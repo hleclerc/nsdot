@@ -1,0 +1,31 @@
+{
+  "include": [
+    "src/python",
+  ],
+  "exclude": [
+    "**/__pycache__",
+    "**/.pytest_cache",
+    "**/node_modules",
+    ".venv"
+  ],
+  "extraPaths": [
+    "src/python",
+  ],
+  "pythonVersion": "3.13",
+  // "pythonPath": "/Users/hugo.leclerc/.mamba/envs/vfs/bin/python",
+  // "pythonPlatform": "Darwin",
+  // "typeCheckingMode": "basic",
+  // "reportMissingImports": true,
+  // "reportMissingTypeStubs": false,
+  // "reportUnusedImport": "warning",
+  // "reportUnusedClass": "warning",
+  // "reportUnusedFunction": "warning",
+  // "reportUnusedVariable": "warning",
+  // "reportDuplicateImport": "warning",
+  // "reportOptionalMemberAccess": "none",
+  // "reportGeneralTypeIssues": "none",
+  // "reportPrivateUsage": "none",
+  // "reportInvalidTypeForm": false,
+  "stubPath": "scripts/stubs",
+  // "extraBuiltins": ["ic", "info"]
+}

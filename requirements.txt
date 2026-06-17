@@ -1,0 +1,23 @@
+#
+nanobind
+devtools
+numpy
+# meson
+# ninja
+
+# Packaging
+cibuildwheel
+hatchling
+build
+
+# Backends
+# jaxlib
+# torch
+# jax
+
+#
+# dask[array]
+matplotlib
+
+# Tests
+timing

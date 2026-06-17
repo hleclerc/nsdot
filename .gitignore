@@ -1,0 +1,55 @@
+# Build artifacts
+compile_commands.json
+.xmake/
+build/
+bin/
+lib/
+*.o
+*.a
+*.so
+*.so.p
+*.cpython*
+*.dylib
+*.out
+
+.private/
+.cache/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.tox/
+*.egg-info/
+dist/
+wheelhouse/
+*.whl
+
+# system
+.DS_Store
+
+# IDEs
+.vscode/
+.idea/
+.zed/
+
+# AI
+CLAUDE.md
+.claude/
+.test.mk
+
+# Documentation
+docs/.vitepress/cache
+docs/.vitepress/dist
+node_modules/
+
+#
+results/
+octave*
+*.vtk
+
+attic
+.aider*

@@ -1,0 +1,4 @@
+-I/Users/hugo.leclerc/Library/Caches/sdot/include
+-Isrc/cpp/
+-std=c++20
+-xc++

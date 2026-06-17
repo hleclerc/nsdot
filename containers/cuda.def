@@ -1,0 +1,104 @@
+# Apptainer/Singularity image for the CUDA (GPU) toolchain.
+#
+# Locks the whole version chain that was fighting us on bare metal:
+#   AdaptiveCpp 25.10  →  LLVM/Clang 20  →  CUDA 12.8  →  one compiler (clang-20)  →  one libstdc++
+# and bakes a pre-built AdaptiveCpp ("full" profile, cuda backend) into an in-image cache so the
+# runtime never rebuilds it. JAX (CUDA) and PyTorch (CUDA) are installed in /opt/venv.
+#
+# Build (from the repo root, so the %files paths resolve):
+#   apptainer build --fakeroot containers/cuda.sif containers/cuda.def
+# Run the C++ test suite (GPU needs --nv to expose the driver):
+#   apptainer exec --nv containers/cuda.sif python scripts/run_cpp_tests.py
+#
+# NOTE: the base image tag and the torch wheel channel are the two things to bump over time;
+# they are isolated at the top of %post.
+
+Bootstrap: docker
+From: nvidia/cuda:12.8.1-devel-ubuntu24.04
+
+%files
+    # Just the package — enough to call ensure_acpp() at build time (no GPU needed to *build* acpp).
+    . /opt/sdot
+
+%environment
+    # First candidate cache root.  Read-only at runtime (baked into the image); acpp and
+    # Boost are found here.  Any new on-the-fly compilation falls through to ~/.cache/sdot.
+    export SDOT_CACHE_DIR=/opt/sdot-cache
+    export CUDA_HOME=/usr/local/cuda
+    export LLVM_CONFIG=/usr/bin/llvm-config-20
+    export PATH=/opt/venv/bin:/usr/lib/llvm-20/bin:$PATH
+    export DEBIAN_FRONTEND=noninteractive
+
+%post
+    set -eux
+
+    # ---- versions to bump over time -------------------------------------------------
+    LLVM_VER=20
+    TORCH_CHANNEL=cu124          # PyTorch CUDA wheel channel (must be <= the image's CUDA)
+    export SDOT_ACPP_VERSION=v25.10.0
+    # ---------------------------------------------------------------------------------
+
+    export DEBIAN_FRONTEND=noninteractive
+    export SDOT_CACHE_DIR=/opt/sdot-cache
+    export CUDA_HOME=/usr/local/cuda
+
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        build-essential cmake ninja-build git ca-certificates \
+        wget gnupg lsb-release software-properties-common \
+        python3 python3-pip python3-venv
+
+    # LLVM / Clang 20 (+ openmp) from the official apt.llvm.org repo.
+    wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+    chmod +x /tmp/llvm.sh
+    /tmp/llvm.sh ${LLVM_VER} all
+    apt-get install -y --no-install-recommends libomp-${LLVM_VER}-dev
+    rm -f /tmp/llvm.sh
+
+    # Build AdaptiveCpp itself with the matching Clang (avoids the gcc/clang + libstdc++ mix
+    # that broke the bare-metal build).
+    export CC=clang-${LLVM_VER}
+    export CXX=clang++-${LLVM_VER}
+
+    # Python runtime: JAX (CUDA) + PyTorch (CUDA), isolated in a venv.
+    python3 -m venv /opt/venv
+    /opt/venv/bin/pip install --no-cache-dir --upgrade pip
+    /opt/venv/bin/pip install --no-cache-dir -r /opt/sdot/requirements.txt
+    /opt/venv/bin/pip install --no-cache-dir "jax[cuda12]"
+    /opt/venv/bin/pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/${TORCH_CHANNEL}
+
+    # Pre-build AdaptiveCpp into the in-image cache (both profiles):
+    #   minimal — CPU/OpenMP, no LLVM needed; used by Device.factory("cpu") inside the image
+    #   full/cuda — generic JIT + CUDA; used by Device.factory("cuda")
+    # Prefixes are deterministic (version+profile+backends+boost+arch), so the runtime never recompiles.
+    PYTHONPATH=/opt/sdot/src/python /opt/venv/bin/python -c \
+        "from sdot.compilation.adaptive_cpp import ensure_acpp; print('acpp minimal:', ensure_acpp('minimal'))"
+    PYTHONPATH=/opt/sdot/src/python /opt/venv/bin/python -c \
+        "from sdot.compilation.adaptive_cpp import ensure_acpp; print('acpp full/cuda:', ensure_acpp('full', ('cuda',)))"
+
+    # the cache must stay readable by the unprivileged runtime user
+    chmod -R a+rX /opt/sdot-cache
+
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+%test
+    # Sanity: both acpp profiles present and the python stack imports.
+    SDOT_CACHE_DIR=/opt/sdot-cache PYTHONPATH=/opt/sdot/src/python /opt/venv/bin/python -c \
+        "from sdot.compilation.adaptive_cpp import is_available; \
+         assert is_available('minimal'), 'acpp minimal missing'; \
+         assert is_available('full', ('cuda',)), 'acpp full/cuda missing'; \
+         print('acpp minimal ok, acpp full/cuda ok')"
+    /opt/venv/bin/python -c "import jax, torch; print('jax', jax.__version__, '| torch', torch.__version__)"
+
+%labels
+    org.sdot.role    cuda-toolchain
+    org.sdot.acpp    v25.10.0
+    org.sdot.llvm    20
+    org.sdot.cuda    12.8
+
+%help
+    CUDA build+runtime image for sdot. Both AdaptiveCpp profiles are prebuilt in /opt/sdot-cache:
+      - minimal (CPU/OpenMP) — for Device.factory("cpu")
+      - full/cuda            — for Device.factory("cuda")
+    Run with --nv to expose the host GPU driver, e.g.:
+      apptainer exec --nv containers/cuda.sif python scripts/run_cpp_tests.py
