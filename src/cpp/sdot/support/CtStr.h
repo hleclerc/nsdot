@@ -2,7 +2,7 @@
 
 namespace sdot {
 
-template<class T> struct CtType {
+template<char *str> struct CtStr {
 };
 
 } // namespace sdot

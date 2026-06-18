@@ -630,7 +630,7 @@ def make_executable( exe_name, src_paths, device, *, profile = None, extra_flags
     cmd = [
         acpp,
         f"--acpp-targets={ targets }",
-        "-std=c++17", "-O2",
+        "-std=c++20", "-O2",
         "-I", project_root / "src" / "cpp",
         *omp_flags,
         *( extra_flags or [] ),

@@ -1,3 +1,4 @@
+-I/Users/hugo.leclerc/Library/Caches/sdot/adaptivecpp/v24.10.0-minimal-arm64/include/AdaptiveCpp
 -I/Users/hugo.leclerc/Library/Caches/sdot/include
 -Isrc/cpp/
 -std=c++20

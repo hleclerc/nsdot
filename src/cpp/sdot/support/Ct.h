@@ -1,6 +1,6 @@
 #pragma once
 
-#include "containers/TypePromote.h"
+#include "util/TypePromote.h"
 #include "common_macros.h"
 
 namespace sdot {

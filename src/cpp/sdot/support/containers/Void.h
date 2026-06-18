@@ -2,7 +2,7 @@
 
 namespace sdot {
 
-template<class T> struct CtType {
+struct Void {
 };
 
 } // namespace sdot
