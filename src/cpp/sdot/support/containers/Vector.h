@@ -14,7 +14,9 @@ public:
     /**/              Vector                   ( const Vector &that );
     /**/              Vector                   ( Vector &&that ) noexcept;
     /**/              Vector                   ( auto &&that );
+
     /**/              Vector                   ( FillWith, auto &&...ctor_args );
+    /**/              Vector                   ( Function, auto &&func );
     /**/              Vector                   ( Values, auto &&...values );
     /**/              Vector                   ( Reserved ); // do not call new on items
     /**/              Vector                   ();

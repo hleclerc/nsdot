@@ -21,9 +21,14 @@ UTP DTP::Vector( auto &&values ) {
         new ( data() + i ) T;
 }
 
-UTP T_VA DTP::Vector( FillWith, A &&...ctor_args ) {
+UTP DTP::Vector( FillWith, auto &&...ctor_args ) {
     for( auto &v : *this )
         new ( &v ) T( ctor_args... );
+}
+
+UTP DTP::Vector( Function, auto &&func ) {
+    for( PI i = 0; i < ct_size; ++i )
+        new ( &operator[]( i ) ) T( func( i ) );
 }
 
 UTP DTP::Vector( Reserved ) {

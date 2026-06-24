@@ -1,45 +1,44 @@
 #pragma once
 
 #include "Matrix.h"
+#include "hipSYCL/compiler/llvm-to-backend/LLVMToBackend.hpp"
 #include <cmath>
 
 namespace sdot {
 
-#define UTP  template<class T,int ct_size>
-#define DTP  Matrix<T,ct_size>
+#define UTP  template<class T,int ct_rows,int ct_cols>
+#define DTP  Matrix<T,ct_rows,ct_cols>
 
-UTP HD Matrix<T,ct_size-1> DTP::without_row_and_col( PI wr, PI wc ) const {
-    Matrix<T,ct_size-1> res;
+UTP Matrix<T,ct_rows-1,ct_cols-1> DTP::without_row_and_col( auto wr, auto wc ) const {
+    Matrix<T,ct_rows-1,ct_cols-1> res;
     for( PI r = 0; r < res.nb_rows(); ++r )
         for( PI c = 0; c < res.nb_cols(); ++c )
             res( r, c ) = operator()( r + ( r >= wr ), c + ( c >= wc ) );
     return res;
 }
 
-UTP T_U HD DTP DTP::with_func( U &&func ) {
+UTP DTP DTP::with_func( auto &&func ) {
     Matrix res;
-    for( PI r = 0; r < ct_size; ++r )
-        for( PI c = 0; c < ct_size; ++c )
+    for( PI r = 0; r < ct_rows; ++r )
+        for( PI c = 0; c < ct_cols; ++c )
             res( r, c ) = func( r, c );
     return res;
 }
 
-UTP HD DTP DTP::with_replaced_col( PI c, const Vec &col ) const {
+UTP DTP DTP::with_replaced_col( auto c, const auto &col ) const {
     Matrix res = *this;
     for( PI r = 0; r < nb_rows(); ++r )
         res( r, c ) = col[ r ];
     return res;
 }
 
-UTP HD typename DTP::Vec DTP::diagonal() const {
-    Vec res( Size(), nb_rows() );
-    for( PI i = 0; i < nb_rows(); ++i )
-        res[ i ] = operator()( i, i );
-    return res;
+UTP auto DTP::diagonal() const {
+    return Vector<T,min(ct_rows,ct_cols)>( Function(), [&]( auto i ) { return operator()( i, i ); } );
 }
 
-UTP HD T DTP::determinant() const {
-    if constexpr ( ct_size == 1 ) {
+UTP T DTP::determinant() const {
+    static_assert( ct_rows == ct_cols );
+    if constexpr ( ct_rows == 1 ) {
         return operator()( 0, 0 );
     } else {
         T sgn = 1, res = 0;
@@ -49,7 +48,7 @@ UTP HD T DTP::determinant() const {
     }
 }
 
-UTP HD DTP DTP::cholesky() const {
+UTP DTP DTP::cholesky() const {
     const PI nd = nb_rows();
     Matrix L( nd );
     for ( PI i = 0; i < nd; ++i )
@@ -73,16 +72,16 @@ UTP HD DTP DTP::cholesky() const {
     return L;
 }
 
-UTP HD typename DTP::Vec DTP::solve( const Vec &vec ) const {
+UTP Vector<T,ct_cols> DTP::solve_det( const auto &vec ) const {
     T d = determinant();
     T sgn = 1;
-    Vec res;
+    Vector<T,ct_cols> res;
     for( PI c = 0; c < nb_rows(); ++c, sgn = -sgn )
         res[ c ] = with_replaced_col( c, vec ).determinant() / d;
     return res;
 }
 
-UTP HD typename DTP::Vec DTP::solve_ge( Vec b ) const {
+UTP Vector<T,ct_cols> DTP::solve_ge( const auto &b ) const {
     const PI n = nb_rows();
     Matrix A = *this;
 
@@ -107,7 +106,7 @@ UTP HD typename DTP::Vec DTP::solve_ge( Vec b ) const {
     }
 
     // back substitution (x initialised to 0 so zero-pivot rows stay 0)
-    Vec x;
+    Vector<T,ct_cols> x;
     for ( PI i = 0; i < n; ++i )
         x[ i ] = T( 0 );
     for ( PI p = n; p-- > 0; ) {
@@ -121,7 +120,7 @@ UTP HD typename DTP::Vec DTP::solve_ge( Vec b ) const {
     return x;
 }
 
-UTP HD DTP DTP::inverse() const {
+UTP DTP DTP::inverse() const {
     const PI n = nb_rows();
     Matrix A = *this;
     Matrix inv = with_func( []( PI r, PI c ) -> T { return r == c ? T(1) : T(0); } );

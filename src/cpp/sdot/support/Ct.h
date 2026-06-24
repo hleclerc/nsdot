@@ -3,6 +3,7 @@
 #include "util/TypePromote.h"
 #include "algorithms/min.h" // IWYU pragma: export
 #include "common_macros.h"
+#include <type_traits>
 
 namespace sdot {
 
