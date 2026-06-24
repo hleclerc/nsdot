@@ -114,7 +114,7 @@ public:
     // (alloc + copy selon io_category). Appelle ensuite cont( vue_kernel ).
     auto             make_available         ( auto &&queue, auto io_category, auto &&cont ) const;
 
-    void             fill_with              ( auto &&avaible_queues, TF value );
+    auto             fill_with              ( auto &&avaible_queues, TF value ); ///< -> QueueEvent (RAII : synchrone par défaut, async si géré)
     void             fill_with              ( TF value );
 
     //

@@ -108,11 +108,22 @@ TEST_CASE( "TensorView — fill_with / for_each_scalar", "" ) {
 TEST_CASE( "TensorView — fill_with avec contextes (run_parallel)", "" ) {
     auto ql = tuple( CpuQueue() );
 
+    // handle ignoré -> RAII : wait à la destruction du temporaire (synchrone)
     double d[ 6 ] = {};
     auto t = tensor_view( d, tuple( 2, 3 ) );
     t.fill_with( ql, 9 );
     for ( double x : d )
         CHECK( x == 9 );
+
+    // handle gardé -> asynchrone, puis wait() explicite (consomme l'event)
+    double e[ 4 ] = {};
+    auto u = tensor_view( e, tuple( 4 ) );
+    {
+        auto h = u.fill_with( ql, 3 );
+        h.wait();
+    }
+    for ( double x : e )
+        CHECK( x == 3 );
 }
 
 TEST_CASE( "TensorView — fill_with avec contextes (run_parallel) et shapes éclatées", "" ) {

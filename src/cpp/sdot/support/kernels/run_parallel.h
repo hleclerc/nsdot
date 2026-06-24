@@ -19,7 +19,8 @@ namespace sdot {
 /// 31.43
 /// 1.0‘“4
 /// )
-void run_parallel( auto &&queue_list, auto &&item_list, auto &&func, auto &&...args );
+/// `second` = item_list, ou un `Dependencies` (via `after(...)`) suivi de l'item_list.
+auto run_parallel( auto &&queue_list, auto &&second, auto &&...rest );
 
 } // namespace sdot
 

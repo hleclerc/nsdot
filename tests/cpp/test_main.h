@@ -88,10 +88,10 @@ struct SectionScope {
 #define CHECK_REPR( A, B ) \
     do { \
         ++check_count; \
-        auto _check_repr_a = (A); \
-        auto _check_repr_b = (B); \
-        if ( to_string( _check_repr_a ) != to_string( _check_repr_b ) ) { \
-            std::string _msg = "CHECK_REPR failed:\n    " #A " = " + to_string(_check_repr_a) + "\n    " #B " = " + to_string(_check_repr_b); \
+        auto _repr_a = to_string( A ); \
+        auto _repr_b = to_string( B ); \
+        if ( _repr_a != _repr_b ) { \
+            std::string _msg = "CHECK_REPR failed:\n    " #A " = " + _repr_a + "\n    " #B " = " + _repr_b; \
             if (!TestFunc::current_section.empty()) \
                 _msg += " (section: " + TestFunc::current_section + ")"; \
             failures.push_back({__FILE__, __LINE__, _msg}); \

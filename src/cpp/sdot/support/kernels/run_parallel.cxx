@@ -7,6 +7,7 @@
 #include "transfer_cost.h"
 #include "make_avaiable.h"
 #include "run_parallel.h"
+#include "QueueEvent.h"
 #include "kernel_cost.h"
 #include "IoCategory.h"
 #include "../Ct.h"
@@ -27,7 +28,7 @@ namespace detail::RunParallel {
         }
     }
 
-    auto _run_kernel( auto &&queue, auto &&func, auto &&item_list, auto &&...args ) {
+    QueueEvent _run_kernel( auto &&queue, auto &&deps, auto &&func, auto &&item_list, auto &&...args ) {
         const int nb_items = item_list.size();
         int max_nb_threads = nb_items;
         if constexpr ( requires { func.max_nb_threads( args... ); } )
@@ -36,49 +37,62 @@ namespace detail::RunParallel {
         // launch at most `max_nb_threads` work items, each handling a strided slice of the items
         const int nb_threads = min( nb_items, max_nb_threads );
         if ( nb_threads <= 0 )
-            return;
+            return {};
 
-        queue.queue.parallel_for( nb_threads, [&]( sycl::id<1> thread_id ) {
-            for ( int index = thread_id; index < nb_items; index += nb_threads )
-                func( index, args... );
+        // submit (et pas parallel_for direct) pour pouvoir déclarer les dépendances `deps`.
+        // capture PAR VALEUR du kernel : il est asynchrone (on ne wait pas ici), donc autonome —
+        // sinon nb_items/nb_threads/args capturés par référence seraient détruits.
+        return queue.queue.submit( [&]( sycl::handler &h ) {
+            for ( const auto &e : deps.events )
+                h.depends_on( e );
+            h.parallel_for( nb_threads, [=]( sycl::id<1> thread_id ) {
+                for ( int index = thread_id; index < nb_items; index += nb_threads )
+                    func( index, args... );
+            } );
         } );
-        // parallel_for est asynchrone : on attend la fin (sinon on lirait les résultats trop tôt,
-        // et les locals capturés par référence — nb_items/nb_threads — seraient déjà détruits).
-        queue.queue.wait();
+    }
+
+    // corps de run_parallel, avec dépendances explicites `deps` (peut être Dependencies<0>)
+    auto _run_parallel( auto &&queue_list, auto &&deps, auto &&item_list, auto &&func, auto &&...args ) {
+        // costs
+        auto costs = apply_values( FORWARD( queue_list ), [&]( auto &&...queues ) {
+            auto cost_for = [&]( auto &&queue ) {
+                return _map_reduce_run_arg( [&]( auto io_category, const auto &arg, auto &&cont ) {
+                    return cont( transfer_cost( queue, io_category, arg ) );
+                }, [&]( auto &&...map_out ) {
+                    return ( map_out + ... + kernel_cost( func, queue, item_list, args... ) );
+                }, InpList(), Ct<int,sizeof...(args)+2>(), item_list, UndefList(), args... );
+            };
+            return tuple( cost_for( queues )... );
+        } );
+
+        // first cost == min cost
+        double min_cost = costs.apply_values( []( auto...values ) { return min( values... ); } );
+        int index_in_queue = 0;
+        bool done = false;
+        QueueEvent result; ///< event du contexte choisi (RAII : wait à la destruction si non consommé)
+        for_each_item( queue_list, [&]( auto &&queue ) {
+            double cost = costs[ index_in_queue++ ];
+            if ( done || cost > min_cost )
+                return;
+            done = true;
+
+            result = _map_reduce_run_arg( [&]( auto io_category, auto &&arg, auto &&cont ) {
+                return make_available( queue, io_category, FORWARD( arg ), FORWARD( cont ) );
+            }, [&]( auto &&...args ) {
+                return _run_kernel( queue, deps, FORWARD( func ), FORWARD( args )... );
+            }, InpList(), Ct<int,sizeof...(args)+2>(), item_list, UndefList(), args... );
+        } );
+        return result;
     }
 }
 
-void run_parallel( auto &&queue_list, auto &&item_list, auto &&func, auto &&...args ) {
-    // costs
-    auto costs = apply_values( FORWARD( queue_list ), [&]( auto &&...queues ) {
-        auto cost_for = [&]( auto &&queue ) {
-            return detail::RunParallel::_map_reduce_run_arg( [&]( auto io_category, const auto &arg, auto &&cont ) {
-                return cont( transfer_cost( queue, io_category, arg ) );
-            }, [&]( auto &&...map_out ) {
-                return ( map_out + ... + kernel_cost( func, queue, item_list, args... ) );
-            }, InpList(), Ct<int,sizeof...(args)+2>(), item_list, UndefList(), args... );
-        };
-
-        return tuple( cost_for( queues )... );
-    } );
-
-    // first cost == min cost
-    double min_cost = costs.apply_values( []( auto...values ) { return min( values... ); } );
-    int index_in_queue = 0;
-    bool done = false;
-    for_each_item( queue_list, [&]( auto &&queue ) {
-        double cost = costs[ index_in_queue++ ];
-        if ( done || cost > min_cost )
-            return;
-        done = true;
-
-        //
-        return detail::RunParallel::_map_reduce_run_arg( [&]( auto io_category, auto &&arg, auto &&cont ) {
-            return make_available( queue, io_category, FORWARD( arg ), FORWARD( cont ) );
-        }, [&]( auto &&...args ) {
-            return detail::RunParallel::_run_kernel( queue, FORWARD( func ), FORWARD( args )... );
-        }, InpList(), Ct<int,sizeof...(args)+2>(), item_list, UndefList(), args... );
-    } );
+// `second` = soit un Dependencies (déps explicites via after(...)), soit l'item_list (pas de déps).
+auto run_parallel( auto &&queue_list, auto &&second, auto &&...rest ) {
+    if constexpr ( is_dependencies<DECAYED_TYPE_OF( second )> )
+        return detail::RunParallel::_run_parallel( FORWARD( queue_list ), FORWARD( second ), FORWARD( rest )... );
+    else
+        return detail::RunParallel::_run_parallel( FORWARD( queue_list ), Dependencies<0>{}, FORWARD( second ), FORWARD( rest )... );
 }
 
 // namespace RunDetails {

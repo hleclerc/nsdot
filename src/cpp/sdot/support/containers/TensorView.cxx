@@ -217,17 +217,20 @@ UTP void DTP::fill_with( TF value ) {
 }
 
 // variante avec contextes d'exécution : dispatch via run_parallel (choix du meilleur contexte)
-UTP void DTP::fill_with( auto &&queue_list, TF value ) {
-    if constexpr ( ct_rank == 0 )
-        ref() = value;
-    else if ( items_are_contiguous() ) {
-        run_parallel( FORWARD( queue_list ), range( nb_items() ),
-            [&]( auto id, auto out, auto value ) { out._data.template as<TF>()[ id ] = value; },
+UTP auto DTP::fill_with( auto &&queue_list, TF value ) {
+    if constexpr ( ct_rank == 0 ) {
+        return run_parallel( FORWARD( queue_list ), range( 1 ),
+            []( auto, auto out, auto value ) { out.ref() = value; },
+            OutList(), *this, InpList(), value
+        );
+    } else if ( items_are_contiguous() ) {
+        return run_parallel( FORWARD( queue_list ), range( nb_items() ),
+            []( auto id, auto out, auto value ) { out._data.template as<TF>()[ id ] = value; },
             OutList(), *this, InpList(), value
         );
     } else {
-        run_parallel( FORWARD( queue_list ), range( nb_items() ),
-            [&]( auto id, auto out, auto value ) { out( indices_col_ordering( id ) ) = value; },
+        return run_parallel( FORWARD( queue_list ), range( nb_items() ),
+            []( auto id, auto out, auto value ) { out( out.indices_col_ordering( id ) ) = value; },
             OutList(), *this, InpList(), value
         );
     }
