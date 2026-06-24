@@ -1,9 +1,8 @@
 #pragma once
 
-#include "common_macros.h"
 #include "ASSERT.h" // IWYU pragma: export
 #include "TODO.h" // IWYU pragma: export
-#include "info.h" // IWYU pragma: export
+#include "INFO.h" // IWYU pragma: export
 
 #include <cstdint>
 
@@ -32,19 +31,5 @@ struct Values {};
 struct Shape {};
 struct Rank {};
 struct Size {};
-struct Out {};
-struct Inp {};
-struct Mut {};
-
-// template<class TF> HD TF factorial( TF n ) {
-//     TF res = 1;
-//     for ( PI i = 2; i <= n; ++i )
-//         res *= TF( i );
-//     return res;
-// }
-
-// template<class TF> constexpr TF pow_rec( TF v, PI n ) {
-//     return n ? pow_rec( v, n - 1 ) * v : 1;
-// }
 
 } // namespace sdot

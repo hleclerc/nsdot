@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <utility>
 
-#include "for_each_item.h"
+#include "../algorithms/for_each_item.h"
 #include "Vector.h"
 
 namespace sdot {

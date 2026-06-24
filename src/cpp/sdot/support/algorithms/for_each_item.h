@@ -1,18 +1,17 @@
 #pragma once
 
-#include "../common_macros.h" // HD, FORWARD
-#include <type_traits>
+#include "apply_values.h" // FORWARD
 
 namespace sdot {
 
-namespace detail {
-    template<class T,class=void> struct has_for_each_item_method : std::false_type {};
-    T_T struct has_for_each_item_method<T,void_t<decltype(std::declval<T>().for_each_item( AnyFunc<>() ))>> : std::true_type {};
-}
-
-T_TA HD auto for_each_item( T &&list, A &&func ) -> std::enable_if_t<detail::has_for_each_item_method<T>::value,void>  {
-    list.for_each_item( FORWARD( func ) );
+auto for_each_item( auto &&list, auto &&func ) requires ( requires { list.for_each_item( FORWARD( func ) ); } || requires { apply_values( FORWARD( list ), []( auto &&... ) {} ); } )  {
+    if constexpr ( requires { list.for_each_item( FORWARD( func ) ); } )
+        list.for_each_item( FORWARD( func ) );
+    else {
+        apply_values( FORWARD( list ), [&]( auto &&...values ) {
+            ( func( values ), ... );
+        } );
+    }
 }
 
 } // namespace sdot
-

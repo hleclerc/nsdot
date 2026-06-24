@@ -1,5 +1,5 @@
 #include <sdot/support/string/to_string.h>
-#include <sdot/support/info.h>
+#include <sdot/support/INFO.h>
 #include <stdexcept>
 #include <iostream>
 #include <vector>
@@ -73,13 +73,17 @@ struct SectionScope {
         } \
     } while( false )
 
+// concaténation avec expansion (sinon __LINE__ n'est pas développé -> collisions)
+#define _TM_CAT2( a, b ) a##b
+#define _TM_CAT( a, b ) _TM_CAT2( a, b )
+
 #define TEST_CASE( name, tags ) \
-    static void _test_func_##__LINE__(); \
-    static TestFunc _test_obj_##__LINE__(name, tags, _test_func_##__LINE__); \
-    static void _test_func_##__LINE__()
+    static void _TM_CAT( _test_func_, __LINE__ )(); \
+    static TestFunc _TM_CAT( _test_obj_, __LINE__ )(name, tags, _TM_CAT( _test_func_, __LINE__ )); \
+    static void _TM_CAT( _test_func_, __LINE__ )()
 
 #define SECTION( name ) \
-    if ( SectionScope _section_scope_##__LINE__{ name } )
+    if ( SectionScope _TM_CAT( _section_scope_, __LINE__ ){ name } )
 
 #define CHECK_REPR( A, B ) \
     do { \

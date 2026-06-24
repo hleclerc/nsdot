@@ -14,11 +14,7 @@ template<class T,int ct_size>
 class alignas( T ) Vector {
 public:
     using             value_type                  = T;
-    #ifdef __CUDA_ARCH__
-        char          _storage[ sizeof( T ) * ct_size + bool( ct_size == 0 ) ];
-    #else
-        char          _storage[ sizeof( T ) * ct_size ];
-    #endif
+    char              _storage[ sizeof( T ) * ct_size ];
 
     template<class U,class=std::enable_if_t<detail::has_size_method<U>::value>>
     /**/              HD Vector                   ( const U &values );

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "util/TypePromote.h"
+#include "algorithms/min.h" // IWYU pragma: export
 #include "common_macros.h"
 
 namespace sdot {
@@ -51,18 +52,6 @@ constexpr auto operator""_b() {
     return sdot::Ct<bool,bool( v )>{};
 }
 
-// template<char... Digits>
-// constexpr auto operator""_s() {
-//     constexpr int v = [] {
-//         char ds[] = { Digits... };
-//         int r = 0;
-//         for ( char c : ds )
-//             r = r * 10 + ( c - '0' );
-//         return r;
-//     }();
-//     return sdot::Ct<char,"...">{};
-// }
-
 template<class A,A i,class B,B j>
 struct TypePromote<Ct<A,i>,Ct<B,j>> { static_assert( i == j ); using type = Ct<typename TypePromote<A,B>::type,i>; };
 
@@ -74,11 +63,11 @@ struct TypePromote<A,Ct<B,j>> { using type = typename TypePromote<A,B>::type; };
 
 
 // Ct Ct
-template<class T0,T0 v0,class T1,T1 v1> constexpr auto operator+( Ct<T0,v0>, Ct<T1,v1> ) { using TR = DECAYED_TYPE_OF( v0 + v1 ); return Ct<TR,v0 + v1>(); }
-template<class T0,T0 v0,class T1,T1 v1> constexpr auto operator-( Ct<T0,v0>, Ct<T1,v1> ) { using TR = DECAYED_TYPE_OF( v0 - v1 ); return Ct<TR,v0 - v1>(); }
-template<class T0,T0 v0,class T1,T1 v1> constexpr auto operator*( Ct<T0,v0>, Ct<T1,v1> ) { using TR = DECAYED_TYPE_OF( v0 * v1 ); return Ct<TR,v0 * v1>(); }
-template<class T0,T0 v0,class T1,T1 v1> constexpr auto operator/( Ct<T0,v0>, Ct<T1,v1> ) { using TR = DECAYED_TYPE_OF( v0 / v1 ); return Ct<TR,v0 / v1>(); }
-template<class T0,T0 v0,class T1,T1 v1> constexpr auto operator%( Ct<T0,v0>, Ct<T1,v1> ) { using TR = DECAYED_TYPE_OF( v0 % v1 ); return Ct<TR,v0 % v1>(); }
+template<class T0,T0 v0,class T1,T1 v1> constexpr auto operator+ ( Ct<T0,v0>, Ct<T1,v1> ) { using TR = DECAYED_TYPE_OF( v0 + v1 ); return Ct<TR,v0 + v1>(); }
+template<class T0,T0 v0,class T1,T1 v1> constexpr auto operator- ( Ct<T0,v0>, Ct<T1,v1> ) { using TR = DECAYED_TYPE_OF( v0 - v1 ); return Ct<TR,v0 - v1>(); }
+template<class T0,T0 v0,class T1,T1 v1> constexpr auto operator* ( Ct<T0,v0>, Ct<T1,v1> ) { using TR = DECAYED_TYPE_OF( v0 * v1 ); return Ct<TR,v0 * v1>(); }
+template<class T0,T0 v0,class T1,T1 v1> constexpr auto operator/ ( Ct<T0,v0>, Ct<T1,v1> ) { using TR = DECAYED_TYPE_OF( v0 / v1 ); return Ct<TR,v0 / v1>(); }
+template<class T0,T0 v0,class T1,T1 v1> constexpr auto operator% ( Ct<T0,v0>, Ct<T1,v1> ) { using TR = DECAYED_TYPE_OF( v0 % v1 ); return Ct<TR,v0 % v1>(); }
 
 template<class T0,T0 v0,class T1,T1 v1> constexpr auto operator&&( Ct<T0,v0>, Ct<T1,v1> ) { return Ct<bool,(v0 && v1)>(); }
 template<class T0,T0 v0,class T1,T1 v1> constexpr auto operator||( Ct<T0,v0>, Ct<T1,v1> ) { return Ct<bool,(v0 || v1)>(); }
@@ -90,12 +79,15 @@ template<class T0,T0 v0,class T1,T1 v1> constexpr auto operator>=( Ct<T0,v0>, Ct
 template<class T0,T0 v0,class T1,T1 v1> constexpr auto operator< ( Ct<T0,v0>, Ct<T1,v1> ) { return Ct<bool,(v0 <  v1)>(); }
 template<class T0,T0 v0,class T1,T1 v1> constexpr auto operator> ( Ct<T0,v0>, Ct<T1,v1> ) { return Ct<bool,(v0 >  v1)>(); }
 
+template<class T0,T0 v0,class T1,T1 v1> constexpr auto min( Ct<T0,v0>, Ct<T1,v1> ) { using TR = TypePromote<T0,T1>::type; return Ct<TR,(v0 <= v1 ? TR( v0 ) : TR( v1 ) )>(); }
+template<class T0,T0 v0,class T1,T1 v1> constexpr auto max( Ct<T0,v0>, Ct<T1,v1> ) { using TR = TypePromote<T0,T1>::type; return Ct<TR,(v0 >= v1 ? TR( v0 ) : TR( v1 ) )>(); }
+
 // Ct T1
-template<class T0,T0 v0,class T1> constexpr auto operator+( Ct<T0,v0>, T1 v1 ) { return v0 + v1; }
-template<class T0,T0 v0,class T1> constexpr auto operator-( Ct<T0,v0>, T1 v1 ) { return v0 - v1; }
-template<class T0,T0 v0,class T1> constexpr auto operator*( Ct<T0,v0>, T1 v1 ) { return v0 * v1; }
-template<class T0,T0 v0,class T1> constexpr auto operator/( Ct<T0,v0>, T1 v1 ) { return v0 / v1; }
-template<class T0,T0 v0,class T1> constexpr auto operator%( Ct<T0,v0>, T1 v1 ) { return v0 % v1; }
+template<class T0,T0 v0,class T1> constexpr auto operator+ ( Ct<T0,v0>, T1 v1 ) { return v0 + v1; }
+template<class T0,T0 v0,class T1> constexpr auto operator- ( Ct<T0,v0>, T1 v1 ) { return v0 - v1; }
+template<class T0,T0 v0,class T1> constexpr auto operator* ( Ct<T0,v0>, T1 v1 ) { return v0 * v1; }
+template<class T0,T0 v0,class T1> constexpr auto operator/ ( Ct<T0,v0>, T1 v1 ) { return v0 / v1; }
+template<class T0,T0 v0,class T1> constexpr auto operator% ( Ct<T0,v0>, T1 v1 ) { return v0 % v1; }
 
 template<class T0,T0 v0,class T1> constexpr auto operator&&( Ct<T0,v0>, T1 v1 ) { return v0 && v1; }
 template<class T0,T0 v0,class T1> constexpr auto operator||( Ct<T0,v0>, T1 v1 ) { return v0 || v1; }
@@ -107,6 +99,8 @@ template<class T0,T0 v0,class T1> constexpr auto operator>=( Ct<T0,v0>, T1 v1 ) 
 template<class T0,T0 v0,class T1> constexpr auto operator< ( Ct<T0,v0>, T1 v1 ) { return v0 <  v1; }
 template<class T0,T0 v0,class T1> constexpr auto operator> ( Ct<T0,v0>, T1 v1 ) { return v0 >  v1; }
 
+template<class T0,T0 v0,class T1> constexpr auto min( Ct<T0,v0>, T1 v1 ) { using TR = TypePromote<T0,T1>::type; return v0 <= v1 ? TR( v0 ) : TR( v1 ); }
+template<class T0,T0 v0,class T1> constexpr auto max( Ct<T0,v0>, T1 v1 ) { using TR = TypePromote<T0,T1>::type; return v0 >= v1 ? TR( v0 ) : TR( v1 ); }
 
 // T0 Ct
 template<class T0,class T1,T1 v1> constexpr auto operator+( T0 v0, Ct<T1,v1> ) { return v0 + v1; }
@@ -123,5 +117,8 @@ template<class T0,class T1,T1 v1> constexpr auto operator<=( T0 v0, Ct<T1,v1> ) 
 template<class T0,class T1,T1 v1> constexpr auto operator>=( T0 v0, Ct<T1,v1> ) { return v0 >= v1; }
 template<class T0,class T1,T1 v1> constexpr auto operator< ( T0 v0, Ct<T1,v1> ) { return v0 <  v1; }
 template<class T0,class T1,T1 v1> constexpr auto operator> ( T0 v0, Ct<T1,v1> ) { return v0 >  v1; }
+
+template<class T0,class T1,T1 v1> constexpr auto min( T0 v0, Ct<T1,v1> ) { using TR = TypePromote<T0,T1>::type; return v0 <= v1 ? TR( v0 ) : TR( v1 ); }
+template<class T0,class T1,T1 v1> constexpr auto max( T0 v0, Ct<T1,v1> ) { using TR = TypePromote<T0,T1>::type; return v0 >= v1 ? TR( v0 ) : TR( v1 ); }
 
 } // namespace sdot

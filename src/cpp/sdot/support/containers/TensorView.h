@@ -5,11 +5,15 @@
 // #include "../hardware/MemorySpace_CpuRam.h" // IWYU pragma: export
 // #include "../hardware/Ptr.h"
 
-// #include "contiguous_strides.h" // IWYU pragma: export
+#include "internal/contiguous_strides.h" // IWYU pragma: export
+#include "../kernels/CpuHostMemorySpace.h"
+#include "../kernels/Ptr.h" // IWYU pragma: export
+#include "AxisNames.h" // IWYU pragma: export
+#include "TupleRep.h" // IWYU pragma: export
+#include <type_traits>
 // #include "container_tags.h" // IWYU pragma: export
 // #include "AxisNames.h" // IWYU pragma: export
 // #include "Vector.h" // IWYU pragma: export
-// #include "Tuple.h" // IWYU pragma: export
 
 namespace sdot {
 
@@ -19,110 +23,124 @@ namespace sdot {
 ///
 ///   TF -> the scalar type
 ///   Shape ->  size for each axis
-///   AxisNames -> name of each axis (Void if not named)
+///   AxisNames -> name of each axis (UnnamedAxis if not named), see AxisNames.h / DEFINE_AXIS
 template<
     class _TF,
     class _Shape,
-    class _AxisNames,
-    class _StrideFunc //DECAYED_TYPE_OF( contiguous_strides<_TF>( _Shape{} ) ),
+    class _MemorySpace,
+    class _AxisNames = DECAYED_TYPE_OF( unnamed_axes( _Shape{} ) ),
+    class _Strides = DECAYED_TYPE_OF( contiguous_strides<_TF>( _Shape{} ) )
 >
 class TensorView {
 public:
-//     using            MemorySpace          = _MemorySpace;
-//     using            AxisNames            = _AxisNames;
-//     using            Strides              = _Strides;
-//     using            Shape                = _Shape;
-//     using            TF                   = _TF;
-//     using            TI                   = SI;
+    using            MemorySpace            = _MemorySpace;
+    using            AxisNames              = _AxisNames;
+    using            Strides                = _Strides;
+    using            Shape                  = _Shape;
+    using            TF                     = _TF;
+    using            TI                     = SI;
 
-//     using            value_type             = TF;
-//     SCInt            ct_rank                = Shape::ct_size;
+    using            value_type             = TF;
 
-//     HD               TensorView             ( TF *data, Shape shape, Strides strides );
-//     HD               TensorView             ( const TensorView & ) = default; ///< Eigen-like view semantics: copy-construction shares the data (shallow), while operator= copies the elements (deep). The defaulted copy-ctor also silences -Wdeprecated-copy.
-//     HD               TensorView             ();
+    using            RawByte                = std::conditional_t<std::is_const_v<TF>,const std::byte,std::byte>; ///< octet const ou non selon la constness de TF (les strides sont en octets)
+    using            BytePtr                = Ptr<RawByte,MemorySpace>; ///< pointeur octet + zone mémoire (ce qu'on stocke)
+    using            DataPtr                = Ptr<TF,MemorySpace>;      ///< pointeur typé renvoyé par data()
+    SCInt            ct_rank                = Shape::ct_size;
 
-//     // generic info
-//     HD bool          not_surely_null        () const { return ! surely_null(); }
-//     HD bool          surely_null            () const; ///< is_invalid() || Zero tensor
-//     HD bool          is_invalid             () const; ///<
-//     HD bool          is_valid               () const; ///<
+    /* */            TensorView             ( DataPtr data, Shape shape, Strides strides ); ///< pointeur typé ; stocké en interne comme BytePtr (strides en octets)
+    /* */            TensorView             ( const TensorView & ) = default; ///< Eigen-like view semantics: copy-construction shares the data (shallow), while operator= copies the elements (deep). The defaulted copy-ctor also silences -Wdeprecated-copy.
+    /* */            TensorView             () = default;
 
-//     // generic info
-//     MemorySpace      memory_space           () const { return _memory_space; }
-//     void             display                ( std::ostream &os ) const;
-//     HD auto          rank                   () const;
+    // generic info
+    bool             not_surely_null        () const { return ! surely_null(); }
+    bool             surely_null            () const; ///< is_invalid() || Zero tensor
+    bool             is_invalid             () const; ///<
+    bool             is_valid               () const; ///<
 
-//     //
-//     HD Strides       strides                () const;
-//     T_T  HD auto     stride                 ( T d ) const;
+    MemorySpace      memory_space           () const { return _data.memory_space; }
+    // (pas de membre display : le display() générique de display.h gère TensorView via shape()/value()/operator[])
 
-//     // shape
-//     T_T  HD void     for_each_index         ( T &&func ) const;
-//     T_T  HD void     for_each_item          ( T &&func ) const;
-//     HD auto          is_contiguous          () const; ///< true iff strides match row-major contiguous layout
-//     HD auto          all_indices            () const;
-//     HD auto          nb_items               () const;
-//     T_T  HD auto     shape                  ( T d ) const { return _shape[ d ]; }
-//     HD Shape         shape                  () const { return _shape; }
-//     HD auto          empty                  () const;
-//     HD auto          size                   () const;
+    //
+    Strides          strides                () const;
+    auto             stride                 ( auto d ) const;
+    auto             rank                   () const;
 
-//     // content
-//     HD auto          data                   () const;
+    // shape
+    // for_each_index / for_each_item : à migrer (dépendent de cartesian_product/range)
+    auto             indices_col_ordering   ( auto index ) const;
+    auto             items_are_contiguous   () const; ///<
+    void             for_each_scalar        ( auto &&func ) const; ///< appelle func( vue_rang_0 ) pour chaque élément (boucle simple récursive)
+    auto             all_indices            () const;
+    auto             nb_items               () const;
+    auto             shape                  ( auto d ) const { return _shape[ d ]; }
+    Shape            shape                  () const { return _shape; }
+    auto             empty                  () const;
+    auto             size                   () const;
 
-//     HD auto          begin                  () const;
-//     HD auto          end                    () const;
+    // content
+    auto             data                   () const;
 
-//     // operator() and operator[] produce a new tensor
-//     T_Tv HD auto     operator()             ( const T &index, V ...rem ) const;
-//     T_T  HD auto     operator[]             ( const T &index ) const { return operator()( index ); }
-//     HD auto          operator()             () const { return *this; }
+    auto             begin                  () const;
+    auto             end                    () const;
 
-//     T_Tv HD auto     offset                 ( const T &index, V ...rem ) const;
-//     HD auto          offset                 () const { return *this; }
+    // operator() and operator[] produce a new tensor
+    auto             operator()             ( const auto &index, auto ...rem ) const;
+    auto             operator[]             ( const auto &index ) const { return operator()( index ); }
+    auto             operator()             () const { return *this; }
 
-//     // scalar value/reference for a rank 1 tensor
-//     HD               operator TF            () const { return value(); }
-//     HD TF            value                  () const;
-//     HD TF&           ref                    () const;
+    auto             offset                 ( const auto &index, auto ...rem ) const;
+    auto             offset                 () const { return *this; }
 
-//     // reassign
-//     T_T  HD void     copy_elements_from     ( const T &that );
-//     T_T  HD void     operator-=             ( const T &that );
-//     T_T  HD void     operator+=             ( const T &that );
-//     T_T  HD void     operator*=             ( const T &that );
-//     T_T  HD void     operator/=             ( const T &that );
-//     T_T  HD void     operator=              ( const T &that );
-//     HD void          operator=              ( const TensorView &that );
-//     HD void          spill_to               ( TensorView &that ); ///< copy data of *this to that, and use data from that
+    // scalar value/reference for a rank 1 tensor
+    /* */            operator TF           () const { return value(); }
+    TF               value                 () const;
+    TF&              ref                   () const;
 
-//     // data copy / transfer — arch-unaware (HD, valid in device code)
-//     T_T  HD auto     transfer_cost          ( const T &execution_context ) const;
+    // reassign
+    void             copy_elements_from     ( const auto &that );
+    void             operator-=             ( const auto &that );
+    void             operator+=             ( const auto &that );
+    void             operator*=             ( const auto &that );
+    void             operator/=             ( const auto &that );
+    void             operator=              ( const auto &that );
+    void             operator=              ( const TensorView &that );
+    void             spill_to               ( TensorView &that ); ///< copy data of *this to that, and use data from that
 
-//     T_TA void        with_same_shape        ( const T &arch, A &&func ) const;
-//     HD void          fill_with              ( TF value );
+    // data copy / transfer
+    auto             transfer_cost          ( const auto &queue, auto io_category ) const;
 
-//     //
-//     T_T  HD auto     unsqueeze              ( T axis ) const; ///< append a trailing dimension of size 1 (preserves strides)
-//     T_T  HD auto     squeeze                ( T axis, PI index = 0 ) const;
-//     HD auto          row                    ( PI index ) const;
+    // rend la vue accessible depuis le contexte d'exécution `queue` : si le coût de transfert
+    // est nul on retype simplement le Ptr vers la zone kernel cible, sinon on transfère
+    // (alloc + copy selon io_category). Appelle ensuite cont( vue_kernel ).
+    auto             make_available         ( auto &&queue, auto io_category, auto &&cont ) const;
 
-//     // compile-time tags (see container_tags.h)
-//     template<class... ExtraTags>
-//     HD auto          with_tags              () const; ///< same view, with ExtraTags... added to the tag set (no-op for tags already present)
+    void             fill_with              ( auto &&avaible_queues, TF value );
+    void             fill_with              ( TF value );
 
-// private:
-//     static HD RawPtr _sentinel              () { return RawPtr( nullptr ) + 1; }
+    //
+    auto             unsqueeze              ( auto axis ) const; ///< append a trailing dimension of size 1 (preserves strides)
+    auto             squeeze                ( auto axis, auto index ) const; ///< axis = position (Ct) ou nom d'axe, + valeur
+    auto             squeeze                ( auto axis_index ) const;       ///< axis_index = (nom = valeur)
+    auto             row                    ( auto index ) const;
 
-//     MemorySpace      _memory_space;       ///<
-//     RawPtr           _raw_ptr;            ///<
-//     Strides          _strides;            ///< byte strides
-//     Shape            _shape;              ///<
+    Strides          _strides;              ///< strides en octets
+    Shape            _shape;                ///<
+    BytePtr          _data;                 ///< pointeur octet + zone mémoire, agrégés
 };
+
+auto tensor_view( auto *ptr, auto &&shape, auto &&axis_names, auto &&strides ) {
+    using TF = DECAYED_TYPE_OF( *ptr );
+    return TensorView<TF,DECAYED_TYPE_OF( shape ),CpuHostMemorySpace,DECAYED_TYPE_OF( axis_names ),DECAYED_TYPE_OF( strides )>(
+        Ptr<TF,CpuHostMemorySpace>( ptr ), FORWARD( shape ), FORWARD( strides )
+    );
+}
+auto tensor_view( auto *ptr, auto &&shape, auto &&axis_names ) { return tensor_view( ptr, shape, FORWARD( axis_names ), contiguous_strides<DECAYED_TYPE_OF( *ptr )>( shape ) ); }
+auto tensor_view( auto *ptr, auto &&shape ) { return tensor_view( ptr, FORWARD( shape ), unnamed_axes( shape ) ); }
+
+
 
 // #undef SDOT_DATA_ACCESSOR
 
 } // namespace sdot
 
-// #include "TensorView.cxx" // IWYU pragma: export
+#include "TensorView.cxx" // IWYU pragma: export

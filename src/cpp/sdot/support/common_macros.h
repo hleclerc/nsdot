@@ -52,22 +52,7 @@ namespace sdot { namespace detail {
     template<template<class...>class Op,class...A> using is_detected = detector<void,Op,A...>;
 } }
 
-#define HAS_STATIC_VALUE( expr )   ::sdot::detail::has_static_value<DECAYED_TYPE_OF( expr )>::value
 #define HAS_CONSTEXPR_SIZE( expr ) ::sdot::detail::has_constexpr_size<DECAYED_TYPE_OF( expr )>::value
-#define HAS_CT_RANK( T )           ::sdot::detail::has_ct_rank<T>::value
+#define HAS_STATIC_VALUE( expr )   ::sdot::detail::has_static_value<DECAYED_TYPE_OF( expr )>::value
 #define IS_DETECTED( Op, ... )     ::sdot::detail::is_detected<Op,__VA_ARGS__>::value
-
-#ifdef __CUDACC__
-    #define CPU_ONLY  __host__
-    #define HD  __host__ __device__
-    #define GD  __device__  // for generic (auto-param) lambdas: __host__ __device__ cannot be generic in CUDA
-    #define SDOT_HOD( SIGNATURE, BODY ) \
-        __device__ SIGNATURE { using ES = ExecutionContext_Cuda; BODY } \
-        __host__   SIGNATURE { using ES = ExecutionContext_Cpu; BODY }
-#else
-    #define CPU_ONLY
-    #define HD
-    #define GD
-    #define SDOT_HOD( SIGNATURE, BODY ) \
-        SIGNATURE { using ES = ExecutionContext_Cpu; BODY }
-#endif
+#define HAS_CT_RANK( T )           ::sdot::detail::has_ct_rank<T>::value
