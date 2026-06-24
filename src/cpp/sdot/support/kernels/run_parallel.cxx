@@ -19,13 +19,59 @@ namespace detail::RunParallel {
     auto _map_reduce_run_arg( const auto &map, const auto &reduce, auto io_category, Ct<int,nb_args>, auto &&head, auto &&...tail ) {
         if constexpr ( nb_args == 0 )
             return reduce( FORWARD( head ), FORWARD( tail )... );
-        else if constexpr ( std::is_same_v<DECAYED_TYPE_OF( head ),UndefList> || std::is_same_v<DECAYED_TYPE_OF( head ),OutList> || std::is_same_v<DECAYED_TYPE_OF( head ),MutList> || std::is_same_v<DECAYED_TYPE_OF( head ),InpList> )
+        else if constexpr ( is_io_category<DECAYED_TYPE_OF( head )> )
             return _map_reduce_run_arg( map, reduce, head, Ct<int,nb_args-1>(), FORWARD( tail )... );
         else {
             return map( io_category, FORWARD( head ), [&]( auto &&mapped ) {
                 return _map_reduce_run_arg( map, reduce, io_category, Ct<int,nb_args-1>(), FORWARD( tail )..., FORWARD( mapped ) );
             } );
         }
+    }
+
+    /// Soumet effectivement le `parallel_for` : plus aucune réduction en tête, `args...` sont les
+    /// arguments « normaux » du kernel. `reductions` est un tuple de `(usm, identity, op)` ; les
+    /// `sycl::reduction` sont créées ici (temporaires) et passées à `parallel_for` avant le kernel.
+    sycl::event _do_submit( sycl::queue q, const auto &deps, auto &&func, auto &&item_list,
+                            int nb_items, int nb_threads, auto reductions, auto &&...args ) {
+        return reductions.apply_values( [&]( auto... infos ) {
+            return q.submit( [&]( sycl::handler &h ) {
+                for ( const auto &e : deps.events )
+                    h.depends_on( e );
+                h.parallel_for( nb_threads, sycl::reduction( infos[ 0_c ], infos[ 1_c ], infos[ 2_c ] )...,
+                                [=]( sycl::id<1> thread_id, auto &...reducers ) {
+                    // l'item passé au kernel est `item_list[index]` : un Range renvoie l'index plat,
+                    // `indices_of(t)` renvoie le multi-indice correspondant. Les reducers (s'il y en a)
+                    // précèdent les arguments normaux, comme dans la signature de `func`.
+                    for ( int index = thread_id; index < nb_items; index += nb_threads )
+                        func( item_list[ index ], reducers..., args... );
+                } );
+            } );
+        } );
+    }
+
+    /// Pèle les `ReductionTarget` (forcément en tête des args, contrainte SYCL : les reducers suivent
+    /// immédiatement l'item). Pour chacun on alloue l'USM, on l'initialise à l'identité, on enregistre
+    /// un finalizer (recopie USM -> hôte puis free), et on l'accumule dans `reductions`.
+    sycl::event _submit_kernel( sycl::queue q, const auto &deps, auto &&func, auto &&item_list,
+                                int nb_items, int nb_threads, std::vector<std::function<void()>> &finalizers,
+                                auto reductions, auto &&head, auto &&...tail ) {
+        if constexpr ( is_reduction_target<DECAYED_TYPE_OF( head )> ) {
+            using T = DECAYED_TYPE_OF( *head.host );
+            T  identity = sycl::known_identity_v<DECAYED_TYPE_OF( head.op ),T>;
+            T *usm      = sycl::malloc_shared<T>( 1, q );
+            *usm = identity;
+            finalizers.push_back( [usm,host=head.host,q]() { *host = *usm; sycl::free( usm, q ); } );
+            return _submit_kernel( q, deps, FORWARD( func ), FORWARD( item_list ), nb_items, nb_threads, finalizers,
+                                   reductions.with_appended_value( tuple( usm, identity, head.op ) ), FORWARD( tail )... );
+        } else
+            return _do_submit( q, deps, FORWARD( func ), FORWARD( item_list ), nb_items, nb_threads, reductions, FORWARD( head ), FORWARD( tail )... );
+    }
+
+    /// cas de base : plus aucun argument (que des réductions, ou liste vide).
+    sycl::event _submit_kernel( sycl::queue q, const auto &deps, auto &&func, auto &&item_list,
+                                int nb_items, int nb_threads, std::vector<std::function<void()>> &/*finalizers*/,
+                                auto reductions ) {
+        return _do_submit( q, deps, FORWARD( func ), FORWARD( item_list ), nb_items, nb_threads, reductions );
     }
 
     QueueEvent _run_kernel( auto &&queue, auto &&deps, auto &&func, auto &&item_list, auto &&...args ) {
@@ -40,16 +86,15 @@ namespace detail::RunParallel {
             return {};
 
         // submit (et pas parallel_for direct) pour pouvoir déclarer les dépendances `deps`.
-        // capture PAR VALEUR du kernel : il est asynchrone (on ne wait pas ici), donc autonome —
-        // sinon nb_items/nb_threads/args capturés par référence seraient détruits.
-        return queue.queue.submit( [&]( sycl::handler &h ) {
-            for ( const auto &e : deps.events )
-                h.depends_on( e );
-            h.parallel_for( nb_threads, [=]( sycl::id<1> thread_id ) {
-                for ( int index = thread_id; index < nb_items; index += nb_threads )
-                    func( index, args... );
-            } );
-        } );
+        // `submit` n'est pas const -> on passe par une copie de la queue (même queue sous-jacente).
+        // capture PAR VALEUR du kernel : il est asynchrone (on ne wait pas ici), donc autonome.
+        sycl::queue q = queue.queue;
+        std::vector<std::function<void()>> finalizers;
+        sycl::event ev = _submit_kernel( q, deps, FORWARD( func ), FORWARD( item_list ),
+                                         nb_items, nb_threads, finalizers, tuple(), FORWARD( args )... );
+        QueueEvent qe( ev );
+        qe.finalizers = std::move( finalizers );
+        return qe;
     }
 
     // corps de run_parallel, avec dépendances explicites `deps` (peut être Dependencies<0>)
@@ -78,7 +123,12 @@ namespace detail::RunParallel {
             done = true;
 
             result = _map_reduce_run_arg( [&]( auto io_category, auto &&arg, auto &&cont ) {
-                return make_available( queue, io_category, FORWARD( arg ), FORWARD( cont ) );
+                // une cible de réduction n'est pas « rendue disponible » (c'est un scalaire hôte) :
+                // on la transforme en `ReductionTarget` (op + pointeur hôte), traitée par `_submit_kernel`.
+                if constexpr ( is_red_list<DECAYED_TYPE_OF( io_category )> )
+                    return cont( ReductionTarget{ io_category.op, &arg } );
+                else
+                    return make_available( queue, io_category, FORWARD( arg ), FORWARD( cont ) );
             }, [&]( auto &&...args ) {
                 return _run_kernel( queue, deps, FORWARD( func ), FORWARD( args )... );
             }, InpList(), Ct<int,sizeof...(args)+2>(), item_list, UndefList(), args... );

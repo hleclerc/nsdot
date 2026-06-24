@@ -1,6 +1,8 @@
 #pragma once
 
 #include <SYCL/sycl.hpp>
+#include <functional>
+#include <vector>
 #include <array>
 
 namespace sdot {
@@ -12,28 +14,34 @@ namespace sdot {
 /// résultats pas encore prêts par mégarde, sans imposer un `wait()` à chaque run : si l'appelant
 /// garde le handle et l'enchaîne, aucun `wait()` n'est forcé.
 ///
+/// `finalizers` est exécuté *après* le `wait()` (avant de marquer l'event consommé) : il sert p.ex.
+/// à recopier le résultat d'une réduction depuis l'USM vers la variable hôte puis à libérer l'USM.
+///
 /// Move-only : un event = une responsabilité (un seul propriétaire à la fois).
 struct QueueEvent {
-    sycl::event event;
-    bool        consumed = false;
+    sycl::event                        event;
+    bool                               consumed = false;
+    std::vector<std::function<void()>> finalizers; ///< exécutés après le wait (recopie réductions, free USM)
 
     /* */       QueueEvent ( sycl::event e ) : event( e ) {}
     /* */       QueueEvent () = default;
 
-    /* */       QueueEvent ( QueueEvent &&o ) noexcept : event( o.event ), consumed( o.consumed ) { o.consumed = true; }
+    /* */       QueueEvent ( QueueEvent &&o ) noexcept : event( o.event ), consumed( o.consumed ), finalizers( std::move( o.finalizers ) ) { o.consumed = true; }
     QueueEvent& operator=  ( QueueEvent &&o ) noexcept {
         if ( this != &o ) {
-            if ( ! consumed ) event.wait();
-            event = o.event; consumed = o.consumed; o.consumed = true;
+            _finish();
+            event = o.event; consumed = o.consumed; finalizers = std::move( o.finalizers ); o.consumed = true;
         }
         return *this;
     }
     /* */       QueueEvent ( const QueueEvent & ) = delete;
     QueueEvent& operator=  ( const QueueEvent & ) = delete;
 
-    /* */       ~QueueEvent() { if ( ! consumed ) event.wait(); }
+    /* */       ~QueueEvent() { _finish(); }
 
-    void        wait       () { event.wait(); consumed = true; } ///< attend explicitement la fin
+    void        _finish    () { if ( consumed ) return; event.wait(); for ( auto &f : finalizers ) f(); finalizers.clear(); consumed = true; }
+
+    void        wait       () { _finish(); }                     ///< attend explicitement la fin (et exécute les finalizers)
     void        detach     () { consumed = true; }               ///< « je m'en occupe » : pas de wait à la destruction
     sycl::event take       () { consumed = true; return event; } ///< récupère l'event (p.ex. comme dépendance d'un run suivant)
 };

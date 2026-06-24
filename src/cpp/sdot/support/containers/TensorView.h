@@ -97,6 +97,7 @@ public:
     TF&              ref                   () const;
 
     // reassign
+    void             _zip_apply             ( auto op, const auto &that ) const; ///< op( ref_scalaire, scalaire_de_that ) sur chaque élément (même rang -> élémentaire ; rang 0/scalaire -> broadcast)
     void             copy_elements_from     ( const auto &that );
     void             operator-=             ( const auto &that );
     void             operator+=             ( const auto &that );
@@ -114,8 +115,10 @@ public:
     // (alloc + copy selon io_category). Appelle ensuite cont( vue_kernel ).
     auto             make_available         ( auto &&queue, auto io_category, auto &&cont ) const;
 
-    auto             fill_with              ( auto &&avaible_queues, TF value ); ///< -> QueueEvent (RAII : synchrone par défaut, async si géré)
-    void             fill_with              ( TF value );
+    auto             fill_with              ( auto &&queue_list, auto &&deps, TF value ); ///< avec dépendances (after(...)) -> QueueEvent
+    auto             fill_with              ( auto &&queue_list, TF value );              ///< -> QueueEvent (RAII : synchrone par défaut, async si géré)
+    void             fill_with              ( TF value );                                 ///< boucle simple côté hôte (gardée par directly_accessible)
+    auto             _fill_with             ( TF value, auto &&run );                     ///< impl partagée : choix item_list/kernel ; `run` = appel run_parallel (avec ou sans déps)
 
     //
     auto             unsqueeze              ( auto axis ) const; ///< append a trailing dimension of size 1 (preserves strides)

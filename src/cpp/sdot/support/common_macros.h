@@ -43,7 +43,7 @@ namespace sdot { namespace detail {
     template<class T,bool=has_size_method<T>::value> struct has_constexpr_size : std::false_type {};
     T_T struct has_constexpr_size<T,true> : has_static_value<DECAYED_TYPE_OF( std::declval<T>().size() )> {};
 
-    template<class R=void> struct AnyFunc { T_VT R operator()( T&&...) const { return *reinterpret_cast<R *>( 0ul ); } };
+    template<class R=void> struct AnyFunc { T_VT R operator()( T&&...) const { if constexpr ( ! std::is_void_v<R> ) return *reinterpret_cast<R *>( 0ul ); } };
 
     // generic detection idiom (Library Fundamentals TS): is Op<A...> well-formed?
     // Op is an alias template wrapping the probed expression (e.g. a member call).

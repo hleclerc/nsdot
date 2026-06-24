@@ -3,6 +3,8 @@
 // #include "../../src/cpp/sdot/support/hardware/Run.h"
 #include <sdot/support/containers/TensorView.h>
 #include <sdot/support/kernels/run_parallel.h>
+#include <sdot/support/algorithms/indices_of.h>
+#include <sdot/support/algorithms/reductions.h>
 #include <sdot/support/containers/Range.h>
 // #include "sdot_test_matrix.h"
 #include "sdot/support/common_macros.h"
@@ -124,6 +126,84 @@ TEST_CASE( "TensorView — fill_with avec contextes (run_parallel)", "" ) {
     }
     for ( double x : e )
         CHECK( x == 3 );
+
+    // chaînage : le 2e run dépend du 1er via after() (qui consomme h1)
+    double f[ 4 ] = {};
+    auto w = tensor_view( f, tuple( 4 ) );
+    auto h1 = w.fill_with( ql, 1 );
+    auto h2 = w.fill_with( ql, after( h1 ), 2 );
+    h2.wait();
+    for ( double x : f )
+        CHECK( x == 2 );
+}
+
+TEST_CASE( "TensorView — opérateurs élémentaires (boucle simple)", "" ) {
+    double a[] = { 1, 2, 3, 4 };
+    double b[] = { 10, 20, 30, 40 };
+    auto ta = tensor_view( a, tuple( 2, 2 ) );
+    auto tb = tensor_view( b, tuple( 2, 2 ) );
+
+    ta += 1;                       // broadcast scalaire -> {2,3,4,5}
+    CHECK( a[ 0 ] == 2 && a[ 3 ] == 5 );
+    ta *= 2;                       // {4,6,8,10}
+    CHECK( a[ 0 ] == 4 && a[ 3 ] == 10 );
+
+    ta += tb;                      // élémentaire (même forme) -> {14,26,38,50}
+    CHECK( a[ 0 ] == 14 && a[ 1 ] == 26 && a[ 2 ] == 38 && a[ 3 ] == 50 );
+
+    ta = tb;                       // copie profonde -> a <- b
+    CHECK( a[ 0 ] == 10 && a[ 3 ] == 40 );
+
+    ta = 0;                        // operator= scalaire (broadcast)
+    for ( double x : a )
+        CHECK( x == 0 );
+
+    tb.row( 0 ) -= 5;              // sur une sous-vue -> b = {5,15,30,40}
+    CHECK( b[ 0 ] == 5 && b[ 1 ] == 15 && b[ 2 ] == 30 );
+}
+
+TEST_CASE( "TensorView — run_parallel élémentaire via indices_of (Mut/Inp)", "" ) {
+    auto ql = tuple( CpuQueue() );
+    double a[] = { 1, 2, 3, 4 };
+    double b[] = { 10, 20, 30, 40 };
+    auto ta = tensor_view( a, tuple( 2, 2 ) );
+    auto tb = tensor_view( b, tuple( 2, 2 ) );
+
+    // a += b en parallèle, écrit « à la main » hors de TensorView (tags Mut/Inp explicites)
+    run_parallel( ql, indices_of( ta, tb ),
+        []( auto indices, auto a, auto b ) { a[ indices ] += b[ indices ]; },
+        MutList(), ta, InpList(), tb
+    ); // QueueEvent ignoré -> wait RAII
+
+    CHECK( a[ 0 ] == 11 && a[ 1 ] == 22 && a[ 2 ] == 33 && a[ 3 ] == 44 );
+}
+
+TEST_CASE( "TensorView — indices_of intersection (formes différentes)", "" ) {
+    auto ql = tuple( CpuQueue() );
+    double a[] = { 1, 2, 3, 4, 5, 6 };  // 2x3
+    double b[] = { 10, 20, 30, 40, 50, 60 }; // 3x2
+    auto ta = tensor_view( a, tuple( 2, 3 ) );
+    auto tb = tensor_view( b, tuple( 3, 2 ) );
+
+    // intersection des parcours -> (min(2,3), min(3,2)) = (2,2) : seuls les indices communs
+    run_parallel( ql, indices_of( ta, tb ),
+        []( auto indices, auto a, auto b ) { a[ indices ] += b[ indices ]; },
+        MutList(), ta, InpList(), tb
+    );
+
+    // a[i][j] += b[i][j] pour i<2, j<2 ; les colonnes j>=2 de a restent intactes
+    CHECK( a[ 0 ] == 11 && a[ 1 ] == 22 && a[ 2 ] == 3 );  // ligne 0 : 1+10, 2+20, 3 (intact)
+    CHECK( a[ 3 ] == 34 && a[ 4 ] == 45 && a[ 5 ] == 6 );  // ligne 1 : 4+30, 5+40, 6 (intact)
+}
+
+TEST_CASE( "TensorView — réductions sum/max (SYCL reduction)", "" ) {
+    auto ql = tuple( CpuQueue() );
+    double d[] = { 1, 2, 3, 4, 5, 6 };
+    auto t = tensor_view( d, tuple( 2, 3 ) );
+
+    CHECK( sum( ql, t ) == 21 );          // 1+..+6
+    CHECK( max( ql, t ) == 6 );
+    CHECK( sum( ql, t.row( 1 ) ) == 15 ); // 4+5+6 sur une sous-vue
 }
 
 TEST_CASE( "TensorView — fill_with avec contextes (run_parallel) et shapes éclatées", "" ) {
@@ -142,71 +222,3 @@ TEST_CASE( "TensorView — fill_with avec contextes (run_parallel) et shapes éc
         CHECK_REPR( d[ i + 1 ], i + 1 );
     }
 }
-
-// // Inner body of the nested run_parallel: writes one element of a row.
-// struct WriteElem {
-//     void operator()( auto j, auto row, double s ) const { row.row( j ) = s; }
-// };
-
-// // Outer body: for each row, spawn a *nested* run_parallel over that row's columns.
-// // `a` arrives tagged has_already_been_parallelized (added on the pool path), and the
-// // tag propagates through a.row(i) (squeeze transform), so the nested run_parallel runs
-// // inline on the current worker — no pool round-trip, hence no self-wait deadlock.
-// struct FillRows {
-//     void operator()( auto i, auto a, double s ) const {
-//         auto r = a.row( i );
-//         static_assert( DECAYED_TYPE_OF( r )::template has_tag<container_tags::has_already_been_parallelized> );
-//         run_parallel( range( r.size() ), WriteElem{}, r, s + double( i ) );
-//     }
-// };
-
-// // Operation under test. A functor (not a generic lambda): nvcc forbids generic
-// // extended __host__ __device__ lambdas, and the matrix runs this on the device too.
-// struct PlusEq {
-//     HD void operator()( auto a, auto b ) const { a += b; }
-// };
-
-// // Element-wise `a += b` over the full matrix: operand-A memory space × operand-B
-// // memory space × shape × execution context. Exercises cross-space transfer
-// // (make_accessible) and the nested/inline dispatch, all checked against a + b.
-// TEST_CASE( "operator+= — element-wise, matrix over memory spaces and contexts", "" ) {
-//     sdot_test::check_binary_op_matrix(
-//         PlusEq{},
-//         [] ( double a, double b ) { return a + b; } );
-// }
-
-// TEST_CASE( "run_parallel — nested run_parallel runs inline (no deadlock)", "" ) {
-//     double da[ 4 ] = { 0, 0, 0, 0 };
-//     auto shape = tuple( 2, 2 );
-//     TensorView a( da, shape, contiguous_strides<double>( shape ), MemorySpace_CpuRam{} );
-
-//     // top-level operand a is not tagged -> pool path (and it gets tagged for the body)
-//     static_assert( ! DECAYED_TYPE_OF( a )::template has_tag<container_tags::has_already_been_parallelized> );
-//     run_parallel( range( shape[ 0_c ] ), FillRows{}, a, 100.0 );
-
-//     CHECK( da[ 0 ] == 100 ); // row 0 -> 100 + 0
-//     CHECK( da[ 1 ] == 100 );
-//     CHECK( da[ 2 ] == 101 ); // row 1 -> 100 + 1
-//     CHECK( da[ 3 ] == 101 );
-// }
-
-// #ifdef __CUDACC__
-// TEST_CASE( "GPU tensor", "" ) {
-//     double data[ 4 ] = { 1, 2, 3, 4 };
-//     MemorySpace_GlobalCudaRam gpu_ram;
-//     gpu_ram.with_reservation<double>( 4, [&]( auto dev ) {
-//         copy( dev, Ptr<double,MemorySpace_CpuRam>( data ), 4 );
-//         cudaStreamSynchronize( ExecutionContext_Cuda{}.stream );
-
-//         TensorView dt( dev.raw, tuple( 4 ), tuple( sizeof( double ) ), dev.memory_space );
-//         // run_parallel( shape.all_indices(), Doubler{}, dt ); // GlobalCudaRam -> dispatch picks CUDA
-//         // cudaStreamSynchronize( ExecutionContext_Cuda{}.stream );
-
-//         // copy( ExecutionContext_Cpu{}, Ptr<double,MemorySpace_CpuRam>( back ), dev, 4 );
-//         info( dt[ 0 ].value() );
-//     } );
-
-//     // TensorView t( data, tuple( 4 ), tuple( sizeof( double ) ), MemorySpace_CpuRam{} );
-//     // info( t );
-// }
-// #endif // __CUDACC__

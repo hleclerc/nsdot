@@ -166,7 +166,7 @@ UTP void DTP::operator=( const TensorView &that ) {
     copy_elements_from( that );
 }
 
-UTP T_T void DTP::operator=( const T &that ) {
+UTP void DTP::operator=( const auto &that ) {
     copy_elements_from( that );
 }
 
@@ -217,23 +217,26 @@ UTP void DTP::fill_with( TF value ) {
 }
 
 // variante avec contextes d'exécution : dispatch via run_parallel (choix du meilleur contexte)
+// Choix de l'item_list + du kernel selon la forme. `run` effectue l'appel run_parallel (avec ou
+// sans dépendances) -> on ne nomme jamais SYCL/Dependencies ici (TensorView reste sans SYCL).
+UTP auto DTP::_fill_with( TF value, auto &&run ) {
+    if constexpr ( ct_rank == 0 )
+        return run( range( 1 ), []( auto, auto out, auto v ) { out.ref() = v; },
+                    OutList(), *this, InpList(), value );
+    else if ( items_are_contiguous() )
+        return run( range( nb_items() ), []( auto id, auto out, auto v ) { out._data.template as<TF>()[ id ] = v; },
+                    OutList(), *this, InpList(), value );
+    else
+        return run( range( nb_items() ), []( auto id, auto out, auto v ) { out( out.indices_col_ordering( id ) ) = v; },
+                    OutList(), *this, InpList(), value );
+}
+
 UTP auto DTP::fill_with( auto &&queue_list, TF value ) {
-    if constexpr ( ct_rank == 0 ) {
-        return run_parallel( FORWARD( queue_list ), range( 1 ),
-            []( auto, auto out, auto value ) { out.ref() = value; },
-            OutList(), *this, InpList(), value
-        );
-    } else if ( items_are_contiguous() ) {
-        return run_parallel( FORWARD( queue_list ), range( nb_items() ),
-            []( auto id, auto out, auto value ) { out._data.template as<TF>()[ id ] = value; },
-            OutList(), *this, InpList(), value
-        );
-    } else {
-        return run_parallel( FORWARD( queue_list ), range( nb_items() ),
-            []( auto id, auto out, auto value ) { out( out.indices_col_ordering( id ) ) = value; },
-            OutList(), *this, InpList(), value
-        );
-    }
+    return _fill_with( value, [&]( auto &&...a ) { return run_parallel( FORWARD( queue_list ), FORWARD( a )... ); } );
+}
+
+UTP auto DTP::fill_with( auto &&queue_list, auto &&deps, TF value ) {
+    return _fill_with( value, [&]( auto &&...a ) { return run_parallel( FORWARD( queue_list ), FORWARD( deps ), FORWARD( a )... ); } );
 }
 
 // UTP void DTP::display( std::ostream &os ) const {
@@ -256,23 +259,35 @@ UTP auto DTP::fill_with( auto &&queue_list, TF value ) {
 //     return product( _shape );
 // }
 
-UTP void DTP::copy_elements_from( const auto &that ) {
+// Primitive boucle simple (hôte) : applique op( ref_scalaire_de_this, scalaire_de_that ) sur chaque
+// élément. `that` de même rang -> élémentaire ; tenseur rang 0 ou scalaire -> broadcast.
+UTP void DTP::_zip_apply( auto op, const auto &that ) const {
+    static_assert( MemorySpace::directly_accessible,
+                   "operation sans contexte : zone non accessible depuis l'hote ; passez un tuple de contextes d'execution" );
+    using That = DECAYED_TYPE_OF( that );
     if constexpr ( ct_rank == 0 ) {
-        if constexpr( Is_TensorView<DECAYED_TYPE_OF( that )>::value )
-            ref() = that.value();
+        if constexpr ( Is_TensorView<That>::value )
+            op( ref(), that.value() );
         else
-            ref() = that;
+            op( ref(), that );
     } else {
-        TODO;
-        // if ( std::is_same_v<TF,typename DECAYED_TYPE_OF(that)::TF> && _strides == that.strides() && is_contiguous() ) {
-        //     copy( data(), that.data(), nb_items() );
-        // } else  {
-        //     run_sequential( cartesian_product_ranges( _shape ), [&]( auto indices, auto &&a, auto &&b ) {
-        //         a[ indices ] = b[ indices ];
-        //     }, out( *this ), that );
-        // }
+        for ( TI i = 0; i < TI( shape( Ct<int,0>() ) ); ++i ) {
+            if constexpr ( Is_TensorView<That>::value ) {
+                if constexpr ( int( That::ct_rank ) == int( ct_rank ) )
+                    operator[]( i )._zip_apply( op, that[ i ] );    // même rang -> élémentaire
+                else
+                    operator[]( i )._zip_apply( op, that );         // broadcast (rang différent)
+            } else
+                operator[]( i )._zip_apply( op, that );             // broadcast (scalaire)
+        }
     }
 }
+
+UTP void DTP::copy_elements_from( const auto &that ) { _zip_apply( []( auto &a, auto b ) { a  = b; }, that ); }
+UTP void DTP::operator+=        ( const auto &that ) { _zip_apply( []( auto &a, auto b ) { a += b; }, that ); }
+UTP void DTP::operator-=        ( const auto &that ) { _zip_apply( []( auto &a, auto b ) { a -= b; }, that ); }
+UTP void DTP::operator*=        ( const auto &that ) { _zip_apply( []( auto &a, auto b ) { a *= b; }, that ); }
+UTP void DTP::operator/=        ( const auto &that ) { _zip_apply( []( auto &a, auto b ) { a /= b; }, that ); }
 
 namespace detail {
     auto indices_rec( auto index, auto &&res_so_far, auto &&shape ) {

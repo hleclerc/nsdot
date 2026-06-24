@@ -18,7 +18,7 @@ auto min( auto &&a, auto &&b ) {
             return FORWARD( b );
     } else {
         using TR = TypePromote<DECAYED_TYPE_OF( a ),DECAYED_TYPE_OF( b )>::type;
-        return ieq ? TR( FORWARD( a ) ) : TR( FORWARD( a ) );
+        return ieq ? TR( FORWARD( a ) ) : TR( FORWARD( b ) );
     }
 }
 
