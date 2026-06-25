@@ -60,7 +60,7 @@ def custom_printer_impl( obj, nl ):
         nnl = nl + "  "
         res = ""
         for n, v in obj.items():
-            res += nnl + n + ": " + custom_printer_impl( v, nnl )
+            res += nnl + str( n ) + ": " + custom_printer_impl( v, nnl )
         return res
 
     if hasattr( obj, "__dict__" ):

@@ -21,18 +21,24 @@ from sdot.compilation.adaptive_cpp import make_executable
 from sdot.devices import Device
 
 
-def discover( filters ):
+def discover( filter_names ):
     files = sorted( ( ROOT / "tests" / "cpp" ).glob( "test_*.*" ) )
-    if filters:
-        files = [ f for f in files if any( k.lower() in f.stem.lower() for k in filters ) ]
+    # on ne restreint les fichiers que par les noms ; le filtrage par tag est
+    # délégué au binaire (qui filtre au niveau de chaque test).
+    if filter_names:
+        files = [ f for f in files if any( k.lower() in f.stem.lower() for k in filter_names ) ]
     return files
 
 
-def main():
-    files = discover( sys.argv[ 1: ] )
-    if not files:
-        print( "no matching tests" )
-        return 1
+def run_cpp_tests( filters ):
+    """Compile et lance les tests C++ correspondant à `filters`.
+
+    Retourne la liste des échecs sous la forme [ ( label, name, phase ), ... ].
+    Les `filters` sont transmis tels quels au binaire de test (mêmes sémantiques
+    de filtrage noms/tags que tests/cpp/test_main.h).
+    """
+    filter_names = [ a for a in filters if "[" not in a ]
+    files = discover( filter_names )
 
     failures = []
     for f in files:
@@ -46,20 +52,26 @@ def main():
             try:
                 exe = make_executable( f"{ f.stem }_{ device }", [ f ], device )
             except Exception as e:
-                print( f"  BUILD-FAIL: { e }" )
+                print( f"  BUILD-FAIL: { e }", flush = True )
                 failures.append( ( device, f.stem, "build" ) )
                 continue
 
-            # run
-            if subprocess.run( [ str( exe ) ] ).returncode:
+            # run (on passe les filtres pour filtrer noms/tags au niveau test)
+            if subprocess.run( [ str( exe ), *filters ] ).returncode:
                 failures.append( ( device, f.stem, "run" ) )
+
+    return failures
+
+
+def main():
+    failures = run_cpp_tests( sys.argv[ 1: ] )
 
     print( "\n=============== summary =================" )
     if failures:
         for label, name, phase in failures:
             print( f"  [{ label }] { name }: { phase } FAILED" )
         return 1
-    print( f"  all good ({ len( files ) } test(s))" )
+    print( "  all good" )
     return 0
 
 
