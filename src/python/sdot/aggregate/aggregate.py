@@ -9,13 +9,6 @@ from .AxisList import AxisList
 from .Tensor import Tensor
 from .Axis import Axis
 
-# declaration types that `@aggregate` collects as fields
-_FIELD_TYPES = ( Tensor, TensorList, DynamicShapeVar, ShapeVar, AxisList, Axis )
-
-
-def _is_aggregate_attribute( attr ):
-    return isinstance( attr, _FIELD_TYPES )
-
 
 def aggregate( cls ):
     """
@@ -74,19 +67,60 @@ def aggregate( cls ):
     """
 
     # collect the field declarations, in declaration order, parents first
-    attributes = {}
+    shape_vars = {}
+    tensors = {}
+    axes = {}
+    all = {}
     for klass in reversed( cls.mro() ):
         for name, value in vars( klass ).items():
-            if _is_aggregate_attribute( value ):
-                attributes[ name ] = value
+            # _FIELD_TYPES = ( Tensor, TensorList, DynamicShapeVar, ShapeVar, AxisList, Axis )
+            if isinstance( value, ShapeVar ):
+                shape_vars[ name ] = value
+                all[ name ] = value
+            if isinstance( value, ( Tensor, TensorList ) ):
+                tensors[ name ] = value
+                all[ name ] = value
+            if isinstance( value, ( Axis, AxisList ) ):
+                axes[ name ] = value
+                all[ name ] = value
 
     # give every declaration the name of the field it is bound to (used in reprs
     # and, later, to generate properties / __init__)
-    for name, decl in attributes.items():
+    for name, decl in all.items():
         if getattr( decl, "name", None ) is None:
             decl.name = name
 
-    # TODO: generate __init__, __setattr__, the per-axis properties and batch_axes.
-    # info( attributes )
+    # __setattr__
+    def __setattr__( self, name, value ):
+        annotation = all.get( name )
+        if annotation is not None:
+            if coerce := getattr( annotation, "coerce", None ):
+                value = coerce( value )
+            elif value is not None and not isinstance( value, annotation ):
+                value = annotation( value )
+        object.__setattr__( self, name, value )
+    cls.__setattr__ = __setattr__
+
+    # __getattribute__
+    def __getattribute__( self, name ):
+        if name in shape_vars:
+            valued_tensors = []
+            for tensor_name, decl in tensors.items():
+                value = getattr( self, tensor_name, None )
+                if value is not None:
+                    valued_tensors.append( ( decl, value ) )
+            return get_shape_var( name, valued_tensors, self )
+        return object.__getattribute__( self, name )
+    cls.__getattribute__ = __getattribute__
 
     return cls
+
+def get_shape_var( name, valued_tensors, aggregate ):
+    # try direct solve
+    for decl, value in valued_tensors:
+        res = decl.direct_solve( name, value.shape, aggregate, [ name ] )
+        if res is not None:
+            return res
+
+    # TODO: indirect solve
+    raise NotImplementedError( f"Unable to find value of shape variable '{ name }'" )

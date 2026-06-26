@@ -1,7 +1,9 @@
-from sdot import Cell, driver
+from sdot import Cell
 from . import test
 
+
 if test( "pouet" ):
-    info( driver.array( [ 1, 2 ] ) )
-    info( driver.ftype )
     c = Cell()
+    c.frame = [[0,0],[1,0],[0,1]]
+    info( c.frame )
+    info( c.nb_dims )

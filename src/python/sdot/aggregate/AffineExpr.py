@@ -1,3 +1,5 @@
+from types import NotImplementedType
+
 from .AffineOperand import AffineOperand
 
 
@@ -9,8 +11,8 @@ class AffineExpr( AffineOperand ):
     """
 
     def __init__( self, terms = None, constant = 0 ) -> None:
-        self.terms    = {}                     # dict[ ShapeVar, int ], coeff != 0
         self.constant = constant
+        self.terms = {}                     # dict[ ShapeVar, int ], coeff != 0
         if terms:
             for var, coeff in terms.items():
                 if coeff:
@@ -18,6 +20,17 @@ class AffineExpr( AffineOperand ):
 
     def _as_affine( self ):
         return self
+
+    def direct_solve( self, name, size, aggregate, forbidden_new_values ):
+        for term, coeff in self.terms.items():
+            if term.name == name:
+                if len( self.terms ) > 1:
+                    # get the other values
+                    raise NotImplementedError
+                if ( size - self.constant ) % coeff:
+                    raise ValueError( f"shape size ({ size }) - offset ({ self.constant }) is not divisible by coefficient ({ coeff })" )
+                return ( size - self.constant ) // coeff
+        return None
 
     @property
     def is_constant( self ):
