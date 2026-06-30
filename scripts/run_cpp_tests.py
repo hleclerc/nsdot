@@ -18,7 +18,7 @@ ROOT = Path( __file__ ).resolve().parents[ 1 ]
 sys.path.insert( 0, str( ROOT / "src" / "python" ) )
 
 from sdot.compilation.adaptive_cpp import make_executable
-from sdot.devices import Device
+from sdot.devices.Device import Device
 
 
 def discover( filter_names ):

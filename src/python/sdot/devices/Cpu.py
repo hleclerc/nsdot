@@ -3,6 +3,9 @@ import os
 
 
 class Cpu( Device ):
+    def copy( self ) -> 'Device':
+        return Cpu()
+
     @property
     def name( self ):
         return "Cpu"
@@ -22,11 +25,6 @@ class Cpu( Device ):
     @property
     def codegen_target( self ):
         return "cpu"
-
-    @property
-    def acpp_targets( self ):
-        # OpenMP CPU backend; resolves to omp.library-only under the minimal profile.
-        return "omp"
 
     @property
     def is_cpu( self ):

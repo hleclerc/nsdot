@@ -1,21 +1,18 @@
-from typing import TYPE_CHECKING, Any
-
 
 class Device:
     """
 
     """
 
-    if TYPE_CHECKING:
-        driver_version: Any
-
-    def copy( self ) -> 'Device':
-        raise NotImplementedError
+    driver_version: any
 
     @staticmethod
     def factory( value ) -> 'Device':
         if isinstance( value, Device ):
             return value.copy()
+
+        if value is None:
+            return Device.default()
 
         value = str( value ).lower()
         if value.startswith( "cpu" ):
@@ -35,6 +32,11 @@ class Device:
             return AppleGpu()
 
         raise ValueError( f"unsupported device name: { value }" )
+
+    @staticmethod
+    def default() -> 'Device':
+        from .Cpu import Cpu
+        return Cpu()
 
     @property
     def name( self ) -> str:
@@ -72,47 +74,13 @@ class Device:
         raise NotImplementedError
 
     @property
-    def compiler_is_present( self ) -> bool:
-        return True
-
-    @property
-    def device_is_present( self ) -> bool:
-        return True
-
-    @property
-    def acpp_targets( self ) -> 'str | None':
-        """AdaptiveCpp `--acpp-targets` string for this device.
-
-        Returns None for devices that are *not* reachable through AdaptiveCpp (e.g. Apple
-        GPU / Metal, which has no acpp backend and uses a dedicated path instead).
-        """
-        return None
-
-    @property
-    def acpp_profile( self ) -> str:
-        """AdaptiveCpp feature profile required to compile for this device.
-
-        "minimal" (CPU, no LLVM) by default; GPU backends override this with "full".
-        """
-        return "minimal"
-
-    @property
-    def acpp_backends( self ) -> tuple:
-        """GPU backends to enable when building acpp for this device.
-
-        Empty = CPU-only. GPU devices override this (e.g. ("cuda",)). Driven explicitly so the
-        acpp build never auto-enables an unrelated backend that happens to be installed.
-        """
-        return ()
-
-    @property
-    def is_apple_gpu( self ) -> bool:
+    def is_apple_gpu( self ):
         return False
 
     @property
-    def is_cuda_gpu( self ) -> bool:
+    def is_cuda_gpu( self ):
         return False
 
     @property
-    def is_cpu( self ) -> bool:
+    def is_cpu( self ):
         return False

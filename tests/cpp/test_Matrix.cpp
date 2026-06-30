@@ -1,5 +1,5 @@
 #include <sdot/support/containers/Matrix.h>
-#include "test_main.h"
+#include "main.h"
 
 using namespace sdot;
 

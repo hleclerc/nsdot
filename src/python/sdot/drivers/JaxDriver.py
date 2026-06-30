@@ -1,3 +1,4 @@
+from numpy._typing import ArrayLike
 from typing_extensions import Optional, overload
 from typing import TYPE_CHECKING, cast, Any
 
@@ -8,8 +9,8 @@ from typing import TYPE_CHECKING, cast, Any
 
 from .JaxFramework import JaxFramework
 # from .FfiCode import FfiCode
-from .Device import Device
-from .Dtype import Dtype
+from ..devices.Device import Device
+from ..tensor.Dtype import Dtype
 
 # from textwrap import dedent, indent
 # import importlib
@@ -102,15 +103,15 @@ class JaxDriver:
     def default_device_for( ftype ):
         platforms = { d.platform for d in jax.devices() }
         if "gpu" in platforms:
-            from .CudaGpu import CudaGpu
+            from ..devices.CudaGpu import CudaGpu
             return CudaGpu( 0 )
 
         # Metal (jax-metal) — auto-select when available; always uses FP32
         if "METAL" in platforms and ftype in ( None, "FP32" ):
-            from .AppleGpu import AppleGpu
+            from ..devices.AppleGpu import AppleGpu
             return AppleGpu()
 
-        from .Cpu import Cpu
+        from ..devices.Cpu import Cpu
         return Cpu()
 
     @property
@@ -134,17 +135,18 @@ class JaxDriver:
 
     if TYPE_CHECKING:
         @overload
-        def array( self, data: None, dtype = None ) -> None: ...
+        def array( self, data: ArrayLike, dtype = None, device = None ) -> jax.Array: ...
         @overload
-        def array( self, data, dtype = None ) -> jax.Array: ...
+        def array( self, data: None, dtype = None, device = None ) -> None: ...
 
-    def array( self, data, dtype = None ):
+    def array( self, data, dtype = None, device = None ):
         if data is None:
             return None
         dtype_ver = Dtype.factory( dtype or self.ftype ).driver_version
         if _has_tracer( data ):
             return jnp.asarray( data, dtype = dtype_ver )
-        return jnp.asarray( data, dtype = dtype_ver, device = self.device.driver_version )
+        # device = self.device.driver_version
+        return jnp.asarray( data, dtype = dtype_ver )
 
 
 

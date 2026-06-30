@@ -1,7 +1,7 @@
 // #include "../../src/cpp/sdot/support/containers/CartesianProduct.h"
 // #include "../../src/cpp/sdot/support/containers/Range.h"
 #include <sdot/support/containers/TupleRep.h>
-#include "test_main.h"
+#include "main.h"
 #include <array>
 
 using namespace sdot;

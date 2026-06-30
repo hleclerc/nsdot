@@ -110,7 +110,7 @@ class Dtype:
     def driver_version( self ):
         if self._driver_version:
             return self._driver_version
-        from .driver import driver
+        from ..drivers.driver import driver
         return driver.driver_dtype_version( self.floating_point, self.signed, self.size )
 
     def __eq__( self, value, / ) -> bool:

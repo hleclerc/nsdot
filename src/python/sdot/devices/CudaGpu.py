@@ -36,37 +36,6 @@ class CudaGpu( Device ):
         return "MemorySpace_GlobalCudaRam"
 
     @property
-    def compiler_is_present( self ) -> bool:
-        import shutil
-        return shutil.which( "nvcc" ) is not None
-
-    @property
-    def device_is_present( self ) -> bool:
-        import shutil, subprocess
-        if not shutil.which( "nvidia-smi" ):
-            return False
-        r = subprocess.run( [ "nvidia-smi", "-L" ], capture_output = True, text = True )
-        return r.returncode == 0 and "GPU" in r.stdout
-
-    @property
-    def acpp_targets( self ):
-        # AOT compilation for the local GPU's compute capability (e.g. cuda:sm_80).
-        attrs = self._get_attrs()
-        if attrs is None:
-            return "cuda"
-        *_, sm_major, sm_minor = attrs
-        return f"cuda:sm_{ sm_major }{ sm_minor }"
-
-    @property
-    def acpp_profile( self ):
-        # CUDA backend requires the LLVM-based 'full' profile.
-        return "full"
-
-    @property
-    def acpp_backends( self ):
-        return ( "cuda", )
-
-    @property
     def is_cuda_gpu( self ):
         return True
 

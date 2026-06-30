@@ -1,6 +1,8 @@
 from ..drivers.driver import driver
-from typing import TYPE_CHECKING
 from ..drivers.Dtype import Dtype
+from typing import TYPE_CHECKING
+
+from .VariableAxesPlaceholder import VariableAxesPlaceholder
 
 
 if TYPE_CHECKING:
@@ -41,15 +43,38 @@ else:
                 return None
             return driver.array( value, dtype = self.dtype )
 
-        def direct_solve( self, name: str, shape, aggregate, forbidden_new_values ):
-            if len( self.axes ) != len( shape ):
-                raise NotImplementedError
-            num_in_shape = 0
+        def _segments( self, shape ):
+            """Map each declared axis to the slice of `shape` it occupies.
+
+            Yields `( axis, sizes )` where `sizes` is a tuple of the concrete extents
+            taken by `axis`. A regular `Axis` takes exactly one; a `*axis_list` run
+            (a `VariableAxesPlaceholder`) takes a variable number, deduced from the
+            remaining (non-fixed) shape positions.
+            """
+            runs = [ a for a in self.axes if isinstance( a, VariableAxesPlaceholder ) ]
+            if len( runs ) > 1:
+                raise NotImplementedError( "only one variable-length axis run is supported" )
+
+            if runs:
+                run_len = len( shape ) - ( len( self.axes ) - 1 )
+                if run_len < 0:
+                    raise ValueError( f"shape { tuple( shape ) } has fewer dims than the declared axes of { self.name }" )
+            elif len( self.axes ) != len( shape ):
+                raise ValueError( f"shape { tuple( shape ) } does not match the { len( self.axes ) } declared axes of { self.name }" )
+
+            i = 0
             for axis in self.axes:
-                res = axis.direct_solve( name, shape, num_in_shape, aggregate, forbidden_new_values )
+                width = run_len if isinstance( axis, VariableAxesPlaceholder ) else 1
+                yield axis, tuple( shape[ i : i + width ] )
+                i += width
+
+        def direct_solve( self, name: str, value, aggregate, forbidden_new_values ):
+            for axis, sizes in self._segments( value.shape ):
+                if isinstance( axis, VariableAxesPlaceholder ):
+                    res = axis.axis_list.direct_solve( name, sizes, aggregate, forbidden_new_values )
+                else:
+                    res = axis.direct_solve( name, sizes[ 0 ], aggregate, forbidden_new_values )
                 if res is not None:
                     return res
-
-                num_in_shape += 1
 
             return None

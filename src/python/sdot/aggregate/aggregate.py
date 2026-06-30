@@ -2,12 +2,13 @@ from ..util.info import info
 
 # re-exported so that `from sdot.aggregate import aggregate, Tensor, ShapeVar, Axis`
 # keeps working from a single place
-from .DynamicShapeVar import DynamicShapeVar
-from .TensorList import TensorList
-from .ShapeVar import ShapeVar
-from .AxisList import AxisList
-from .Tensor import Tensor
-from .Axis import Axis
+# from .DynamicShapeVar import DynamicShapeVar
+# from .TensorList import TensorList
+# from .ShapeVar import ShapeVar
+# from .AxisList import AxisList
+# from .Tensor import Tensor
+# from .Axis import Axis
+# from .Attribute import Reassignable
 
 
 def aggregate( cls ):
@@ -66,61 +67,104 @@ def aggregate( cls ):
             knots        = TensorList( dim, num_knot[ dim ] )
     """
 
-    # collect the field declarations, in declaration order, parents first
-    shape_vars = {}
-    tensors = {}
-    axes = {}
-    all = {}
+    # .name
     for klass in reversed( cls.mro() ):
         for name, value in vars( klass ).items():
-            # _FIELD_TYPES = ( Tensor, TensorList, DynamicShapeVar, ShapeVar, AxisList, Axis )
-            if isinstance( value, ShapeVar ):
-                shape_vars[ name ] = value
-                all[ name ] = value
-            if isinstance( value, ( Tensor, TensorList ) ):
-                tensors[ name ] = value
-                all[ name ] = value
-            if isinstance( value, ( Axis, AxisList ) ):
-                axes[ name ] = value
-                all[ name ] = value
+            if isinstance( value, Reassignable ):
+                value.name = name
 
-    # give every declaration the name of the field it is bound to (used in reprs
-    # and, later, to generate properties / __init__)
-    for name, decl in all.items():
-        if getattr( decl, "name", None ) is None:
-            decl.name = name
+    # __base_init__
+    def __base_init__( self, *arg, **kwarg ):
+        copy_map = {}
+        for klass in reversed( cls.mro() ):
+            for name, value in vars( klass ).items():
+                if isinstance( value, Reassignable ):
+                    self.__dict__[ name ] = value.copy( copy_map )
+    cls.__base_init__ = __base_init__
 
-    # __setattr__
-    def __setattr__( self, name, value ):
-        annotation = all.get( name )
-        if annotation is not None:
-            if coerce := getattr( annotation, "coerce", None ):
-                value = coerce( value )
-            elif value is not None and not isinstance( value, annotation ):
-                value = annotation( value )
-        object.__setattr__( self, name, value )
-    cls.__setattr__ = __setattr__
+    if '__init__' not in vars( cls ):
+        cls.__init__ = __base_init__
 
-    # __getattribute__
-    def __getattribute__( self, name ):
-        if name in shape_vars:
-            valued_tensors = []
-            for tensor_name, decl in tensors.items():
-                value = getattr( self, tensor_name, None )
-                if value is not None:
-                    valued_tensors.append( ( decl, value ) )
-            return get_shape_var( name, valued_tensors, self )
-        return object.__getattribute__( self, name )
-    cls.__getattribute__ = __getattribute__
+
+    # # collect the field declarations, in declaration order, parents first
+    # shape_vars = {}
+    # tensors = {}
+    # axes = {}
+    # all = {}
+    # for klass in reversed( cls.mro() ):
+    #     for name, value in vars( klass ).items():
+    #         # _FIELD_TYPES = ( Tensor, TensorList, DynamicShapeVar, ShapeVar, AxisList, Axis )
+    #         if isinstance( value, ShapeVar ):
+    #             shape_vars[ name ] = value
+    #             all[ name ] = value
+    #         if isinstance( value, ( Tensor, TensorList ) ):
+    #             tensors[ name ] = value
+    #             all[ name ] = value
+    #         if isinstance( value, ( Axis, AxisList ) ):
+    #             axes[ name ] = value
+    #             all[ name ] = value
+
+    # # give every declaration the name of the field it is bound to (used in reprs
+    # # and, later, to generate properties / __init__)
+    # for name, decl in all.items():
+    #     if getattr( decl, "name", None ) is None:
+    #         decl.name = name
+
+    # # __setattr__
+    # def __setattr__( self, name, value ):
+    #     annotation = all.get( name )
+    #     if annotation is not None:
+    #         if coerce := getattr( annotation, "coerce", None ):
+    #             value = coerce( value )
+    #         elif value is not None and not isinstance( value, annotation ):
+    #             value = annotation( value )
+    #     object.__setattr__( self, name, value )
+    # cls.__setattr__ = __setattr__
+
+    # # __getattribute__
+    # def __getattribute__( self, name ):
+    #     if name in shape_vars:
+    #         valued_tensors = []
+    #         for tensor_name, decl in tensors.items():
+    #             value = getattr( self, tensor_name, None )
+    #             if value is not None:
+    #                 valued_tensors.append( ( decl, value ) )
+    #         return get_shape_var( name, valued_tensors, self )
+    #     return object.__getattribute__( self, name )
+    # cls.__getattribute__ = __getattribute__
 
     return cls
 
-def get_shape_var( name, valued_tensors, aggregate ):
-    # try direct solve
-    for decl, value in valued_tensors:
-        res = decl.direct_solve( name, value.shape, aggregate, [ name ] )
-        if res is not None:
-            return res
+# def get_shape_var( name, valued_tensors, aggregate ):
+#     """Solve the ShapeVar `name` from the shapes of the currently bound tensors.
 
-    # TODO: indirect solve
-    raise NotImplementedError( f"Unable to find value of shape variable '{ name }'" )
+#     Triggered when a ShapeVar field is read (`c.nb_dims`) via `__getattribute__`.
+#     Each bound field's *value* is passed to `decl.direct_solve( name, value, ... )`
+#     (an array for a `Tensor`, a ragged `list` of arrays for a `TensorList`); the
+#     first non-`None` answer wins. The answer is a scalar, or a `list` for a rank-1
+#     (vector) ShapeVar. The `direct_solve` chain:
+
+#       - `Tensor`: `_segments( value.shape )` cuts the concrete shape into one slice
+#         per declared axis (the length of a `*axis_list` run is the leftover dims).
+#         A plain `Axis` inverts its affine extent; a run delegates to `AxisList`.
+#       - `AxisList`: (1) the *number* of axes in the run pins the rank-1 var's length
+#         via `count_affine()`; (2) otherwise solve elementwise (invert the affine per
+#         element) when `name` is the base var.
+#       - `TensorList`: leading axis -> element count; an indexed axis (`num_knot[ dim ]`)
+#         -> `AxisList.direct_solve_indexed` (each element's own length).
+
+#     `direct_solve` returns `None` when *this* decl doesn't constrain `name` (so we
+#     move on), and raises on an actual inconsistency. Not done yet: *indirect* solve
+#     (no tensor pins `name` directly) and multi-term affines (`AffineExpr.direct_solve`
+#     raises `NotImplementedError`).
+#     """
+#     for decl, value in valued_tensors:
+#         res = decl.direct_solve( name, value, aggregate, [ name ] )
+#         if res is not None:
+#             return res
+
+#     # TODO: indirect solve
+#     raise NotImplementedError( f"Unable to find value of shape variable '{ name }'" )
+
+# def batch_version_of( cls, base_version ):
+#     return cls

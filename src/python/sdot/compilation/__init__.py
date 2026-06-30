@@ -1,4 +1,4 @@
-from ..devices import Device
+from ..devices.Device import Device
 from pathlib import Path
 import subprocess
 import tempfile

@@ -63,6 +63,20 @@ def to_affine( x ) -> AffineExpr:
     return o
 
 
+def extent_affine( x ) -> AffineExpr:
+    """Affine extent of a *shape element* `x`.
+
+    Shape elements (the entries of `ShapeVar( shape=[ ... ] )`) are kept raw: they
+    may be `Axis`es (e.g. `shape=[ dim ]`) or plain `AffineOperand`s / ints. An
+    `Axis` contributes its own extent expression, everything else goes through
+    `to_affine`. Imported lazily to avoid an `Axis` <-> `AffineExpr` import cycle.
+    """
+    from .Axis import Axis
+    if isinstance( x, Axis ):
+        return x.extent
+    return to_affine( x )
+
+
 def _to_affine( x ):
     if isinstance( x, AffineOperand ):
         return x._as_affine()

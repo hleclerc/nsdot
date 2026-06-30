@@ -9,7 +9,7 @@
 // #include "sdot_test_matrix.h"
 #include "sdot/support/common_macros.h"
 #include "sdot/support/kernels/CpuHostMemorySpace.h"
-#include "test_main.h"
+#include "main.h"
 
 using namespace sdot;
 

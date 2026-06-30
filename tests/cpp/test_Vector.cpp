@@ -1,5 +1,5 @@
 #include <sdot/support/containers/Vector.h>
-#include "test_main.h"
+#include "main.h"
 
 using namespace sdot;
 

@@ -5,8 +5,9 @@ import os
 from .TorchFramework import TorchFramework
 from .JaxFramework import JaxFramework
 from .Framework import Framework
-from .Device import Device
-from .Dtype import Dtype
+
+from ..devices.Device import Device
+from ..tensor.Dtype import Dtype
 
 if TYPE_CHECKING:
     from .JaxDriver import JaxDriver
