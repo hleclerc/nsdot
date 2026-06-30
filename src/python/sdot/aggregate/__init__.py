@@ -1,4 +1,3 @@
-# from .aggregate import batch_version_of as batch_version_of
 from .aggregate import aggregate as aggregate
 
 # from .aggregate import DynamicShapeVar as DynamicShapeVar

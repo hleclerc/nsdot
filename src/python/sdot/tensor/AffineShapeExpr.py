@@ -17,11 +17,18 @@ class AffineShapeExpr( ShapeExpr ):
     def to_affine( self ):
         return self
 
-    def copy( self, copy_map ):
-        return AffineShapeExpr(
-            terms = { var.copy( copy_map ): coeff for var, coeff in self.terms.items() },
-            offset = self.offset,
-        )
+    def eval( self, bindings ):
+        """Evaluate the affine extent given an instance's `_bindings` (decl -> inst).
+
+        Returns `None` if any `ShapeVar` term is still unsolved.
+        """
+        total = self.offset
+        for shape_var, coeff in self.terms.items():
+            value = bindings[ shape_var ].value
+            if value is None:
+                return None
+            total += value * coeff
+        return total
 
     def solve_shape_var( self, shape_var, extent ):
         for n, ( term, coeff ) in enumerate( self.terms.items() ):
