@@ -1,28 +1,18 @@
-from sdot import ShapeVar
-from sdot.aggregate.aggregate import aggregate
+from sdot import ShapeVar, aggregate
 from . import test
 
 if test( "basic" ):
     @aggregate
     class Cell:
-        nb_dims = ShapeVar()
-        num     = Axis( nb_dims + 1 )
-        dim     = Axis( nb_dims )
-
-        frame   = Tensor( num, dim )
-
-        def __init__( self ) -> None:
-            self.pouet = 32
+        nb_xs:   ShapeVar[ "nb_dims" ]
+        nb_dims: ShapeVar
 
     c = Cell()
-    # frame shape == [ num, dim ] == [ nb_dims + 1, nb_dims ] -> [ 3, 2 ] solves nb_dims = 2
-    c.frame = [ [ 0, 0 ], [ 1, 1 ], [ 2, 2 ] ]
-    assert c.nb_dims == 2
-    assert c.pouet == 32
+    info( c )
+    # c.nb_dims = 1
+    # info( c.nb_dims )
 
-    # a prescribed value wins over what the tensors imply
-    c.nb_dims = 1222
-    assert c.nb_dims == 1222
+
 
 # if test( "basic" ):
 #     @aggregate

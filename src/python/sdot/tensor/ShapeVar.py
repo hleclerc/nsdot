@@ -1,16 +1,13 @@
-from typing_extensions import Sequence, overload
+# from typing_extensions import Sequence, overload
+from ..util.Parametrized import Parametrized
+from ..util.Attribute import Attribute
 from typing import TYPE_CHECKING
 
-from .ShapeExpr import ShapeExpr
-
-from ..util.Attribute import Attribute
-
-
-if TYPE_CHECKING:
-    from .Axis import Axis
+# if TYPE_CHECKING:
+#     from .Axis import Axis
 
 
-class ShapeVar( Attribute, ShapeExpr ):
+class ShapeVar( Attribute ):
     """A free (symbolic) integer variable used to build shapes.
 
     This is a *declaration* (shared, class-level schema) and a typed descriptor:
@@ -30,55 +27,54 @@ class ShapeVar( Attribute, ShapeExpr ):
     - rank >= 1 (`shape=[ ... ]`): a vector of unknowns indexed by the given axes.
     """
 
-    def __init__( self, shape : None | Sequence[ 'Axis' ] = None, name = None, prescribed_value = None ) -> None:
-        if shape is None:
-            shape = []
+    def __class_getitem__( cls, *deps: str ):
+        return Parametrized( cls, *deps )
 
-        self.prescribed_value = prescribed_value
-        self.shape = list( shape )
-        self.name = name          # if None, set by `Attribute.__set_name__`
+    def __init__( self, parent, dep_axes : None | list[ str ] = None, /, template_args = [], template_kwargs = {} ) -> None:
+        self.dep_axes = []
+        # for dep_axis in template_args:
+        #     self.dep_axes.append(  )
 
-        self.usage = []           # `Tensor` *declarations* that reference this var
-        self._shared_cell = None  # set when injected, so every injectee shares one cell
 
-    # --- descriptor protocol ------------------------------------------------
-    @overload
-    def __get__( self, obj: None, objtype = None ) -> 'ShapeVar': ...
-    @overload
-    def __get__( self, obj: object, objtype = None ) -> int: ...
 
-    def __get__( self, obj, objtype = None ):
-        if obj is None:
-            return self  # class access (e.g. inside the class body) -> the schema
-        return obj._bindings[ self ].value
+    # # --- descriptor protocol ------------------------------------------------
+    # @overload
+    # def __get__( self, obj: None, objtype = None ) -> 'ShapeVar': ...
+    # @overload
+    # def __get__( self, obj: object, objtype = None ) -> int: ...
 
-    def __set__( self, obj, value: int ) -> None:
-        obj._bindings[ self ].prescribed_value = int( value )
+    # def __get__( self, obj, objtype = None ):
+    #     if obj is None:
+    #         return self  # class access (e.g. inside the class body) -> the schema
+    #     return obj._bindings[ self ].value
 
-    def instantiate( self, env, injection = None ) -> ShapeVarInst:
-        if isinstance( injection, ShapeVar ):
-            # injected for sharing: every object given this var reuses one cell
-            if injection._shared_cell is None:
-                injection._shared_cell = ShapeVarInst( self )
-            cell = injection._shared_cell
-        else:
-            cell = ShapeVarInst( self )
-            if injection is not None:
-                cell.prescribed_value = int( injection )
-        cell.envs.append( env )
-        return cell
+    # def __set__( self, obj, value: int ) -> None:
+    #     obj._bindings[ self ].prescribed_value = int( value )
 
-    def register_tensor( self, tensor_decl ):
-        if tensor_decl not in self.usage:
-            self.usage.append( tensor_decl )
+    # def instantiate( self, env, injection = None ) -> ShapeVarInst:
+    #     if isinstance( injection, ShapeVar ):
+    #         # injected for sharing: every object given this var reuses one cell
+    #         if injection._shared_cell is None:
+    #             injection._shared_cell = ShapeVarInst( self )
+    #         cell = injection._shared_cell
+    #     else:
+    #         cell = ShapeVarInst( self )
+    #         if injection is not None:
+    #             cell.prescribed_value = int( injection )
+    #     cell.envs.append( env )
+    #     return cell
 
-    # --- ShapeExpr ----------------------------------------------------------
-    @property
-    def rank( self ):
-        return len( self.shape )
+    # def register_tensor( self, tensor_decl ):
+    #     if tensor_decl not in self.usage:
+    #         self.usage.append( tensor_decl )
 
-    def to_affine( self ) -> AffineShapeExpr:
-        return AffineShapeExpr( terms = { self: 1 }, offset = 0 )
+    # # --- ShapeExpr ----------------------------------------------------------
+    # @property
+    # def rank( self ):
+    #     return len( self.shape )
 
-    def __repr__( self ):
-        return f"{ self.name or 'shape_var' }[ shape={ self.shape } ]"
+    # def to_affine( self ) -> AffineShapeExpr:
+    #     return AffineShapeExpr( terms = { self: 1 }, offset = 0 )
+
+    # def __repr__( self ):
+    #     return f"{ self.name or 'shape_var' }[ shape={ self.shape } ]"

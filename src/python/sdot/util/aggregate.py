@@ -1,5 +1,6 @@
+from ..util.Parametrized import Parametrized
 from ..util.Attribute import Attribute
-
+import inspect
 
 def aggregate( cls ):
     """
@@ -32,31 +33,17 @@ def aggregate( cls ):
 
     # collect the field declarations in MRO order (parents first); a field
     # redefined in a subclass overrides the parent's while keeping its position.
-    decls = {}
-    for klass in reversed( cls.__mro__ ):
-        for name, value in vars( klass ).items():
-            if isinstance( value, Attribute ):
-                decls[ name ] = value
 
-    cls._attribute_decls = list( decls.values() )
-    decl_names = set( decls )
 
+    # ------------------ __init__ ------------------
     orig_init = cls.__init__
 
     def __init__( self, *args, **kwargs ):
-        # peel off the field injections; the rest is left for the user __init__
-        injections = { name: kwargs.pop( name ) for name in decl_names if name in kwargs }
-
-        bindings = {}
-        for decl in cls._attribute_decls:
-            bindings[ decl ] = decl.instantiate( bindings, injections.get( decl.name ) )
-        self._bindings = bindings
-
-        if orig_init is object.__init__:
-            orig_init( self )
-        else:
-            orig_init( self, *args, **kwargs )
-
+        for klass in reversed( cls.__mro__ ):
+            for name_attr, type_attr in getattr( klass, '__annotations__', {} ).items():
+                sc = type_attr.cls if isinstance( type_attr, Parametrized ) else type_attr
+                if inspect.isclass( sc ) and issubclass( sc, Attribute ):
+                    setattr( self, name_attr, type_attr( self ) )
     cls.__init__ = __init__
 
     return cls

@@ -1,4 +1,4 @@
-from .aggregate import aggregate as aggregate
+from .util.aggregate import aggregate as aggregate
 
 from .tensor.ShapeVar import ShapeVar as ShapeVar
 from .tensor.Tensor import Tensor as Tensor

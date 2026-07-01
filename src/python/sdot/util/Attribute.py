@@ -1,3 +1,5 @@
+from .Parametrized import Parametrized
+
 class Attribute:
     """Base protocol for `@aggregate` field declarations.
 
@@ -14,17 +16,6 @@ class Attribute:
     ...), and override `instantiate` when they carry per-instance state.
     """
 
-    name: str | None = None
-
-    def __set_name__( self, owner, name ):
-        if self.name is None:
-            self.name = name
-
-    def instantiate( self, env, injection = None ):
-        """Return this field's per-instance object.
-
-        `env` is the instance's binding scope (`decl -> inst`, being built);
-        `injection` is the matching constructor kwarg, if any. The default: a
-        stateless declaration is its own per-instance view.
-        """
-        return self
+    # def __class_getitem__( cls, *deps: str ):
+    #     return Parametrized( cls, *deps )
+    pass
