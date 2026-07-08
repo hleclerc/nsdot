@@ -31,19 +31,70 @@ def aggregate( cls ):
     before delegating to the user-defined `__init__`.
     """
 
-    # collect the field declarations in MRO order (parents first); a field
-    # redefined in a subclass overrides the parent's while keeping its position.
-
-
     # ------------------ __init__ ------------------
-    orig_init = cls.__init__
+    def __base_init__( self, **kwargs ):
+        # get references
+        if len( kwargs ):
+            for name_attr, type_attr in annotations( cls ).items():
+                if name_attr in kwargs:
+                    value = kwargs.pop( name_attr )
+                    type = type_attr.cls if isinstance( type_attr, Parametrized ) else type_attr
+                    if inspect.isclass( type ) and isinstance( value, type ):
+                        setattr( self, name_attr, value )
 
-    def __init__( self, *args, **kwargs ):
-        for klass in reversed( cls.__mro__ ):
-            for name_attr, type_attr in getattr( klass, '__annotations__', {} ).items():
-                sc = type_attr.cls if isinstance( type_attr, Parametrized ) else type_attr
-                if inspect.isclass( sc ) and issubclass( sc, Attribute ):
-                    setattr( self, name_attr, type_attr( self ) )
-    cls.__init__ = __init__
+        # initialize new attributes
+        for name_attr in annotations( cls ).keys():
+            get_attribute( name_attr, self )
+
+        # assign values
+        if len( kwargs ):
+            raise NotImplementedError
+
+    cls.__base_init__ = __base_init__
+    cls.__init__ = __base_init__
+
+    # ------------------ __setattr__ ------------------
+    def __setattr__( self, name, value ):
+        if name not in self.__dict__:
+            self.__dict__[ name ] = value
+            return
+        attr = self.__dict__[ name ]
+        if isinstance( attr, Attribute ):
+            attr.set( value )
+        else:
+            self.__dict__[ name ] = value
+    cls.__setattr__ = __setattr__
+
 
     return cls
+
+
+def annotations( cls ):
+    res = {}
+    for klass in reversed( cls.__mro__ ):
+        for name, attr in getattr( klass, '__annotations__', {} ).items():
+            res[ name ] = attr
+    return res
+
+
+def get_attribute( name, parent_inst ):
+    # already in attributes ?
+    res = getattr( parent_inst, name, None )
+    if res is not None:
+        return res
+
+    # in annotation ?
+    dct = getattr( parent_inst.__class__, '__annotations__', {} )
+    if name in dct:
+        type_attr = dct[ name ]
+        sc = type_attr.cls if isinstance( type_attr, Parametrized ) else type_attr
+        if inspect.isclass( sc ) and issubclass( sc, Attribute ):
+            res = type_attr( parent_inst )
+        else:
+            res = type_attr()
+
+        setattr( parent_inst, name, res )
+        return res
+
+    #
+    raise ValueError( f"There's no atttribue '{ name }' in '{ type( parent_inst ) }'" )

@@ -1,8 +1,17 @@
+
+
 class Parametrized:
-    def __init__( self, cls, *args, **kwargs ) -> None:
-        self.kwargs = kwargs
-        self.args = args
+    def __init__( self, cls, *args ) -> None:
+        self.args = []
+        self.kwargs = {}
         self.cls = cls
 
+        for arg in args:
+            if isinstance( arg, tuple ) and len( arg ) == 2 and isinstance( arg[ 0 ], str ):
+                self.kwargs[ arg[ 0 ] ] = arg[ 1 ]
+            else:
+                self.args.append( arg )
+
     def __call__( self, *args, **kwargs ):
-        return self.cls( *args, **kwargs, template_args = self.args, template_kwargs = self.kwargs )
+        merged_kwargs = { **self.kwargs, **kwargs }
+        return self.cls( *args, template_args = self.args, template_kwargs = merged_kwargs )

@@ -1,5 +1,6 @@
 from .Parametrized import Parametrized
 
+
 class Attribute:
     """Base protocol for `@aggregate` field declarations.
 
@@ -16,6 +17,11 @@ class Attribute:
     ...), and override `instantiate` when they carry per-instance state.
     """
 
-    # def __class_getitem__( cls, *deps: str ):
-    #     return Parametrized( cls, *deps )
-    pass
+    def __class_getitem__( cls, item ):
+        if isinstance( item, tuple ):
+            return Parametrized( cls, *item )
+        else:
+            return Parametrized( cls, item )
+
+    def set( self, value ):
+        raise NotImplementedError

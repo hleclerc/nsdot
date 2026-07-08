@@ -1,11 +1,8 @@
 # from typing_extensions import Sequence, overload
 from ..util.Parametrized import Parametrized
+from ..util.aggregate import get_attribute
 from ..util.Attribute import Attribute
 from typing import TYPE_CHECKING
-
-# if TYPE_CHECKING:
-#     from .Axis import Axis
-
 
 class ShapeVar( Attribute ):
     """A free (symbolic) integer variable used to build shapes.
@@ -27,42 +24,31 @@ class ShapeVar( Attribute ):
     - rank >= 1 (`shape=[ ... ]`): a vector of unknowns indexed by the given axes.
     """
 
-    def __class_getitem__( cls, *deps: str ):
-        return Parametrized( cls, *deps )
+    if TYPE_CHECKING:
+        def __set__( self, obj, value: int ) -> None: ...
 
-    def __init__( self, parent, dep_axes : None | list[ str ] = None, /, template_args = [], template_kwargs = {} ) -> None:
+    def __init__( self, parent_inst = None, /, template_args = [], template_kwargs = {} ) -> None:
+        from .Axis import Axis
+
         self.dep_axes = []
-        # for dep_axis in template_args:
-        #     self.dep_axes.append(  )
+        for dep_axis in template_args:
+            axis = get_attribute( dep_axis, parent_inst )
+            assert isinstance( axis, Axis )
+            self.dep_axes.append( axis )
 
+        self.prescribed_value = None
 
+    def set( self, value ):
+        if isinstance( value, ShapeVar ):
+            value = value.value
+        self.prescribed_value = int( value )
 
-    # # --- descriptor protocol ------------------------------------------------
-    # @overload
-    # def __get__( self, obj: None, objtype = None ) -> 'ShapeVar': ...
-    # @overload
-    # def __get__( self, obj: object, objtype = None ) -> int: ...
+    @property
+    def value( self ):
+        if self.prescribed_value is not None:
+            return self.prescribed_value
+        raise NotImplementedError
 
-    # def __get__( self, obj, objtype = None ):
-    #     if obj is None:
-    #         return self  # class access (e.g. inside the class body) -> the schema
-    #     return obj._bindings[ self ].value
-
-    # def __set__( self, obj, value: int ) -> None:
-    #     obj._bindings[ self ].prescribed_value = int( value )
-
-    # def instantiate( self, env, injection = None ) -> ShapeVarInst:
-    #     if isinstance( injection, ShapeVar ):
-    #         # injected for sharing: every object given this var reuses one cell
-    #         if injection._shared_cell is None:
-    #             injection._shared_cell = ShapeVarInst( self )
-    #         cell = injection._shared_cell
-    #     else:
-    #         cell = ShapeVarInst( self )
-    #         if injection is not None:
-    #             cell.prescribed_value = int( injection )
-    #     cell.envs.append( env )
-    #     return cell
 
     # def register_tensor( self, tensor_decl ):
     #     if tensor_decl not in self.usage:

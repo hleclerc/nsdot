@@ -1,16 +1,65 @@
-from sdot import ShapeVar, aggregate
+from sdot import ShapeVar, Axis, Tensor, aggregate
 from . import test
 
 if test( "basic" ):
     @aggregate
     class Cell:
-        nb_xs:   ShapeVar[ "nb_dims" ]
-        nb_dims: ShapeVar
+        nb_vertices: ShapeVar
+        nb_dims    : ShapeVar
 
-    c = Cell()
-    info( c )
-    # c.nb_dims = 1
-    # info( c.nb_dims )
+        num_vertex : Axis[ "nb_vertices" ]
+        dim        : Axis[ "nb_dims" ]
+
+        positions  : Tensor[ "num_vertex", "dim", ("dtype", int) ]
+
+        def __init__( self, **kw ) -> None: ...
+
+
+    nb_dims = ShapeVar()
+    c = Cell( nb_dims = nb_dims )
+
+    c.positions = [ [ 1, 2 ] ]
+    # Vérifier que le dtype est bien extracté
+    info( c.positions.raw )
+
+
+
+if test( "axis_parsing" ):
+    @aggregate
+    class Dell:
+        x: ShapeVar
+        y: ShapeVar
+
+        a1: Axis[ "x" ]
+        a2: Axis[ "2 * x + 3" ]
+        a3: Axis[ "x - 5" ]
+        a4: Axis[ "3 * x + 2 * y - 1" ]
+        a5: Axis[ "- x + 10" ]
+
+        def __init__( self, **ka ) -> None: ...
+
+    c = Dell()
+
+    # Test simple variable
+    assert len( c.a1.coeffs ) == 1 and c.a1.offset == 0
+
+    # Test coefficient + constant
+    assert len( c.a2.coeffs ) == 1 and c.a2.offset == 3
+    coeff2 = list(c.a2.coeffs.values())[0]
+    assert coeff2 == 2
+
+    # Test subtraction
+    assert len( c.a3.coeffs ) == 1 and c.a3.offset == -5
+
+    # Test multiple variables
+    assert len( c.a4.coeffs ) == 2 and c.a4.offset == -1
+
+    # Test negative variable
+    assert len( c.a5.coeffs ) == 1 and c.a5.offset == 10
+    coeff5 = list(c.a5.coeffs.values())[0]
+    assert coeff5 == -1
+
+    info( "All axis parsing tests passed" )
 
 
 

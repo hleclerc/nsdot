@@ -1,10 +1,14 @@
 from typing_extensions import overload
 from numpy.typing import ArrayLike
+from typing import TYPE_CHECKING
 
+from ..util.aggregate import get_attribute
 from ..util.Attribute import Attribute
 
+from ..drivers.driver import driver
+
 from ..devices.Device import Device
-from .TensorInst import TensorInst
+
 from .Dtype import Dtype
 from .Axis import Axis
 
@@ -23,36 +27,25 @@ class Tensor( Attribute ):
     Les extents des axes peuvent dépendre d'autres axes (axes ragged).
     """
 
-    def __init__( self, *axes : Axis, dtype = None, device = None, name = None ) -> None:
-        self.device = Device.factory( device )
-        self.dtype = Dtype.factory( dtype )
-        self.axes = list( axes )
-        self.name = name # if None, set by `Attribute.__set_name__`
+    if TYPE_CHECKING:
+        def __set__( self, obj, value: ArrayLike | None ) -> None: ...
 
-        # structural graph: tell each ShapeVar decl that this tensor decl uses it
-        for axis in self.axes:
-            for shape_var in axis.extent.terms.keys():
-                shape_var.register_tensor( self )
 
-    # --- descriptor protocol ------------------------------------------------
-    @overload
-    def __get__( self, obj: None, objtype = None ) -> 'Tensor': ...
-    @overload
-    def __get__( self, obj: object, objtype = None ) -> TensorInst: ...
+    def __init__( self, parent_inst = None, /, template_args = [], template_kwargs = {} ) -> None:
+        self.device = Device.factory( template_kwargs.get( "device", None ) )
+        self.dtype = Dtype.factory( template_kwargs.get( "dtype", None ) )
+        self.raw = None
 
-    def __get__( self, obj, objtype = None ):
-        if obj is None:
-            return self
-        return obj._bindings[ self ]
+        self.axes = []
+        for dep_axis in template_args:
+            axis = get_attribute( dep_axis, parent_inst )
+            assert isinstance( axis, Axis )
+            self.axes.append( axis )
 
-    def __set__( self, obj, value: ArrayLike | None ) -> None:
-        obj._bindings[ self ].reassign( value )
+    def set( self, value ):
+        if isinstance( value, Tensor ):
+            value = value._raw
+        self.raw = driver.array( value, dtype = self.dtype, device = self.device )
 
-    def instantiate( self, env, injection = None ) -> TensorInst:
-        inst = TensorInst( self )
-        if injection is not None:
-            inst.reassign( injection )
-        return inst
-
-    def __repr__( self ):
-        return f"{ self.name or 'tensor' }( { ', '.join( a.name or 'axis' for a in self.axes ) } )"
+    # def __repr__( self ):
+    #     return f"{ self.name or 'tensor' }( { ', '.join( a.name or 'axis' for a in self.axes ) } )"
