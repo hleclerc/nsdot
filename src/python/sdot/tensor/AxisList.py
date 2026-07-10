@@ -1,98 +1,58 @@
-from .AffineExpr import to_affine
-from .VariableAxesPlaceholder import VariableAxesPlaceholder
+import numpy
+
+from ..util.aggregate import get_attribute
+from .AbstractAxis import AbstractAxis
 
 
-class AxisList:
-    """A symbolic-length run of axes, whose extents are an affine expression.
+class AxisList( AbstractAxis ):
+    """A *family* of axes indexed by a loop axis, meant to be UNROLLED.
 
-    `extent` is an affine expression of `ShapeVar`s, typically built on a rank-1
-    `ShapeVar` so that there is one axis per element:
+    `AxisList[ loop_axis, expr ]`: `loop_axis` is the axis to unroll over
+    (e.g. `dim`), `expr` the affine extent of each member (e.g. `extent`, with
+    `extent : ShapeVar[ "dim" ]` holding one count per loop index).
 
-        img_axes = AxisList( img_shape )         # one axis per img_shape element
-        num_knot = AxisList( nb_intervals + 1 )  # extents = nb_intervals[ i ] + 1
+    Used in a `Tensor` declaration with a trailing `...` (`Tensor[ "img_pos..." ]`)
+    it expands into `nb_dims` separate static axes, giving the tensor a DYNAMIC
+    rank. The count `nb_dims` is unknown at declaration time -- hence the split
+    from `Axis` (a single, ragged-or-not, dimension needs no unrolling)."""
 
-    This is how axes that cannot be named one by one are declared. Unlike a vector
-    `DynamicShapeVar` passed to a single `Axis` (which yields one ragged axis), an
-    `AxisList` yields several distinct axes.
-    """
+    def _init_axis( self, parent_inst, template_args ):
+        assert len( template_args ) == 2
+        self.loop_axis = get_attribute( template_args[ 0 ], parent_inst )
+        self._parse_expr( parent_inst, template_args[ 1 ] )
 
-    def __init__( self, extent ) -> None:
-        self.extent = to_affine( extent )
-        self.name   = None                     # set by `@aggregate` from the field name
+    def max_list( self ):
+        # one extent per loop index: `offset + sum( coeff * shape_var[k] )`, where
+        # the loop count is the loop axis' extent (`nb_dims`) and each coeff's
+        # ShapeVar is a rank-1 vector of that length.
+        res = numpy.full( self.loop_axis.max, self.offset, dtype = int )
+        for shape_var, m in self.coeffs.items():
+            res = res + m * numpy.asarray( shape_var.value, dtype = int )
+        return [ int( x ) for x in res ]
 
-    def __iter__( self ):
-        # called by Python when the list is unpacked with `*` in a Tensor(...) decl;
-        # we yield a single placeholder standing for the whole (symbolic) run of axes
-        yield VariableAxesPlaceholder( self )
+    def register_in( self, tensor, index, unroll ):
+        assert unroll, "an AxisList must be unrolled in a tensor ('img_pos...')"
 
-    def __getitem__( self, index ):
-        # `axis_list[ i ]` -> the single (still symbolic) axis taken at `i`
-        return VariableAxesPlaceholder( self, index = index )
+        # Unrolled at `index`, this family expands into `count` static axes; the
+        # span (start, count) is filled by `Tensor.set` once a value is observed.
+        # The loop axis' ShapeVar is solved from the unroll count; each member's
+        # ShapeVar(s) from the vector of per-index sizes.
+        for shape_var in self.loop_axis.coeffs:
+            def resolve_count( t, axis = self.loop_axis, shape_var = shape_var, index = index ):
+                span = t._unroll_spans.get( index )
+                if span is None:
+                    return None
+                return axis.solve_single( shape_var, numpy.array( span[ 1 ], dtype = int ) )
+            shape_var.add_usage( tensor, resolve_count )
 
-    def __repr__( self ):
-        name = self.name or "axis_list"
-        return f"{ name }[ { self.extent } ]"
-
-    def base_var( self ):
-        """The single rank-1 `ShapeVar` the run of axes is built upon."""
-        vars = list( self.extent.terms )
-        if len( vars ) != 1:
-            raise NotImplementedError( "an AxisList must depend on exactly one ShapeVar" )
-        return vars[ 0 ]
-
-    def count_affine( self ):
-        """Affine expression giving the *number* of axes in the run.
-
-        That count is the length of the underlying rank-1 `ShapeVar`, i.e. the
-        extent of its (single) declaring axis (e.g. `img_shape = ShapeVar( [ nb_dims ] )`
-        has `nb_dims` elements).
-        """
-        from .AffineExpr import extent_affine
-        var = self.base_var()
-        if not var.shape:
-            raise NotImplementedError( "an AxisList must be built on a rank-1 ShapeVar" )
-        return extent_affine( var.shape[ 0 ] )
-
-    def direct_solve( self, name, sizes, aggregate, forbidden_new_values ):
-        """Solve `name` from the concrete `sizes` taken by the whole run of axes."""
-        # 1) the number of axes pins down the rank-1 var's length (e.g. `nb_dims`)
-        res = self.count_affine().direct_solve( name, len( sizes ), aggregate, forbidden_new_values )
-        if res is not None:
-            return res
-
-        # 2) elementwise: each extent is `coeff * base_var[ i ] + constant`, so the
-        #    rank-1 var itself is recovered by inverting that affine per element.
-        var = self.base_var()
-        if var.name == name:
-            coeff    = self.extent.terms[ var ]
-            constant = self.extent.constant
-            out = []
-            for size in sizes:
-                if ( size - constant ) % coeff:
-                    raise ValueError( f"axis size ({ size }) - offset ({ constant }) is not divisible by coefficient ({ coeff })" )
-                out.append( ( size - constant ) // coeff )
-            return out
-
-        return None
-
-    def direct_solve_indexed( self, name, value, aggregate, forbidden_new_values ):
-        """Solve `name` from a ragged `TensorList` value indexed by this list.
-
-        Used for `knots = TensorList( dim, num_knot[ dim ] )`: element `d` is a 1-D
-        array whose length is this list's extent at index `d`, i.e.
-        `nb_intervals[ d ] + 1`. Inverting that affine per element recovers the
-        rank-1 base var (`nb_intervals`).
-        """
-        var = self.base_var()
-        if var.name == name:
-            coeff    = self.extent.terms[ var ]
-            constant = self.extent.constant
-            out = []
-            for arr in value:
-                size = arr.shape[ 0 ]
-                if ( size - constant ) % coeff:
-                    raise ValueError( f"element size ({ size }) - offset ({ constant }) is not divisible by coefficient ({ coeff })" )
-                out.append( ( size - constant ) // coeff )
-            return out
-
-        return None
+        for shape_var in self.coeffs:
+            def resolve_vec( t, axis = self, shape_var = shape_var, index = index ):
+                span = t._unroll_spans.get( index )
+                if span is None or t._sizes is None:
+                    return None
+                start, count = span
+                vals = [ axis.solve_single( shape_var, t._sizes[ start + k ] ) for k in range( count ) ]
+                if any( v is None for v in vals ):
+                    return None
+                return numpy.array( vals, dtype = int )
+            shape_var.add_usage( tensor, resolve_vec )

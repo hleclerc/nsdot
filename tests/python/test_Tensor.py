@@ -1,16 +1,17 @@
-from sdot import ShapeVar, Axis, Tensor, aggregate
+from sdot import ShapeVar, Axis, AxisList, Tensor, aggregate, driver
 from . import test
 
 if test( "basic" ):
     @aggregate
     class Cell:
-        nb_vertices: ShapeVar
-        nb_dims    : ShapeVar
+        vertex_positions : Tensor[ "num_vertex", "dim" ]
+        vertex_indices   : Tensor[ "num_vertex", "dim", { "dtype": int } ]
 
-        num_vertex : Axis[ "nb_vertices" ]
-        dim        : Axis[ "nb_dims" ]
+        num_vertex       : Axis[ "nb_vertices" ]
+        dim              : Axis[ "nb_dims" ]
 
-        positions  : Tensor[ "num_vertex", "dim", ("dtype", int) ]
+        nb_vertices      : ShapeVar
+        nb_dims          : ShapeVar
 
         def __init__( self, **kw ) -> None: ...
 
@@ -18,10 +19,68 @@ if test( "basic" ):
     nb_dims = ShapeVar()
     c = Cell( nb_dims = nb_dims )
 
-    c.positions = [ [ 1, 2 ] ]
+    c.vertex_positions = [ [ 1, 2 ] ]
     # Vérifier que le dtype est bien extracté
-    info( c.positions.raw )
 
+    info( c.nb_vertices )
+
+    # `c.nb_vertices` now reads back the solved value (value-on-read)
+    assert c.nb_vertices == 1
+    assert c.nb_dims == 2
+
+
+
+if test( "ragged" ):
+    @aggregate
+    class Mesh:
+        cell_vertices   : Tensor[ "cell", "vtx" ]
+
+        cell            : Axis[ "nb_cells" ]
+        vtx             : Axis[ "nb_vtx_per_cell" ]      # ragged: depends on `cell`
+
+        nb_cells        : ShapeVar
+        nb_vtx_per_cell : ShapeVar[ "cell" ]             # rank-1 (one count per cell)
+
+        def __init__( self, **kw ) -> None: ...
+
+
+    m = Mesh()
+    m.cell_vertices = [ [ 10, 11 ], [ 12 ] ]   # cell 0 has 2 vertices, cell 1 has 1
+
+    # sizes are read from the nesting only (no data touched)
+    assert m.nb_cells == 2
+    assert list( m.nb_vtx_per_cell ) == [ 2, 1 ]
+
+    # values assembled into a padded rank-2 buffer (pad = 0), functionally
+    import numpy
+    raw = numpy.asarray( m.cell_vertices.raw )
+    assert raw.shape == ( 2, 2 )
+    assert raw.tolist() == [ [ 10, 11 ], [ 12, 0 ] ]
+
+    info( m.nb_vtx_per_cell )
+
+
+if test( "TensorList" ):
+    @aggregate
+    class Image:
+        values  : Tensor[ "img_pos..." ]
+        knots   : Tensor[ "dim", "num_knot" ]
+
+        num_knot: Axis[ "extent + 1" ]          # ragged over `dim` via `extent`
+        img_pos : AxisList[ "dim", "extent" ]    # unrolled into `nb_dims` static axes
+        dim     : Axis[ "nb_dims" ]
+
+        nb_dims : ShapeVar
+        extent  : ShapeVar[ "dim" ]             # rank-1 (one count per dim)
+
+        def __init__( self, **kw ) -> None: ...
+
+
+    m = Image()
+    m.values = driver.random( [ 2, 1 ] )
+    m.knots = [ [ 0, 1, 2 ], [ 0, 1 ] ]
+    assert m.nb_dims == 2
+    assert list( m.extent ) == [ 2, 1 ]
 
 
 if test( "axis_parsing" ):

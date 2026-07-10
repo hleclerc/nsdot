@@ -5,16 +5,14 @@ class Attribute:
     """Base protocol for `@aggregate` field declarations.
 
     This is the *only* thing `@aggregate` knows about: it operates on classes
-    whose fields are `Attribute`s, with no knowledge of any concrete declaration
-    type (`ShapeVar`, `Tensor`, ... are just examples). A declaration is a
-    class-level descriptor -- the immutable, shared *schema* of a field.
-    Per-instance mutable state lives in the object returned by `instantiate`,
-    stored in the instance's `_bindings` map (`decl -> inst`); that object merely
-    *references* its declaration, nothing is copied.
+    whose fields are `Attribute`s, with no knowledge of any concrete field type
+    (`ShapeVar`, `Tensor`, ... are just examples).
 
-    Subclasses implement the descriptor protocol (`__get__` / `__set__`) to expose
-    whatever per-instance *view* the user manipulates (an `int`, a tensor wrapper,
-    ...), and override `instantiate` when they carry per-instance state.
+    A field annotation is a `Parametrized` (`Attribute[...]`) that acts as the
+    class-level *schema*. `get_attribute` calls it once per parent instance to
+    build a fresh per-instance `Attribute` that holds that instance's state, kept
+    in `self._attributes`. `@aggregate` installs one data descriptor per field:
+    `c.field` returns `get` (the read view), `c.field = value` routes to `set`.
     """
 
     def __class_getitem__( cls, item ):
@@ -25,3 +23,7 @@ class Attribute:
 
     def set( self, value ):
         raise NotImplementedError
+
+    def get( self ):
+        """Per-instance read view exposed by `c.field`; default: the object itself."""
+        return self

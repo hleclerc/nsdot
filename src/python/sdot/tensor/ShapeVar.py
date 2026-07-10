@@ -2,65 +2,71 @@
 from ..util.Parametrized import Parametrized
 from ..util.aggregate import get_attribute
 from ..util.Attribute import Attribute
-from typing import TYPE_CHECKING
+from numpy._typing import ArrayLike
+from typing import TYPE_CHECKING, Iterator
+import weakref
+import numpy
+
 
 class ShapeVar( Attribute ):
-    """A free (symbolic) integer variable used to build shapes.
+    """An integer (possibly rank > 0) variable used to build shapes.
 
-    This is a *declaration* (shared, class-level schema) and a typed descriptor:
-    on an instance, `c.nb_dims` reads as an `int` (the prescribed or solved
-    value) and `c.nb_dims = 1222` prescribes it. The per-instance state lives in
-    a `ShapeVarInst` cell, reached through the instance's `_bindings`.
+    Rank 0 is a plain scalar count; rank > 0 holds the per-row/per-segment counts
+    of a RAGGED structure (`dep_axes` records which axes it varies along).
 
-    Axis extents are *expressions* built on top of `ShapeVar`s (e.g.
-    `nb_dims + 1`). A `ShapeVar` is either prescribed or solved from the shapes
-    of the declared tensors that use it (`usage`).
+    Axis extents are affine *expressions* over `ShapeVar`s (e.g. `nb_dims + 1`).
+    A `ShapeVar` is either prescribed (`c.nb_dims = 1222`) or solved from the
+    shapes observed on the declared tensors that use it; a prescribed value wins.
+    `c.nb_dims` reads back the value.
 
-    Sharing: pass a `ShapeVar` to several constructors (`Cell( nb_dims = n )`).
-    The objects then point to the same cell, so the value is solved from the
-    union of their bound tensors (see `instantiate`).
-
-    - rank 0 (`shape=None`): a scalar unknown.
-    - rank >= 1 (`shape=[ ... ]`): a vector of unknowns indexed by the given axes.
+    Sharing: pass a `ShapeVar` to several constructors (`Cell( nb_dims = n )`);
+    they then reference the same object, so the value is solved from the union of
+    their tensors.
     """
 
     if TYPE_CHECKING:
         def __set__( self, obj, value: int ) -> None: ...
+        def __iter__( self ) -> Iterator: ...
 
     def __init__( self, parent_inst = None, /, template_args = [], template_kwargs = {} ) -> None:
-        from .Axis import Axis
+        from .AbstractAxis import AbstractAxis
 
+        # (weakref(tensor), resolver): each `resolver(tensor)` returns our solved
+        # value from that tensor's observed sizes, or None if it cannot yet.
+        # Weak so a shared ShapeVar does not keep dropped instances' tensors alive.
+        self.usages = []
         self.dep_axes = []
         for dep_axis in template_args:
             axis = get_attribute( dep_axis, parent_inst )
-            assert isinstance( axis, Axis )
+            assert isinstance( axis, AbstractAxis )
             self.dep_axes.append( axis )
 
         self.prescribed_value = None
 
+    def add_usage( self, tensor, resolver ):
+        self.usages.append( ( weakref.ref( tensor ), resolver ) )
+
     def set( self, value ):
         if isinstance( value, ShapeVar ):
             value = value.value
-        self.prescribed_value = int( value )
+        self.prescribed_value = numpy.array( value, dtype = int )
+
+    def get( self ) -> ArrayLike:
+        return self.value
 
     @property
-    def value( self ):
+    def value( self ) -> ArrayLike:
         if self.prescribed_value is not None:
             return self.prescribed_value
-        raise NotImplementedError
 
+        # else solve from the first tensor able to constrain us: each usage knows
+        # how (single-var affine inversion of an observed size, unroll count, ...).
+        for tensor_ref, resolver in self.usages:
+            tensor = tensor_ref()
+            if tensor is None:
+                continue
+            solved = resolver( tensor )
+            if solved is not None:
+                return numpy.asarray( solved )
 
-    # def register_tensor( self, tensor_decl ):
-    #     if tensor_decl not in self.usage:
-    #         self.usage.append( tensor_decl )
-
-    # # --- ShapeExpr ----------------------------------------------------------
-    # @property
-    # def rank( self ):
-    #     return len( self.shape )
-
-    # def to_affine( self ) -> AffineShapeExpr:
-    #     return AffineShapeExpr( terms = { self: 1 }, offset = 0 )
-
-    # def __repr__( self ):
-    #     return f"{ self.name or 'shape_var' }[ shape={ self.shape } ]"
+        raise NotImplementedError( "ShapeVar is neither prescribed nor constrained by a tensor" )

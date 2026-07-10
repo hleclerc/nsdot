@@ -148,6 +148,23 @@ class JaxDriver:
         # device = self.device.driver_version
         return jnp.asarray( data, dtype = dtype_ver )
 
+    # functional building blocks (tracer-safe, differentiable): used to assemble
+    # padded buffers without in-place mutation, which does not fit Jax.
+    def zeros( self, shape, dtype = None ):
+        return jnp.zeros( shape, dtype = Dtype.factory( dtype or self.ftype ).driver_version )
+
+    def stack( self, tensors, axis = 0 ):
+        return jnp.stack( tensors, axis = axis )
+
+    def pad( self, tensor, pad_width ):
+        return jnp.pad( tensor, pad_width )
+
+    def random( self, shape, dtype = None ):
+        seed = getattr( self, "_rng_seed", 0 )
+        self._rng_seed = seed + 1
+        dtype_ver = Dtype.factory( dtype or self.ftype ).driver_version
+        return jax.random.uniform( jax.random.PRNGKey( seed ), tuple( shape ), dtype = dtype_ver )
+
 
 
     # class CapacityOverflow( RuntimeError ):

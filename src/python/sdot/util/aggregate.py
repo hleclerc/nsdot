@@ -8,65 +8,72 @@ def aggregate( cls ):
 
     `aggregate` works one level of abstraction above any concrete field type: it
     knows nothing about `ShapeVar` / `Axis` / `Tensor` (mere examples), only the
-    `Attribute` protocol. Two levels are at play:
-
-      - the *declaration* (an `Attribute`): a class-level descriptor, shared by
-        all instances -- the immutable schema and the typed accessor.
-      - the *instance object*: the per-instance state, obtained from
-        `decl.instantiate(...)` and stored in `self._bindings` (`decl -> inst`).
-        It references its declaration; nothing is copied.
-
-    Per-field state is reached through `_bindings`, so the descriptors always
-    fire (no data/non-data shadowing) and the instance namespace stays clean.
+    `Attribute` protocol. Each annotation is a `Parametrized` schema; a fresh
+    per-instance `Attribute` is built lazily by `get_attribute` and kept in
+    `self._attributes`.
 
     Each field can be *injected* at construction by passing its name as a kwarg;
-    the declaration decides what the injection means (e.g. a `ShapeVar` shares a
-    cell, enabling several objects to agree on the same value):
+    an `Attribute` value is shared (several instances then agree on the same
+    value, e.g. a `ShapeVar` solved from the union of their tensors), any other
+    value prescribes it:
 
         n = ShapeVar()
         a = Cell( nb_dims = n )   # a and b share nb_dims
         b = Cell( nb_dims = n )
 
-    Generated: an `__init__` that builds `self._bindings` (honoring injections)
-    before delegating to the user-defined `__init__`.
+    Generated: an `__init__` that honors injections and instantiates every field,
+    and one data descriptor per field routing `c.field` to `get` and
+    `c.field = value` to `set`.
     """
 
     # ------------------ __init__ ------------------
     def __base_init__( self, **kwargs ):
-        # get references
-        if len( kwargs ):
-            for name_attr, type_attr in annotations( cls ).items():
-                if name_attr in kwargs:
-                    value = kwargs.pop( name_attr )
-                    type = type_attr.cls if isinstance( type_attr, Parametrized ) else type_attr
-                    if inspect.isclass( type ) and isinstance( value, type ):
-                        setattr( self, name_attr, value )
+        self._attributes = {}
 
-        # initialize new attributes
-        for name_attr in annotations( cls ).keys():
-            get_attribute( name_attr, self )
+        # injections: share the passed `Attribute`, prescribe any other value
+        for name, type_attr in annotations( cls ).items():
+            if name in kwargs:
+                value = kwargs.pop( name )
+                sc = _field_cls( type_attr )
+                if inspect.isclass( sc ) and isinstance( value, sc ):
+                    self._attributes[ name ] = value
+                else:
+                    get_attribute( name, self ).set( value )
 
-        # assign values
+        # instantiate the remaining fields
+        for name in annotations( cls ).keys():
+            get_attribute( name, self )
+
         if len( kwargs ):
             raise NotImplementedError
 
-    cls.__base_init__ = __base_init__
     cls.__init__ = __base_init__
 
-    # ------------------ __setattr__ ------------------
-    def __setattr__( self, name, value ):
-        if name not in self.__dict__:
-            self.__dict__[ name ] = value
-            return
-        attr = self.__dict__[ name ]
-        if isinstance( attr, Attribute ):
-            attr.set( value )
-        else:
-            self.__dict__[ name ] = value
-    cls.__setattr__ = __setattr__
-
+    # ------------------ per-field descriptors ------------------
+    for name, type_attr in annotations( cls ).items():
+        if _is_attribute_field( type_attr ):
+            setattr( cls, name, FieldDescriptor( name ) )
 
     return cls
+
+
+class FieldDescriptor:
+    """Data descriptor generated per `@aggregate` field.
+
+    Reads return the per-instance read view (`attr.get()`); writes route to
+    `attr.set(value)`. Class access (`Cls.field`) returns the descriptor itself,
+    a handle on the schema.
+    """
+    def __init__( self, name ):
+        self.name = name
+
+    def __get__( self, obj, objtype = None ):
+        if obj is None:
+            return self
+        return get_attribute( self.name, obj ).get()
+
+    def __set__( self, obj, value ):
+        get_attribute( self.name, obj ).set( value )
 
 
 def annotations( cls ):
@@ -77,24 +84,31 @@ def annotations( cls ):
     return res
 
 
+def _field_cls( type_attr ):
+    return type_attr.cls if isinstance( type_attr, Parametrized ) else type_attr
+
+
+def _is_attribute_field( type_attr ):
+    sc = _field_cls( type_attr )
+    return inspect.isclass( sc ) and issubclass( sc, Attribute )
+
+
 def get_attribute( name, parent_inst ):
-    # already in attributes ?
-    res = getattr( parent_inst, name, None )
-    if res is not None:
-        return res
+    # already instantiated ?
+    attrs = parent_inst._attributes
+    if name in attrs:
+        return attrs[ name ]
 
     # in annotation ?
-    dct = getattr( parent_inst.__class__, '__annotations__', {} )
+    dct = annotations( parent_inst.__class__ )
     if name in dct:
         type_attr = dct[ name ]
-        sc = type_attr.cls if isinstance( type_attr, Parametrized ) else type_attr
-        if inspect.isclass( sc ) and issubclass( sc, Attribute ):
+        if _is_attribute_field( type_attr ):
             res = type_attr( parent_inst )
         else:
             res = type_attr()
 
-        setattr( parent_inst, name, res )
+        attrs[ name ] = res
         return res
 
-    #
-    raise ValueError( f"There's no atttribue '{ name }' in '{ type( parent_inst ) }'" )
+    raise ValueError( f"There's no attribute '{ name }' in '{ type( parent_inst ) }'" )
