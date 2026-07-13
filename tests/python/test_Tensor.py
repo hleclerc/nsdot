@@ -1,7 +1,7 @@
 from sdot import ShapeVar, Axis, AxisList, Tensor, aggregate, driver
 from . import test
 
-if test( "basic" ):
+if test( "basic_tensor" ):
     @aggregate
     class Cell:
         vertex_positions : Tensor[ "num_vertex", "dim" ]

@@ -25,3 +25,13 @@ class CallArg_Axis( CallArg ):
         for shape_var_name, coeff in self.coeffs.items():
             extent += coeff * int( attributes[ shape_var_name ].capacity )
         return extent
+
+    # -- driver-agnostic C++ (DEFINE_AXIS is the same for every driver) --
+    def cpp_define( self ):
+        # the same axis name may appear several times in `ca.axes` (declared in different
+        # tensors / aggregates): guard each DEFINE_AXIS so it lands at most once per TU.
+        guard = f"SDOT_AXIS_{ self.name }"
+        return ( f"#ifndef { guard }\n"
+                 f"#define { guard }\n"
+                 f"DEFINE_AXIS( { self.name } );\n"
+                 f"#endif" )

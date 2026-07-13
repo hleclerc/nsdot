@@ -31,12 +31,13 @@ class ShapeVar( Attribute ):
     @classmethod
     def make_CallArg( cls, caa, io_category, name, value, ctor_args, schema = None ):
         # `max_of_<name>` reserves a capacity (runtime value 0, written by the kernel);
-        # `<name>` prescribes a fixed init value. This lookup is ShapeVar's own business.
+        # `<name>` prescribes a fixed init value. This lookup is ShapeVar's own business; which
+        # SCOPE the key comes from (this aggregate's `Args`, or an enclosing one) is `ctor_args`'.
         from ..drivers.CallArg_ShapeVar import CallArg_ShapeVar
         return CallArg_ShapeVar(
             caa, io_category, name,
-            reserved = ctor_args.get( "max_of_" + name ),
-            prescribed = ctor_args.get( name ),
+            reserved = ctor_args.find( name, "max_of_" ),
+            prescribed = ctor_args.find( name ),
             schema = schema,
         )
 

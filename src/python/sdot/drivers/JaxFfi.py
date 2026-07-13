@@ -116,23 +116,25 @@ def call_body( body: str, device ):
 # materialized as a small `struct` of views so the C++ body can write `cell.<field> = v`.
 _CALL_TEMPLATE = """\
 #include "xla/ffi/api/ffi.h"
+#include "sdot/support/common_types.h"
+#include "sdot/support/Ct.h"
+#include "sdot/support/containers/TensorView.h"
+#include "sdot/support/containers/ShapeVarView.h"
 #include <cstdint>
 #include <iostream>
 
 namespace ffi = xla::ffi;
+using namespace sdot;
 
-// Minimal view over a ShapeVar's output buffer: `cell.<name> = v` writes the count.
-template<class T>
-struct ShapeVarView {{
-    T *p;
-    ShapeVarView &operator=( T v ) {{ *p = v; return *this; }}
-    operator T() const {{ return *p; }}
-}};
+{axis_defs}
 
 {struct_defs}
 
+{struct_aliases}
+
 static ffi::Error sdot_ffi_impl( {params} ) {{
 {struct_inits}
+{seeds}
     {{
 {body}
     }}
@@ -152,25 +154,37 @@ def call( code, ca, device ):
     """Compile `code.fwd_code` bound to the buffers described by `ca`, run it, return the
     reconstructed output object(s).
 
-    Slice 3a: only `ShapeVar` buffers are bound (they carry `jax_*` emitters); tensors and
-    `DEFINE_AXIS` come next. Buffer order is fixed by `ca.tensors` and shared between the FFI
-    `Bind()`, the handler params and the `ffi_call` result specs.
-    """
-    buffers = [ t for t in ca.tensors if hasattr( t, "jax_cpp_member" ) ]
+    Each aggregate arg becomes a `struct` of views over the FFI result buffers; outputs are
+    seeded (from `prescribed`/`reserved`) before the body runs. Buffer order is fixed by
+    `ca.tensors` and shared between the FFI `Bind()`, the handler params and the result specs.
 
-    struct_defs = []
+    The struct is a *template* (one definition per aggregate class, hence the dedup by
+    `type_name`), so the same class may appear several times in a call with different
+    compile-time parameters; each arg gets an alias to its own instantiation.
+    """
+    buffers = [ t for t in ca.tensors if hasattr( t, "jax_ffi_ret_type" ) ]
+
+    struct_defs = {}
+    struct_aliases = []
     struct_inits = []
+    seeds = []
     for arg_name, arg_ca in ca.args.items():
         type_name = _struct_type_name( arg_name )
-        struct_defs.append( arg_ca.jax_struct_def( type_name ) )
+        for cls_name, struct_def in arg_ca.cpp_struct_defs().items():
+            struct_defs.setdefault( cls_name, struct_def )
+        struct_aliases.append( f"using { type_name } = { arg_ca.cpp_struct_type() };" )
         struct_inits.append( arg_ca.jax_struct_init( arg_name, type_name ) )
+        seeds.append( arg_ca.cpp_seed( arg_name ) )
 
     source = _CALL_TEMPLATE.format(
-        struct_defs  = "\n\n".join( struct_defs ),
-        params       = ", ".join( f"ffi::Result<{ b.jax_ffi_ret_type() }> { b.name }" for b in buffers ),
-        struct_inits = "\n".join( struct_inits ),
-        body         = code.fwd_code,
-        binds        = "".join( f"\n        .Ret<{ b.jax_ffi_ret_type() }>()" for b in buffers ),
+        axis_defs      = "\n".join( a.cpp_define() for a in ca.axes ),
+        struct_defs    = "\n\n".join( struct_defs.values() ),
+        struct_aliases = "\n".join( struct_aliases ),
+        params         = ", ".join( f"ffi::Result<{ b.jax_ffi_ret_type() }> { b.ffi_name }" for b in buffers ),
+        struct_inits   = "\n".join( struct_inits ),
+        seeds          = "\n".join( "    " + line for s in seeds for line in s.splitlines() ),
+        body           = code.fwd_code,
+        binds          = "".join( f"\n        .Ret<{ b.jax_ffi_ret_type() }>()" for b in buffers ),
     )
 
     target = compile_and_register( source, device )

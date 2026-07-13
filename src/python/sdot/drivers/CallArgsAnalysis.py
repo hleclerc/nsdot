@@ -1,5 +1,6 @@
 from .CallArg_Aggregate import CallArg_Aggregate
 from .IoCategory import IoCategory
+from .CtorArgs import CtorArgs
 from .CallArg import CallArg
 
 
@@ -26,8 +27,32 @@ class CallArgsAnalysis:
         self.tensors = []
         self.axes = []
         self.args = {}
+        self.type_names = {}
         for name, arg in args.items():
-            self.args[ name ] = self.make_CallArg( io_category, name, type( arg ), arg, {} )
+            self.args[ name ] = self.make_CallArg( io_category, name, type( arg ), arg, CtorArgs( {} ) )
+
+    def register_tensor( self, tensor ):
+        """Register a buffer to bind, and give it a unique `ffi_name`.
+
+        Attribute names are only unique within their aggregate, whereas the FFI buffers share a
+        flat namespace (the handler's parameter list): two `Cell`s in the same call both bring a
+        `vertex_positions`. The struct member keeps the attribute name; only the buffer is
+        renamed."""
+        name = tensor.name
+        while any( t.ffi_name == name for t in self.tensors ):
+            name += "_"
+        tensor.ffi_name = name
+        self.tensors.append( tensor )
+
+    def cpp_type_name( self, cls ):
+        """C++ name of the struct template generated for the `@aggregate` class `cls`: its
+        Python name, made unique should two distinct classes share it in the same call."""
+        if cls not in self.type_names:
+            name = cls.__name__
+            while name in self.type_names.values():
+                name += "_"
+            self.type_names[ cls ] = name
+        return self.type_names[ cls ]
 
     def make_CallArg( self, io_category: IoCategory, name, klass, value, ctor_args ) -> CallArg:
         make = getattr( klass, "make_CallArg", None )

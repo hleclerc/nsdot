@@ -64,6 +64,81 @@ def _collapse( sizes, rank ):
     return sizes
 
 
+def _leaves( tree ):
+    if isinstance( tree, list ):
+        for v in tree:
+            yield from _leaves( v )
+    else:
+        yield tree
+
+
+def _fmt_scalar( v ):
+    if v is _BLANK:
+        return ""
+    return f"{ v:g}" if isinstance( v, float ) else str( v )
+
+
+def _render_tree( tree, width, rank ):
+    """Text form of a (possibly ragged) nested list of numbers: no brackets, each
+    number right-justified to `width`, one row per line, a blank line between
+    higher-rank blocks. A row/block that is ENTIRELY padding (e.g. the unwritten
+    tail of a reservation) is dropped rather than printed as blank -- a row that
+    is only partly padding (ragged in some other direction) still prints, with
+    `_BLANK` cells shown empty in place, so column alignment is preserved."""
+    if rank == 0:
+        return _fmt_scalar( tree ).rjust( width )
+    if rank == 1:
+        return " ".join( _fmt_scalar( v ).rjust( width ) for v in tree )
+    sep = "\n" if rank == 2 else "\n\n"
+    kept = [ sub for sub in tree if not _is_blank( sub ) ]
+    return sep.join( _render_tree( sub, width, rank - 1 ) for sub in kept )
+
+
+# display sentinel for a raw cell that is padding, not a real value (see `_display_tree`)
+_BLANK = object()
+
+
+def _is_blank( tree ):
+    return all( v is _BLANK for v in _leaves( tree ) )
+
+
+def _shape_var_at( shape_var, axes, idx ):
+    """Current value of `shape_var` (its LIVE `.value`, e.g. solved from a kernel
+    write -- not a reservation) at raw position `idx`: dense (no `dep_axes`) is a
+    single value (same convention as `Axis.max`); ragged is indexed by where its
+    `dep_axes` sit among `axes` (a dependency this tensor does not itself carry
+    as a dimension falls back to the max over it)."""
+    v = shape_var.value
+    if not shape_var.dep_axes:
+        return int( v.max() )
+    key = tuple( idx[ axes.index( dep ) ] if dep in axes else slice( None ) for dep in shape_var.dep_axes )
+    v = v[ key ]
+    return int( v.max() ) if v.ndim else int( v )
+
+
+def _cell_valid( specs, idx ):
+    """Whether raw position `idx` holds a real value: every axis's OWN extent,
+    evaluated at `idx` from its ShapeVars' current values, must cover it. Checked
+    independently per axis, so ragged padding is caught in any direction, not
+    only a trailing/horizontal one."""
+    axes = [ axis for axis, _ in specs ]
+    for d, ( axis, _ ) in enumerate( specs ):
+        extent = axis.offset + sum(
+            coeff * _shape_var_at( shape_var, axes, idx ) for shape_var, coeff in axis.coeffs.items()
+        )
+        if idx[ d ] >= extent:
+            return False
+    return True
+
+
+def _display_tree( raw, specs, d = 0, idx = () ):
+    """Nested list over the full (padded) `raw`, `_BLANK` at every position that
+    is padding rather than a real value (see `_cell_valid`)."""
+    if d == raw.ndim:
+        return raw[ idx ].item() if _cell_valid( specs, idx ) else _BLANK
+    return [ _display_tree( raw, specs, d + 1, idx + ( i, ) ) for i in range( raw.shape[ d ] ) ]
+
+
 def _assemble( value, caps, dtype, device ):
     """Build a padded rank-`len(caps)` buffer from `value`, FUNCTIONALLY: pad each
     block up to `caps` (extension), then `stack` the blocks (assembly). No in-place
@@ -101,7 +176,8 @@ class Tensor( Attribute ):
     @classmethod
     def make_CallArg( cls, caa, io_category, name, value, ctor_args, schema = None ):
         from ..drivers.CallArg_Tensor import CallArg_Tensor
-        return CallArg_Tensor( caa, io_category, name, value = value, schema = schema )
+        dtype = Dtype.factory( schema.kwargs.get( "dtype" ) if schema is not None else None )
+        return CallArg_Tensor( caa, io_category, name, value = value, schema = schema, dtype = dtype )
 
     def __init__( self, parent_inst = None, /, template_args = [], template_kwargs = {} ) -> None:
         self.device = Device.factory( template_kwargs.get( "device", None ) )
@@ -212,5 +288,14 @@ class Tensor( Attribute ):
     def raw( self ):
         return self._raw
 
-    # def __repr__( self ):
-    #     return f"{ self.name or 'tensor' }( { ', '.join( a.name or 'axis' for a in self.axes ) } )"
+    def __repr__( self ):
+        header = f"Tensor( shape={ self.shape }, dtype={ self.dtype.name }, device={ self.device } )"
+        if self._raw is None:
+            return header
+
+        raw = numpy.asarray( self._raw )
+        # an unrolled AxisList is always fully dense (no reservation, no padding);
+        # otherwise mask out padding cell by cell, from the axes' LIVE extents.
+        tree = raw.tolist() if self._unroll_spans else _display_tree( raw, self.specs )
+        width = max( ( len( _fmt_scalar( v ) ) for v in _leaves( tree ) if v is not _BLANK ), default = 0 )
+        return header + "\n" + _render_tree( tree, width, raw.ndim )

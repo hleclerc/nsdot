@@ -53,6 +53,18 @@ def custom_printer_impl( obj, nl ):
             res += nnl + custom_printer_impl( v, nnl )
         return res
 
+    if type( obj ).__repr__ is not object.__repr__:
+        repr = obj.__repr__().split( "\n" )
+        if len( repr ) >= 2:
+            res = repr[ 0 ]
+            for r in repr[ 1: ]:
+                res += nl + "  " + r.rstrip()
+            return res
+        return '\n'.join( repr )
+
+    if type( obj ).__str__ is not object.__str__:
+        return obj.__str__()
+
     if _is_array( obj ):
         return _array_to_str( obj, nl + "  " )
 
@@ -69,9 +81,6 @@ def custom_printer_impl( obj, nl ):
         for n, _ in collect_attributes_instance( obj, use_annotations = True ):
             res += nnl + n + ": " + custom_printer_impl( getattr( obj, n, None ), nnl )
         return str(res)
-
-    if type( obj ).__str__ is not object.__str__:
-        return obj.__str__()
 
     return str( obj )
 
