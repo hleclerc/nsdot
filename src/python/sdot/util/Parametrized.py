@@ -1,19 +1,31 @@
+import inspect
 
 
 class Parametrized:
     def __init__( self, cls, *args ) -> None:
-        self.args = []
         self.kwargs = {}
+        self.args = []
         self.cls = cls
 
         for arg in args:
-            if isinstance( arg, dict ):
-                self.kwargs.update( arg )
-            elif isinstance( arg, tuple ) and len( arg ) == 2 and isinstance( arg[ 0 ], str ):
+            if isinstance( arg, tuple ) and len( arg ) == 2 and isinstance( arg[ 0 ], str ):
                 self.kwargs[ arg[ 0 ] ] = arg[ 1 ]
+            elif isinstance( arg, dict ):
+                self.kwargs.update( arg )
             else:
                 self.args.append( arg )
 
     def __call__( self, *args, **kwargs ):
         merged_kwargs = { **self.kwargs, **kwargs }
         return self.cls( *args, template_args = self.args, template_kwargs = merged_kwargs )
+
+    def make_CallArg( self, caa, io_category, name, value, ctor_args ):
+        # forward the decomposition to the wrapped type, handing it this schema so it can read
+        # its template args (axes, dep_axes, ...).
+        return self.cls.make_CallArg( caa, io_category, name, value, ctor_args, schema = self )
+
+
+def constructor_of_subclass_of( klass, parents ):
+    if isinstance( klass, Parametrized ):
+        return issubclass( klass.cls, parents )
+    return inspect.isclass( klass ) and issubclass( klass, parents )

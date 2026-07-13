@@ -59,6 +59,39 @@ class Device:
         """Codegen context tag for per-context FfiCode selectors ( see FfiCode.select_for )."""
         raise NotImplementedError
 
+    # ── AdaptiveCpp / Jax-FFI mapping ─────────────────────────────────────────
+    # Consumed by sdot.compilation.adaptive_cpp (make_executable / make_library) and by the
+    # Jax FFI registration. Defaults describe a device NOT reachable through acpp (e.g. Apple
+    # GPU / Metal): `acpp_targets is None` makes the acpp builders raise. Reachable devices
+    # override these.
+    @property
+    def acpp_targets( self ):
+        """`--acpp-targets` value (e.g. "omp", "cuda:sm_80"); None if not acpp-reachable."""
+        return None
+
+    @property
+    def acpp_profile( self ):
+        """AdaptiveCpp feature profile ("minimal" | "full")."""
+        return "minimal"
+
+    @property
+    def acpp_backends( self ):
+        """GPU backends to enable when building acpp (e.g. ("cuda",)); () for CPU-only."""
+        return ()
+
+    @property
+    def ffi_platform( self ) -> str:
+        """XLA/Jax platform tag used by jax.ffi.register_ffi_target ("cpu" | "cuda" | ...)."""
+        raise NotImplementedError
+
+    @property
+    def device_is_present( self ) -> bool:
+        """Whether this device is actually usable here (hardware present AND acpp-reachable).
+
+        Default: reachable iff acpp can target it (covers Cpu -> True, Apple GPU / Metal ->
+        False). Devices whose hardware may be absent (CUDA) refine this."""
+        return self.acpp_targets is not None
+
     def __eq__( self, value, / ) -> bool:
         if not isinstance( value, Device ):
             value = Device.factory( value )

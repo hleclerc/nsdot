@@ -39,6 +39,31 @@ class CudaGpu( Device ):
     def is_cuda_gpu( self ):
         return True
 
+    @property
+    def acpp_targets( self ):
+        attrs = self._get_attrs()
+        if attrs is None:
+            return "cuda"
+        *_, sm_major, sm_minor = attrs
+        return f"cuda:sm_{ sm_major }{ sm_minor }"
+
+    @property
+    def acpp_profile( self ):
+        return "full"
+
+    @property
+    def acpp_backends( self ):
+        return ( "cuda", )
+
+    @property
+    def ffi_platform( self ):
+        return "cuda"
+
+    @property
+    def device_is_present( self ):
+        # acpp-reachable AND a real CUDA driver/device available (libcuda loads, attrs read).
+        return self.acpp_targets is not None and self._get_attrs() is not None
+
     def driver_version_for_jax( self, devices ):
         return devices( "gpu" )[ self.device_id ]
 

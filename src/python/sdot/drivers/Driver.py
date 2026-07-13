@@ -1,10 +1,6 @@
 from typing import TYPE_CHECKING, cast
 from .DriverProxy import DriverProxy
 
-from .FfiCode import FfiCode as FfiCode
-from .FfiCode import FfiCodeCustom as FfiCodeCustom
-from .FfiCode import FfiCodeParallel as FfiCodeParallel
-
 # start with an unknown driver instance
 driver = DriverProxy()
 

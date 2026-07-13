@@ -1,16 +1,19 @@
-from numpy._typing import ArrayLike
 from typing_extensions import Optional, overload
 from typing import TYPE_CHECKING, cast, Any
+from numpy._typing import ArrayLike
 
 # from jax._src.custom_derivatives import CustomVJPPrimal
 # from jax._src import ad_util
 
-# from ..compilation.CallArgsAnalysis import CallArgsAnalysis
+from .CallArgsAnalysis import CallArgsAnalysis
 
 from .JaxFramework import JaxFramework
-# from .FfiCode import FfiCode
 from ..devices.Device import Device
 from ..tensor.Dtype import Dtype
+
+from ..compilation.FfiCode import FfiCode
+from ..util.info import info
+from .JaxFfi import call_body, call as ffi_call
 
 # from textwrap import dedent, indent
 # import importlib
@@ -165,6 +168,16 @@ class JaxDriver:
         dtype_ver = Dtype.factory( dtype or self.ftype ).driver_version
         return jax.random.uniform( jax.random.PRNGKey( seed ), tuple( shape ), dtype = dtype_ver )
 
+
+    def call( self, code : FfiCode | str, **kwargs ):
+        ca = CallArgsAnalysis( kwargs )
+
+        if isinstance( code, str ):
+            code = FfiCode( code )
+
+        # Compile `code.fwd_code` bound to the buffers described by `ca` (slice 3a: ShapeVar
+        # outputs), run it, and return the reconstructed output object(s).
+        return ffi_call( code, ca, self.device )
 
 
     # class CapacityOverflow( RuntimeError ):

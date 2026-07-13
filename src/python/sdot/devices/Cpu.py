@@ -30,6 +30,14 @@ class Cpu( Device ):
     def is_cpu( self ):
         return True
 
+    @property
+    def acpp_targets( self ):
+        return "omp"
+
+    @property
+    def ffi_platform( self ):
+        return "cpu"
+
     def __repr__( self ) -> str:
         return "Cpu"
 

@@ -60,7 +60,7 @@ if test( "ragged" ):
     info( m.nb_vtx_per_cell )
 
 
-if test( "TensorList" ):
+if test( "AxisList" ):
     @aggregate
     class Image:
         values  : Tensor[ "img_pos..." ]
@@ -76,11 +76,9 @@ if test( "TensorList" ):
         def __init__( self, **kw ) -> None: ...
 
 
-    m = Image()
-    m.values = driver.random( [ 2, 1 ] )
-    m.knots = [ [ 0, 1, 2 ], [ 0, 1 ] ]
-    assert m.nb_dims == 2
+    m = Image( values = driver.random( [ 2, 1 ] ), knots = [ [ 0, 1, 2 ], [ 0, 1 ] ] )
     assert list( m.extent ) == [ 2, 1 ]
+    assert m.nb_dims == 2
 
 
 if test( "axis_parsing" ):

@@ -475,6 +475,18 @@ def ensure_boost( *, force: bool = False ) -> Path:
 # ─────────────────────────────────── build ───────────────────────────────────
 
 
+def _env_flag( name: str ) -> bool:
+    """Boolean env var, treating "0"/"false"/"no"/"off"/"" (any case) as False.
+
+    Plain `os.getenv(name)` truthiness is wrong here: the string "0" is truthy in Python, so
+    `SDOT_FORCE_BUILD=0` would still read as "force". This parses the value instead.
+    """
+    v = os.getenv( name )
+    if v is None:
+        return False
+    return v.strip().lower() not in ( "", "0", "false", "no", "off" )
+
+
 def _run( cmd, **kw ):
     print( "[acpp] $ " + " ".join( map( str, cmd ) ), flush = True )
     r = subprocess.run( list( map( str, cmd ) ), **kw )
@@ -639,3 +651,52 @@ def make_executable( exe_name, src_paths, device, *, profile = None, extra_flags
     ]
     _run( cmd )
     return exe
+
+def make_library( lib_name, src_paths, device, *, profile = None, extra_flags = None ):
+    """Compile & link `src_paths` into a shared library using the `acpp` driver.
+
+    Same wiring as `make_executable`, but emits a relocatable shared object (`-shared
+    -fPIC`) meant to be `dlopen`ed at runtime (e.g. to expose an XLA FFI handler symbol to
+    Jax). The output file name is taken verbatim, so callers are expected to make it unique
+    — typically a content hash of the sources + options (see `encode_base_62`).
+
+    Disk cache: if the target already exists it is returned as-is, unless `SDOT_FORCE_BUILD`
+    is set (the dev/test override, also used by `.private/Makefile`). Since the file name is
+    a hash of the inputs, a changed source naturally produces a new name and a rebuild.
+    Returns the path to the built library.
+    """
+    from . import build_dir, _src_root
+
+    targets = device.acpp_targets
+    if targets is None:
+        raise RuntimeError(
+            f"{ device } is not reachable through AdaptiveCpp (e.g. Apple GPU / Metal); "
+            "use its dedicated backend instead."
+        )
+
+    out_dir = build_dir()
+    out_dir.mkdir( parents = True, exist_ok = True )
+    lib = out_dir / lib_name
+
+    if lib.exists() and not _env_flag( "SDOT_FORCE_BUILD" ):
+        return lib
+
+    profile = profile or device.acpp_profile
+    acpp = ensure_acpp( profile, device.acpp_backends )
+
+    omp_flags = _macos_omp_include_flags() if targets.startswith( "omp" ) else []
+
+    project_root = _src_root()
+    cmd = [
+        acpp,
+        f"--acpp-targets={ targets }",
+        "-std=c++20", "-O2",
+        "-fPIC", "-shared",
+        "-I", project_root / "src" / "cpp",
+        *omp_flags,
+        *( extra_flags or [] ),
+        "-o", lib,
+        *src_paths,
+    ]
+    _run( cmd )
+    return lib

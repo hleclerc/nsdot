@@ -28,6 +28,18 @@ class ShapeVar( Attribute ):
         def __set__( self, obj, value: int ) -> None: ...
         def __iter__( self ) -> Iterator: ...
 
+    @classmethod
+    def make_CallArg( cls, caa, io_category, name, value, ctor_args, schema = None ):
+        # `max_of_<name>` reserves a capacity (runtime value 0, written by the kernel);
+        # `<name>` prescribes a fixed init value. This lookup is ShapeVar's own business.
+        from ..drivers.CallArg_ShapeVar import CallArg_ShapeVar
+        return CallArg_ShapeVar(
+            caa, io_category, name,
+            reserved = ctor_args.get( "max_of_" + name ),
+            prescribed = ctor_args.get( name ),
+            schema = schema,
+        )
+
     def __init__( self, parent_inst = None, /, template_args = [], template_kwargs = {} ) -> None:
         from .AbstractAxis import AbstractAxis
 

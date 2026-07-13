@@ -17,6 +17,13 @@ class AbstractAxis( Attribute ):
     count (`nb_dims`) is unknown when the class is declared.
     """
 
+    @classmethod
+    def make_CallArg( cls, caa, io_category, name, value, ctor_args, schema = None ):
+        # An axis is not a buffer, but it is resolvable: a `CallArg_Axis` node that carries its
+        # affine extent and computes it on demand (see `CallArg_Tensor.resolve_shape`).
+        from ..drivers.CallArg_Axis import CallArg_Axis
+        return CallArg_Axis( caa, io_category, name, schema.args[ 0 ] )
+
     def __init__( self, parent_inst = None, /, template_args = [], template_kwargs = {} ) -> None:
         from .ShapeVar import ShapeVar
         self.coeffs: dict[ ShapeVar, int ] = {}
@@ -24,20 +31,33 @@ class AbstractAxis( Attribute ):
         self._init_axis( parent_inst, template_args )
 
     # ---- shared affine parser ----
-    def _parse_expr( self, parent_inst, expr ):
-        """Parse an affine expression like "2 * nb_dims + 3 * nb_xs + 1" into
-        `coeffs` / `offset`. Spaces are dropped and subtraction is turned into
-        the addition of a negative term."""
+    @staticmethod
+    def parse_affine( expr ):
+        """Pure parse of an affine expression like "2 * nb_dims + 3 * nb_xs + 1" into
+        `( { var_name: coeff }, offset )`. No `ShapeVar` resolution -- names stay strings, so
+        this is usable without a parent instance (e.g. shape resolution in `CallArg_Tensor`).
+        Spaces are dropped and subtraction becomes the addition of a negative term."""
+        coeffs = {}
+        offset = 0
         expr = expr.replace( " ", "" ).replace( "-", "+-" )
         for term in ( t for t in expr.split( "+" ) if t ):
             if term.lstrip( "-" ).isdigit():
-                self.offset += int( term )
+                offset += int( term )
             elif "*" in term:
                 coeff_str, var_name = term.split( "*", 1 )
-                self._add_coeff( parent_inst, var_name, int( coeff_str ) )
+                coeffs[ var_name ] = coeffs.get( var_name, 0 ) + int( coeff_str )
             else:
-                self._add_coeff( parent_inst, term.lstrip( "+-" ),
-                                 -1 if term[ 0 ] == "-" else 1 )
+                name = term.lstrip( "+-" )
+                coeffs[ name ] = coeffs.get( name, 0 ) + ( -1 if term[ 0 ] == "-" else 1 )
+        return coeffs, offset
+
+    def _parse_expr( self, parent_inst, expr ):
+        """Instance-side parse: fill `coeffs` (resolving names to `ShapeVar`s via
+        `get_attribute`) and `offset` from the affine expression."""
+        coeffs, offset = self.parse_affine( expr )
+        self.offset += offset
+        for var_name, coeff in coeffs.items():
+            self._add_coeff( parent_inst, var_name, coeff )
 
     def _add_coeff( self, parent_inst, var_name, coeff ):
         from .ShapeVar import ShapeVar

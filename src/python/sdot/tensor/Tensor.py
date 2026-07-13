@@ -98,6 +98,10 @@ class Tensor( Attribute ):
     if TYPE_CHECKING:
         def __set__( self, obj, value: ArrayLike | None ) -> None: ...
 
+    @classmethod
+    def make_CallArg( cls, caa, io_category, name, value, ctor_args, schema = None ):
+        from ..drivers.CallArg_Tensor import CallArg_Tensor
+        return CallArg_Tensor( caa, io_category, name, value = value, schema = schema )
 
     def __init__( self, parent_inst = None, /, template_args = [], template_kwargs = {} ) -> None:
         self.device = Device.factory( template_kwargs.get( "device", None ) )

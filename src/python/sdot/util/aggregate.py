@@ -1,6 +1,8 @@
-from ..util.Parametrized import Parametrized
-from ..util.Attribute import Attribute
+from .Parametrized import Parametrized
+from .annotations import annotations
+from .Attribute import Attribute
 import inspect
+
 
 def aggregate( cls ):
     """
@@ -33,19 +35,17 @@ def aggregate( cls ):
         # injections: share the passed `Attribute`, prescribe any other value
         for name, type_attr in annotations( cls ).items():
             if name in kwargs:
-                value = kwargs.pop( name )
                 sc = _field_cls( type_attr )
-                if inspect.isclass( sc ) and isinstance( value, sc ):
-                    self._attributes[ name ] = value
-                else:
-                    get_attribute( name, self ).set( value )
+                if inspect.isclass( sc ) and isinstance( kwargs[ name ], sc ):
+                    self._attributes[ name ] = kwargs.pop( name )
 
         # instantiate the remaining fields
         for name in annotations( cls ).keys():
             get_attribute( name, self )
 
-        if len( kwargs ):
-            raise NotImplementedError
+        # assignation
+        for name, value in kwargs.items():
+            get_attribute( name, self ).set( value )
 
     cls.__init__ = __base_init__
 
@@ -76,12 +76,6 @@ class FieldDescriptor:
         get_attribute( self.name, obj ).set( value )
 
 
-def annotations( cls ):
-    res = {}
-    for klass in reversed( cls.__mro__ ):
-        for name, attr in getattr( klass, '__annotations__', {} ).items():
-            res[ name ] = attr
-    return res
 
 
 def _field_cls( type_attr ):
