@@ -162,6 +162,11 @@ class JaxDriver:
     def pad( self, tensor, pad_width ):
         return jnp.pad( tensor, pad_width )
 
+    def vmap( self, func ):
+        """Map `func` over a new leading axis. A `driver.call` inside it is not replayed item by
+        item: it recompiles into a kernel that runs the whole batch (see `JaxFfi._make_op`)."""
+        return jax.vmap( func )
+
     def random( self, shape, dtype = None ):
         seed = getattr( self, "_rng_seed", 0 )
         self._rng_seed = seed + 1
@@ -187,9 +192,14 @@ class JaxDriver:
 
         Inputs and outputs are disjoint, as in XLA: an update in place is a Python-side
         rebinding, for the caller to make between two calls.
-        """
-        ca = CallArgsAnalysis( kwargs, self.device, output_attributes, capacities )
 
+        A capacity may of course turn out to be too small -- only the kernel knows how many items
+        it produces. It says so (it records the count that did not fit, see
+        `support/containers/ErrorBuffer.h`), and we simply RUN AGAIN with room for it: what a
+        failed run wrote is discarded, outputs being fresh buffers anyway. The new capacity is
+        `max( what was asked for, twice what we had )` -- a capacity exceeded once tends to be
+        exceeded again, so we make room rather than track a count.
+        """
         if isinstance( code, str ):
             code = FfiCode( code )
 
@@ -197,7 +207,24 @@ class JaxDriver:
         if prefix:
             prefix += "_"
 
-        ffi_call( code, ca, self.device, prefix )
+        capacities = dict( capacities )   # ours to grow: the caller's dict is not ours to touch
+        while True:
+            ca = CallArgsAnalysis( kwargs, self.device, output_attributes, capacities )
+            ffi_call( code, ca, self.device, prefix )
+
+            overflows = ca.capacity_overflows()
+            if overflows is None:
+                # under a `jit` / `vmap` trace, the buffer holds a traced value: Python cannot
+                # look at it here, hence cannot grow anything and run again. What it can still do
+                # is not return silently truncated results -- so the check moves to run time.
+                jax.debug.callback( _raise_on_error, ca.errors.raw )
+                return
+
+            if not overflows:
+                return
+
+            for path, wanted, capacity in overflows:
+                capacities[ path ] = max( wanted, 2 * capacity )
 
 
     # class CapacityOverflow( RuntimeError ):
@@ -1245,6 +1272,20 @@ class JaxDriver:
 
     #     final = unpack( result.x )
     #     return final if is_list else final[ 0 ]
+
+
+def _raise_on_error( errors ):
+    """The error buffer, checked at RUN time -- what is left when trace time cannot see it.
+
+    Growing a capacity means running again, and that is a Python loop: it needs the count that did
+    not fit, which under a trace only exists once the kernel has run. So inside a `jit` or a
+    `vmap` a capacity has to be given generously -- and when it was not, this is what says so,
+    rather than letting truncated results through."""
+    if int( errors[ 0 ] ) != 0:
+        raise RuntimeError(
+            "the kernel reported an error (a capacity too small, typically) from inside a traced "
+            "call, where Python cannot grow one and run again: give the call a larger capacity."
+        )
 
 
 def _has_tracer( data ) -> bool:

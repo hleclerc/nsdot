@@ -15,9 +15,11 @@ class Parametrized:
             else:
                 self.args.append( arg )
 
-    def __call__( self, *args, **kwargs ):
+    def __call__( self, *args, scope = None, **kwargs ):
+        # positionals belong to the wrapped type (a value, an expression, ...); the schema only
+        # adds the template args/kwargs it carries, plus the scope names are to be resolved in.
         merged_kwargs = { **self.kwargs, **kwargs }
-        return self.cls( *args, template_args = self.args, template_kwargs = merged_kwargs )
+        return self.cls( *args, template_args = self.args, template_kwargs = merged_kwargs, scope = scope )
 
     def make_CallArg( self, caa, io_category, name, value, ctor_args ):
         # forward the decomposition to the wrapped type, handing it this schema so it can read

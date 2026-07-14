@@ -19,8 +19,12 @@ from . import test
 # aggregate is our own Python object -- Jax only ever sees the tensors inside it).
 #
 # The io category is not just bookkeeping: it is what `make_available` uses to move a member to
-# the device and back. An aggregate carries its members' categories, so nothing crosses that has
-# no reason to; a bare tensor is tagged in the body (`OutList()`, ...).
+# the device and back. It is a property of the KERNEL, though, not of the data -- chain two
+# kernels over one object and they may read and write different parts of it. So the generated
+# struct holds none: it is handed a POLICY (`Cell_io`, the same shape, one category per member)
+# where `run_parallel` expects a category. This call's own policy comes ready-made as
+# `<arg>_io`, but a body may hand another one -- or a plain tag, which then holds for every
+# member (`InpList(), cell`). A bare tensor has no members, so a plain tag is all it takes.
 #
 # A `ShapeVar` holds a COUNT: how many items are used. A kernel reads it or writes it, so it
 # lives in a device buffer; under `jit` Python does not know it, and it can therefore never
@@ -56,19 +60,24 @@ if test( "basic" ):
     #
     # An object handed to the kernel is an ARGUMENT of `run_parallel`, not a capture: that is
     # what lets `make_available` retype its pointers into the memory space the kernel reads. It
-    # is made available member by member, each with the io category Python knows it has -- an
-    # input is not copied back, an output not copied in.
+    # is preceded by its io policy (`cell_io`, generated from what this call does with `cell`),
+    # and made available member by member -- an input is not copied back, an output not copied in.
+    #
+    # `batch_index` is applied to a value exactly like any other index: it is a multi-index of
+    # NAMED coordinates (`vmap_0 = i`), so it selects an axis by name -- and a value that is not
+    # mapped along that axis ignores it. Unbatched, it is the EMPTY multi-index, and indexing by
+    # it is a no-op. Hence one body, batched or not.
     driver.call(
         FfiCode( name = "test_call_basic", fwd_code = """
         run_parallel(
             queue,
             global_batch_indices,
             []( auto batch_index, auto cell ) {
-                cell.nb_vertices = 1;
-                cell.vertex_positions( dim = 0, num_vertex = 0 ) = 1;
-                cell.vertex_positions( dim = 1, num_vertex = 0 ) = 2;
+                cell.nb_vertices( batch_index ) = 1;
+                cell.vertex_positions( batch_index, dim = 0, num_vertex = 0 ) = 1;
+                cell.vertex_positions( batch_index, dim = 1, num_vertex = 0 ) = 2;
             },
-            cell
+            cell_io, cell
         );
         """ ),
         cell = cell,
@@ -77,16 +86,19 @@ if test( "basic" ):
         # frame = driver.array( [ [ 0 ] ] )
     )
 
-    info( cell.vertex_positions )
+    # the kernel wrote the count, and the count is what makes the tensor read 1x2 -- while the
+    # BUFFER it was written into is the 8x2 the call asked for.
+    assert cell.nb_vertices == 1
+    assert cell.vertex_positions.shape == [ 1, 2 ]
+    assert cell.vertex_positions.capacity == ( 8, 2 )
+    assert cell.vertex_positions.raw.tolist()[ 0 ] == [ 1, 2 ]
 
     # a `Tensor` needs no wrapper aggregate to be an argument: here it borrows `cell`'s axis,
     # hence `cell`'s ShapeVar. That ShapeVar's capacity is not restated: it is READ BACK from
     # `cell.vertex_positions`, which is allocated 8x2 -- so `res` gets 8 too. `cell` is a
     # read-only input of this second call.
     #
-    # A bare tensor has no members, hence no io category of its own to carry: it is the body that
-    # tags it (`OutList()`), as it would in hand-written C++. An aggregate needs no tag -- each of
-    # its members already knows what it is.
+    # `res` is a bare tensor: no members, so no policy either -- a plain tag says it all.
     res = Tensor[ cell.num_vertex ]()
 
     driver.call(
@@ -95,9 +107,9 @@ if test( "basic" ):
             queue,
             global_batch_indices,
             []( auto batch_index, auto cell, auto res ) {
-                res( num_vertex = 0 ) = cell.nb_vertices;
+                res( batch_index, num_vertex = 0 ) = cell.nb_vertices( batch_index );
             },
-            cell, OutList(), res
+            cell_io, cell, OutList(), res
         );
         """ ),
         cell = cell,
@@ -105,7 +117,10 @@ if test( "basic" ):
         output_attributes = [ "res" ],
     )
 
-    info( res )
+    # the capacity was not restated, and `res` still got 8: it was read back from the buffer of
+    # `cell.vertex_positions`, which the first call allocated.
+    assert res.capacity == ( 8, )
+    assert res.raw.tolist()[ 0 ] == 1
 
 
 if test( "partial_init" ):
@@ -136,13 +151,13 @@ if test( "partial_init" ):
             queue,
             global_batch_indices,
             []( auto batch_index, auto cell ) {
-                cell.nb_vertices = 1;
-                cell.vertex_positions( num_vertex = 0, dim = 0 ) = 1;
+                cell.nb_vertices( batch_index ) = 1;
+                cell.vertex_positions( batch_index, num_vertex = 0, dim = 0 ) = 1;
 
                 static_assert( DECAYED_TYPE_OF( cell.vertex_positions.is_valid() )::value == 1 );
                 static_assert( DECAYED_TYPE_OF( cell.vertex_indices  .is_valid() )::value == 0 );
             },
-            cell
+            cell_io, cell
         );
         """ ),
         cell = cell,
@@ -150,7 +165,11 @@ if test( "partial_init" ):
         capacities = { "cell.nb_vertices": 8 },
     )
 
-    info( cell.vertex_positions )
+    assert cell.nb_vertices == 1
+    assert cell.vertex_positions.raw.tolist()[ 0 ] == [ 1, 0 ]
+
+    # nothing was bound for `vertex_indices`, and nothing came back for it either.
+    assert cell.vertex_indices.raw is None
 
 
 if test( "two_instances" ):
@@ -178,14 +197,18 @@ if test( "two_instances" ):
             queue,
             global_batch_indices,
             []( auto batch_index, auto flat, auto volu ) {
-                flat.nb_vertices = 1;
-                flat.vertex_positions( num_vertex = 0, dim = 0 ) = 1;
-                flat.vertex_positions( num_vertex = 0, dim = 1 ) = 2;
+                // an index applies to a whole aggregate just as well as to one of its members:
+                // `f( batch_index ).nb_vertices` and `flat.nb_vertices( batch_index )` are the
+                // same thing. Handy when every member takes the same index.
+                auto f = flat( batch_index );
+                f.nb_vertices = 1;
+                f.vertex_positions( num_vertex = 0, dim = 0 ) = 1;
+                f.vertex_positions( num_vertex = 0, dim = 1 ) = 2;
 
-                volu.nb_vertices = 1;
-                volu.vertex_positions( num_vertex = 0, dim = 2 ) = 3;
+                volu.nb_vertices( batch_index ) = 1;
+                volu.vertex_positions( batch_index, num_vertex = 0, dim = 2 ) = 3;
             },
-            flat, volu
+            flat_io, flat, volu_io, volu
         );
         """ ),
         flat = flat,
@@ -197,7 +220,12 @@ if test( "two_instances" ):
         capacities = { "flat.nb_vertices": 8, "volu.nb_vertices": 4 },
     )
 
-    info( flat.vertex_positions, volu.vertex_positions )
+    # one class, two instantiations: the compile-time `nb_dims` differ, and so do the capacities.
+    assert flat.nb_vertices == 1 and volu.nb_vertices == 1
+    assert flat.vertex_positions.capacity == ( 8, 2 )
+    assert volu.vertex_positions.capacity == ( 4, 3 )
+    assert flat.vertex_positions.raw.tolist()[ 0 ] == [ 1, 2 ]
+    assert volu.vertex_positions.raw.tolist()[ 0 ] == [ 0, 0, 3 ]
 
 
 if test( "nested" ):
@@ -233,13 +261,16 @@ if test( "nested" ):
             queue,
             global_batch_indices,
             []( auto batch_index, auto pair ) {
-                pair.left.nb_vertices = 1;
-                pair.left.vertex_positions( num_vertex = 0, dim = 1 ) = 1;
+                // indexing an aggregate indexes its members -- a nested one included, recursively.
+                auto p = pair( batch_index );
 
-                pair.right.nb_vertices = 1;
-                pair.right.vertex_positions( num_vertex = 0, dim = 2 ) = 2;
+                p.left.nb_vertices = 1;
+                p.left.vertex_positions( num_vertex = 0, dim = 1 ) = 1;
+
+                p.right.nb_vertices = 1;
+                p.right.vertex_positions( num_vertex = 0, dim = 2 ) = 2;
             },
-            pair
+            pair_io, pair
         );
         """ ),
         pair = pair,
@@ -247,8 +278,170 @@ if test( "nested" ):
         capacities = { "pair.left.nb_vertices": 8, "pair.right.nb_vertices": 4 },
     )
 
-    info( pair.left.vertex_positions, pair.right.vertex_positions )
+    assert pair.left.nb_vertices == 1 and pair.right.nb_vertices == 1
+    assert pair.left .vertex_positions.raw.tolist()[ 0 ] == [ 0, 1 ]
+    assert pair.right.vertex_positions.raw.tolist()[ 0 ] == [ 0, 0, 2 ]
 
-# TODO: a capacity may turn out to be too small. `ShapeVarView::operator=` (see
-# src/cpp/sdot/support/containers/ShapeVarView.h) must detect a count > max, record the
-# offending ShapeVar in an error buffer, and let Python relaunch with a larger capacity.
+if test( "vmap" ):
+    # a `vmap` maps the call over a new axis, and the KERNEL is what runs it: the batched call is
+    # one launch of one (re)compiled kernel over N items, not N calls. The body does not change --
+    # `batch_index` was already there, empty. Nothing here is Jax-specific: `driver.vmap` is what
+    # the driver in use provides (Jax today, Torch later), and the test only ever sees driver
+    # arrays.
+    @aggregate
+    class Cell5:
+        vertex_positions : Tensor[ "num_vertex", "dim" ]
+
+        num_vertex       : Axis[ "nb_vertices" ]
+        dim              : Axis[ "nb_dims" ]
+
+        nb_vertices      : ShapeVar
+        nb_dims          : CtShapeVar
+
+        def __init__( self, **kw ) -> None: ...
+
+
+    code = FfiCode( name = "test_call_vmap", fwd_code = """
+    run_parallel(
+        queue,
+        global_batch_indices,
+        []( auto batch_index, auto cell, auto scale ) {
+            auto c = cell( batch_index );
+            c.nb_vertices = 1;
+            c.vertex_positions( num_vertex = 0, dim = 0 ) = scale( batch_index, dim = 0 );
+            c.vertex_positions( num_vertex = 0, dim = 1 ) = scale( batch_index, dim = 1 );
+        },
+        cell_io, cell, InpList(), scale
+    );
+    """ )
+
+    def positions_of( raw_scale ):
+        cell = Cell5( nb_dims = 2 )
+
+        # a bare tensor input, borrowing `cell`'s `dim` axis: one scale per dimension.
+        scale = Tensor[ cell.dim ]()
+        scale.set( raw_scale )
+
+        driver.call(
+            code,
+            cell = cell,
+            scale = scale,
+            output_attributes = [ "cell.nb_vertices", "cell.vertex_positions" ],
+            capacities = { "cell.nb_vertices": 4 },
+        )
+        return cell.vertex_positions.raw
+
+    # unmapped: one cell, the batch multi-index is empty and indexing by it is a no-op.
+    one = positions_of( driver.array( [ 1, 2 ] ) )
+    assert one.tolist()[ 0 ] == [ 1, 2 ]
+
+    # mapped: three cells at once. Each item reads ITS row of `scale` -- the input gained a batch
+    # axis and the kernel selects it by name -- and writes ITS slice of the output.
+    many = driver.vmap( positions_of )( driver.array( [ [ 1, 2 ], [ 3, 4 ], [ 5, 6 ] ] ) )
+    assert many.shape == ( 3, 4, 2 )   # 3 batch items x the capacity this call asked for x dim
+    assert [ item.tolist()[ 0 ] for item in many ] == [ [ 1, 2 ], [ 3, 4 ], [ 5, 6 ] ]
+
+
+if test( "capacity_overflow" ):
+    # a capacity is a GUESS -- only the kernel knows how many items it produces. So the kernel is
+    # allowed to ask for more than it was given: `ShapeVarView::operator=` sees the count exceed
+    # the capacity it was handed, records it in the call's error buffer (which is not a ShapeVar
+    # business: anything that fails records there, see `support/containers/ErrorBuffer.h`), and
+    # CLAMPS the count -- so whatever the body writes next stays inside the buffers this call
+    # allocated. Python then reserves more and runs again, until it fits. Nothing of a failed run
+    # survives: an output is a fresh buffer every time.
+    @aggregate
+    class Cell6:
+        vertex_positions : Tensor[ "num_vertex", "dim" ]
+
+        num_vertex       : Axis[ "nb_vertices" ]
+        dim              : Axis[ "nb_dims" ]
+
+        nb_vertices      : ShapeVar   # written by the kernel: what it produced
+        nb_wanted        : ShapeVar   # read by it: how many it is going to produce
+        nb_dims          : CtShapeVar
+
+        def __init__( self, **kw ) -> None: ...
+
+
+    code = FfiCode( name = "test_call_overflow", fwd_code = """
+    run_parallel(
+        queue,
+        global_batch_indices,
+        []( auto batch_index, auto cell ) {
+            auto c = cell( batch_index );
+
+            // the count may not fit -- and then what one READS BACK is the capacity, never more,
+            // which is what makes the loop below safe whatever happens.
+            c.nb_vertices = c.nb_wanted;
+            for ( SI n = 0; n < SI( c.nb_vertices ); ++n )
+                c.vertex_positions( num_vertex = n, dim = 0 ) = n;
+        },
+        cell_io, cell
+    );
+    """ )
+
+    def cell_of( nb_wanted, capacity ):
+        cell = Cell6( nb_dims = 2, nb_wanted = nb_wanted )
+        driver.call(
+            code,
+            cell = cell,
+            output_attributes = [ "cell.nb_vertices", "cell.vertex_positions" ],
+            capacities = { "cell.nb_vertices": capacity },
+        )
+        return cell
+
+    # it fits: one run, and the capacity stays the one that was asked for.
+    cell = cell_of( 2, 8 )
+    assert cell.nb_vertices == 2
+    assert cell.vertex_positions.capacity == ( 8, 2 )
+
+    # 3 vertices into a buffer of 2 -> a second run, with `max( 3, 2 * 2 ) = 4`: a capacity that
+    # was exceeded once tends to be exceeded again, so we make ROOM rather than fit the count.
+    cell = cell_of( 3, 2 )
+    assert cell.nb_vertices == 3
+    assert cell.vertex_positions.capacity == ( 4, 2 )
+    assert [ row[ 0 ] for row in cell.vertex_positions.raw.tolist() ] == [ 0, 1, 2, 0 ]
+
+    # 5 into a buffer of 1 -> `max( 5, 2 * 1 ) = 5`: this time it is the count that decides.
+    cell = cell_of( 5, 1 )
+    assert cell.nb_vertices == 5
+    assert cell.vertex_positions.capacity == ( 5, 2 )
+    assert [ row[ 0 ] for row in cell.vertex_positions.raw.tolist() ] == [ 0, 1, 2, 3, 4 ]
+
+
+if test( "der" ):
+    inp = Tensor( 17 )
+    out = Tensor()
+
+    yo = Tensor[ dict( dtype = int ) ]( [ 17, 18 ] )
+
+    info( inp )
+    info( yo )
+
+
+    # driver.call(
+    #     FfiCode( name = "test_call_der",
+    #         fwd_code = """
+    #             run_parallel( queue, global_batch_indices,
+    #                 []( auto batch_index, auto out, auto inp ) {
+    #                     out = inp;
+    #                 },
+    #                 out_io, out,
+    #                 inp_io, inp
+    #             );
+    #         """,
+    #         bwd_code = """
+    #             run_parallel( queue, global_batch_indices,
+    #                 []( auto batch_index, auto out, auto inp ) {
+    #                     // out = inp;
+    #                 },
+    #                 out_io, out,
+    #                 inp_io, inp
+    #             );
+    #         """,
+    #     ),
+    #     output_attributes = [ "out" ],
+    #     out = out,
+    #     inp = inp,
+    # )

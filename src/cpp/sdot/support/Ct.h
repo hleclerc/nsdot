@@ -22,6 +22,11 @@ struct Ct {
         return i;
     }
 
+    // selecting axes on a value that has none: there is nothing to select, so it gives back
+    // itself. That is what lets a batch index be applied to a whole aggregate
+    // (`cell( batch_index )`) whose members are not all mapped -- or not tensors at all.
+    constexpr auto operator()( auto &&.../*index*/ ) const { return *this; }
+
     // as a `run_parallel` argument: la valeur est dans le type, il n'y a rien en mémoire à
     // rendre accessible -- elle traverse le kernel telle quelle, à coût nul.
     constexpr auto transfer_cost ( const auto &/*queue*/, auto /*io_category*/ ) const { return Ct<double,0.0>(); }

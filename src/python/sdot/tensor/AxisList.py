@@ -1,6 +1,6 @@
 import numpy
 
-from ..util.aggregate import get_attribute
+from ..util.Attribute import resolve_attribute
 from .AbstractAxis import AbstractAxis
 
 
@@ -16,10 +16,10 @@ class AxisList( AbstractAxis ):
     rank. The count `nb_dims` is unknown at declaration time -- hence the split
     from `Axis` (a single, ragged-or-not, dimension needs no unrolling)."""
 
-    def _init_axis( self, parent_inst, template_args ):
-        assert len( template_args ) == 2
-        self.loop_axis = get_attribute( template_args[ 0 ], parent_inst )
-        self._parse_expr( parent_inst, template_args[ 1 ] )
+    def _init_axis( self, args, scope ):
+        assert len( args ) == 2, "an AxisList takes a loop axis and an extent expression"
+        self.loop_axis = resolve_attribute( args[ 0 ], scope, AbstractAxis )
+        self._parse_expr( args[ 1 ], scope )
 
     def max_list( self ):
         # one extent per loop index: `offset + sum( coeff * shape_var[k] )`, where

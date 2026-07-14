@@ -14,9 +14,9 @@ class Axis( AbstractAxis ):
     so `c.dim` reads back the evaluated extent (an `int`, or `None` while
     still unsolved)."""
 
-    def _init_axis( self, parent_inst, template_args ):
-        assert len( template_args ) == 1
-        self._parse_expr( parent_inst, template_args[ 0 ] )
+    def _init_axis( self, args, scope ):
+        assert len( args ) == 1, "an Axis takes exactly one extent expression"
+        self._parse_expr( args[ 0 ], scope )
 
     @property
     def max( self ):

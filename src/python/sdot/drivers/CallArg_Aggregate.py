@@ -26,6 +26,14 @@ class CallArg_Aggregate( CallArg ):
     the kernel's views living in another memory space. A nested aggregate is no exception: it is
     one type parameter too, deduced in turn from its own members. Nothing is forwarded, prefixed,
     or written twice.
+
+    What the struct does NOT hold is io: which members a kernel reads and which it writes is a
+    property of that `run_parallel`, not of the data -- chain two kernels over one `Cell` and the
+    answer changes. So a second template is generated beside it, the io POLICY (`Cell_io`): the
+    same shape, holding a category per member. It is passed where `run_parallel` already expects
+    a category, and the struct reads its own members out of it (`io_of_<member>`); a plain tag
+    (`InpList()`) still works and then holds for every member. Python emits the policy THIS call
+    implies as `<arg>_io` -- a default the body may ignore.
     """
 
     attributes : dict[ str, CallArg ]
@@ -44,20 +52,32 @@ class CallArg_Aggregate( CallArg ):
             if ca is not None:
                 self.attributes[ name_attr ] = ca
 
+    def _clone( self, mapping ):
+        res = super()._clone( mapping )
+        res.attributes = { n: c._clone( mapping ) for n, c in self.attributes.items() }
+        return res
+
     def _fields( self, method ):
         """Child CallArgs implementing `method` (polymorphic filter, no type tests): struct
         members, brace-init entries and writable-back values are each such a subset."""
         return [ ca for ca in self.attributes.values() if hasattr( ca, method ) ]
 
+    @property
+    def io_type_name( self ):
+        """C++ name of the io POLICY generated beside the struct (`Cell` -> `Cell_io`)."""
+        return f"{ self.type_name }_io"
+
     # -- driver-agnostic C++ (the same for every driver) --
     def cpp_struct_defs( self ):
-        """`{ type_name: template definition }`, nested aggregates FIRST (a class must be
-        defined before the parent that holds one). Keyed by `type_name`, so a class used
-        several times in the call is emitted once."""
+        """`{ name: template definition }`, nested aggregates FIRST (a class must be defined
+        before the parent that holds one). Keyed by name, so a class used several times in the
+        call is emitted once. Each aggregate yields TWO definitions: the data, and its io
+        policy."""
         res = {}
         for c in self._fields( "cpp_struct_defs" ):
             res.update( c.cpp_struct_defs() )
         res[ self.type_name ] = self.cpp_struct_def()
+        res[ self.io_type_name ] = self.cpp_io_struct_def()
         return res
 
     def cpp_struct_def( self ):
@@ -65,19 +85,56 @@ class CallArg_Aggregate( CallArg ):
         members = "\n".join( "    " + c.cpp_member() for c in fields )
         params = ", ".join( c.cpp_tpl_param() for c in fields )
         prefix = f"template<{ params }>\n" if params else ""
-        body = "\n\n".join( [ members, self._cpp_transfer_cost( fields ), self._cpp_make_available( fields ) ] )
+        parts = [ members, self._cpp_call_op( fields ), self._cpp_io_of( fields ),
+                  self._cpp_transfer_cost( fields ), self._cpp_make_available( fields ) ]
+        body = "\n\n".join( p for p in parts if p )
         return f"{ prefix }struct { self.type_name } {{\n{ body }\n}};"
 
+    def cpp_io_struct_def( self ):
+        """The io policy: the same shape as the struct, holding a category per member.
+
+        An io category is a property of a `run_parallel`, NOT of the data -- chain two kernels
+        over one object and they may read and write different parts of it. So the struct knows
+        nothing about io: it is handed a policy (this) or a plain tag, and reads what it needs."""
+        fields = self._fields( "cpp_member" )
+        members = "\n".join( "    " + c.cpp_member() for c in fields )
+        params = ", ".join( c.cpp_tpl_param() for c in fields )
+        prefix = f"template<{ params }>\n" if params else ""
+        # declared, not derived: a base class would cost us the CTAD (see `is_io_policy`).
+        return ( f"{ prefix }struct { self.io_type_name } {{\n"
+                 f"    static constexpr bool is_io_policy = true;\n{ members }\n}};" )
+
+    # -- selecting axes, as on a tensor --
+    def _cpp_call_op( self, fields ):
+        """`cell( batch_index )` = the same aggregate, each member indexed. So the two spellings
+        below are one and the same, which is the point:
+
+            cell( batch_index ).nb_vertices = 1;
+            cell.nb_vertices( batch_index ) = 1;
+
+        A member selects what it carries and lets the rest through (a batch index is OPTIONAL, see
+        AxisNames.h), so members mapped along different axes -- or along none, or not even tensors
+        -- all take the same index. The result is another instantiation of the same template
+        (the members lost an axis), deduced, not spelled; `::` reaches the template rather than the
+        current instantiation."""
+        values = ", ".join( f"{ c.name }( index... )" for c in fields )
+        return ( "    auto operator()( const auto &...index ) const {\n"
+                 f"        return ::{ self.type_name }{{ { values } }};\n"
+                 "    }" )
+
     # -- as an argument of `run_parallel` (see support/kernels/run_parallel.h) --
-    # An aggregate is handed to a kernel as one argument, but it is NOT made available as one
-    # block: each member carries its own io category, which Python decided (`cpp_io_list`), so an
-    # input is never copied back and an output never copied in. That is also why the category the
-    # caller passes for the aggregate as a whole is ignored -- there is nothing it could add.
-    #
-    # A nested aggregate needs no special case: it is a member, and this is its `make_available`.
+    def _cpp_io_of( self, fields ):
+        """How a member reads its own io category out of what the caller gave the aggregate: its
+        entry in the policy, or the plain tag itself, which then holds for every member."""
+        return "\n".join(
+            f"    static constexpr auto io_of_{ c.name }( auto io ) {{ "
+            f"if constexpr ( requires {{ io.{ c.name }; }} ) return io.{ c.name }; else return io; }}"
+            for c in fields
+        )
+
     def _cpp_make_available( self, fields ):
         opens = "\n".join(
-            f"        return sdot::make_available( queue, { c.cpp_io_list() }, { c.name }, "
+            f"        return sdot::make_available( queue, io_of_{ c.name }( io ), { c.name }, "
             f"[&]( auto &&a_{ c.name } ) {{" for c in fields
         )
         values = ", ".join( f"a_{ c.name }" for c in fields )
@@ -88,16 +145,16 @@ class CallArg_Aggregate( CallArg ):
         # class name), which is exactly the one we are NOT rebuilding.
         rebuilt = f"::{ self.type_name }{{ { values } }}"
         closes = "        " + "} );" * len( fields )
-        return ( "    auto make_available( auto &&queue, auto /*io_category*/, auto &&cont ) const {\n"
+        return ( "    auto make_available( auto &&queue, auto io, auto &&cont ) const {\n"
                  f"{ opens }\n"
                  f"            return cont( { rebuilt } );\n"
                  f"{ closes }\n"
                  "    }" )
 
     def _cpp_transfer_cost( self, fields ):
-        costs = [ f"sdot::transfer_cost( queue, { c.cpp_io_list() }, { c.name } )" for c in fields ]
+        costs = [ f"sdot::transfer_cost( queue, io_of_{ c.name }( io ), { c.name } )" for c in fields ]
         total = "\n             + ".join( costs + [ "Ct<double,0.0>()" ] )
-        return ( "    auto transfer_cost( const auto &queue, auto /*io_category*/ ) const {\n"
+        return ( "    auto transfer_cost( const auto &queue, auto io ) const {\n"
                  f"        return { total };\n"
                  "    }" )
 
@@ -108,13 +165,27 @@ class CallArg_Aggregate( CallArg ):
     def cpp_member( self ):
         return f"{ self.cpp_tpl_name() } { self.name };"
 
+    def cpp_io_list( self ):
+        """Our default policy, member by member -- a nested aggregate contributing its own.
+
+        The TYPE follows the class (the shape: which members exist, common to every `Cell`); the
+        VALUE follows the argument (the profile: what THIS call does with THIS object). So two
+        `Cell`s of one call can have two profiles -- they are two instantiations."""
+        cats = ", ".join( c.cpp_io_list() for c in self._fields( "cpp_member" ) )
+        return f"{ self.io_type_name }{{ { cats } }}"
+
     # -- as a ROOT argument --
     def cpp_root_decl( self, var_name ):
-        """A root argument brace-inits from the buffers bound to it. Its type is DEDUCED from
-        them (C++20 aggregate CTAD), and so, recursively, is the type of any aggregate it holds:
-        no instantiation is ever spelled out."""
+        """A root argument brace-inits from the buffers bound to it, and comes with `<name>_io`:
+        the io policy this CALL implies (what Python knows attribute by attribute). A default,
+        not a law -- the body is free to hand `run_parallel` another one, which is the whole
+        point of keeping io out of the data.
+
+        Types are DEDUCED from the members (C++20 aggregate CTAD), here and recursively for any
+        aggregate held: no instantiation is ever spelled out."""
         inits = ",\n".join( "        " + c.jax_cpp_init() for c in self._fields( "jax_cpp_init" ) )
-        return f"    auto { var_name } = { self.type_name }{{\n{ inits }\n    }};"
+        return ( f"    auto { var_name } = { self.type_name }{{\n{ inits }\n    }};\n"
+                 f"    auto { var_name }_io = { self.cpp_io_list() };" )
 
     # -- seeding: what an output must hold before the body runs --
     def cpp_seed_root( self, var_name ):

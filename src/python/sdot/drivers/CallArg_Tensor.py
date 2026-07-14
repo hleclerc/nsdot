@@ -38,6 +38,20 @@ class CallArg_Tensor( CallArg ):
             for axis_name in self.axis_names:
                 call_args_analysis.register_axis( axis_name )
 
+    # -- as a value a `vmap` maps over --
+    def add_batch_axis( self, name, size ):
+        """One more axis, in front -- a NAMED one, so the kernel selects it by name and a value
+        that does not have it lets the index through. There is nothing more to it: a batch axis is
+        an axis, and the buffer really did gain a leading dimension (that is what the framework
+        handed us)."""
+        self.axis_names = [ name ] + self.axis_names
+        self.shape = [ int( size ) ] + self.shape
+
+    def batch_dim_expr( self, name ):
+        if name not in self.axis_names:
+            return None
+        return self.jax_dim( self.axis_names.index( name ) )
+
     # -- driver-agnostic C++ (the same for every driver) --
     def _cpp_scalar( self ):
         import numpy

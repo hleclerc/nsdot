@@ -77,8 +77,14 @@ UTP auto DTP::squeeze( auto axis_index ) const {
     using A = DECAYED_TYPE_OF( axis_index );
     static_assert( IsAxisIndex<A>::value, "squeeze a 1 argument attend un indice nomme (nom = valeur)" );
     constexpr int pos = AxisPos<typename A::axis_type, AxisNames>::value;
-    static_assert( pos >= 0, "nom d'axe inconnu pour ce tenseur" );
-    return squeeze( Ct<int,pos>(), axis_index.index );
+    if constexpr ( pos < 0 ) {
+        // an axis we do not have. A strict index (`dim = 0`) makes this a typo; an OPTIONAL one
+        // (a batch index, see AxisNames.h) is meant for whoever carries that axis -- we are not
+        // mapped along it, so we simply let it through.
+        static_assert( A::optional, "nom d'axe inconnu pour ce tenseur" );
+        return *this;
+    } else
+        return squeeze( Ct<int,pos>(), axis_index.index );
 }
 
 UTP auto DTP::row( auto index ) const {

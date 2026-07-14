@@ -79,6 +79,10 @@ def aggregate( cls ):
     cls.__init__ = __base_init__
     cls._is_sdot_aggregate = True
 
+    # the scope protocol (see `resolve_attribute`): what turns the NAME an attribute reads in a
+    # declaration (`Tensor[ "num_vertex" ]`) into the very object this instance holds.
+    cls.get_attribute = lambda self, name: get_attribute( name, self )
+
     # ------------------ per-field descriptors ------------------
     for name, type_attr in annotations( cls ).items():
         if _is_attribute_field( type_attr ):
@@ -150,7 +154,9 @@ def get_attribute( name, parent_inst ):
     if name in dct:
         type_attr = dct[ name ]
         if _is_attribute_field( type_attr ):
-            res = type_attr( parent_inst )
+            # the parent is not a ctor argument, it is the SCOPE the declaration's names are
+            # resolved in -- an `Attribute` is built the same way with or without one.
+            res = type_attr( scope = parent_inst )
         else:
             res = type_attr()
 

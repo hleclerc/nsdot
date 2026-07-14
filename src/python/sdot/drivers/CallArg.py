@@ -16,6 +16,27 @@ class CallArg:
         self.io_category = io_category
         self.name = name
 
+    def _clone( self, mapping ):
+        """A copy of this node, for a lowering of the SAME objects under different conditions (a
+        `vmap` derives one that carries a batch axis). The Python objects are shared, not copied:
+        the write-back must reach the very tensors the caller handed us."""
+        import copy
+        res = copy.copy( self )
+        mapping[ id( self ) ] = res
+        return res
+
+    def takes_batch_axis( self ):
+        """Whether a `vmap` gives us one more (leading) axis. True of anything that holds ONE
+        value per batch item -- which is everything the kernel writes, save the buffers that
+        belong to the call itself rather than to an item (the error buffer, see
+        `CallArg_Errors`)."""
+        return True
+
+    def batch_dim_expr( self, name ):
+        """Where the SIZE of a batch axis can be read at run time, if we carry it: an extent of
+        our buffer, like any other (a node that carries no batch axis answers None)."""
+        return None
+
     def cpp_tpl_name( self ):
         """Our template parameter, named after the field: unique within the struct that holds
         us, which is the only scope it lives in."""

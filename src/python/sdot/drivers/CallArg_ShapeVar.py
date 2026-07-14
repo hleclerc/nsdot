@@ -1,4 +1,5 @@
 from ..tensor.Dtype import Dtype
+from .CallArg_Errors import ERRORS_VAR_NAME
 from .CallArg import CallArg
 
 class CallArg_ShapeVar( CallArg ):
@@ -11,7 +12,9 @@ class CallArg_ShapeVar( CallArg ):
 
     What the count is NOT is a size: what sizes the buffers depending on this var is its
     CAPACITY, a decision made by the CALL (see `CallArgsAnalysis`). It crosses as the `max`
-    bound of the `ShapeVarView`, so a written count can be capacity-checked on the C++ side.
+    bound of the `ShapeVarView`, so a written count can be capacity-checked on the C++ side --
+    and a count that does not fit is recorded in the call's ERROR BUFFER, under the `error_id`
+    given here, for the host to reserve more and run again.
 
     An unbound var wraps a `NoneTensor` instead of a view: there is no count anywhere, and the
     type says so -- writing it does not compile, rather than corrupting a null pointer.
@@ -21,10 +24,14 @@ class CallArg_ShapeVar( CallArg ):
         super().__init__( call_args_analysis.io_category( path, _has_count( inst ) ), name )
 
         self.inst = inst
+        self.path = path
         self.memory_space = call_args_analysis.cpp_memory_space
         # one count per cell of the ragged structure this var varies along (none -> a scalar).
         self.shape = [ int( s ) for axis in inst.dep_axes
                        for s in axis.capacity_list( lambda sv: call_args_analysis.capacity_of( sv, path ) ) ]
+        # the batch axes a `vmap` gave us, leading and NAMED (a count is per batch item too); the
+        # counts' own axes stay positional -- they are cells of a ragged structure, not names.
+        self.batch_axes = []
 
         # the bound a written count is checked against; -1 marks "unbounded" (nothing sizes
         # itself on this var, so this call had no reason to be given a capacity for it).
@@ -33,13 +40,35 @@ class CallArg_ShapeVar( CallArg ):
         except ValueError:
             self.max_bound = -1
 
+        # only a var this call WRITES, and that something is sized on, can overflow a capacity: it
+        # is the only one that needs a place in the error buffer (the others carry a
+        # `NoErrorBuffer`, which compiles away).
+        self.error_id = -1
+        if self.io_category.is_output and self.max_bound >= 0:
+            self.error_id = call_args_analysis.register_error_var( self )
+
         if self.io_category.is_bound:
             call_args_analysis.register_tensor( self )
+
+    # -- as a value a `vmap` maps over: one count per batch item --
+    def add_batch_axis( self, name, size ):
+        self.batch_axes = [ name ] + self.batch_axes
+        self.shape = [ int( size ) ] + self.shape
+
+    def batch_dim_expr( self, name ):
+        if name not in self.batch_axes:
+            return None
+        return self.jax_dim( self.batch_axes.index( name ) )
 
     # -- driver-agnostic C++ (the same for every driver) --
     def _cpp_shape_tuple( self ):
         # the extents come from the BUFFER, not from `self.shape`: see `CallArg.jax_dim`.
         return "tuple( " + ", ".join( self.jax_dim( d ) for d in range( len( self.shape ) ) ) + " )"
+
+    def _cpp_axis_tuple( self ):
+        # the batch axes are named (the kernel selects them by name); the count's own axes are not.
+        names = self.batch_axes + [ "UnnamedAxis{}" ] * ( len( self.shape ) - len( self.batch_axes ) )
+        return "tuple( " + ", ".join( names ) + " )"
 
     def _cpp_max_bound( self ):
         """The capacity a written count is checked against. A CALL parameter, so it reaches the
@@ -58,14 +87,25 @@ class CallArg_ShapeVar( CallArg ):
             return f"NoneTensor<std::int32_t, { self._cpp_shape_type() }, Tuple<>>"
         return f"TensorView<std::int32_t, { self._cpp_shape_type() }, { self.memory_space }>"
 
+    def _cpp_errors( self ):
+        """The error buffer this var records into -- the call's, the one and only. A var that
+        cannot overflow gets a `NoErrorBuffer` instead: a type, so nothing crosses and the check
+        compiles away."""
+        if self.error_id < 0:
+            return "NoErrorBuffer{}"
+        return ERRORS_VAR_NAME
+
     def cpp_type( self ):
-        return f"ShapeVarView<{ self._cpp_counts_type() }>"
+        return f"ShapeVarView<{ self._cpp_counts_type() }, NoErrorBuffer>"
 
     def cpp_view( self ):
         if not self.io_category.is_bound:
-            return f"{ self.cpp_type() }{{ { self._cpp_counts_type() }{{}}, { self._cpp_max_bound() } }}"
-        view = f"tensor_view<{ self.memory_space }>( { self.jax_data_ptr() }, { self._cpp_shape_tuple() } )"
-        return f"make_shape_var_view( { view }, { self._cpp_max_bound() } )"
+            return ( f"{ self.cpp_type() }{{ { self._cpp_counts_type() }{{}}, "
+                     f"{ self._cpp_max_bound() }, NoErrorBuffer{{}}, SI( -1 ) }}" )
+        view = ( f"tensor_view<{ self.memory_space }>( { self.jax_data_ptr() }, "
+                 f"{ self._cpp_shape_tuple() }, { self._cpp_axis_tuple() } )" )
+        return ( f"make_shape_var_view( { view }, { self._cpp_max_bound() }, "
+                 f"{ self._cpp_errors() }, SI( { self.error_id } ) )" )
 
     # -- as a member of an aggregate --
     def cpp_tpl_param( self ):

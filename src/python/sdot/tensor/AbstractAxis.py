@@ -1,5 +1,4 @@
-from ..util.aggregate import get_attribute
-from ..util.Attribute import Attribute
+from ..util.Attribute import Attribute, resolve_attribute
 
 
 class AbstractAxis( Attribute ):
@@ -10,6 +9,10 @@ class AbstractAxis( Attribute ):
     expression into `coeffs` (a `{ ShapeVar: int }` map) and an integer
     `offset`, plus the single-variable inversion used to solve a `ShapeVar`
     from an observed size.
+
+    The expression is given either as a string (`Axis[ "2 * nb_dims + 1" ]`,
+    whose names an aggregate resolves) or, outside of any aggregate, as the
+    `ShapeVar` itself (`Axis( nb_dims )`).
 
     They differ in what is known at declaration time (virtual `register_in`):
     an `Axis` is a single dimension (ragged when one of its `ShapeVar`s has
@@ -24,11 +27,13 @@ class AbstractAxis( Attribute ):
         # tensors (a tensor may borrow an axis from an object that is not even an argument).
         return None
 
-    def __init__( self, parent_inst = None, /, template_args = [], template_kwargs = {} ) -> None:
+    def __init__( self, *exprs, template_args = (), template_kwargs = {}, scope = None ) -> None:
         from .ShapeVar import ShapeVar
         self.coeffs: dict[ ShapeVar, int ] = {}
         self.offset = 0
-        self._init_axis( parent_inst, template_args )
+        # declared (`Axis[ "nb_dims + 1" ]`) or built directly (`Axis( nb_dims )`): same args,
+        # two ways in.
+        self._init_axis( list( template_args ) + list( exprs ), scope )
 
     # ---- shared affine parser ----
     @staticmethod
@@ -51,18 +56,23 @@ class AbstractAxis( Attribute ):
                 coeffs[ name ] = coeffs.get( name, 0 ) + ( -1 if term[ 0 ] == "-" else 1 )
         return coeffs, offset
 
-    def _parse_expr( self, parent_inst, expr ):
-        """Instance-side parse: fill `coeffs` (resolving names to `ShapeVar`s via
-        `get_attribute`) and `offset` from the affine expression."""
+    def _parse_expr( self, expr, scope ):
+        """Instance-side parse: fill `coeffs` (each name resolved to its `ShapeVar` in `scope`)
+        and `offset`. A `ShapeVar` handed over directly is the degenerate expression `1 * var`,
+        and needs no scope."""
+        from .ShapeVar import ShapeVar
+        if isinstance( expr, ShapeVar ):
+            self._add_coeff( expr, 1, scope )
+            return
+
         coeffs, offset = self.parse_affine( expr )
         self.offset += offset
         for var_name, coeff in coeffs.items():
-            self._add_coeff( parent_inst, var_name, coeff )
+            self._add_coeff( var_name, coeff, scope )
 
-    def _add_coeff( self, parent_inst, var_name, coeff ):
+    def _add_coeff( self, var, coeff, scope ):
         from .ShapeVar import ShapeVar
-        shape_var = get_attribute( var_name, parent_inst )
-        assert isinstance( shape_var, ShapeVar )
+        shape_var = resolve_attribute( var, scope, ShapeVar )
         self.coeffs[ shape_var ] = self.coeffs.get( shape_var, 0 ) + coeff
 
     def solve_single( self, shape_var, size ):
@@ -116,5 +126,5 @@ class AbstractAxis( Attribute ):
         raise NotImplementedError
 
     # ---- virtual ----
-    def _init_axis( self, parent_inst, template_args ):
+    def _init_axis( self, args, scope ):
         raise NotImplementedError

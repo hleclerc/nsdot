@@ -3,6 +3,7 @@
 // #include "../../src/cpp/sdot/support/hardware/Run.h"
 #include <sdot/support/containers/TensorView.h>
 #include <sdot/support/kernels/run_parallel.h>
+#include <sdot/support/algorithms/CartesianIndices.h>
 #include <sdot/support/algorithms/indices_of.h>
 #include <sdot/support/algorithms/reductions.h>
 #include <sdot/support/containers/Range.h>
@@ -221,4 +222,29 @@ TEST_CASE( "TensorView — fill_with avec contextes (run_parallel) et shapes éc
         CHECK_REPR( d[ i + 0 ], 100 );
         CHECK_REPR( d[ i + 1 ], i + 1 );
     }
+}
+
+DEFINE_AXIS( vmap_0 );
+
+TEST_CASE( "TensorView — indexation par un multi-indice de batch (axes nommés, optionnels)", "" ) {
+    // what a `vmap` produces: a batch axis, carried by the mapped values and by them only.
+    double b[ 2*3 ] = { 1, 2, 3, 4, 5, 6 };
+    auto batched = tensor_view( b, tuple( 2, 3 ), tuple( vmap_0, col_ ) );
+
+    double s[ 3 ] = { 10, 20, 30 };
+    auto shared = tensor_view( s, tuple( 3 ), tuple( col_ ) ); // not mapped along vmap_0
+
+    CartesianIndices<Tuple<SI>,Tuple<_vmap_0>> items{ tuple( SI( 2 ) ) };
+    CHECK( items.size() == 2 );
+
+    // an item is a NAMED coordinate (`vmap_0 = 1`), so it selects the axis by name: the batched
+    // view loses its batch axis, the shared one simply lets the index through.
+    auto batch_index = items[ 1 ];
+    CHECK( batched( batch_index, col_ = 0 ).value() == 4 );
+    CHECK( shared ( batch_index, col_ = 0 ).value() == 10 );
+
+    // unbatched: the empty multi-index indexes nothing -- the same body works either way.
+    CartesianIndices<Tuple<>> no_batch;
+    CHECK( no_batch.size() == 1 );
+    CHECK( shared( no_batch[ 0 ], col_ = 2 ).value() == 30 );
 }

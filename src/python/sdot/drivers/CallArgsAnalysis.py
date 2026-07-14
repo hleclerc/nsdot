@@ -1,6 +1,7 @@
 from ..util.aggregate import get_attribute
 from ..util.annotations import annotations
 from .CallArg_Aggregate import CallArg_Aggregate
+from .CallArg_Errors import CallArg_Errors, ERRORS_VAR_NAME
 from .IoCategory import IoCategory
 from .CallArg import CallArg
 
@@ -50,6 +51,8 @@ class CallArgsAnalysis:
         self.declared_outputs = set()
         self.type_names = {}
         self.axis_names = []
+        self.batch_axes = []
+        self.error_vars = []
         self.tensors = []
         self.args = {}
 
@@ -65,11 +68,71 @@ class CallArgsAnalysis:
         for name, inst in args.items():
             self.args[ name ] = self.make_CallArg( name, name, inst )
 
+        # what the kernel writes when something goes wrong -- last, so that everything that can
+        # fail has been given its id by then. It is a buffer of the call, not of an argument: no
+        # object of the caller's has anything to do with it.
+        self.errors = CallArg_Errors( self )
+
         # a path that reached nothing is a typo, and a silent one would turn an output into an
         # unbound attribute (the kernel would write into the void).
         unused = [ p for p in self.output_paths if p not in self.declared_outputs ]
         if unused:
             raise ValueError( f"output_attributes: no such attribute: { ', '.join( unused ) }" )
+
+    # -- errors --
+    def register_error_var( self, shape_var_ca ) -> int:
+        """Give a value that can fail its id in the error buffer -- what a record points back to."""
+        self.error_vars.append( shape_var_ca )
+        return len( self.error_vars ) - 1
+
+    def capacity_overflows( self ):
+        """The capacities this call turned out to be too small for: `[ ( path, wanted, capacity ) ]`,
+        empty if the call went through, `None` if we cannot know here (a traced buffer -- see
+        `CallArg_Errors.capacity_overflows`)."""
+        return self.errors.capacity_overflows( self.error_vars )
+
+    # -- what a `vmap` derives --
+    def batched( self, axis_name, axis_size, batched_inputs ):
+        """The same lowering, of the same objects, with one more axis: what a `vmap` calls.
+
+        A COPY, not a mutation: the caller's own lowering must keep saying what its tensors are,
+        since it is the one that writes the results back onto them (and it does so with the shapes
+        the outer trace sees, batch axis stripped). The Python objects are shared -- only the
+        lowering nodes are cloned.
+
+        Every OUTPUT gains the axis (the kernel writes one per item); an input gains it only if the
+        mapping gave it one (`batched_inputs`, the buffers the framework says it mapped). A value
+        left out is not broadcast: it is shared by every item, and the kernel simply lets the batch
+        index pass through it."""
+        import copy
+
+        mapping = {}
+        res = copy.copy( self )
+        res.args = { n: c._clone( mapping ) for n, c in self.args.items() }
+        res.errors = self.errors._clone( mapping )
+        res.error_vars = [ mapping[ id( v ) ] for v in self.error_vars ]
+        res.tensors = [ mapping[ id( t ) ] for t in self.tensors ]
+        res.axis_names = list( self.axis_names )
+        res.batch_axes = list( self.batch_axes ) + [ axis_name ]
+        res.register_axis( axis_name )
+
+        for tensor in res.tensors:
+            if not tensor.takes_batch_axis():
+                continue
+            if tensor.io_category.is_output or tensor.ffi_name in batched_inputs:
+                tensor.add_batch_axis( axis_name, axis_size )
+
+        return res
+
+    def batch_dim_expr( self, axis_name ):
+        """Where the size of a batch axis is READ at run time: an extent of the first buffer that
+        carries it. Like any extent, it is not a literal in the source -- one compiled kernel has
+        to serve every batch size."""
+        for tensor in self.tensors:
+            expr = tensor.batch_dim_expr( axis_name )
+            if expr is not None:
+                return expr
+        raise ValueError( f"no buffer carries the batch axis '{ axis_name }'" )
 
     @staticmethod
     def _attribute_at( args, path ):

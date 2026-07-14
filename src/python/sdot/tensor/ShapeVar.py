@@ -1,7 +1,5 @@
 # from typing_extensions import Sequence, overload
-from ..util.Parametrized import Parametrized
-from ..util.aggregate import get_attribute
-from ..util.Attribute import Attribute
+from ..util.Attribute import Attribute, resolve_attribute
 from numpy._typing import ArrayLike
 from typing import TYPE_CHECKING, Iterator
 import weakref
@@ -45,21 +43,20 @@ class ShapeVar( Attribute ):
         from ..drivers.CallArg_ShapeVar import CallArg_ShapeVar
         return CallArg_ShapeVar( caa, path, name, inst )
 
-    def __init__( self, parent_inst = None, /, template_args = [], template_kwargs = {} ) -> None:
+    def __init__( self, value = None, /, *, template_args = (), template_kwargs = {}, scope = None ) -> None:
         from .AbstractAxis import AbstractAxis
 
         # (weakref(tensor), resolver): each `resolver(tensor)` returns our solved
         # value from that tensor's observed sizes, or None if it cannot yet.
         # Weak so a shared ShapeVar does not keep dropped instances' tensors alive.
         self.usages = []
-        self.dep_axes = []
-        for dep_axis in template_args:
-            axis = get_attribute( dep_axis, parent_inst )
-            assert isinstance( axis, AbstractAxis )
-            self.dep_axes.append( axis )
+        self.dep_axes = [ resolve_attribute( d, scope, AbstractAxis ) for d in template_args ]
 
         self.prescribed_value = None
         self._count = None     # count produced by a kernel: a driver tensor, possibly traced
+
+        if value is not None:
+            self.set( value )
 
     def add_usage( self, tensor, resolver ):
         self.usages.append( ( weakref.ref( tensor ), resolver ) )
@@ -113,6 +110,10 @@ class ShapeVar( Attribute ):
             return solved
 
         raise NotImplementedError( "ShapeVar is neither prescribed nor constrained by a tensor" )
+
+    @value.setter
+    def value( self, value ):
+        self.set( value )
 
     def allocated_capacity( self ):
         """The capacity our tensors were ALLOCATED with, read off their buffers -- a fact, not

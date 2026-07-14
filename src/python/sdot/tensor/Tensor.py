@@ -3,8 +3,7 @@ from numpy.typing import ArrayLike
 from typing import TYPE_CHECKING
 import numpy
 
-from ..util.aggregate import get_attribute
-from ..util.Attribute import Attribute
+from ..util.Attribute import Attribute, resolve_attribute
 
 from ..drivers.driver import driver
 
@@ -19,14 +18,25 @@ class Tensor( Attribute ):
     Tensor declaration: a thin wrapper around the backend tensor of the chosen
     library (Jax, Torch, ...).
 
-    One `Tensor` is created per parent instance (see `get_attribute`) and holds
-    its own state: `c.frame = ...` goes through `set` and fills `_raw` (a
-    homogeneous driver tensor); `c.frame` reads that value back.
+    Inside an `@aggregate`, one `Tensor` is created per parent instance (see
+    `get_attribute`) and holds that instance's state: `c.frame = ...` goes
+    through `set` and fills `_raw` (a homogeneous driver tensor); `c.frame`
+    reads it back.
+
+    But a `Tensor` needs no aggregate: it is only a scope in which the NAMES of
+    its axes are looked up. Give it the axes themselves (or none) and it stands
+    alone, `t.value` playing the part `c.frame` plays above:
+
+        t = Tensor( 17 )                        # rank 0, no declared axis
+        t = Tensor[ { "dtype": int } ]( [ 1, 2 ] )
+        t = Tensor[ x, y ]( [ [ 1, 2 ] ] )      # x, y being `Axis` objects
 
     The logical contract is the axis list; axis extents may depend on other axes
     (RAGGED axes), in which case the varying sizes live in the `ShapeVar`s of
-    rank > 0. The physical contract (padding / order / alignment, per device) is
-    to come, as template kwargs, kept separate from the axis list.
+    rank > 0. With no declared axis at all, there is nothing to solve and the
+    buffer IS the contract (see `shape`). The physical contract (padding / order
+    / alignment, per device) is to come, as template kwargs, kept separate from
+    the axis list.
     """
 
     if TYPE_CHECKING:
@@ -37,7 +47,7 @@ class Tensor( Attribute ):
         from ..drivers.CallArg_Tensor import CallArg_Tensor
         return CallArg_Tensor( caa, path, name, inst )
 
-    def __init__( self, parent_inst = None, /, template_args = [], template_kwargs = {} ) -> None:
+    def __init__( self, value = None, /, *, template_args = (), template_kwargs = {}, scope = None ) -> None:
         self.device = Device.factory( template_kwargs.get( "device", None ) )
         self.dtype = Dtype.factory( template_kwargs.get( "dtype", None ) )
         self._raw = None          # homogeneous value buffer (padded when ragged)
@@ -45,26 +55,25 @@ class Tensor( Attribute ):
         self._spec_dims = None    # spec index -> its first array dimension
         self._unroll_spans = {}   # spec index -> (start, count) for the unrolled AxisList
 
-        # A declared member is either an axis NAME, looked up in the parent aggregate, or an
-        # `AbstractAxis` object -- a tensor can then BORROW an axis (`Tensor[ cell.num_vertex ]`),
-        # hence its ShapeVars, hence its capacity, without belonging to any aggregate.
+        # A declared member is either an axis NAME, looked up in `scope`, or an `AbstractAxis`
+        # object -- a tensor can then BORROW an axis (`Tensor[ cell.num_vertex ]`), hence its
+        # ShapeVars, hence its capacity, without belonging to any aggregate.
         # A trailing `...` on a name is the unroll marker (only valid for an AxisList).
         # At most one member may be unrolled; plain `Axis`es can sit before and/or
         # after it (they keep one array dimension each; the unroll takes the rest).
         self.specs = []
         for entry in template_args:
             unroll = isinstance( entry, str ) and entry.endswith( "..." )
-            if isinstance( entry, AbstractAxis ):
-                axis = entry
-            else:
-                axis = get_attribute( entry[ :-3 ] if unroll else entry, parent_inst )
-            assert isinstance( axis, AbstractAxis )
+            axis = resolve_attribute( entry[ :-3 ] if unroll else entry, scope, AbstractAxis )
             self.specs.append( ( axis, unroll ) )
         assert sum( u for _, u in self.specs ) <= 1, "at most one unrolled AxisList per tensor"
 
         # let each member record, on its ShapeVars, how this tensor constrains them
         for index, ( axis, unroll ) in enumerate( self.specs ):
             axis.register_in( self, index, unroll )
+
+        if value is not None:
+            self.set( value )
 
     @property
     def axes( self ):
@@ -153,6 +162,11 @@ class Tensor( Attribute ):
 
     @property
     def shape( self ):
+        # with no declared axis there is no expression to evaluate: the buffer is the whole
+        # contract (a standalone `Tensor( [ 1, 2 ] )`), and it has none while unvalued.
+        if not self.specs:
+            return list( self._raw.shape ) if self._raw is not None else []
+
         # each member contributes a LIST of extents (one for an `Axis`, `nb_dims`
         # for an unrolled `AxisList`); concatenation gives the tensor's extents.
         res = []
@@ -162,11 +176,21 @@ class Tensor( Attribute ):
 
     @property
     def rank( self ):
+        if not self.specs:
+            return self._raw.ndim if self._raw is not None else 0
         return len( self.axes )
 
     @property
     def raw( self ):
         return self._raw
+
+    @property
+    def value( self ):
+        return self._raw
+
+    @value.setter
+    def value( self, value ):
+        self.set( value )
 
     def __repr__( self ):
         header = f"Tensor( shape={ self.shape }, dtype={ self.dtype.name }, device={ self.device } )"

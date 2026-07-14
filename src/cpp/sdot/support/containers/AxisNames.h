@@ -16,16 +16,27 @@ struct UnnamedAxis : AxisBase {
 
 /// Indice attaché à un axe nommé (résultat de `axis = index`), consommé par
 /// `TensorView::operator()` / `squeeze` pour retirer l'axe `axis_type` à la position `index`.
-template<class AxisType, class Index>
+///
+/// `Optional` says what an argument WITHOUT that axis must do. A user index (`dim = 0`) is
+/// strict: a name the tensor does not have is a typo, and the compiler says so. A BATCH index is
+/// not: a `vmap` axis is carried by the arguments it maps and by them only, so `x( batch_index )`
+/// has to leave the others untouched -- which is what makes ONE body work batched or not.
+template<class AxisType, class Index, bool Optional = false>
 struct AxisIndex {
-    using axis_type = AxisType;
-    Index index;
+    using                  axis_type = AxisType;
+    static constexpr bool  optional  = Optional;
+    Index                  index;
 };
 
+/// An index an argument may ignore: what a batch multi-index is made of (see `CartesianIndices`).
+constexpr auto optional_axis_index( auto axis, auto index ) {
+    return AxisIndex<DECAYED_TYPE_OF( axis ),DECAYED_TYPE_OF( index ),true>{ index };
+}
+
 // --- traits -------------------------------------------------------------------------------
-template<class A>          constexpr bool is_axis            = std::is_base_of_v<AxisBase, A>;
-template<class>            struct IsAxisIndex                  : std::false_type {};
-template<class A,class I>  struct IsAxisIndex<AxisIndex<A,I>>  : std::true_type  {};
+template<class A>                 constexpr bool is_axis               = std::is_base_of_v<AxisBase, A>;
+template<class>                   struct IsAxisIndex                     : std::false_type {};
+template<class A,class I,bool O>  struct IsAxisIndex<AxisIndex<A,I,O>>   : std::true_type  {};
 
 /// Position (compile-time) d'un axe nommé `Name` dans un `Tuple` de noms ; -1 si absent.
 template<class Name,class Tup> struct AxisPos;

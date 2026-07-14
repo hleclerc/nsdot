@@ -173,3 +173,32 @@ if test( "axis_parsing" ):
 # @aggregate
 # class Test:
 #     a : MonTypeTemplate[ 132, a = 2 ]
+
+if test( "indep" ):
+    inp = Tensor( 17 ) # rank 0
+    out = Tensor()
+
+    yo = Tensor[ dict( dtype = int ) ]( [ 17, 18 ] ) # rank 1
+    assert yo.shape == [ 2 ]
+    assert out.shape == []
+
+    nx = ShapeVar()
+    ny = ShapeVar()
+    x  = Axis( nx )   # outside an aggregate, an Axis takes the ShapeVar itself (no name to resolve)
+    y  = Axis( ny )
+    ya = Tensor[ x, y, dict( dtype = int ) ]( [ [ 17, 18 ] ] ) # rank 2 with named Axes
+
+    # the ShapeVars are solved from the tensor, exactly as they would be in an aggregate
+    assert nx.value == 1
+    assert ny.value == 2
+
+    info( inp )
+    info( yo )
+    info( ya )
+
+    ya.value = [ [ 18, 19, 20 ] ] # reassign
+    assert ny.value == 3
+    info( ya )
+
+    info( nx )
+    info( ny )
