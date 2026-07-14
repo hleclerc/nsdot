@@ -1,47 +1,40 @@
+from .IoCategory import IoCategory
 from .CallArg import CallArg
 
 class CallArg_CtShapeVar( CallArg ):
-    """A compile-time `ShapeVar`: its value is carried by the C++ type, NOT an FFI buffer.
+    """A compile-time `ShapeVar`: its count is carried by the C++ TYPE, not by an FFI buffer.
 
-    Kept in the aggregate's `attributes` (so axes can read its `capacity`), but deliberately
-    absent from `caa.tensors` (no buffer). It emits a `Ct<SI, value>` struct member -- the
-    value lives in the type, so C++ code can tell it is compile-time known. Because the value
-    is part of the generated source, it is also part of the library-name hash.
+    It lowers to a `Ct<SI, value>` member -- the value lives in the type, so C++ code can tell
+    it is compile-time known (and specialize, unroll, ...). Being part of the generated source,
+    it is also part of the library-name hash.
+
+    It is therefore never an output: a kernel cannot write into a type. Being swept in by an
+    aggregate declared as an output is fine (we are just skipped); being named as one is a
+    contradiction, and is refused.
     """
 
-    name : str
+    def __init__( self, call_args_analysis, path, name, inst ) -> None:
+        super().__init__( IoCategory.INPUT, name )
 
-    def __init__( self, call_args_analysis, io_category, name, value ) -> None:
-        super().__init__( io_category )
+        call_args_analysis.io_category( path, True )   # so a covering declaration counts as used
+        if call_args_analysis.is_exact_output( path ):
+            raise ValueError( f"CtShapeVar '{ name }' is compile-time: a kernel cannot write it" )
 
-        self.name = name
-        self.value = value
+        self.value = int( inst.value )
 
-    @property
-    def capacity( self ):
-        return self.value
+    # -- driver-agnostic C++ (the same for every driver) --
+    def cpp_type( self ):
+        return f"Ct<SI, { self.value }>"
 
-    # -- driver-agnostic C++ (the struct is the same for every driver) --
-    # the value is a *non-type* parameter of the owning struct: two instances of the same
-    # aggregate with e.g. `nb_dims = 2` and `nb_dims = 3` are two instantiations of the same
-    # template, and `Ct<SI, ct_nb_dims>` says exactly what the member is.
-    def cpp_tpl_names( self, prefix = "" ):
-        return [ f"ct_{ prefix }{ self.name }" ]
+    def cpp_tpl_param( self ):
+        return f"class { self.cpp_tpl_name() }"
 
-    def cpp_tpl_params( self, prefix = "" ):
-        return [ "SI " + n for n in self.cpp_tpl_names( prefix ) ]
+    def cpp_tpl_arg( self ):
+        return self.cpp_type()
 
-    def cpp_tpl_args( self ):
-        return [ str( int( self.value ) ) ]
-
-    def cpp_member( self, prefix = "" ):
-        name, = self.cpp_tpl_names( prefix )
-        return f"Ct<SI, { name }> { self.name };"
+    def cpp_member( self ):
+        return f"{ self.cpp_tpl_name() } { self.name };"
 
     # -- Jax FFI ABI --
     def jax_cpp_init( self ):
-        return f"Ct<SI, { int( self.value ) }>{{}}"
-
-    def jax_value( self, buffer_to_array ):
-        # compile-time known: reconstructed straight from the Python-side value.
-        return self.value
+        return f"{ self.cpp_type() }{{}}"

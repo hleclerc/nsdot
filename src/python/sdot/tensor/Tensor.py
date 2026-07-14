@@ -14,6 +14,173 @@ from .Dtype import Dtype
 from .AbstractAxis import AbstractAxis
 
 
+class Tensor( Attribute ):
+    """
+    Tensor declaration: a thin wrapper around the backend tensor of the chosen
+    library (Jax, Torch, ...).
+
+    One `Tensor` is created per parent instance (see `get_attribute`) and holds
+    its own state: `c.frame = ...` goes through `set` and fills `_raw` (a
+    homogeneous driver tensor); `c.frame` reads that value back.
+
+    The logical contract is the axis list; axis extents may depend on other axes
+    (RAGGED axes), in which case the varying sizes live in the `ShapeVar`s of
+    rank > 0. The physical contract (padding / order / alignment, per device) is
+    to come, as template kwargs, kept separate from the axis list.
+    """
+
+    if TYPE_CHECKING:
+        def __set__( self, obj, value: ArrayLike | None ) -> None: ...
+
+    @classmethod
+    def make_CallArg( cls, caa, path, name, inst ):
+        from ..drivers.CallArg_Tensor import CallArg_Tensor
+        return CallArg_Tensor( caa, path, name, inst )
+
+    def __init__( self, parent_inst = None, /, template_args = [], template_kwargs = {} ) -> None:
+        self.device = Device.factory( template_kwargs.get( "device", None ) )
+        self.dtype = Dtype.factory( template_kwargs.get( "dtype", None ) )
+        self._raw = None          # homogeneous value buffer (padded when ragged)
+        self._sizes = None        # one size per array dimension of the value
+        self._spec_dims = None    # spec index -> its first array dimension
+        self._unroll_spans = {}   # spec index -> (start, count) for the unrolled AxisList
+
+        # A declared member is either an axis NAME, looked up in the parent aggregate, or an
+        # `AbstractAxis` object -- a tensor can then BORROW an axis (`Tensor[ cell.num_vertex ]`),
+        # hence its ShapeVars, hence its capacity, without belonging to any aggregate.
+        # A trailing `...` on a name is the unroll marker (only valid for an AxisList).
+        # At most one member may be unrolled; plain `Axis`es can sit before and/or
+        # after it (they keep one array dimension each; the unroll takes the rest).
+        self.specs = []
+        for entry in template_args:
+            unroll = isinstance( entry, str ) and entry.endswith( "..." )
+            if isinstance( entry, AbstractAxis ):
+                axis = entry
+            else:
+                axis = get_attribute( entry[ :-3 ] if unroll else entry, parent_inst )
+            assert isinstance( axis, AbstractAxis )
+            self.specs.append( ( axis, unroll ) )
+        assert sum( u for _, u in self.specs ) <= 1, "at most one unrolled AxisList per tensor"
+
+        # let each member record, on its ShapeVars, how this tensor constrains them
+        for index, ( axis, unroll ) in enumerate( self.specs ):
+            axis.register_in( self, index, unroll )
+
+    @property
+    def axes( self ):
+        return [ axis for axis, _ in self.specs ]
+
+    def set( self, value ):
+        if isinstance( value, Tensor ):
+            self._raw = value._raw
+            self._sizes = value._sizes
+            self._unroll_spans = value._unroll_spans
+            return
+
+        if any( unroll for _, unroll in self.specs ):
+            return self._set_unrolled( value )
+
+        # Sizes are read from a *shape tree* (list nesting + `.shape` metadata),
+        # so `value`'s data is never touched -- a GPU tensor is not moved. One
+        # size-tensor per axis; its rank is fixed by the declaration (a dense
+        # axis collapses to a scalar, a ragged one keeps the per-segment lengths).
+        tree = _shape_tree( value )
+        ranks = [ _axis_rank( axis ) for axis, _ in self.specs ]
+        self._sizes = [
+            numpy.array( _collapse( _query( tree, d ), ranks[ d ] ), dtype = int )
+            for d in range( len( self.specs ) )
+        ]
+        # no unroll here: one array dimension per declared axis
+        self._spec_dims = list( range( len( self.specs ) ) )
+
+        # values are stored in a tensor of rank = nb of axes (no compression).
+        # Dense maps directly; ragged is assembled into a padded buffer whose per
+        # axis capacity is (for now) the max observed size.
+        if all( r == 0 for r in ranks ):
+            self._raw = driver.array( value, dtype = self.dtype, device = self.device )
+        else:
+            caps = [ int( size.max() ) for size in self._sizes ]
+            self._raw = _assemble( value, caps, self.dtype, self.device )
+
+    def _set_unrolled( self, value ):
+        """Assign a tensor with one unrolled AxisList: its rank is dynamic. Each
+        plain axis before/after keeps a single array dimension; the AxisList spans
+        the remaining ones, so the value is a dense array (a ragged non-unrolled
+        axis would need nested lists, which this case deliberately excludes).
+
+        `nb_dims` is solved from the number of spanned dimensions; each spanned
+        size solves one loop index of the AxisList's ShapeVars; each plain axis is
+        solved from its own (scalar) dimension."""
+        u = next( i for i, ( _, unroll ) in enumerate( self.specs ) if unroll )
+        tree = _shape_tree( value )
+        assert isinstance( tree, tuple ), "an unrolled tensor expects a dense array value"
+
+        # the unroll spans every array dimension not taken by a plain axis
+        count = len( tree ) - ( len( self.specs ) - 1 )
+        assert count >= 0, "value rank too small for the declared axes"
+
+        self._sizes = [ numpy.array( s, dtype = int ) for s in tree ]
+        self._spec_dims = []
+        d = 0
+        for i in range( len( self.specs ) ):
+            self._spec_dims.append( d )
+            d += count if i == u else 1
+        self._unroll_spans = { u: ( self._spec_dims[ u ], count ) }
+        self._raw = driver.array( value, dtype = self.dtype, device = self.device )
+
+    def set_raw( self, raw ):
+        """Bind the buffer a kernel produced (a driver tensor). Sizes stay unobserved: an
+        output's extents are the ones we ASKED for (`shape`), and its counts live in the
+        ShapeVars the kernel wrote -- there is nothing to solve from the data."""
+        self._raw = raw
+        self._spec_dims = list( range( len( self.specs ) ) )
+
+    @property
+    def capacity( self ):
+        """What our buffer IS: the allocated extents, read off it. An input is bound at THIS
+        size -- an output that wants to grow must not force us to inflate the input."""
+        if self._raw is None:
+            return [ 0 ] * self.rank
+        return self._raw.shape
+
+    @property
+    def allocated_sizes( self ):
+        """One allocated size per array dimension (the counterpart of `_sizes`, which holds the
+        LOGICAL ones): what a `ShapeVar` inverts to learn the capacity it was allocated with."""
+        if self._raw is None or self._spec_dims is None:
+            return None
+        return [ numpy.array( s, dtype = int ) for s in self._raw.shape ]
+
+    @property
+    def shape( self ):
+        # each member contributes a LIST of extents (one for an `Axis`, `nb_dims`
+        # for an unrolled `AxisList`); concatenation gives the tensor's extents.
+        res = []
+        for axis, _ in self.specs:
+            res += axis.max_list()
+        return res
+
+    @property
+    def rank( self ):
+        return len( self.axes )
+
+    @property
+    def raw( self ):
+        return self._raw
+
+    def __repr__( self ):
+        header = f"Tensor( shape={ self.shape }, dtype={ self.dtype.name }, device={ self.device } )"
+        if self._raw is None:
+            return header
+
+        raw = numpy.asarray( self._raw )
+        # an unrolled AxisList is always fully dense (no reservation, no padding);
+        # otherwise mask out padding cell by cell, from the axes' LIVE extents.
+        tree = raw.tolist() if self._unroll_spans else _display_tree( raw, self.specs )
+        width = max( ( len( _fmt_scalar( v ) ) for v in _leaves( tree ) if v is not _BLANK ), default = 0 )
+        return header + "\n" + _render_tree( tree, width, raw.ndim )
+
+
 # containers recursed into by `_shape_tree` (a whitelist: anything else is a leaf)
 _containers = ( list, tuple )
 
@@ -153,149 +320,3 @@ def _assemble( value, caps, dtype, device ):
         block = driver.zeros( caps[ 1: ], dtype = dtype )
         children = children + [ block ] * ( caps[ 0 ] - len( children ) )
     return driver.stack( children, axis = 0 )
-
-
-class Tensor( Attribute ):
-    """
-    Tensor declaration: a thin wrapper around the backend tensor of the chosen
-    library (Jax, Torch, ...).
-
-    One `Tensor` is created per parent instance (see `get_attribute`) and holds
-    its own state: `c.frame = ...` goes through `set` and fills `_raw` (a
-    homogeneous driver tensor); `c.frame` reads that value back.
-
-    The logical contract is the axis list; axis extents may depend on other axes
-    (RAGGED axes), in which case the varying sizes live in the `ShapeVar`s of
-    rank > 0. The physical contract (padding / order / alignment, per device) is
-    to come, as template kwargs, kept separate from the axis list.
-    """
-
-    if TYPE_CHECKING:
-        def __set__( self, obj, value: ArrayLike | None ) -> None: ...
-
-    @classmethod
-    def make_CallArg( cls, caa, io_category, name, value, ctor_args, schema = None ):
-        from ..drivers.CallArg_Tensor import CallArg_Tensor
-        dtype = Dtype.factory( schema.kwargs.get( "dtype" ) if schema is not None else None )
-        return CallArg_Tensor( caa, io_category, name, value = value, schema = schema, dtype = dtype )
-
-    def __init__( self, parent_inst = None, /, template_args = [], template_kwargs = {} ) -> None:
-        self.device = Device.factory( template_kwargs.get( "device", None ) )
-        self.dtype = Dtype.factory( template_kwargs.get( "dtype", None ) )
-        self._raw = None          # homogeneous value buffer (padded when ragged)
-        self._sizes = None        # one size per array dimension of the value
-        self._spec_dims = None    # spec index -> its first array dimension
-        self._unroll_spans = {}   # spec index -> (start, count) for the unrolled AxisList
-
-        # A declared member is either a plain name or `name...` (unroll marker,
-        # only valid for an AxisList): (axis, unroll) pairs kept in `specs`.
-        # At most one member may be unrolled; plain `Axis`es can sit before and/or
-        # after it (they keep one array dimension each; the unroll takes the rest).
-        self.specs = []
-        for entry in template_args:
-            unroll = isinstance( entry, str ) and entry.endswith( "..." )
-            axis = get_attribute( entry[ :-3 ] if unroll else entry, parent_inst )
-            assert isinstance( axis, AbstractAxis )
-            self.specs.append( ( axis, unroll ) )
-        assert sum( u for _, u in self.specs ) <= 1, "at most one unrolled AxisList per tensor"
-
-        # let each member record, on its ShapeVars, how this tensor constrains them
-        for index, ( axis, unroll ) in enumerate( self.specs ):
-            axis.register_in( self, index, unroll )
-
-    @property
-    def axes( self ):
-        return [ axis for axis, _ in self.specs ]
-
-    def set( self, value ):
-        if isinstance( value, Tensor ):
-            self._raw = value._raw
-            self._sizes = value._sizes
-            self._unroll_spans = value._unroll_spans
-            return
-
-        if any( unroll for _, unroll in self.specs ):
-            return self._set_unrolled( value )
-
-        # Sizes are read from a *shape tree* (list nesting + `.shape` metadata),
-        # so `value`'s data is never touched -- a GPU tensor is not moved. One
-        # size-tensor per axis; its rank is fixed by the declaration (a dense
-        # axis collapses to a scalar, a ragged one keeps the per-segment lengths).
-        tree = _shape_tree( value )
-        ranks = [ _axis_rank( axis ) for axis, _ in self.specs ]
-        self._sizes = [
-            numpy.array( _collapse( _query( tree, d ), ranks[ d ] ), dtype = int )
-            for d in range( len( self.specs ) )
-        ]
-        # no unroll here: one array dimension per declared axis
-        self._spec_dims = list( range( len( self.specs ) ) )
-
-        # values are stored in a tensor of rank = nb of axes (no compression).
-        # Dense maps directly; ragged is assembled into a padded buffer whose per
-        # axis capacity is (for now) the max observed size.
-        if all( r == 0 for r in ranks ):
-            self._raw = driver.array( value, dtype = self.dtype, device = self.device )
-        else:
-            caps = [ int( size.max() ) for size in self._sizes ]
-            self._raw = _assemble( value, caps, self.dtype, self.device )
-
-    def _set_unrolled( self, value ):
-        """Assign a tensor with one unrolled AxisList: its rank is dynamic. Each
-        plain axis before/after keeps a single array dimension; the AxisList spans
-        the remaining ones, so the value is a dense array (a ragged non-unrolled
-        axis would need nested lists, which this case deliberately excludes).
-
-        `nb_dims` is solved from the number of spanned dimensions; each spanned
-        size solves one loop index of the AxisList's ShapeVars; each plain axis is
-        solved from its own (scalar) dimension."""
-        u = next( i for i, ( _, unroll ) in enumerate( self.specs ) if unroll )
-        tree = _shape_tree( value )
-        assert isinstance( tree, tuple ), "an unrolled tensor expects a dense array value"
-
-        # the unroll spans every array dimension not taken by a plain axis
-        count = len( tree ) - ( len( self.specs ) - 1 )
-        assert count >= 0, "value rank too small for the declared axes"
-
-        self._sizes = [ numpy.array( s, dtype = int ) for s in tree ]
-        self._spec_dims = []
-        d = 0
-        for i in range( len( self.specs ) ):
-            self._spec_dims.append( d )
-            d += count if i == u else 1
-        self._unroll_spans = { u: ( self._spec_dims[ u ], count ) }
-        self._raw = driver.array( value, dtype = self.dtype, device = self.device )
-
-    @property
-    def capacity( self ):
-        if self._raw is None:
-            return [ 0 ] * self.rank
-        return self._raw.shape
-
-    @property
-    def shape( self ):
-        # each member contributes a LIST of extents (one for an `Axis`, `nb_dims`
-        # for an unrolled `AxisList`); concatenation gives the tensor's extents.
-        res = []
-        for axis, _ in self.specs:
-            res += axis.max_list()
-        return res
-
-    @property
-    def rank( self ):
-        return len( self.axes )
-
-    @property
-    def raw( self ):
-        return self._raw
-
-    def __repr__( self ):
-        header = f"Tensor( shape={ self.shape }, dtype={ self.dtype.name }, device={ self.device } )"
-        if self._raw is None:
-            return header
-
-        raw = numpy.asarray( self._raw )
-        # an unrolled AxisList is always fully dense (no reservation, no padding);
-        # otherwise mask out padding cell by cell, from the axes' LIVE extents.
-        tree = raw.tolist() if self._unroll_spans else _display_tree( raw, self.specs )
-        width = max( ( len( _fmt_scalar( v ) ) for v in _leaves( tree ) if v is not _BLANK ), default = 0 )
-        return header + "\n" + _render_tree( tree, width, raw.ndim )

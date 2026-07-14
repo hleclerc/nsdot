@@ -9,13 +9,21 @@ class CtShapeVar( ShapeVar ):
     source, it is part of the library-name hash -- each distinct value yields a distinct
     compiled library (enabling template specialization, loop unrolling, ...).
 
-    It must be *prescribed* (`<name> = v`); a reservation (`max_of_`) denotes a runtime count
-    and is therefore rejected.
+    It must therefore be *prescribed* (`Cell( nb_dims = 2 )`), and it is the one case where
+    count and capacity coincide: the value is in the type, so a buffer sized on it is sized on
+    exactly what the kernel will see. Nothing to allocate for, nothing for a kernel to write.
     """
 
     @classmethod
-    def make_CallArg( cls, caa, io_category, name, value, ctor_args, schema = None ):
+    def make_CallArg( cls, caa, path, name, inst ):
         from ..drivers.CallArg_CtShapeVar import CallArg_CtShapeVar
-        if ctor_args.has( name, "max_of_" ):
-            raise ValueError( f"CtShapeVar '{ name }' is compile-time: it cannot be reserved (max_of_{ name })" )
-        return CallArg_CtShapeVar( caa, io_category, name, value = ctor_args.find( name ) )
+        return CallArg_CtShapeVar( caa, path, name, inst )
+
+    def accept_capacity( self, capacity ):
+        raise ValueError(
+            f"CtShapeVar '{ self.name }' is compile-time: its count IS its capacity, so a call "
+            f"cannot allocate a different one. Prescribe it instead: { self.name } = ..."
+        )
+
+    def set_count( self, value ):
+        raise ValueError( f"CtShapeVar '{ self.name }' is compile-time: a kernel cannot write it" )

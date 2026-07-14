@@ -1,0 +1,30 @@
+#pragma once
+
+#include "../common_types.h"
+#include "../Ct.h"
+
+namespace sdot {
+
+/// A tensor that is NOT there: an attribute this call did not bind (no value given, and not
+/// declared as an output -- an optional field the kernel does not use).
+///
+/// The absence is carried by the TYPE, not by a null pointer to be tested at runtime: a
+/// `NoneTensor` has no data, no shape value, nothing to dereference. It keeps the DECLARED
+/// `TF` / `Shape` / `AxisNames` though, so generic code can still read what the attribute
+/// would have been.
+///
+/// A kernel discriminates at compile time -- `is_valid()` returns a `Ct<bool,false>`, so
+/// `if constexpr ( DECAYED_TYPE_OF( t.is_valid() )::value )` compiles the branch away, and a
+/// `static_assert` can forbid touching it at all.
+template<class _TF, class _Shape, class _AxisNames>
+struct NoneTensor {
+    using            TF                     = _TF;
+    using            Shape                  = _Shape;
+    using            AxisNames              = _AxisNames;
+    SCInt            ct_rank                = Shape::ct_size;
+
+    constexpr auto   is_valid               () const { return Ct<bool,false>(); } ///< no data at all
+    constexpr auto   surely_null            () const { return Ct<bool,true >(); } ///< nothing to read: reads nothing but zero
+};
+
+} // namespace sdot

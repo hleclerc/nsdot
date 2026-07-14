@@ -30,6 +30,11 @@ class AxisList( AbstractAxis ):
             res = res + m * numpy.asarray( shape_var.value, dtype = int )
         return [ int( x ) for x in res ]
 
+    def capacity_list( self, capacity_of ):
+        # an unrolled AxisList is dense: it holds no reservation, so its extents ARE its counts
+        # (each of its ShapeVars is a vector, which a scalar capacity could not describe anyway).
+        return self.max_list()
+
     def register_in( self, tensor, index, unroll ):
         assert unroll, "an AxisList must be unrolled in a tensor ('img_pos...')"
 
@@ -37,8 +42,10 @@ class AxisList( AbstractAxis ):
         # span (start, count) is filled by `Tensor.set` once a value is observed.
         # The loop axis' ShapeVar is solved from the unroll count; each member's
         # ShapeVar(s) from the vector of per-index sizes.
+        # `allocated` makes no difference here: an unrolled tensor is dense, so its allocated
+        # sizes are its logical ones.
         for shape_var in self.loop_axis.coeffs:
-            def resolve_count( t, axis = self.loop_axis, shape_var = shape_var, index = index ):
+            def resolve_count( t, allocated, axis = self.loop_axis, shape_var = shape_var, index = index ):
                 span = t._unroll_spans.get( index )
                 if span is None:
                     return None
@@ -46,7 +53,7 @@ class AxisList( AbstractAxis ):
             shape_var.add_usage( tensor, resolve_count )
 
         for shape_var in self.coeffs:
-            def resolve_vec( t, axis = self, shape_var = shape_var, index = index ):
+            def resolve_vec( t, allocated, axis = self, shape_var = shape_var, index = index ):
                 span = t._unroll_spans.get( index )
                 if span is None or t._sizes is None:
                     return None

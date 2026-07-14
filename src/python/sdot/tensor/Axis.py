@@ -27,3 +27,9 @@ class Axis( AbstractAxis ):
 
     def max_list( self ):
         return [ self.max ]
+
+    def capacity_list( self, capacity_of ):
+        res = self.offset
+        for shape_var, m in self.coeffs.items():
+            res += m * capacity_of( shape_var )
+        return [ int( res ) ]

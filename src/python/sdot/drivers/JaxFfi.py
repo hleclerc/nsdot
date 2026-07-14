@@ -73,13 +73,17 @@ def render_source( body: str ) -> str:
     return _SOURCE_TEMPLATE.format( body = body )
 
 
-def compile_and_register( source: str, device ) -> str:
+def compile_and_register( source: str, device, prefix: str = "" ) -> str:
     """Compile *source*, load and register it, and return its Jax FFI target name.
 
     Idempotent and cached: repeated calls with the same source + device reuse the compiled
     library and the existing registration.
     """
-    name = "sdot_ffi_" + encode_base_62( source + "|" + str( device ) )
+
+    if not prefix:
+        prefix = "sdot_ffi_"
+
+    name = prefix + encode_base_62( source + "|" + str( device ) )
     if name in _loaded:
         return name
 
@@ -112,14 +116,17 @@ def call_body( body: str, device ):
     return jax.ffi.ffi_call( target, jax.ShapeDtypeStruct( ( 1, ), jnp.int32 ) )()
 
 
-# Full handler skeleton (slice 3a): buffers are bound as FFI results, each aggregate arg is
-# materialized as a small `struct` of views so the C++ body can write `cell.<field> = v`.
+# Full handler skeleton: input buffers are bound as FFI args, output buffers as FFI results,
+# and each aggregate arg is materialized as a small `struct` of views over them, so the C++
+# body can read and write `cell.<field>`.
 _CALL_TEMPLATE = """\
 #include "xla/ffi/api/ffi.h"
 #include "sdot/support/common_types.h"
 #include "sdot/support/Ct.h"
 #include "sdot/support/containers/TensorView.h"
 #include "sdot/support/containers/ShapeVarView.h"
+#include "sdot/support/containers/NoneTensor.h"
+#include "sdot/support/containers/ZeroTensor.h"
 #include <cstdint>
 #include <iostream>
 
@@ -130,10 +137,8 @@ using namespace sdot;
 
 {struct_defs}
 
-{struct_aliases}
-
 static ffi::Error sdot_ffi_impl( {params} ) {{
-{struct_inits}
+{decls}
 {seeds}
     {{
 {body}
@@ -146,53 +151,63 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL( sdot_ffi_entry, sdot_ffi_impl,
 """
 
 
-def _struct_type_name( arg_name: str ) -> str:
-    return "Sdot_" + arg_name
+def _axis_def( name: str ) -> str:
+    # the same axis serves several tensors: guard each DEFINE_AXIS so it lands at most once.
+    guard = f"SDOT_AXIS_{ name }"
+    return ( f"#ifndef { guard }\n"
+             f"#define { guard }\n"
+             f"DEFINE_AXIS( { name } );\n"
+             f"#endif" )
 
 
-def call( code, ca, device ):
-    """Compile `code.fwd_code` bound to the buffers described by `ca`, run it, return the
-    reconstructed output object(s).
+def call( code, ca, device, prefix = "" ):
+    """Compile `code.fwd_code` bound to the buffers described by `ca`, run it, and write the
+    outputs back onto the objects the caller handed us.
 
-    Each aggregate arg becomes a `struct` of views over the FFI result buffers; outputs are
-    seeded (from `prescribed`/`reserved`) before the body runs. Buffer order is fixed by
-    `ca.tensors` and shared between the FFI `Bind()`, the handler params and the result specs.
+    Inputs and outputs are disjoint buffers: an input is bound at the size its data actually
+    has, an output is allocated at the capacity declared in Python. XLA FFI wants args before
+    results, so the parameter list is inputs then outputs, `ca.tensors` fixing the order within
+    each group.
 
-    The struct is a *template* (one definition per aggregate class, hence the dedup by
-    `type_name`), so the same class may appear several times in a call with different
-    compile-time parameters; each arg gets an alias to its own instantiation.
+    A root argument declares itself (`cpp_root_decl`): an aggregate as a `struct` of views over
+    its buffers -- a *template*, hence the dedup of definitions by `type_name`, since the same
+    class may appear twice in a call with different compile-time parameters -- and a bare
+    tensor as the view itself, no wrapper needed.
     """
-    buffers = [ t for t in ca.tensors if hasattr( t, "jax_ffi_ret_type" ) ]
+    inputs = [ t for t in ca.tensors if t.io_category.is_input ]
+    outputs = [ t for t in ca.tensors if t.io_category.is_output ]
 
     struct_defs = {}
-    struct_aliases = []
-    struct_inits = []
-    seeds = []
-    for arg_name, arg_ca in ca.args.items():
-        type_name = _struct_type_name( arg_name )
-        for cls_name, struct_def in arg_ca.cpp_struct_defs().items():
-            struct_defs.setdefault( cls_name, struct_def )
-        struct_aliases.append( f"using { type_name } = { arg_ca.cpp_struct_type() };" )
-        struct_inits.append( arg_ca.jax_struct_init( arg_name, type_name ) )
-        seeds.append( arg_ca.cpp_seed( arg_name ) )
+    for arg_ca in ca.args.values():
+        struct_defs.update( arg_ca.cpp_struct_defs() )
+
+    params = [ f"{ b.jax_ffi_type() } { b.ffi_name }" for b in inputs ]
+    params += [ f"ffi::Result<{ b.jax_ffi_type() }> { b.ffi_name }" for b in outputs ]
+
+    binds = "".join( f"\n        .Arg<{ b.jax_ffi_type() }>()" for b in inputs )
+    binds += "".join( f"\n        .Ret<{ b.jax_ffi_type() }>()" for b in outputs )
+
+    seeds = [ ca_.cpp_seed_root( n ) for n, ca_ in ca.args.items() if hasattr( ca_, "cpp_seed_root" ) ]
 
     source = _CALL_TEMPLATE.format(
-        axis_defs      = "\n".join( a.cpp_define() for a in ca.axes ),
-        struct_defs    = "\n\n".join( struct_defs.values() ),
-        struct_aliases = "\n".join( struct_aliases ),
-        params         = ", ".join( f"ffi::Result<{ b.jax_ffi_ret_type() }> { b.ffi_name }" for b in buffers ),
-        struct_inits   = "\n".join( struct_inits ),
-        seeds          = "\n".join( "    " + line for s in seeds for line in s.splitlines() ),
-        body           = code.fwd_code,
-        binds          = "".join( f"\n        .Ret<{ b.jax_ffi_ret_type() }>()" for b in buffers ),
+        axis_defs   = "\n".join( _axis_def( n ) for n in ca.axis_names ),
+        struct_defs = "\n\n".join( struct_defs.values() ),
+        params      = ", ".join( params ),
+        decls       = "\n".join( ca_.cpp_root_decl( n ) for n, ca_ in ca.args.items() ),
+        seeds       = "\n".join( s for s in seeds if s ),
+        body        = code.fwd_code,
+        binds       = binds,
     )
 
-    target = compile_and_register( source, device )
+    target = compile_and_register( source, device, prefix )
 
-    results = jax.ffi.ffi_call( target, [ b.jax_out_spec() for b in buffers ] )()
-    buffer_to_array = dict( zip( buffers, results ) )
+    results = jax.ffi.ffi_call( target, [ b.jax_out_spec() for b in outputs ] )(
+        *[ b.jax_input_array() for b in inputs ]
+    )
+    if not isinstance( results, ( list, tuple ) ):
+        results = [ results ]
 
-    reconstructed = { name: arg_ca.jax_reconstruct( buffer_to_array ) for name, arg_ca in ca.args.items() }
-    if len( reconstructed ) == 1:
-        return next( iter( reconstructed.values() ) )
-    return reconstructed
+    # an output attribute was EMPTY (that is what made it declarable as one), so filling it in
+    # is not a mutation of anything the caller could already have observed.
+    for buffer, array in zip( outputs, results ):
+        buffer.jax_write_back( array )

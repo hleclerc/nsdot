@@ -18,11 +18,11 @@ class AbstractAxis( Attribute ):
     """
 
     @classmethod
-    def make_CallArg( cls, caa, io_category, name, value, ctor_args, schema = None ):
-        # An axis is not a buffer, but it is resolvable: a `CallArg_Axis` node that carries its
-        # affine extent and computes it on demand (see `CallArg_Tensor.resolve_shape`).
-        from ..drivers.CallArg_Axis import CallArg_Axis
-        return CallArg_Axis( caa, io_category, name, schema.args[ 0 ] )
+    def make_CallArg( cls, caa, path, name, inst ):
+        # An axis lowers to NOTHING: it is a declaration, not data. Its extent is already baked
+        # into the shape of every tensor that uses it, and its name is registered by those
+        # tensors (a tensor may borrow an axis from an object that is not even an argument).
+        return None
 
     def __init__( self, parent_inst = None, /, template_args = [], template_kwargs = {} ) -> None:
         from .ShapeVar import ShapeVar
@@ -96,13 +96,24 @@ class AbstractAxis( Attribute ):
         """One declared axis <-> its own array dimension (`tensor._spec_dims[ index ]`,
         which accounts for an unrolled AxisList sibling spanning several dimensions):
         each of our `ShapeVar`s is solved from that size (a scalar when dense, a
-        per-segment array when ragged)."""
+        per-segment array when ragged).
+
+        The same inversion serves twice, on two different sizes: the tensor's LOGICAL sizes
+        give our count, its ALLOCATED sizes give the capacity its buffer was made with."""
         for shape_var in self.coeffs:
-            def resolve( t, axis = self, index = index, shape_var = shape_var ):
-                if t._sizes is None:
+            def resolve( t, allocated, axis = self, index = index, shape_var = shape_var ):
+                sizes = t.allocated_sizes if allocated else t._sizes
+                if sizes is None:
                     return None
-                return axis.solve_single( shape_var, t._sizes[ t._spec_dims[ index ] ] )
+                return axis.solve_single( shape_var, sizes[ t._spec_dims[ index ] ] )
             shape_var.add_usage( tensor, resolve )
+
+    # ---- extents (virtual) ----
+    def capacity_list( self, capacity_of ):
+        """The member's extents for an allocation, as a list to be concatenated into a tensor
+        shape -- `capacity_of( shape_var )` being what the CALL decided to allocate for each of
+        our variables (a capacity is never our own state, see `ShapeVar`)."""
+        raise NotImplementedError
 
     # ---- virtual ----
     def _init_axis( self, parent_inst, template_args ):

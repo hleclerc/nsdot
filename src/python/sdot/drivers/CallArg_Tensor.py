@@ -1,44 +1,43 @@
 from .CallArg import CallArg
 
 class CallArg_Tensor( CallArg ):
-    """A tensor buffer crossing the FFI boundary.
+    """A tensor attribute, and how it reaches the kernel.
 
-    `value` is the concrete input tensor when known (input), else `None` (an output to build).
-    `schema` is the `Parametrized` declaration (`Tensor["num_vertex","dim"]`); its `args` are
-    the declared axis names, used to resolve the `shape` and to name the C++ `TensorView`
-    axes. `dtype` is the element `Dtype`. Registers itself in `caa.tensors`.
+    `inst` is the `Tensor` itself, so everything is read off it -- there is nothing to resolve
+    from siblings. The shape depends on the direction, and that is the whole point:
 
-    Codegen splits by concern: `cpp_*` methods emit the driver-agnostic C++ struct (identical
-    for Jax or Torch), while `jax_*` methods carry the Jax FFI ABI (buffer types, data
-    pointer, result specs). A `torch_*` counterpart will reuse the same `cpp_*`.
+    * INPUT   -> `inst.capacity`: the size the data ACTUALLY has (read off its buffer). An
+                 output that wants to grow must not force us to inflate the input.
+    * OUTPUT  -> the size THIS CALL asks for: the axes evaluated on the capacities the call was
+                 given (see `CallArgsAnalysis`). Known to Python, as an XLA shape must be.
+    * UNBOUND -> no buffer, and no `TensorView` either: the attribute lowers to a `NoneTensor`,
+                 a distinct TYPE carrying the declared TF/Shape/AxisNames and no data. The
+                 kernel discriminates at compile time; there is nothing to test at runtime.
 
-    `shape`:
-    * `value` known  -> `value.shape`.
-    * output (`value is None`) -> resolved from the declared axes against the sibling
-      `ShapeVar` capacities, in `resolve_shape` (needs the owning aggregate).
+    Codegen splits by concern: `cpp_*` emits the driver-agnostic C++ (identical for Jax or
+    Torch), `jax_*` carries the Jax FFI ABI (buffer types, data pointer, result specs).
     """
 
-    name : str
-    shape : list
+    def __init__( self, call_args_analysis, path, name, inst ) -> None:
+        super().__init__( call_args_analysis.io_category( path, inst.raw is not None ), name )
 
-    def __init__( self, call_args_analysis, io_category, name, value = None, schema = None, dtype = None ) -> None:
-        super().__init__( io_category )
+        self.inst = inst
+        self.dtype = inst.dtype
+        self.axis_names = [ axis.name for axis, _ in inst.specs ]
 
-        self.name = name
-        self.value = value
-        self.schema = schema
-        self.dtype = dtype
-        self.shape = list( value.shape ) if value is not None else None
+        if self.io_category.is_output:
+            self.shape = [ int( s ) for s in call_args_analysis.output_shape( inst, path ) ]
+        elif self.io_category.is_input:
+            self.shape = [ int( s ) for s in inst.capacity ]
+        else:
+            self.shape = [ 0 ] * inst.rank
 
-        call_args_analysis.register_tensor( self )
+        if self.io_category.is_bound:
+            call_args_analysis.register_tensor( self )
+            for axis_name in self.axis_names:
+                call_args_analysis.register_axis( axis_name )
 
-    def resolve_shape( self, owner ) -> None:
-        if self.shape is not None:
-            return
-        axis_names = self.schema.args if self.schema is not None else []
-        self.shape = [ owner.attributes[ a ].extent( owner.attributes ) for a in axis_names ]
-
-    # -- driver-agnostic C++ (the struct is the same for every driver) --
+    # -- driver-agnostic C++ (the same for every driver) --
     def _cpp_scalar( self ):
         import numpy
         dt = numpy.dtype( self.dtype.driver_version )
@@ -48,15 +47,14 @@ class CallArg_Tensor( CallArg ):
 
     def _cpp_memory_space( self ):
         # `tensor_view` builds CPU-host views for now; a device-dependent memory space will
-        # become one more template parameter of the owning struct.
+        # become part of this member's type, like everything else about it.
         return "CpuHostMemorySpace"
 
     def _cpp_shape_tuple( self ):
         return "tuple( " + ", ".join( f"SI( { int( s ) } )" for s in self.shape ) + " )"
 
     def _cpp_axis_tuple( self ):
-        names = self.schema.args if self.schema is not None else []
-        return "tuple( " + ", ".join( names ) + " )"
+        return "tuple( " + ", ".join( self.axis_names ) + " )"
 
     def _cpp_shape_type( self ):
         # the *type* of the shape tuple: only the rank (extents are runtime `SI`s) -- a
@@ -65,29 +63,40 @@ class CallArg_Tensor( CallArg ):
 
     def _cpp_axis_names_type( self ):
         # `DEFINE_AXIS( num_vertex )` declares the type `_num_vertex` (and the value `num_vertex`).
-        names = self.schema.args if self.schema is not None else []
-        return "Tuple<" + ", ".join( "_" + n for n in names ) + ">"
+        return "Tuple<" + ", ".join( "_" + n for n in self.axis_names ) + ">"
 
-    # -- template parameters of the owning struct --
-    def cpp_tpl_names( self, prefix = "" ):
-        """What varies from one instance of the aggregate to another: the scalar type and the
-        shape type (its rank, hence a shape param rather than a spelled-out `Tuple<SI,SI>`: an
-        unrolled `AxisList` gives a rank that depends on the compile-time ShapeVars). `prefix`
-        is the attribute path of the owning aggregate when it is itself a nested member."""
-        return [ f"TF_{ prefix }{ self.name }", f"Shape_{ prefix }{ self.name }" ]
+    def cpp_type( self ):
+        """This member's C++ type. An unbound attribute is not a degenerate view: it is a
+        `NoneTensor`, so its absence is a compile-time fact."""
+        if not self.io_category.is_bound:
+            return ( f"NoneTensor<{ self._cpp_scalar() }, { self._cpp_shape_type() }, "
+                     f"{ self._cpp_axis_names_type() }>" )
+        return ( f"TensorView<{ self._cpp_scalar() }, { self._cpp_shape_type() }, "
+                 f"{ self._cpp_memory_space() }, { self._cpp_axis_names_type() }>" )
 
-    def cpp_tpl_params( self, prefix = "" ):
-        return [ "class " + n for n in self.cpp_tpl_names( prefix ) ]
+    def cpp_view( self ):
+        # a `NoneTensor` has nothing to view: it value-initializes.
+        if not self.io_category.is_bound:
+            return f"{ self.cpp_type() }{{}}"
+        ptr = self.jax_data_ptr()
+        return f"tensor_view( { ptr }, { self._cpp_shape_tuple() }, { self._cpp_axis_tuple() } )"
 
-    def cpp_tpl_args( self ):
-        return [ self._cpp_scalar(), self._cpp_shape_type() ]
+    # -- as a member of an aggregate: one type parameter, spelled out at instantiation --
+    def cpp_tpl_param( self ):
+        return f"class { self.cpp_tpl_name() }"
 
-    def cpp_member( self, prefix = "" ):
-        # spelled structurally (rather than a `decltype` of the view expression): C++ code can
-        # read the scalar type, the rank and the axis names straight from the member type.
-        tf, shape = self.cpp_tpl_names( prefix )
-        return ( f"TensorView<{ tf }, { shape }, { self._cpp_memory_space() }, "
-                 f"{ self._cpp_axis_names_type() }> { self.name };" )
+    def cpp_tpl_arg( self ):
+        return self.cpp_type()
+
+    def cpp_member( self ):
+        return f"{ self.cpp_tpl_name() } { self.name };"
+
+    # -- as a ROOT argument (a tensor needs no wrapper aggregate to be passed) --
+    def cpp_root_decl( self, var_name ):
+        return f"    auto { var_name } = { self.cpp_view() };"
+
+    def cpp_struct_defs( self ):
+        return {}
 
     # -- Jax FFI ABI --
     def _jax_ffi_elem( self ):
@@ -97,15 +106,21 @@ class CallArg_Tensor( CallArg ):
                  ( "i", 4 ): "ffi::S32", ( "i", 8 ): "ffi::S64",
                  ( "u", 4 ): "ffi::U32", ( "u", 8 ): "ffi::U64" }[ ( dt.kind, dt.itemsize ) ]
 
-    def jax_ffi_ret_type( self ):
-        return f"ffi::BufferR{ len( self.shape ) }<{ self._jax_ffi_elem() }>"
+    def jax_ffi_type( self ):
+        return f"ffi::BufferR{ len( self._jax_buffer_shape() ) }<{ self._jax_ffi_elem() }>"
+
+    def _jax_buffer_shape( self ):
+        return self.shape
 
     def jax_cpp_init( self ):
-        return f"tensor_view( { self.ffi_name }->typed_data(), { self._cpp_shape_tuple() }, { self._cpp_axis_tuple() } )"
+        return self.cpp_view()
+
+    def jax_input_array( self ):
+        return self.inst.raw
 
     def jax_out_spec( self ):
         import jax
-        return jax.ShapeDtypeStruct( tuple( int( s ) for s in self.shape ), self.dtype.driver_version )
+        return jax.ShapeDtypeStruct( tuple( int( s ) for s in self._jax_buffer_shape() ), self.dtype.driver_version )
 
-    def jax_value( self, buffer_to_array ):
-        return buffer_to_array[ self ]
+    def jax_write_back( self, array ):
+        self.inst.set_raw( array )

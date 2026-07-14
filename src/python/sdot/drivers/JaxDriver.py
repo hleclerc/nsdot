@@ -169,15 +169,35 @@ class JaxDriver:
         return jax.random.uniform( jax.random.PRNGKey( seed ), tuple( shape ), dtype = dtype_ver )
 
 
-    def call( self, code : FfiCode | str, **kwargs ):
-        ca = CallArgsAnalysis( kwargs )
+    def call( self, code : FfiCode | str, output_attributes = (), capacities = {}, **kwargs ):
+        """Run the C++ `code` on the objects passed as kwargs.
+
+        The objects are built by the caller; nothing is returned. Both lists below name
+        attributes by dotted path (`"cell.vertex_positions"`, or `"cell"` for a whole subtree).
+
+        `output_attributes` are what the kernel PRODUCES: a fresh buffer, rebound onto the
+        attribute once the call returns. An attribute that already holds data is an input; an
+        empty, undeclared one is not bound at all (the kernel sees a null view -- it may simply
+        be an optional field this kernel does not use).
+
+        `capacities` says how big to allocate: `{ "cell.nb_vertices": 8 }`. It belongs to the
+        call and not to the object, because it is a decision about THIS allocation -- an object
+        only ever states what it IS. A capacity already materialized in a buffer need not be
+        restated (it is read back from it).
+
+        Inputs and outputs are disjoint, as in XLA: an update in place is a Python-side
+        rebinding, for the caller to make between two calls.
+        """
+        ca = CallArgsAnalysis( kwargs, output_attributes, capacities )
 
         if isinstance( code, str ):
             code = FfiCode( code )
 
-        # Compile `code.fwd_code` bound to the buffers described by `ca` (slice 3a: ShapeVar
-        # outputs), run it, and return the reconstructed output object(s).
-        return ffi_call( code, ca, self.device )
+        prefix = code.name
+        if prefix:
+            prefix += "_"
+
+        ffi_call( code, ca, self.device, prefix )
 
 
     # class CapacityOverflow( RuntimeError ):

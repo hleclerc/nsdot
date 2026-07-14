@@ -51,11 +51,12 @@ public:
     /* */            TensorView             ( const TensorView & ) = default; ///< Eigen-like view semantics: copy-construction shares the data (shallow), while operator= copies the elements (deep). The defaulted copy-ctor also silences -Wdeprecated-copy.
     /* */            TensorView             () = default;
 
-    // generic info
-    bool             not_surely_null        () const { return ! surely_null(); }
-    bool             surely_null            () const; ///< is_invalid() || Zero tensor
-    bool             is_invalid             () const; ///<
-    bool             is_valid               () const; ///<
+    // generic info. A view HAS data, and says so in its type: the answer is a `Ct`, known at
+    // compile time, so a kernel branches with `if constexpr` and never tests a pointer. The
+    // storageless cases are distinct TYPES (see NoneTensor.h -- unbound, and ZeroTensor.h --
+    // symbolically zero), not a TensorView in a degenerate state.
+    constexpr auto   is_valid               () const { return Ct<bool,true >(); }
+    constexpr auto   surely_null            () const { return Ct<bool,false>(); }
 
     MemorySpace      memory_space           () const { return _data.memory_space; }
     // (pas de membre display : le display() générique de display.h gère TensorView via shape()/value()/operator[])

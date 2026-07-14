@@ -13,7 +13,14 @@ class Attribute:
     build a fresh per-instance `Attribute` that holds that instance's state, kept
     in `self._attributes`. `@aggregate` installs one data descriptor per field:
     `c.field` returns `get` (the read view), `c.field = value` routes to `set`.
+
+    `name` is the declared field name, stamped by `get_attribute`. An `Attribute`
+    that outlives its aggregate keeps it (a `Tensor` built on a borrowed `Axis`
+    still knows that axis is called `num_vertex`, which is what the C++ side needs
+    to name it).
     """
+
+    name = None
 
     def __class_getitem__( cls, item ):
         if isinstance( item, tuple ):
