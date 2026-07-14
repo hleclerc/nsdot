@@ -21,6 +21,7 @@ class CallArg_ShapeVar( CallArg ):
         super().__init__( call_args_analysis.io_category( path, _has_count( inst ) ), name )
 
         self.inst = inst
+        self.memory_space = call_args_analysis.cpp_memory_space
         # one count per cell of the ragged structure this var varies along (none -> a scalar).
         self.shape = [ int( s ) for axis in inst.dep_axes
                        for s in axis.capacity_list( lambda sv: call_args_analysis.capacity_of( sv, path ) ) ]
@@ -37,7 +38,16 @@ class CallArg_ShapeVar( CallArg ):
 
     # -- driver-agnostic C++ (the same for every driver) --
     def _cpp_shape_tuple( self ):
-        return "tuple( " + ", ".join( f"SI( { int( s ) } )" for s in self.shape ) + " )"
+        # the extents come from the BUFFER, not from `self.shape`: see `CallArg.jax_dim`.
+        return "tuple( " + ", ".join( self.jax_dim( d ) for d in range( len( self.shape ) ) ) + " )"
+
+    def _cpp_max_bound( self ):
+        """The capacity a written count is checked against. A CALL parameter, so it reaches the
+        kernel as an FFI attribute -- as a literal it would recompile the kernel for each
+        capacity. Unbound: nothing crosses, so the literal is all there is."""
+        if not self.io_category.is_bound:
+            return f"SI( { self.max_bound } )"
+        return f"SI( { self._jax_attr_name() } )"
 
     def _cpp_shape_type( self ):
         return "Tuple<" + ", ".join( "SI" for _ in self.shape ) + ">"
@@ -46,23 +56,20 @@ class CallArg_ShapeVar( CallArg ):
         # counts use unnamed axes (they are positional).
         if not self.io_category.is_bound:
             return f"NoneTensor<std::int32_t, { self._cpp_shape_type() }, Tuple<>>"
-        return f"TensorView<std::int32_t, { self._cpp_shape_type() }, CpuHostMemorySpace>"
+        return f"TensorView<std::int32_t, { self._cpp_shape_type() }, { self.memory_space }>"
 
     def cpp_type( self ):
         return f"ShapeVarView<{ self._cpp_counts_type() }>"
 
     def cpp_view( self ):
         if not self.io_category.is_bound:
-            return f"{ self.cpp_type() }{{ { self._cpp_counts_type() }{{}}, SI( { self.max_bound } ) }}"
-        view = f"tensor_view( { self.jax_data_ptr() }, { self._cpp_shape_tuple() } )"
-        return f"make_shape_var_view( { view }, SI( { self.max_bound } ) )"
+            return f"{ self.cpp_type() }{{ { self._cpp_counts_type() }{{}}, { self._cpp_max_bound() } }}"
+        view = f"tensor_view<{ self.memory_space }>( { self.jax_data_ptr() }, { self._cpp_shape_tuple() } )"
+        return f"make_shape_var_view( { view }, { self._cpp_max_bound() } )"
 
     # -- as a member of an aggregate --
     def cpp_tpl_param( self ):
         return f"class { self.cpp_tpl_name() }"
-
-    def cpp_tpl_arg( self ):
-        return self.cpp_type()
 
     def cpp_member( self ):
         return f"{ self.cpp_tpl_name() } { self.name };"
@@ -74,19 +81,31 @@ class CallArg_ShapeVar( CallArg ):
         return {}
 
     # -- seeding: what an output must hold before the body runs --
+    # A pure output starts at whatever XLA left in the buffer, and the body may only increment
+    # it, so it has to be zeroed first. Through the QUEUE, not by a host loop: the buffer lives
+    # where the kernel runs, which on a GPU is somewhere the host cannot write. A scalar count
+    # broadcasts over all the cells of a ragged one, so this is right at any rank.
     def cpp_seed_member( self, owner_name ):
-        # a pure output starts empty: the kernel is what fills it. A scalar broadcasts over all
-        # cells, so this is correct at any rank.
         if not self.io_category.is_output:
             return ""
-        return f"{ owner_name }.{ self.name } = 0;"
+        return f"{ owner_name }.{ self.name }.fill_with( queue, 0 );"
 
     def cpp_seed_root( self, var_name ):
         if not self.io_category.is_output:
             return ""
-        return f"    { var_name } = 0;"
+        return f"    { var_name }.fill_with( queue, 0 );"
 
     # -- Jax FFI ABI --
+    def _jax_attr_name( self ):
+        # the FFI attributes share one flat namespace, like the buffers: name it after ours.
+        return f"max_{ self.ffi_name }"
+
+    def jax_attrs( self ):
+        """The scalars this node needs at run time, but NOT through a buffer: an XLA FFI
+        attribute is baked into the call, not into the kernel, so the same compiled kernel serves
+        every capacity."""
+        return [ ( self._jax_attr_name(), "int64_t", int( self.max_bound ) ) ]
+
     def _jax_buffer_shape( self ):
         # rank-0 count -> a 1-element buffer (avoid xla FFI rank-0 buffers).
         return self.shape if self.shape else [ 1 ]

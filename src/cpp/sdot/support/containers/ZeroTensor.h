@@ -27,6 +27,11 @@ struct ZeroTensor {
     constexpr auto   operator()             ( auto &&...  ) const { return ZeroTensor<TF, Tuple<>, Tuple<>>(); }
     constexpr TF     value                  () const { return 0; }
     constexpr        operator TF            () const { return 0; }
+
+    // as a `run_parallel` argument: no storage backs it, so it crosses into the kernel
+    // unchanged, at no cost, whatever the queue and the io category.
+    constexpr auto   transfer_cost          ( const auto &/*queue*/, auto /*io_category*/ ) const { return Ct<double,0.0>(); }
+    constexpr auto   make_available         ( auto &&/*queue*/, auto /*io_category*/, auto &&cont ) const { return cont( *this ); }
 };
 
 } // namespace sdot

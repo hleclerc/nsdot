@@ -21,10 +21,18 @@ namespace detail {
 /// Ensemble des multi-indices d'une forme (cf. `CartesianIndices` en Julia).
 /// Utilisée comme item_list de `run_parallel` : le kernel reçoit `item_list[flat]`, c.-à-d. le
 /// multi-indice correspondant. Trivialement copiable (ne porte que la forme) -> capturable kernel.
+/// Le cas de rang 0 (`CartesianIndices<Tuple<>>`) est légitime et fréquent : un seul item, le
+/// multi-indice vide -- « une passe, sans axe de batch » (c'est le `global_batch_indices` par
+/// défaut d'un kernel généré ; un `vmap` lui ajoute des axes).
 template<class Shape>
 struct CartesianIndices {
     auto size          () const { return product( shape ); }
-    auto operator[]    ( auto flat ) const { return detail::unravel_index( flat, tuple(), shape.without_index( 0_c ) ); }
+    auto operator[]    ( auto flat ) const {
+        if constexpr ( Shape::ct_size == 0 )
+            return tuple();
+        else
+            return detail::unravel_index( flat, tuple(), shape.without_index( 0_c ) );
+    }
     auto make_available( auto &&/*queue*/, auto &&/*io_category*/, auto &&cont ) const { return cont( *this ); }
 
     /// intersection des parcours : min terme à terme des formes (mêmes rangs).

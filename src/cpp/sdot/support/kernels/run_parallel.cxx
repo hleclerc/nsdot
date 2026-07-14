@@ -139,7 +139,10 @@ namespace detail::RunParallel {
 
 // `second` = soit un Dependencies (déps explicites via after(...)), soit l'item_list (pas de déps).
 auto run_parallel( auto &&queue_list, auto &&second, auto &&...rest ) {
-    if constexpr ( is_dependencies<DECAYED_TYPE_OF( second )> )
+    // une queue seule vaut une liste d'une queue (une queue porte une `sycl::queue`, pas un Tuple)
+    if constexpr ( requires { queue_list.queue; } )
+        return run_parallel( tuple( FORWARD( queue_list ) ), FORWARD( second ), FORWARD( rest )... );
+    else if constexpr ( is_dependencies<DECAYED_TYPE_OF( second )> )
         return detail::RunParallel::_run_parallel( FORWARD( queue_list ), FORWARD( second ), FORWARD( rest )... );
     else
         return detail::RunParallel::_run_parallel( FORWARD( queue_list ), Dependencies<0>{}, FORWARD( second ), FORWARD( rest )... );

@@ -21,9 +21,31 @@ class CallArg:
         us, which is the only scope it lives in."""
         return f"T_{ self.name }"
 
+    def cpp_io_list( self ):
+        """This member's io category, as the tag `run_parallel` speaks (see kernels/IoCategory.h).
+
+        It is what tells `make_available` how much to move: an input is copied to the device but
+        not back, an output back but not in. Python already knows it attribute by attribute, so a
+        kernel argument is made available MEMBER BY MEMBER -- nothing crosses that has no reason
+        to."""
+        from .IoCategory import IoCategory
+        return { IoCategory.INPUT: "InpList()",
+                 IoCategory.OUTPUT: "OutList()",
+                 IoCategory.UNBOUND: "UndefList()" }[ self.io_category ]
+
+    def _jax_buffer( self ):
+        """How to reach the FFI buffer: an arg is passed by value, a result is pointer-like."""
+        return f"{ self.ffi_name }->" if self.io_category.is_output else f"{ self.ffi_name }."
+
     def jax_data_ptr( self ):
-        """Pointer to this buffer's data: an FFI arg is passed by value, a result is
-        pointer-like."""
-        if self.io_category.is_output:
-            return f"{ self.ffi_name }->typed_data()"
-        return f"{ self.ffi_name }.typed_data()"
+        return f"{ self._jax_buffer() }typed_data()"
+
+    def jax_dim( self, d ):
+        """Extent `d` of this buffer, READ FROM THE BUFFER at run time.
+
+        A capacity must never be a literal in the source: it changes from call to call, and
+        every distinct value would mean another compilation of the same kernel. XLA already
+        carries the extents next to the data, so the generated code just asks for them -- what
+        stays in the C++ type is what is genuinely structural (scalar, rank, axis names, and the
+        compile-time counts one WANTS in the type)."""
+        return f"SI( { self._jax_buffer() }dimensions()[ { d } ] )"

@@ -25,6 +25,11 @@ struct NoneTensor {
 
     constexpr auto   is_valid               () const { return Ct<bool,false>(); } ///< no data at all
     constexpr auto   surely_null            () const { return Ct<bool,true >(); } ///< nothing to read: reads nothing but zero
+
+    // as a `run_parallel` argument: there is no storage to make available anywhere, so it
+    // crosses into the kernel unchanged, at no cost, whatever the queue and the io category.
+    constexpr auto   transfer_cost          ( const auto &/*queue*/, auto /*io_category*/ ) const { return Ct<double,0.0>(); }
+    constexpr auto   make_available         ( auto &&/*queue*/, auto /*io_category*/, auto &&cont ) const { return cont( *this ); }
 };
 
 } // namespace sdot

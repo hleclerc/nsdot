@@ -11,12 +11,12 @@ class Cpu( Device ):
         return "Cpu"
 
     @property
-    def cpp_type( self ):
-        return "ExecutionContext_Cpu"
+    def cpp_queue_type( self ):
+        return "CpuQueue"
 
     @property
-    def mem_type( self ):
-        return "MemorySpace_CpuRam"
+    def cpp_memory_space( self ):
+        return "CpuHostMemorySpace"
 
     @property
     def signature( self ):

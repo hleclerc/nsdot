@@ -25,6 +25,7 @@ import sys
 
 import jax
 import jax.numpy as jnp
+import numpy
 
 from ..compilation.adaptive_cpp import make_library
 from ..compilation import build_dir
@@ -121,6 +122,10 @@ def call_body( body: str, device ):
 # body can read and write `cell.<field>`.
 _CALL_TEMPLATE = """\
 #include "xla/ffi/api/ffi.h"
+#define SDOT_QUEUE {queue_type}
+#include "sdot/Queue.h"
+#include "sdot/support/algorithms/CartesianIndices.h"
+#include "sdot/support/kernels/run_parallel.h"
 #include "sdot/support/common_types.h"
 #include "sdot/support/Ct.h"
 #include "sdot/support/containers/TensorView.h"
@@ -138,6 +143,16 @@ using namespace sdot;
 {struct_defs}
 
 static ffi::Error sdot_ffi_impl( {params} ) {{
+    // the one execution context of this call. A `sycl::queue` is expensive to create, and this
+    // handler always runs on the same device (the device is in the TYPE of everything below), so
+    // there is exactly one, made on first use -- and never destroyed: the SYCL runtime is torn
+    // down before the statics of a dlopen'ed handler are, and a queue outliving it deadlocks.
+    static Queue &queue = *new Queue();
+
+    // what the body iterates over. No batch axis yet -> a single item, the empty multi-index; a
+    // `vmap` is what will give this shape its axes (`CartesianIndices` grows, the body does not).
+    CartesianIndices<Tuple<>> global_batch_indices;
+
 {decls}
 {seeds}
     {{
@@ -177,19 +192,29 @@ def call( code, ca, device, prefix = "" ):
     inputs = [ t for t in ca.tensors if t.io_category.is_input ]
     outputs = [ t for t in ca.tensors if t.io_category.is_output ]
 
+    # scalars that are neither data nor structure -- a capacity, typically. They cross as XLA FFI
+    # ATTRIBUTES: baked into the call, not into the kernel, so a new capacity does not mean a new
+    # compilation. (Extents need no attribute at all: XLA carries them next to the data.)
+    attrs = [ a for b in ca.tensors if hasattr( b, "jax_attrs" ) for a in b.jax_attrs() ]
+
     struct_defs = {}
     for arg_ca in ca.args.values():
         struct_defs.update( arg_ca.cpp_struct_defs() )
 
+    # XLA FFI binds in this order, and the handler's parameters must follow it: args, results,
+    # then attributes.
     params = [ f"{ b.jax_ffi_type() } { b.ffi_name }" for b in inputs ]
     params += [ f"ffi::Result<{ b.jax_ffi_type() }> { b.ffi_name }" for b in outputs ]
+    params += [ f"{ cpp_type } { name }" for name, cpp_type, _ in attrs ]
 
     binds = "".join( f"\n        .Arg<{ b.jax_ffi_type() }>()" for b in inputs )
     binds += "".join( f"\n        .Ret<{ b.jax_ffi_type() }>()" for b in outputs )
+    binds += "".join( f'\n        .Attr<{ cpp_type }>( "{ name }" )' for name, cpp_type, _ in attrs )
 
     seeds = [ ca_.cpp_seed_root( n ) for n, ca_ in ca.args.items() if hasattr( ca_, "cpp_seed_root" ) ]
 
     source = _CALL_TEMPLATE.format(
+        queue_type  = device.cpp_queue_type,
         axis_defs   = "\n".join( _axis_def( n ) for n in ca.axis_names ),
         struct_defs = "\n\n".join( struct_defs.values() ),
         params      = ", ".join( params ),
@@ -201,8 +226,12 @@ def call( code, ca, device, prefix = "" ):
 
     target = compile_and_register( source, device, prefix )
 
+    # the kernel dereferences its buffers where IT runs, so an input has to be there: an array
+    # built on the host would otherwise be read through a device pointer.
+    arrays = [ jax.device_put( b.jax_input_array(), device.driver_version ) for b in inputs ]
+
     results = jax.ffi.ffi_call( target, [ b.jax_out_spec() for b in outputs ] )(
-        *[ b.jax_input_array() for b in inputs ]
+        *arrays, **{ name: numpy.int64( value ) for name, _, value in attrs }
     )
     if not isinstance( results, ( list, tuple ) ):
         results = [ results ]

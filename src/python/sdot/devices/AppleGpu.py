@@ -29,12 +29,13 @@ class AppleGpu( Device ):
         return "metal"
 
     @property
-    def cpp_type( self ):
-        return "ExecutionContext_Cpu"
+    def cpp_queue_type( self ):
+        # not acpp-reachable (see `acpp_targets`): no SYCL queue targets Metal.
+        raise NotImplementedError
 
     @property
-    def mem_type( self ):
-        return "MemorySpace_CpuRam"
+    def cpp_memory_space( self ):
+        raise NotImplementedError
 
     @property
     def is_apple_gpu( self ):

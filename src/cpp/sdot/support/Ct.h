@@ -22,6 +22,11 @@ struct Ct {
         return i;
     }
 
+    // as a `run_parallel` argument: la valeur est dans le type, il n'y a rien en mémoire à
+    // rendre accessible -- elle traverse le kernel telle quelle, à coût nul.
+    constexpr auto transfer_cost ( const auto &/*queue*/, auto /*io_category*/ ) const { return Ct<double,0.0>(); }
+    constexpr auto make_available( auto &&/*queue*/, auto /*io_category*/, auto &&cont ) const { return cont( *this ); }
+
     T_U void display( U &os ) const {
         os << "Ct(" << i  << ")";
     }

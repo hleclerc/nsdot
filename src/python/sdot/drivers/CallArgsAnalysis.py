@@ -35,12 +35,17 @@ class CallArgsAnalysis:
        use it -- a fact, not a decision, so a chained call need not restate it;
     3. else a count Python actually holds (a `CtShapeVar`, a prescribed value);
     4. else there is nothing to allocate from, and we say which attribute is missing.
+
+    The DEVICE is here too: it is not a runtime parameter of the kernel but part of the type of
+    everything the kernel touches (a buffer's memory space is in its `TensorView` type), so every
+    node needs it while it emits its C++.
     """
 
     tensors: list   # the buffers to bind, in FFI order
     args: dict
 
-    def __init__( self, args : dict, output_attributes = (), capacities = {} ) -> None:
+    def __init__( self, args : dict, device, output_attributes = (), capacities = {} ) -> None:
+        self.device = device
         self.output_paths = list( output_attributes )
         self.declared_outputs = set()
         self.type_names = {}
@@ -76,6 +81,11 @@ class CallArgsAnalysis:
         for name in names[ 1: ]:
             inst = get_attribute( name, inst )
         return inst
+
+    @property
+    def cpp_memory_space( self ):
+        """Where the buffers of this call already live -- part of the type of every view we emit."""
+        return self.device.cpp_memory_space
 
     def capacity_of( self, shape_var, path ):
         """How much to allocate for `shape_var` in this call (see the class docstring)."""

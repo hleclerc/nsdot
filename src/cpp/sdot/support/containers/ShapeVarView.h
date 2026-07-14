@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../kernels/make_avaiable.h"
+#include "../kernels/transfer_cost.h"
 #include "../common_types.h"
 
 namespace sdot {
@@ -24,6 +26,22 @@ struct ShapeVarView {
     }
 
     operator SI() const { return view.value(); }
+
+    /// remise à zéro d'un compteur de sortie. Passe par la queue (donc par un kernel) : sur un
+    /// device, le buffer n'est pas accessible depuis l'hôte -- ce n'est pas une boucle hôte.
+    void fill_with( auto &&queue, auto v ) { view.fill_with( FORWARD( queue ), v ); }
+
+    // comme argument de `run_parallel` : on rend la vue disponible, et on reconstruit la même
+    // `ShapeVarView` autour (le `max` est une constante, il suit la vue dans le kernel).
+    auto transfer_cost ( const auto &queue, auto io_category ) const {
+        return sdot::transfer_cost( queue, io_category, view );
+    }
+
+    auto make_available( auto &&queue, auto io_category, auto &&cont ) const {
+        return sdot::make_available( queue, io_category, view, [&]( auto &&kernel_view ) {
+            return cont( ShapeVarView<DECAYED_TYPE_OF( kernel_view )>{ FORWARD( kernel_view ), max } );
+        } );
+    }
 };
 
 template<class View>

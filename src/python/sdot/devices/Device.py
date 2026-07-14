@@ -42,12 +42,19 @@ class Device:
     def name( self ) -> str:
         raise NotImplementedError
 
+    # ── what the device IS, in C++ ────────────────────────────────────────────
+    # A device is not a runtime parameter of a kernel: it is part of its TYPE. The queue decides
+    # which memory space the kernel dereferences (see Ptr.h), and the memory space of a buffer
+    # says where it already lives -- so both are typedefs in the generated source, and a call
+    # whose data XLA put on the GPU needs no transfer at all.
     @property
-    def cpp_type( self ) -> str:
+    def cpp_queue_type( self ) -> str:
+        """The `sdot::Queue` of a generated kernel ("CpuQueue" | "CudaQueue")."""
         raise NotImplementedError
 
     @property
-    def mem_type( self ) -> str:
+    def cpp_memory_space( self ) -> str:
+        """Where the buffers this device is given already live ("CpuHostMemorySpace" | ...)."""
         raise NotImplementedError
 
     @property

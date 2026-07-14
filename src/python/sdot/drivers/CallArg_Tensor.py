@@ -23,6 +23,7 @@ class CallArg_Tensor( CallArg ):
 
         self.inst = inst
         self.dtype = inst.dtype
+        self.memory_space = call_args_analysis.cpp_memory_space
         self.axis_names = [ axis.name for axis, _ in inst.specs ]
 
         if self.io_category.is_output:
@@ -45,13 +46,9 @@ class CallArg_Tensor( CallArg ):
                  ( "i", 4 ): "std::int32_t", ( "i", 8 ): "std::int64_t",
                  ( "u", 4 ): "std::uint32_t", ( "u", 8 ): "std::uint64_t" }[ ( dt.kind, dt.itemsize ) ]
 
-    def _cpp_memory_space( self ):
-        # `tensor_view` builds CPU-host views for now; a device-dependent memory space will
-        # become part of this member's type, like everything else about it.
-        return "CpuHostMemorySpace"
-
     def _cpp_shape_tuple( self ):
-        return "tuple( " + ", ".join( f"SI( { int( s ) } )" for s in self.shape ) + " )"
+        # the extents come from the BUFFER, not from `self.shape`: see `CallArg.jax_dim`.
+        return "tuple( " + ", ".join( self.jax_dim( d ) for d in range( len( self.shape ) ) ) + " )"
 
     def _cpp_axis_tuple( self ):
         return "tuple( " + ", ".join( self.axis_names ) + " )"
@@ -67,26 +64,25 @@ class CallArg_Tensor( CallArg ):
 
     def cpp_type( self ):
         """This member's C++ type. An unbound attribute is not a degenerate view: it is a
-        `NoneTensor`, so its absence is a compile-time fact."""
+        `NoneTensor`, so its absence is a compile-time fact. Where the data lives is in the type
+        too (`memory_space`): on a GPU, XLA already put this buffer in device memory."""
         if not self.io_category.is_bound:
             return ( f"NoneTensor<{ self._cpp_scalar() }, { self._cpp_shape_type() }, "
                      f"{ self._cpp_axis_names_type() }>" )
         return ( f"TensorView<{ self._cpp_scalar() }, { self._cpp_shape_type() }, "
-                 f"{ self._cpp_memory_space() }, { self._cpp_axis_names_type() }>" )
+                 f"{ self.memory_space }, { self._cpp_axis_names_type() }>" )
 
     def cpp_view( self ):
         # a `NoneTensor` has nothing to view: it value-initializes.
         if not self.io_category.is_bound:
             return f"{ self.cpp_type() }{{}}"
         ptr = self.jax_data_ptr()
-        return f"tensor_view( { ptr }, { self._cpp_shape_tuple() }, { self._cpp_axis_tuple() } )"
+        return ( f"tensor_view<{ self.memory_space }>( { ptr }, { self._cpp_shape_tuple() }, "
+                 f"{ self._cpp_axis_tuple() } )" )
 
     # -- as a member of an aggregate: one type parameter, spelled out at instantiation --
     def cpp_tpl_param( self ):
         return f"class { self.cpp_tpl_name() }"
-
-    def cpp_tpl_arg( self ):
-        return self.cpp_type()
 
     def cpp_member( self ):
         return f"{ self.cpp_tpl_name() } { self.name };"

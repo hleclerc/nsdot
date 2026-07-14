@@ -28,12 +28,14 @@ class CudaGpu( Device ):
         return "cuda"
 
     @property
-    def cpp_type( self ):
-        return "ExecutionContext_Cuda"
+    def cpp_queue_type( self ):
+        return "CudaQueue"
 
     @property
-    def mem_type( self ):
-        return "MemorySpace_GlobalCudaRam"
+    def cpp_memory_space( self ):
+        # XLA already hands us the call's buffers in the device's global memory: the kernel
+        # dereferences them where they are, and `make_available` merely retypes the pointers.
+        return "CudaGlobalMemorySpace"
 
     @property
     def is_cuda_gpu( self ):

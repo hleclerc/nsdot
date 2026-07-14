@@ -132,14 +132,21 @@ public:
     BytePtr          _data;                 ///< pointeur octet + zone mémoire, agrégés
 };
 
+// Vue sur des données dont on connaît l'adresse. La zone mémoire est un paramètre de TYPE (elle
+// fait partie du type de la vue, comme de celui du Ptr) : par défaut la RAM hôte, mais le kernel
+// généré d'un `driver.call` sur GPU la construit sur `CudaGlobalMemorySpace`, puisque c'est là
+// que XLA lui remet ses buffers.
+template<class MemorySpace = CpuHostMemorySpace>
 auto tensor_view( auto *ptr, auto &&shape, auto &&axis_names, auto &&strides ) {
     using TF = DECAYED_TYPE_OF( *ptr );
-    return TensorView<TF,DECAYED_TYPE_OF( shape ),CpuHostMemorySpace,DECAYED_TYPE_OF( axis_names ),DECAYED_TYPE_OF( strides )>(
-        Ptr<TF,CpuHostMemorySpace>( ptr ), FORWARD( shape ), FORWARD( strides )
+    return TensorView<TF,DECAYED_TYPE_OF( shape ),MemorySpace,DECAYED_TYPE_OF( axis_names ),DECAYED_TYPE_OF( strides )>(
+        Ptr<TF,MemorySpace>( ptr ), FORWARD( shape ), FORWARD( strides )
     );
 }
-auto tensor_view( auto *ptr, auto &&shape, auto &&axis_names ) { return tensor_view( ptr, shape, FORWARD( axis_names ), contiguous_strides<DECAYED_TYPE_OF( *ptr )>( shape ) ); }
-auto tensor_view( auto *ptr, auto &&shape ) { return tensor_view( ptr, FORWARD( shape ), unnamed_axes( shape ) ); }
+template<class MemorySpace = CpuHostMemorySpace>
+auto tensor_view( auto *ptr, auto &&shape, auto &&axis_names ) { return tensor_view<MemorySpace>( ptr, shape, FORWARD( axis_names ), contiguous_strides<DECAYED_TYPE_OF( *ptr )>( shape ) ); }
+template<class MemorySpace = CpuHostMemorySpace>
+auto tensor_view( auto *ptr, auto &&shape ) { return tensor_view<MemorySpace>( ptr, FORWARD( shape ), unnamed_axes( shape ) ); }
 
 
 

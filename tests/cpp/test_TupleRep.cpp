@@ -12,7 +12,7 @@ auto array( auto...values ) {
 
 TEST_CASE( "AxisValues", "" ) {
     auto t = tuple_rep( 1, 2 );
-    info( t[ 0 ] );
-    info( t[ 1 ] );
-    info( t[ 2 ] );
+    INFO( t[ 0 ] );
+    INFO( t[ 1 ] );
+    INFO( t[ 2 ] );
 }

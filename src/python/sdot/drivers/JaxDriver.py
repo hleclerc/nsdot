@@ -188,7 +188,7 @@ class JaxDriver:
         Inputs and outputs are disjoint, as in XLA: an update in place is a Python-side
         rebinding, for the caller to make between two calls.
         """
-        ca = CallArgsAnalysis( kwargs, output_attributes, capacities )
+        ca = CallArgsAnalysis( kwargs, self.device, output_attributes, capacities )
 
         if isinstance( code, str ):
             code = FfiCode( code )

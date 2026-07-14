@@ -29,9 +29,6 @@ class CallArg_CtShapeVar( CallArg ):
     def cpp_tpl_param( self ):
         return f"class { self.cpp_tpl_name() }"
 
-    def cpp_tpl_arg( self ):
-        return self.cpp_type()
-
     def cpp_member( self ):
         return f"{ self.cpp_tpl_name() } { self.name };"
 
