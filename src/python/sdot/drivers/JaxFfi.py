@@ -290,9 +290,10 @@ def _make_op( code, ca, device, prefix ):
     return op
 
 
-def call( code, ca, device, prefix = "" ):
-    """Run `code` on the buffers described by `ca`, and write the outputs back onto the objects
-    the caller handed us."""
+def _run( code, ca, device, prefix ):
+    """Run `code` on the buffers of `ca` and return `( output CallArgs, result arrays )`, WITHOUT
+    writing anything back. The caller decides what the results are: outputs to rebind onto Python
+    objects (a forward call), or cotangents to hand back to Jax (a backward call)."""
     inputs = [ t for t in ca.tensors if t.io_category.is_input ]
     outputs = [ t for t in ca.tensors if t.io_category.is_output ]
 
@@ -301,6 +302,19 @@ def call( code, ca, device, prefix = "" ):
     arrays = [ jax.device_put( b.jax_input_array(), device.driver_version ) for b in inputs ]
 
     results = _make_op( code, ca, device, prefix )( *arrays )
+    return outputs, list( results ) if isinstance( results, ( list, tuple ) ) else [ results ]
+
+
+def call( code, ca, device, prefix = "" ):
+    """Run `code` on the buffers described by `ca`, and write the outputs back onto the objects
+    the caller handed us.
+
+    When `code` carries a `bwd_code`, the call is made DIFFERENTIABLE: Jax is given a VJP rule
+    (`jax.custom_vjp`) whose backward is itself an ordinary kernel call (see `_call_backward`)."""
+    if code.bwd_code:
+        outputs, results = _call_with_vjp( code, ca, device, prefix )
+    else:
+        outputs, results = _run( code, ca, device, prefix )
 
     # an output attribute was EMPTY (that is what made it declarable as one), so filling it in
     # is not a mutation of anything the caller could already have observed. Under a `vmap` these
@@ -308,3 +322,171 @@ def call( code, ca, device, prefix = "" ):
     # be a copy: this one still describes the tensors as the caller knows them.
     for buffer, array in zip( outputs, results ):
         buffer.jax_write_back( array )
+
+
+def _call_with_vjp( code, ca, device, prefix ):
+    """The forward call, wrapped in a `jax.custom_vjp` so `jax.grad`/`jax.vjp` reach the backward
+    kernel. Returns the same `( outputs, results )` as `_run`, so the write-back is common.
+
+    Every FLOAT input is a differentiable primal; an INTEGER one is non-differentiable and
+    non-perturbable (a mesh of indices, a count), so it is captured as a constant of the trace and
+    never differentiated. `symbolic_zeros = True` gives us the two facts the backward needs to
+    stay cheap: which inputs Jax actually wants a gradient for (`perturbed`), and which output
+    cotangents are structurally zero (a `SymbolicZero`)."""
+    inputs = [ t for t in ca.tensors if t.io_category.is_input ]
+    outputs = [ t for t in ca.tensors if t.io_category.is_output ]
+
+    diff_idx = [ i for i, t in enumerate( inputs ) if t.dtype.floating_point ]
+    in_arrays = [ jax.device_put( t.jax_input_array(), device.driver_version ) for t in inputs ]
+
+    fwd_op = _make_op( code, ca, device, prefix )
+
+    def _full( diff_values ):
+        # the differentiable primals sit back among the captured (integer) inputs, in FFI order.
+        full = list( in_arrays )
+        for k, i in enumerate( diff_idx ):
+            full[ i ] = diff_values[ k ]
+        return full
+
+    @jax.custom_vjp
+    def op( diff_values ):
+        return tuple( fwd_op( *_full( diff_values ) ) )
+
+    def op_fwd( diff_values ):
+        # symbolic_zeros wraps each primal in `CustomVJPPrimal( value, perturbed )`.
+        perturbed = tuple( getattr( v, "perturbed", True ) for v in diff_values )
+        values = tuple( getattr( v, "value", v ) for v in diff_values )
+        full_in = _full( values )
+        outs = tuple( fwd_op( *full_in ) )
+        return outs, ( full_in, outs, perturbed )
+
+    def op_bwd( residuals, cotangents ):
+        full_in, out_values, perturbed = residuals
+        grads = _call_backward( code, ca, device, prefix, inputs, outputs, diff_idx,
+                                full_in, out_values, perturbed, cotangents )
+        return ( grads, )
+
+    op.defvjp( op_fwd, op_bwd, symbolic_zeros = True )
+
+    results = op( tuple( in_arrays[ i ] for i in diff_idx ) )
+    return outputs, list( results )
+
+
+def _grad_tensor( inst, array ):
+    """A bare tensor holding `array`, shaped like `inst` -- a residual (a forward input/output) or
+    a cotangent, entering the backward kernel as an input bound at the size its data has."""
+    from ..tensor.Tensor import Tensor
+    res = Tensor.like( inst )
+    res.set_raw( array )
+    return res
+
+
+def _call_backward( code, ca, device, prefix, inputs, outputs, diff_idx,
+                    full_in, out_values, perturbed, cotangents ):
+    """The backward pass, expressed as an ORDINARY kernel call whose body is `code.bwd_code`.
+
+    Each forward argument `X` yields two backward arguments, of the SAME type as `X` (a bare
+    tensor, or an aggregate mirrored member by member):
+
+    * a RESIDUAL `X`: the forward values, re-entering as backward INPUTS under the very name they
+      had -- so the body reads `cell.vertex_positions`, `inp`, ... exactly as the forward did;
+    * a gradient `grad_for_X`, whose tensors are, per member:
+        - a float forward OUTPUT   -> its cotangent, a backward INPUT (a `SymbolicZero` lowers to a
+          `ZeroTensor`: read as 0, no buffer, dropped at compile time);
+        - a float forward INPUT     -> a backward OUTPUT when perturbed, else a `NoneTensor` (the
+          body skips it at compile time, `grad_for_...is_valid()` being false);
+        - anything else             -> a `NoneTensor`.
+
+    An aggregate `grad_for_cell` thus carries a MIX of backward-input and backward-output members;
+    the per-member io policy already handles that (see `CallArg_Aggregate`). Non-tensor members
+    (`Axis`, `ShapeVar`, `CtShapeVar`) are SHARED from the primal, so a gradient buffer resolves
+    its capacity from the forward tensor it mirrors.
+
+    Returns the tuple of cotangents, one per differentiable primal, in `diff_idx` order.
+    """
+    from ..tensor.Tensor import Tensor
+    from ..compilation.FfiCode import FfiCode
+    from .CallArgsAnalysis import CallArgsAnalysis
+    from ..util.annotations import annotations
+    from ..util.aggregate import get_attribute
+    from jax.custom_derivatives import SymbolicZero
+
+    # leaf-indexed facts (by tensor identity), so the structural walk below can consult them.
+    io_of, residual_of = {}, {}
+    for k, t in enumerate( inputs ):
+        if hasattr( t, "inst" ):
+            io_of[ id( t.inst ) ], residual_of[ id( t.inst ) ] = "input", full_in[ k ]
+    for j, t in enumerate( outputs ):
+        if hasattr( t, "inst" ):
+            io_of[ id( t.inst ) ], residual_of[ id( t.inst ) ] = "output", out_values[ j ]
+    cotangent_of = { id( t.inst ): cotangents[ j ]
+                     for j, t in enumerate( outputs ) if hasattr( t, "inst" ) }
+    perturbed_of = { id( inputs[ i ].inst ): perturbed[ k ] for k, i in enumerate( diff_idx ) }
+
+    output_paths = []
+    grad_obj_of = {}   # id( primal input leaf ) -> its gradient tensor (a backward output)
+
+    def _is_agg( obj ):
+        return getattr( type( obj ), "_is_sdot_aggregate", False )
+
+    def _blank( inst ):
+        obj = type( inst ).__new__( type( inst ) )
+        obj._attributes = {}
+        obj.name = getattr( inst, "name", None )   # only a NESTED aggregate carries a field name
+        return obj
+
+    def _build( inst, path ):
+        """`( residual, grad )` mirroring `inst` (a tensor or a whole aggregate subtree)."""
+        if _is_agg( inst ):
+            residual, grad = _blank( inst ), _blank( inst )
+            for mname in annotations( type( inst ) ):
+                member = get_attribute( mname, inst )
+                if isinstance( member, Tensor ) or _is_agg( member ):
+                    r, g = _build( member, f"{ path }.{ mname }" )
+                else:
+                    r = g = member   # Axis / ShapeVar / CtShapeVar: shared, so shapes resolve
+                residual._attributes[ mname ], grad._attributes[ mname ] = r, g
+            return residual, grad
+
+        # a tensor leaf: the residual is bound to whatever forward value it held.
+        arr = residual_of.get( id( inst ) )
+        residual = _grad_tensor( inst, arr ) if arr is not None else Tensor.like( inst )
+
+        io = io_of.get( id( inst ) )
+        if io == "output" and inst.dtype.floating_point:
+            cotangent = cotangent_of.get( id( inst ) )
+            if isinstance( cotangent, SymbolicZero ):
+                grad = Tensor.like( inst, symbolic_zero = True )
+            else:
+                grad = _grad_tensor( inst, cotangent )
+        elif io == "input" and inst.dtype.floating_point and perturbed_of.get( id( inst ), False ):
+            grad = Tensor.like( inst )
+            output_paths.append( path )
+            grad_obj_of[ id( inst ) ] = grad
+        else:
+            grad = Tensor.like( inst )   # non-differentiable or non-perturbed -> a NoneTensor
+        return residual, grad
+
+    kwargs = {}
+    for name, arg in ca.args.items():
+        if not hasattr( arg, "inst" ):
+            continue
+        residual, grad = _build( arg.inst, "grad_for_" + name )
+        kwargs[ name ] = residual
+        kwargs[ "grad_for_" + name ] = grad
+
+    bwd_code = FfiCode( fwd_code = code.bwd_code, name = ( code.name or "sdot" ) + "_bwd" )
+    bwd_ca = CallArgsAnalysis( kwargs, device, output_attributes = output_paths )
+    bwd_outputs, bwd_results = _run( bwd_code, bwd_ca, device, prefix + "bwd_" )
+
+    result_of = { id( o.inst ): r for o, r in zip( bwd_outputs, bwd_results ) if hasattr( o, "inst" ) }
+
+    grads = []
+    for i in diff_idx:
+        gobj = grad_obj_of.get( id( inputs[ i ].inst ) )
+        if gobj is not None and id( gobj ) in result_of:
+            grads.append( result_of[ id( gobj ) ] )
+        else:
+            # a non-perturbed primal: Jax will not use this, but the tuple must be complete.
+            grads.append( jnp.zeros_like( full_in[ i ] ) )
+    return tuple( grads )

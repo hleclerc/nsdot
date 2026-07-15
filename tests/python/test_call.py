@@ -411,37 +411,237 @@ if test( "capacity_overflow" ):
 
 
 if test( "der" ):
-    inp = Tensor( 17 )
-    out = Tensor()
+    # a differentiable call: `fwd_code` computes the output, `bwd_code` the input gradients. The
+    # backward is generated as an ORDINARY kernel call -- its inputs are the forward inputs and
+    # outputs plus the output cotangents (`grad_for_out`), its output the input cotangent
+    # (`grad_for_inp`). Jax reaches it through a `custom_vjp` rule.
+    #
+    # An INTEGER tensor is non-differentiable and non-perturbable: it never gets a `grad_for_`.
+    # A symbolically-zero output cotangent lowers to a `ZeroTensor` (`grad_for_out.surely_null()`
+    # is a compile-time true), and a non-perturbed input gradient to a `NoneTensor`
+    # (`grad_for_inp.is_valid()` a compile-time false) -- either lets the body drop a term at
+    # compile time rather than move or multiply a buffer of zeros.
+    code = FfiCode( name = "test_call_der",
+        fwd_code = """
+            run_parallel( queue, global_batch_indices,
+                []( auto batch_index, auto out, auto inp ) {
+                    out = 2 * inp + 100;
+                },
+                OutList{}, out,
+                InpList{}, inp
+            );
+        """,
+        bwd_code = """
+            run_parallel( queue, global_batch_indices,
+                []( auto batch_index, auto grad_for_inp, auto grad_for_out ) {
+                    if ( ! grad_for_out.surely_null() && grad_for_inp.is_valid() )
+                        grad_for_inp = 2 * grad_for_out;
+                },
+                OutList{}, grad_for_inp,
+                InpList{}, grad_for_out
+            );
+        """,
+    )
 
-    yo = Tensor[ dict( dtype = int ) ]( [ 17, 18 ] )
+    def fwd_of( x ):
+        inp = Tensor()
+        inp.set( x )
+        out = Tensor()
+        driver.call( code, output_attributes = [ "out" ], out = out, inp = inp )
+        return out.raw
 
-    info( inp )
-    info( yo )
+    # forward: 2 * 17 + 100 = 134
+    assert float( fwd_of( driver.array( 17.0 ) ) ) == 134
+
+    # backward: d( 2 * inp + 100 ) / d inp = 2
+    g = driver.grad( fwd_of )( driver.array( 17.0 ) )
+    assert float( g ) == 2
 
 
-    # driver.call(
-    #     FfiCode( name = "test_call_der",
-    #         fwd_code = """
-    #             run_parallel( queue, global_batch_indices,
-    #                 []( auto batch_index, auto out, auto inp ) {
-    #                     out = inp;
-    #                 },
-    #                 out_io, out,
-    #                 inp_io, inp
-    #             );
-    #         """,
-    #         bwd_code = """
-    #             run_parallel( queue, global_batch_indices,
-    #                 []( auto batch_index, auto out, auto inp ) {
-    #                     // out = inp;
-    #                 },
-    #                 out_io, out,
-    #                 inp_io, inp
-    #             );
-    #         """,
-    #     ),
-    #     output_attributes = [ "out" ],
-    #     out = out,
-    #     inp = inp,
-    # )
+if test( "der_symbolic_zero" ):
+    # two outputs, and a loss that uses only one of them: the cotangent of the UNUSED output is a
+    # symbolic zero, so `grad_for_out_b` reaches the backward kernel as a `ZeroTensor` -- read as
+    # 0, no buffer. The body multiplies by it and the term simply vanishes.
+    code = FfiCode( name = "test_call_der_sz",
+        fwd_code = """
+            run_parallel( queue, global_batch_indices,
+                []( auto batch_index, auto out_a, auto out_b, auto inp ) {
+                    out_a = 2 * inp;
+                    out_b = 3 * inp;
+                },
+                OutList{}, out_a, out_b,
+                InpList{}, inp
+            );
+        """,
+        bwd_code = """
+            run_parallel( queue, global_batch_indices,
+                []( auto batch_index, auto grad_for_inp, auto grad_for_out_a, auto grad_for_out_b ) {
+                    grad_for_inp = 2 * grad_for_out_a + 3 * grad_for_out_b;
+                },
+                OutList{}, grad_for_inp,
+                InpList{}, grad_for_out_a, grad_for_out_b
+            );
+        """,
+    )
+
+    def only_a( x ):
+        inp = Tensor()
+        inp.set( x )
+        out_a = Tensor()
+        out_b = Tensor()
+        driver.call( code, output_attributes = [ "out_a", "out_b" ],
+                     out_a = out_a, out_b = out_b, inp = inp )
+        return out_a.raw   # `out_b` is never used: its cotangent is a symbolic zero
+
+    # d( 2 * inp ) / d inp = 2 -- the `3 * grad_for_out_b` term drops (ZeroTensor)
+    g = driver.grad( only_a )( driver.array( 5.0 ) )
+    assert float( g ) == 2
+
+
+if test( "der_non_perturbed" ):
+    # two float inputs, but only one is a function of the differentiated variable: the other is a
+    # constant, so Jax does not perturb it. Its gradient is never requested, so `grad_for_bias`
+    # reaches the backward kernel as a `NoneTensor` -- `is_valid()` is a compile-time false, and
+    # the body simply does not compute it (nor is a buffer allocated for it).
+    code = FfiCode( name = "test_call_der_np",
+        fwd_code = """
+            run_parallel( queue, global_batch_indices,
+                []( auto batch_index, auto out, auto inp, auto bias ) {
+                    out = inp + bias;
+                },
+                OutList{}, out,
+                InpList{}, inp, bias
+            );
+        """,
+        bwd_code = """
+            run_parallel( queue, global_batch_indices,
+                []( auto batch_index, auto grad_for_inp, auto grad_for_bias, auto grad_for_out ) {
+                    // the perturbation is a COMPILE-TIME fact here: `grad_for_inp` is a real
+                    // gradient buffer, `grad_for_bias` a `NoneTensor` (bias is never perturbed).
+                    static_assert( DECAYED_TYPE_OF( grad_for_inp .is_valid() )::value == 1 );
+                    static_assert( DECAYED_TYPE_OF( grad_for_bias.is_valid() )::value == 0 );
+
+                    // a `NoneTensor` has no `operator=`, so its write must be dropped at COMPILE
+                    // time -- `if constexpr` on `is_valid()`, not a runtime `if`.
+                    if constexpr ( DECAYED_TYPE_OF( grad_for_inp.is_valid() )::value )
+                        grad_for_inp = grad_for_out;
+                    if constexpr ( DECAYED_TYPE_OF( grad_for_bias.is_valid() )::value )
+                        grad_for_bias = grad_for_out;
+                },
+                OutList{}, grad_for_inp, grad_for_bias,
+                InpList{}, grad_for_out
+            );
+        """,
+    )
+
+    def loss( x ):
+        inp = Tensor()
+        inp.set( x )
+        bias = Tensor()
+        bias.set( driver.array( 100.0 ) )   # a constant: not a function of `x`, so non-perturbed
+        out = Tensor()
+        driver.call( code, output_attributes = [ "out" ], out = out, inp = inp, bias = bias )
+        return out.raw
+
+    assert float( loss( driver.array( 5.0 ) ) ) == 105
+
+    # d( inp + bias ) / d inp = 1 -- `bias` is never perturbed, so `grad_for_bias` is a NoneTensor
+    g = driver.grad( loss )( driver.array( 5.0 ) )
+    assert float( g ) == 1
+
+
+if test( "der_shape_var" ):
+    # a differentiable tensor whose shape is driven by a `ShapeVar`: the gradient of an input is
+    # allocated at the input's capacity, read back from its buffer through the axis they share.
+    n = ShapeVar()
+    ax = Axis( n )
+    ax.name = "n"   # a standalone axis: stamp the name the generated C++ uses (`DEFINE_AXIS( n )`)
+
+    code = FfiCode( name = "test_call_der_sv",
+        fwd_code = """
+            run_parallel( queue, global_batch_indices,
+                []( auto batch_index, auto out, auto vec ) {
+                    out( n = 0 ) = 2 * vec( n = 0 );
+                    out( n = 1 ) = 3 * vec( n = 1 );
+                },
+                OutList{}, out,
+                InpList{}, vec
+            );
+        """,
+        bwd_code = """
+            run_parallel( queue, global_batch_indices,
+                []( auto batch_index, auto grad_for_vec, auto grad_for_out ) {
+                    if ( grad_for_vec.is_valid() && ! grad_for_out.surely_null() ) {
+                        grad_for_vec( n = 0 ) = 2 * grad_for_out( n = 0 );
+                        grad_for_vec( n = 1 ) = 3 * grad_for_out( n = 1 );
+                    }
+                },
+                OutList{}, grad_for_vec,
+                InpList{}, grad_for_out
+            );
+        """,
+    )
+
+    def loss( x ):
+        vec = Tensor[ ax ]()
+        vec.set( x )            # length-2 vector -> `n` is solved to 2 from the data
+        out = Tensor[ ax ]()
+        driver.call( code, output_attributes = [ "out" ], out = out, vec = vec )
+        return out.raw.sum()    # loss = 2*vec[0] + 3*vec[1]
+
+    assert float( loss( driver.array( [ 1.0, 1.0 ] ) ) ) == 5
+
+    # d loss / d vec = [ 2, 3 ], and the gradient buffer is sized like `vec` (capacity 2)
+    g = driver.grad( loss )( driver.array( [ 1.0, 1.0 ] ) )
+    assert [ float( v ) for v in g ] == [ 2, 3 ]
+
+
+if test( "der_aggregate" ):
+    # differentiating through an AGGREGATE argument: the backward gets a `grad_for_cell` of the
+    # same class, mirrored member by member -- `grad_for_cell.data` is the gradient of the input
+    # `cell.data`, allocated at its capacity (the shared `nn` resolves it). The residual `cell`
+    # re-enters under its forward name; non-tensor members (`n`, `nn`) are shared.
+    @aggregate
+    class Vec:
+        data : Tensor[ "n" ]
+        n    : Axis[ "nn" ]
+        nn   : CtShapeVar
+
+        def __init__( self, **kw ) -> None: ...
+
+    code = FfiCode( name = "test_call_der_agg",
+        fwd_code = """
+            run_parallel( queue, global_batch_indices,
+                []( auto batch_index, auto out, auto cell ) {
+                    out = 2 * cell.data( n = 0 ) + 3 * cell.data( n = 1 );
+                },
+                OutList{}, out,
+                InpList{}, cell
+            );
+        """,
+        bwd_code = """
+            run_parallel( queue, global_batch_indices,
+                []( auto batch_index, auto grad_for_out, auto grad_for_cell ) {
+                    if ( ! grad_for_out.surely_null() && grad_for_cell.data.is_valid() ) {
+                        grad_for_cell.data( n = 0 ) = 2 * grad_for_out;
+                        grad_for_cell.data( n = 1 ) = 3 * grad_for_out;
+                    }
+                },
+                InpList{}, grad_for_out,
+                OutList{}, grad_for_cell
+            );
+        """,
+    )
+
+    def loss( x ):
+        cell = Vec( nn = 2 )
+        cell.data = x           # a float INPUT member
+        out = Tensor()          # a bare scalar output
+        driver.call( code, output_attributes = [ "out" ], out = out, cell = cell )
+        return out.raw          # loss = 2*data[0] + 3*data[1]
+
+    assert float( loss( driver.array( [ 1.0, 1.0 ] ) ) ) == 5
+
+    # d loss / d cell.data = [ 2, 3 ], returned through `grad_for_cell.data`
+    g = driver.grad( loss )( driver.array( [ 1.0, 1.0 ] ) )
+    assert [ float( v ) for v in g ] == [ 2, 3 ]

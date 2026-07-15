@@ -47,10 +47,29 @@ class Tensor( Attribute ):
         from ..drivers.CallArg_Tensor import CallArg_Tensor
         return CallArg_Tensor( caa, path, name, inst )
 
+    @classmethod
+    def like( cls, other, *, symbolic_zero = False ) -> "Tensor":
+        """An empty tensor sharing `other`'s axes, dtype and device -- what the backward pass
+        builds to carry a gradient (same logical shape as the value it is the gradient of).
+
+        `symbolic_zero = True` marks it as a STRUCTURAL zero: it lowers to a `ZeroTensor` (read
+        as 0, no buffer, dropped at compile time), which is how a symbolic-zero cotangent crosses
+        into the backward kernel."""
+        res = cls( template_kwargs = { "dtype": other.dtype, "device": other.device } )
+        res.specs = list( other.specs )   # same axes, but not re-registered on their ShapeVars
+        res._symbolic_zero = symbolic_zero
+        return res
+
+    @property
+    def is_symbolic_zero( self ) -> bool:
+        return self._symbolic_zero
+
     def __init__( self, value = None, /, *, template_args = (), template_kwargs = {}, scope = None ) -> None:
         self.device = Device.factory( template_kwargs.get( "device", None ) )
         self.dtype = Dtype.factory( template_kwargs.get( "dtype", None ) )
         self._raw = None          # homogeneous value buffer (padded when ragged)
+        self._symbolic_zero = False  # a structural zero (a symbolic-zero cotangent): no buffer,
+                                     # reads as 0 -- lowers to a `ZeroTensor` (see `CallArg_Tensor`)
         self._sizes = None        # one size per array dimension of the value
         self._spec_dims = None    # spec index -> its first array dimension
         self._unroll_spans = {}   # spec index -> (start, count) for the unrolled AxisList

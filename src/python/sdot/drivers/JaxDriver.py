@@ -167,6 +167,17 @@ class JaxDriver:
         item: it recompiles into a kernel that runs the whole batch (see `JaxFfi._make_op`)."""
         return jax.vmap( func )
 
+    def grad( self, func, argnums = 0 ):
+        """Gradient of a scalar-valued `func`. A `driver.call` inside it reaches its `bwd_code`
+        through the VJP rule the call registers (see `JaxFfi._call_with_vjp`)."""
+        return jax.grad( func, argnums = argnums )
+
+    def vjp( self, func, *primals ):
+        """`( func( *primals ), pullback )` -- the framework's reverse-mode primitive. Lets a test
+        seed an output cotangent directly (a symbolic zero included), without going through a
+        scalar loss."""
+        return jax.vjp( func, *primals )
+
     def random( self, shape, dtype = None ):
         seed = getattr( self, "_rng_seed", 0 )
         self._rng_seed = seed + 1

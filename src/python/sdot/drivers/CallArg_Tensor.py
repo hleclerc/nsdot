@@ -23,6 +23,9 @@ class CallArg_Tensor( CallArg ):
 
         self.inst = inst
         self.dtype = inst.dtype
+        # a symbolic-zero cotangent: it IS there (reads as 0), but no storage backs it -- so it
+        # is unbound like a `NoneTensor`, only it lowers to a `ZeroTensor` (see `cpp_type`).
+        self.symbolic_zero = getattr( inst, "is_symbolic_zero", False )
         self.memory_space = call_args_analysis.cpp_memory_space
         self.axis_names = [ axis.name for axis, _ in inst.specs ]
 
@@ -78,10 +81,12 @@ class CallArg_Tensor( CallArg ):
 
     def cpp_type( self ):
         """This member's C++ type. An unbound attribute is not a degenerate view: it is a
-        `NoneTensor`, so its absence is a compile-time fact. Where the data lives is in the type
-        too (`memory_space`): on a GPU, XLA already put this buffer in device memory."""
+        `NoneTensor` (absent -- a compile-time fact) or a `ZeroTensor` (a symbolic zero, read as
+        0). Where the data lives is in the type too (`memory_space`): on a GPU, XLA already put
+        this buffer in device memory."""
         if not self.io_category.is_bound:
-            return ( f"NoneTensor<{ self._cpp_scalar() }, { self._cpp_shape_type() }, "
+            kind = "ZeroTensor" if self.symbolic_zero else "NoneTensor"
+            return ( f"{ kind }<{ self._cpp_scalar() }, { self._cpp_shape_type() }, "
                      f"{ self._cpp_axis_names_type() }>" )
         return ( f"TensorView<{ self._cpp_scalar() }, { self._cpp_shape_type() }, "
                  f"{ self.memory_space }, { self._cpp_axis_names_type() }>" )
