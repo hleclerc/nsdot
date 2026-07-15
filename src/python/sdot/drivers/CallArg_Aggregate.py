@@ -1,5 +1,16 @@
 from .CallArg import CallArg
 
+
+def _cpp_define( name, body ):
+    """A `#define name body` where `body` may span several lines: each line but the last gets a
+    trailing backslash. `body` must carry no `//` comments -- the escaped newline would swallow
+    the code that follows (the generated methods use none)."""
+    lines = body.split( "\n" )
+    if len( lines ) == 1:
+        return f"#define { name } { lines[ 0 ] }"
+    return "\n".join( [ f"#define { name } \\" ] + [ l + " \\" for l in lines[ :-1 ] ] + [ lines[ -1 ] ] )
+
+
 class CallArg_Aggregate( CallArg ):
     """Default lowering of an aggregate instance: one child `CallArg` per declared field.
 
@@ -47,7 +58,11 @@ class CallArg_Aggregate( CallArg ):
         self.inst = inst
 
         self.attributes = {}
+        # the axes the aggregate DECLARES (an `Axis` lowers to no CallArg): kept so their
+        # `DEFINE_AXIS` is emitted whether or not a tensor of this call references them.
+        self.declared_axes = []
         for name_attr, attr in call_args_analysis.attributes_of( inst ).items():
+            self.declared_axes += getattr( attr, "cpp_axis_names", lambda: [] )()
             ca = call_args_analysis.make_CallArg( f"{ path }.{ name_attr }", name_attr, attr )
             if ca is not None:
                 self.attributes[ name_attr ] = ca
@@ -68,27 +83,81 @@ class CallArg_Aggregate( CallArg ):
         return f"{ self.type_name }_io"
 
     # -- driver-agnostic C++ (the same for every driver) --
-    def cpp_struct_defs( self ):
-        """`{ name: template definition }`, nested aggregates FIRST (a class must be defined
-        before the parent that holds one). Keyed by name, so a class used several times in the
-        call is emitted once. Each aggregate yields TWO definitions: the data, and its io
-        policy."""
-        res = {}
-        for c in self._fields( "cpp_struct_defs" ):
-            res.update( c.cpp_struct_defs() )
-        res[ self.type_name ] = self.cpp_struct_def()
-        res[ self.io_type_name ] = self.cpp_io_struct_def()
-        return res
+    # the support the struct's own methods lean on: `make_available` / `transfer_cost` (found by
+    # ADL at instantiation, but their declarations must be visible) and `Ct` for the transfer-cost
+    # fold. The MEMBERS are template parameters, so no container header is needed here -- a
+    # `TensorView` vs a `NoneTensor` is decided at the instantiation site, not in the definition.
+    _CPP_SUPPORT_INCLUDES = ( "sdot/support/common_types.h", "sdot/support/Ct.h",
+                              "sdot/support/kernels/make_avaiable.h",
+                              "sdot/support/kernels/transfer_cost.h" )
 
-    def cpp_struct_def( self ):
+    def cpp_includes( self ):
+        """The one header the call needs for us: the MANUAL struct header (`sdot/Cell.h`), the one
+        the user hand-writes and the call instantiates. Writing the generated part it leans on is
+        our own business (`_emit_macros_header`), invisible from the outside -- the caller only
+        learns that some `.h` is needed."""
+        self._emit_macros_header()
+        return [ f"sdot/{ self.type_name }.h" ]
+
+    def _emit_macros_header( self ):
+        """Write the generated header the manual struct is built from. Rather than emit the struct
+        (an opaque generated type nothing can extend or autocomplete), we emit two macros the user
+        drops into a struct of their own:
+
+            SDOT_TEMPLATE_DECL_FOR_Cell   ->  template<class T_nb_vertices, ...>
+            SDOT_ATTRIBUTES_OF_Cell       ->  the members + the generated methods
+
+        so `sdot/Cell.h` reads:
+
+            SDOT_TEMPLATE_DECL_FOR_Cell
+            struct Cell { SDOT_ATTRIBUTES_OF_Cell   void init_full() { ... } };
+
+        The user's struct is the one the call instantiates (the generated brace-init deduces it by
+        CTAD), and it can carry methods of its own -- an autocompleted `init_full`, a body the
+        kernel calls. It must live in `namespace sdot`: the generated methods rebuild it there
+        (`::sdot::Cell`, see `_cpp_make_available`).
+
+        The io policy `Cell_io` is NOT customized, so it is emitted whole beside the macros. The
+        header also pulls in the support the methods need and the axes the members name, so the
+        manual header that includes it can spell them (`init_full` names `dim`, `num_vertex`)."""
+        from ..compilation.generated_headers import shared_header
+        from ..tensor.AbstractAxis import AbstractAxis
+
+        for child in self._fields( "_emit_macros_header" ):   # nested aggregates get theirs too
+            child._emit_macros_header()
+
+        # every axis the aggregate declares, plus any a member borrows from elsewhere -- all get a
+        # `DEFINE_AXIS`, so the manual struct that includes us can spell any of them.
+        axis_names = list( self.declared_axes )
+        for ca in self.attributes.values():
+            for axis_name in getattr( ca, "axis_names", () ):
+                if axis_name not in axis_names:
+                    axis_names.append( axis_name )
+        axis_incs = [ AbstractAxis.cpp_shared_header( a ) for a in axis_names ]
+
         fields = self._fields( "cpp_member" )
-        members = "\n".join( "    " + c.cpp_member() for c in fields )
+        params_without_type = ", ".join( c.cpp_tpl_name() for c in fields )
         params = ", ".join( c.cpp_tpl_param() for c in fields )
-        prefix = f"template<{ params }>\n" if params else ""
+
+        lines = [ "#pragma once", "" ]
+        lines += [ f'#include "{ inc }"' for inc in self._CPP_SUPPORT_INCLUDES ]
+        lines += [ f'#include "{ inc }"' for inc in axis_incs ]
+        lines += [ "", f"#define SDOT_TEMPLATE_DECL_FOR_{ self.type_name } template<{ params }>", "" ]
+        lines += [ "", f"#define SDOT_TEMPLATE_ARGS_FOR_{ self.type_name } { params_without_type }", "" ]
+        # the io policy, generated whole -- in `namespace sdot`, where its struct lives.
+        lines += [ "namespace sdot {", self.cpp_io_struct_def(), "}", "" ]
+        lines += [ _cpp_define( f"SDOT_ATTRIBUTES_OF_{ self.type_name }", self._cpp_attributes( fields ) ) ]
+        content = "\n".join( lines ) + "\n"
+
+        shared_header( f"sdot/generated/aggregates/{ self.type_name }.h", content )
+
+    def _cpp_attributes( self, fields ):
+        """The struct BODY -- members and the generated methods -- with no `struct { }` wrapper
+        and no template line, so it can be dropped into a struct the user declares."""
+        members = "\n".join( "    " + c.cpp_member() for c in fields )
         parts = [ members, self._cpp_call_op( fields ), self._cpp_io_of( fields ),
                   self._cpp_transfer_cost( fields ), self._cpp_make_available( fields ) ]
-        body = "\n\n".join( p for p in parts if p )
-        return f"{ prefix }struct { self.type_name } {{\n{ body }\n}};"
+        return "\n\n".join( p for p in parts if p )
 
     def cpp_io_struct_def( self ):
         """The io policy: the same shape as the struct, holding a category per member.
@@ -115,11 +184,11 @@ class CallArg_Aggregate( CallArg ):
         A member selects what it carries and lets the rest through (a batch index is OPTIONAL, see
         AxisNames.h), so members mapped along different axes -- or along none, or not even tensors
         -- all take the same index. The result is another instantiation of the same template
-        (the members lost an axis), deduced, not spelled; `::` reaches the template rather than the
-        current instantiation."""
+        (the members lost an axis), deduced, not spelled; the qualified name reaches the template
+        rather than the current instantiation (see `_cpp_make_available`)."""
         values = ", ".join( f"{ c.name }( index... )" for c in fields )
         return ( "    auto operator()( const auto &...index ) const {\n"
-                 f"        return ::{ self.type_name }{{ { values } }};\n"
+                 f"        return ::sdot::{ self.type_name }{{ { values } }};\n"
                  "    }" )
 
     # -- as an argument of `run_parallel` (see support/kernels/run_parallel.h) --
@@ -140,10 +209,11 @@ class CallArg_Aggregate( CallArg ):
         values = ", ".join( f"a_{ c.name }" for c in fields )
         # the members reaching the kernel have other TYPES than ours (a kernel memory space), so
         # what `cont` receives is another instantiation of the same template -- deduced from the
-        # members it is built with (C++20 aggregate CTAD), never spelled out. Qualified `::`,
+        # members it is built with (C++20 aggregate CTAD), never spelled out. Qualified name,
         # because inside the class our own name means the CURRENT instantiation (the injected
-        # class name), which is exactly the one we are NOT rebuilding.
-        rebuilt = f"::{ self.type_name }{{ { values } }}"
+        # class name), which is exactly the one we are NOT rebuilding. The user defines the struct
+        # in `namespace sdot` (that is the convention the macros assume), so `::sdot::` reaches it.
+        rebuilt = f"::sdot::{ self.type_name }{{ { values } }}"
         closes = "        " + "} );" * len( fields )
         return ( "    auto make_available( auto &&queue, auto io, auto &&cont ) const {\n"
                  f"{ opens }\n"
@@ -173,6 +243,11 @@ class CallArg_Aggregate( CallArg ):
         `Cell`s of one call can have two profiles -- they are two instantiations."""
         cats = ", ".join( c.cpp_io_list() for c in self._fields( "cpp_member" ) )
         return f"{ self.io_type_name }{{ { cats } }}"
+
+    def cpp_run_parallel_pair( self ):
+        # the policy VARIABLE declared beside us (`cpp_root_decl` emits `<name>_io`): a category
+        # per member, not one blanket tag for the whole aggregate.
+        return f"{ self.name }_io, { self.name }"
 
     # -- as a ROOT argument --
     def cpp_root_decl( self, var_name ):

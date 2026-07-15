@@ -219,11 +219,13 @@ class CallArgsAnalysis:
         self.tensors.append( tensor )
 
     def register_axis( self, name ):
-        """An axis name used by a bound tensor: it needs a `DEFINE_AXIS` in the source.
+        """An axis name a tensor spells into its C++ type: it needs a `DEFINE_AXIS` in the source.
 
         Collected from the TENSORS rather than from the aggregates' declarations, because a
         tensor may borrow an axis from an object that is not itself an argument of this call
-        (`Tensor[ cell.num_vertex ]`)."""
+        (`Tensor[ cell.num_vertex ]`). Unbound tensors count too: a `NoneTensor` still names its
+        axes in its type (`Tuple<_num_cut, _dim>`), so the axis type must exist even with no
+        buffer bound."""
         if name not in self.axis_names:
             self.axis_names.append( name )
 

@@ -36,10 +36,14 @@ class CallArg_Tensor( CallArg ):
         else:
             self.shape = [ 0 ] * inst.rank
 
+        # every tensor spells its axes into its C++ type -- a `NoneTensor`'s `Tuple<_num_cut, _dim>`
+        # references `_num_cut` just as a bound view does -- so the axis needs a `DEFINE_AXIS`
+        # whether or not a buffer is bound. Only the buffer binding is conditional on `is_bound`.
+        for axis_name in self.axis_names:
+            call_args_analysis.register_axis( axis_name )
+
         if self.io_category.is_bound:
             call_args_analysis.register_tensor( self )
-            for axis_name in self.axis_names:
-                call_args_analysis.register_axis( axis_name )
 
     # -- as a value a `vmap` maps over --
     def add_batch_axis( self, name, size ):
@@ -109,9 +113,6 @@ class CallArg_Tensor( CallArg ):
     # -- as a ROOT argument (a tensor needs no wrapper aggregate to be passed) --
     def cpp_root_decl( self, var_name ):
         return f"    auto { var_name } = { self.cpp_view() };"
-
-    def cpp_struct_defs( self ):
-        return {}
 
     # -- Jax FFI ABI --
     def _jax_ffi_elem( self ):

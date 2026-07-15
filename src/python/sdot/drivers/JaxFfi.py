@@ -66,8 +66,10 @@ def _lib_suffix() -> str:
 
 
 def _ffi_include_flags() -> list:
-    # jaxlib ships the header-only XLA FFI C++ API (xla/ffi/api/ffi.h) under this dir.
-    return [ "-I", jax.ffi.include_dir() ]
+    # jaxlib ships the header-only XLA FFI C++ API (xla/ffi/api/ffi.h) under this dir; the shared
+    # generated headers (`sdot/generated/...`) live under the build tree, on their own `-I` root.
+    from ..compilation.generated_headers import include_root
+    return [ "-I", jax.ffi.include_dir(), "-I", str( include_root() ) ]
 
 
 def render_source( body: str ) -> str:
@@ -140,9 +142,13 @@ _CALL_TEMPLATE = """\
 namespace ffi = xla::ffi;
 using namespace sdot;
 
-{axis_defs}
+// the axes this call names, from their shared generated headers (`DEFINE_AXIS`), so anything
+// below can spell them.
+{axis_includes}
 
-{struct_defs}
+// the headers the arguments and the body asked for: the manual struct of each aggregate (which
+// pulls in its own generated macros), then whatever the body listed for itself.
+{extra_includes}
 
 static ffi::Error sdot_ffi_impl( {params} ) {{
     // the one execution context of this call. A `sycl::queue` is expensive to create, and this
@@ -167,15 +173,6 @@ static ffi::Error sdot_ffi_impl( {params} ) {{
 XLA_FFI_DEFINE_HANDLER_SYMBOL( sdot_ffi_entry, sdot_ffi_impl,
     ffi::Ffi::Bind(){binds} );
 """
-
-
-def _axis_def( name: str ) -> str:
-    # the same axis serves several tensors: guard each DEFINE_AXIS so it lands at most once.
-    guard = f"SDOT_AXIS_{ name }"
-    return ( f"#ifndef { guard }\n"
-             f"#define { guard }\n"
-             f"DEFINE_AXIS( { name } );\n"
-             f"#endif" )
 
 
 def _batch_indices_decl( ca ):
@@ -215,9 +212,13 @@ def _render_call( code, ca, device ):
     # compilation. (Extents need no attribute at all: XLA carries them next to the data.)
     attrs = [ a for b in ca.tensors if hasattr( b, "jax_attrs" ) for a in b.jax_attrs() ]
 
-    struct_defs = {}
-    for arg_ca in ca.args.values():
-        struct_defs.update( arg_ca.cpp_struct_defs() )
+    # the headers the arguments ask for (an aggregate names its struct header), then whatever the
+    # body itself listed. Collected blind: the call never knows which node brought a header, nor
+    # that any of it is hand-written or generated behind the scenes.
+    includes = []
+    for inc in [ i for arg_ca in ca.args.values() for i in arg_ca.cpp_includes() ] + list( code.includes ):
+        if inc not in includes:
+            includes.append( inc )
 
     # XLA FFI binds in this order, and the handler's parameters must follow it: args, results,
     # then attributes.
@@ -236,15 +237,17 @@ def _render_call( code, ca, device ):
     seeds = [ ca.errors.cpp_seed_root( ERRORS_VAR_NAME ) ]
     seeds += [ ca_.cpp_seed_root( n ) for n, ca_ in ca.args.items() if hasattr( ca_, "cpp_seed_root" ) ]
 
+    from ..tensor.AbstractAxis import AbstractAxis
     source = _CALL_TEMPLATE.format(
         queue_type    = device.cpp_queue_type,
-        axis_defs     = "\n".join( _axis_def( n ) for n in ca.axis_names ),
-        struct_defs   = "\n\n".join( struct_defs.values() ),
+        extra_includes = "".join( f'#include "{ inc }"\n' for inc in includes ),
+        axis_includes = "".join( f'#include "{ AbstractAxis.cpp_shared_header( n ) }"\n'
+                                 for n in ca.axis_names ),
         params        = ", ".join( params ),
         batch_indices = _batch_indices_decl( ca ),
         decls         = "\n".join( decls ),
         seeds         = "\n".join( s for s in seeds if s ),
-        body          = code.fwd_code,
+        body          = code.code_for( "fwd", ca ),
         binds         = binds,
     )
     return source, inputs, outputs, attrs
@@ -309,9 +312,9 @@ def call( code, ca, device, prefix = "" ):
     """Run `code` on the buffers described by `ca`, and write the outputs back onto the objects
     the caller handed us.
 
-    When `code` carries a `bwd_code`, the call is made DIFFERENTIABLE: Jax is given a VJP rule
+    When `code` has a backward, the call is made DIFFERENTIABLE: Jax is given a VJP rule
     (`jax.custom_vjp`) whose backward is itself an ordinary kernel call (see `_call_backward`)."""
-    if code.bwd_code:
+    if code.has_code_for( "bwd" ):
         outputs, results = _call_with_vjp( code, ca, device, prefix )
     else:
         outputs, results = _run( code, ca, device, prefix )
@@ -383,7 +386,7 @@ def _grad_tensor( inst, array ):
 
 def _call_backward( code, ca, device, prefix, inputs, outputs, diff_idx,
                     full_in, out_values, perturbed, cotangents ):
-    """The backward pass, expressed as an ORDINARY kernel call whose body is `code.bwd_code`.
+    """The backward pass, expressed as an ORDINARY kernel call whose body is the code's backward.
 
     Each forward argument `X` yields two backward arguments, of the SAME type as `X` (a bare
     tensor, or an aggregate mirrored member by member):
@@ -405,7 +408,6 @@ def _call_backward( code, ca, device, prefix, inputs, outputs, diff_idx,
     Returns the tuple of cotangents, one per differentiable primal, in `diff_idx` order.
     """
     from ..tensor.Tensor import Tensor
-    from ..compilation.FfiCode import FfiCode
     from .CallArgsAnalysis import CallArgsAnalysis
     from ..util.annotations import annotations
     from ..util.aggregate import get_attribute
@@ -475,7 +477,10 @@ def _call_backward( code, ca, device, prefix, inputs, outputs, diff_idx,
         kwargs[ name ] = residual
         kwargs[ "grad_for_" + name ] = grad
 
-    bwd_code = FfiCode( fwd_code = code.bwd_code, name = ( code.name or "sdot" ) + "_bwd" )
+    # the backward runs as an ordinary forward whose body is our backward one -- of the same kind,
+    # so a `FfiCodeParallel` scaffolds it over the residual+gradient arguments just as it did the
+    # forward over the primal ones.
+    bwd_code = code.for_backward()
     bwd_ca = CallArgsAnalysis( kwargs, device, output_attributes = output_paths )
     bwd_outputs, bwd_results = _run( bwd_code, bwd_ca, device, prefix + "bwd_" )
 

@@ -98,18 +98,15 @@ class ShapeVar( Attribute ):
     @property
     def value( self ) -> ArrayLike:
         """The COUNT. A kernel-written count wins, being the freshest truth -- and it is then a
-        DEVICE value: never size a buffer with it."""
+        DEVICE value: never size a buffer with it. `None` when we are UNRESOLVED: neither
+        prescribed nor constrained by a tensor, so there is no count to hand back yet."""
         if self._count is not None:
             return self._count
 
         if self.prescribed_value is not None:
             return self.prescribed_value
 
-        solved = self._solve()
-        if solved is not None:
-            return solved
-
-        raise NotImplementedError( "ShapeVar is neither prescribed nor constrained by a tensor" )
+        return self._solve()
 
     @value.setter
     def value( self, value ):

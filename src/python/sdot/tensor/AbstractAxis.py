@@ -27,6 +27,24 @@ class AbstractAxis( Attribute ):
         # tensors (a tensor may borrow an axis from an object that is not even an argument).
         return None
 
+    def cpp_axis_names( self ):
+        """The axis name(s) this declaration needs `DEFINE_AXIS`'d in C++. An aggregate collects
+        these so every axis it declares is spelled in its header -- even one no tensor of the call
+        references (`num_edge`): a body may still name it, and the C++ type must exist for it."""
+        return [ self.name ]
+
+    @staticmethod
+    def cpp_shared_header( name ):
+        """The shared header that DECLARES the axis `name`: `DEFINE_AXIS` (behind AxisNames.h),
+        which spells the type `_name` a tensor references and the `name` object a body indexes
+        with. Returns its include path. It lives here because the C++ facet of an axis is the
+        axis's business, not the call's -- the call only asks for it by name."""
+        from ..compilation.generated_headers import shared_header
+        content = ( "#pragma once\n\n"
+                    '#include "sdot/support/containers/AxisNames.h"\n\n'
+                    f"DEFINE_AXIS( { name } );\n" )
+        return shared_header( f"sdot/generated/axes/{ name }.h", content )
+
     def __init__( self, *exprs, template_args = (), template_kwargs = {}, scope = None ) -> None:
         from .ShapeVar import ShapeVar
         self.coeffs: dict[ ShapeVar, int ] = {}

@@ -117,9 +117,6 @@ class CallArg_ShapeVar( CallArg ):
     def cpp_root_decl( self, var_name ):
         return f"    auto { var_name } = { self.cpp_view() };"
 
-    def cpp_struct_defs( self ):
-        return {}
-
     # -- seeding: what an output must hold before the body runs --
     # A pure output starts at whatever XLA left in the buffer, and the body may only increment
     # it, so it has to be zeroed first. Through the QUEUE, not by a host loop: the buffer lives
@@ -172,8 +169,5 @@ class CallArg_ShapeVar( CallArg ):
 
 
 def _has_count( inst ):
-    try:
-        inst.value
-        return True
-    except NotImplementedError:
-        return False
+    # an unresolved ShapeVar (neither prescribed nor constrained by a tensor) has no count yet.
+    return inst.value is not None

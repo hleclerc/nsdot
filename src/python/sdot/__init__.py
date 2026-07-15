@@ -9,3 +9,5 @@ from .tensor.Axis import Axis as Axis
 from .compilation.FfiCode import FfiCode as FfiCode
 
 from .drivers.driver import driver as driver
+
+from .Cell import Cell as Cell

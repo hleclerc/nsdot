@@ -22,7 +22,11 @@ class Axis( AbstractAxis ):
     def max( self ):
         res = self.offset
         for shape_var, m in self.coeffs.items():
-            res += m * shape_var.value.max()
+            # an unresolved ShapeVar leaves the extent unsolved: there is no int to hand back yet.
+            value = shape_var.value
+            if value is None:
+                return None
+            res += m * value.max()
         return int( res )
 
     def max_list( self ):

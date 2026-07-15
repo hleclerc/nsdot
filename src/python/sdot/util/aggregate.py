@@ -41,6 +41,9 @@ def aggregate( cls ):
     `c.field = value` to `set`.
     """
 
+    #
+    cls._is_sdot_aggregate = True
+
     # ------------------ __init__ ------------------
     def __base_init__( self, **kwargs ):
         self._attributes = {}
@@ -76,8 +79,9 @@ def aggregate( cls ):
             elif not any( _is_aggregate( t ) for t in anns.values() ):
                 raise TypeError( f"'{ cls.__name__ }' has no field '{ key }' to initialize" )
 
-    cls.__init__ = __base_init__
-    cls._is_sdot_aggregate = True
+    cls.__base_init__ = __base_init__
+    if getattr( cls, "__init__", None ) is None:
+        cls.__init__ = __base_init__
 
     # the scope protocol (see `resolve_attribute`): what turns the NAME an attribute reads in a
     # declaration (`Tensor[ "num_vertex" ]`) into the very object this instance holds.

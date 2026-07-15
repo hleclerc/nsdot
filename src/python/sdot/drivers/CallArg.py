@@ -42,6 +42,18 @@ class CallArg:
         us, which is the only scope it lives in."""
         return f"T_{ self.name }"
 
+    def cpp_includes( self ):
+        """C++ headers the call must `#include` for us. Empty for most nodes; an aggregate names
+        the struct header it is built from. The caller collects these blind -- it never needs to
+        know which node brought what, nor whether a header is hand-written or generated."""
+        return []
+
+    def cpp_run_parallel_pair( self ):
+        """How we enter a `run_parallel` list, as an `<io>, <value>` pair: an io tag saying how
+        much the kernel moves (an input in, an output back), then our C++ value. An aggregate
+        overrides this to hand its per-member POLICY instead of one blanket tag."""
+        return f"{ self.cpp_io_list() }, { self.name }"
+
     def cpp_io_list( self ):
         """This member's io category, as the tag `run_parallel` speaks (see kernels/IoCategory.h).
 
