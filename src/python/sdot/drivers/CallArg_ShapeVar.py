@@ -40,15 +40,18 @@ class CallArg_ShapeVar( CallArg ):
         except ValueError:
             self.max_bound = -1
 
-        # only a var this call WRITES, and that something is sized on, can overflow a capacity: it
-        # is the only one that needs a place in the error buffer (the others carry a
-        # `NoErrorBuffer`, which compiles away).
+        # a real id is handed out once the tree is built (see `wants_error_id`); -1 until then, and
+        # for good if we need none.
         self.error_id = -1
-        if self.io_category.is_output and self.max_bound >= 0:
-            self.error_id = call_args_analysis.register_error_var( self )
 
-        if self.io_category.is_bound:
-            call_args_analysis.register_tensor( self )
+    def is_ffi_buffer( self ):
+        return self.io_category.is_bound
+
+    def wants_error_id( self ):
+        """Whether we need a slot in the error buffer: only a count this call WRITES, and that
+        something is sized on, can overflow a capacity. The others carry a `NoErrorBuffer`, which
+        compiles away -- so they never take an id."""
+        return self.io_category.is_output and self.max_bound >= 0
 
     # -- as a value a `vmap` maps over: one count per batch item --
     def add_batch_axis( self, name, size ):
@@ -59,6 +62,11 @@ class CallArg_ShapeVar( CallArg ):
         if name not in self.batch_axes:
             return None
         return self.jax_dim( self.batch_axes.index( name ) )
+
+    # -- the axes our type spells (see `CallArg.cpp_axis_names`): only the NAMED batch ones -- a
+    # count's own (ragged) dimensions are positional, spelled `UnnamedAxis` (see `_cpp_axis_tuple`).
+    def cpp_axis_names( self ):
+        return self.batch_axes
 
     # -- driver-agnostic C++ (the same for every driver) --
     def _cpp_shape_tuple( self ):
@@ -140,7 +148,12 @@ class CallArg_ShapeVar( CallArg ):
     def jax_attrs( self ):
         """The scalars this node needs at run time, but NOT through a buffer: an XLA FFI
         attribute is baked into the call, not into the kernel, so the same compiled kernel serves
-        every capacity."""
+        every capacity.
+
+        Only a BOUND var crosses one: an unbound one has no buffer, so its bound is a literal in
+        the source (`_cpp_max_bound`), and it never got an `ffi_name` to build an attr name from."""
+        if not self.io_category.is_bound:
+            return []
         return [ ( self._jax_attr_name(), "int64_t", int( self.max_bound ) ) ]
 
     def _jax_buffer_shape( self ):

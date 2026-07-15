@@ -42,6 +42,26 @@ class CallArg:
         us, which is the only scope it lives in."""
         return f"T_{ self.name }"
 
+    def children( self ):
+        """The nodes directly below us in the argument tree: none for a leaf, its members for an
+        aggregate. This is the ONLY structure a generic traversal needs -- every collection the
+        analysis derives (axes, attributes, ...) is a FOLD over `CallArgsAnalysis.nodes`, not a
+        typed list a node pushes itself onto during construction."""
+        return []
+
+    def cpp_axis_names( self ):
+        """The axis names our C++ TYPE spells (`_num_vertex`, a batch axis), each needing a
+        `DEFINE_AXIS` in the generated source. Empty for a node that names none."""
+        return []
+
+    def is_ffi_buffer( self ):
+        """Whether we bind an FFI buffer -- a slot in the handler's arg/result list, moved to the
+        device and back. True of a bound tensor or count, and of the error buffer; false of a
+        value that crosses as an attribute (a `CtShapeVar`, a bare `int`) and of an aggregate (its
+        members bind buffers, it does not). The analysis pulls the buffer list by folding the tree
+        on this, so nothing pushes itself onto a list as it is built."""
+        return False
+
     def cpp_includes( self ):
         """C++ headers the call must `#include` for us. Empty for most nodes; an aggregate names
         the struct header it is built from. The caller collects these blind -- it never needs to

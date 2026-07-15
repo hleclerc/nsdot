@@ -37,7 +37,8 @@ class CallArg_Errors( CallArg ):
         self.shape = [ 1 + 3 * self.max_records ]   # [ nb_records, ( kind, id, value )... ]
         self.raw = None
 
-        call_args_analysis.register_tensor( self )
+    def is_ffi_buffer( self ):
+        return True
 
     def takes_batch_axis( self ):
         """ONE buffer for the whole call, batched or not: every item of a batch records into this

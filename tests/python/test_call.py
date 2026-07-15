@@ -36,8 +36,11 @@ from . import test
 # buffer is read back from it, so a chained call need not restate it.
 
 if test( "basic" ):
+    # NB the class is `Cell1`, not `Cell`: a bare `Cell` would match the hand-written
+    # `src/cpp/sdot/Cell.h`, and the aggregate would build on THAT struct instead of a generated
+    # one. A name with no `sdot/<Name>.h` gets its struct generated whole (see `_emit_full_header`).
     @aggregate
-    class Cell:
+    class Cell1:
         vertex_positions : Tensor[ "num_vertex", "dim" ]
 
         num_vertex       : Axis[ "nb_vertices" ]
@@ -51,7 +54,7 @@ if test( "basic" ):
 
     # the ctor only prescribes what the cell IS: `nb_dims` is compile-time known (its count is
     # its size). `nb_vertices` has no count yet -- the kernel is what writes it.
-    cell = Cell( nb_dims = 2 )
+    cell = Cell1( nb_dims = 2 )
 
     # the body runs on a DEVICE. `queue` is the call's execution context (a `sdot::Queue`, chosen
     # by the device -- a typedef, since the memory space a pointer lives in is part of its type),

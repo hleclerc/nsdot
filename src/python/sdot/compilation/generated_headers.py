@@ -15,7 +15,21 @@ resolve as `sdot/generated/...`. Write-if-changed keeps a deterministic content 
 mtimes (hence rebuilds).
 """
 
+from pathlib import Path
+
 from . import build_dir
+
+
+def manual_header( rel_path: str ) -> str | None:
+    """The HAND-WRITTEN header at `rel_path` (`sdot/Cell.h`) if the user provides one on the C++
+    source path, else `None`.
+
+    This is the switch between an aggregate's two C++ modes: a manual header lets it carry methods
+    written by hand (the user's `struct` drops in the generated macros and adds its own code);
+    without one, the struct is generated WHOLE and needs no C++ at all. Only the sources are
+    consulted -- a generated header (under the build tree) is never a manual override of itself."""
+    root = Path( __file__ ).absolute().parents[ 4 ] / "src" / "cpp"
+    return rel_path if ( root / rel_path ).is_file() else None
 
 
 def include_root():

@@ -80,7 +80,12 @@ def aggregate( cls ):
                 raise TypeError( f"'{ cls.__name__ }' has no field '{ key }' to initialize" )
 
     cls.__base_init__ = __base_init__
-    if getattr( cls, "__init__", None ) is None:
+    # A class may keep its OWN `__init__` for custom construction -- it then calls `__base_init__`
+    # itself, where it wants the fields set up (see tests/python/test_Cell.py). But a class that
+    # only STUBS it -- `def __init__( self, **kw ) -> None: ...`, the shape it declares so a type
+    # checker accepts `Cell( nb_dims = 2 )` -- is asking us to fill it in, so we route it to
+    # `__base_init__`. Same when it defines none at all.
+    if _init_is_stub( cls ):
         cls.__init__ = __base_init__
 
     # the scope protocol (see `resolve_attribute`): what turns the NAME an attribute reads in a
@@ -131,6 +136,23 @@ class NestedDescriptor:
         return get_attribute( self.name, obj )
 
 
+
+
+def _init_is_stub( cls ):
+    """Whether `@aggregate` should supply `__init__` by routing it to `__base_init__`.
+
+    True when the class defines no `__init__` of its own, or only a STUB: a body that is just
+    `...`, `pass`, or a docstring (the typing shape `def __init__( self, **kw ) -> None: ...`).
+    Such a body does nothing but return a constant -- it never touches `self`, an argument, or a
+    call -- so its bytecode loads constants and returns, and nothing else. A real `__init__` does
+    reference something (`LOAD_FAST`, `CALL`, ...), and is left untouched: it runs its own logic
+    and calls `__base_init__` where it chooses."""
+    import dis
+    init = cls.__dict__.get( "__init__" )
+    if init is None:
+        return True
+    trivial = { "RESUME", "LOAD_CONST", "RETURN_CONST", "RETURN_VALUE", "POP_TOP", "NOP" }
+    return all( instr.opname in trivial for instr in dis.get_instructions( init ) )
 
 
 def _field_cls( type_attr ):

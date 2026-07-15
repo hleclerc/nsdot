@@ -185,7 +185,7 @@ class JaxDriver:
         return jax.random.uniform( jax.random.PRNGKey( seed ), tuple( shape ), dtype = dtype_ver )
 
 
-    def call( self, code : FfiCode | str, output_attributes = (), capacities = {}, **kwargs ):
+    def call( self, code : FfiCode | str, output_attributes = (), output_attribute_exceptions = (), capacities = {}, **kwargs ):
         """Run the C++ `code` on the objects passed as kwargs.
 
         The objects are built by the caller; nothing is returned. Both lists below name
@@ -195,6 +195,12 @@ class JaxDriver:
         attribute once the call returns. An attribute that already holds data is an input; an
         empty, undeclared one is not bound at all (the kernel sees a null view -- it may simply
         be an optional field this kernel does not use).
+
+        `output_attribute_exceptions` carve holes in that subtree: a path under a named output
+        the kernel does NOT produce this time (`output_attributes = [ "cell" ]` with
+        `output_attribute_exceptions = [ "cell.vertex_indices" ]` -- a run that leaves the vertex
+        indices alone). The carved-out attribute falls back to being observed, exactly as if it
+        had never been under an output.
 
         `capacities` says how big to allocate: `{ "cell.nb_vertices": 8 }`. It belongs to the
         call and not to the object, because it is a decision about THIS allocation -- an object
@@ -220,7 +226,7 @@ class JaxDriver:
 
         capacities = dict( capacities )   # ours to grow: the caller's dict is not ours to touch
         while True:
-            ca = CallArgsAnalysis( kwargs, self.device, output_attributes, capacities )
+            ca = CallArgsAnalysis( kwargs, self.device, output_attributes, capacities, output_attribute_exceptions )
             ffi_call( code, ca, self.device, prefix )
 
             overflows = ca.capacity_overflows()

@@ -207,10 +207,11 @@ def _render_call( code, ca, device ):
     inputs = [ t for t in ca.tensors if t.io_category.is_input ]
     outputs = [ t for t in ca.tensors if t.io_category.is_output ]
 
-    # scalars that are neither data nor structure -- a capacity, typically. They cross as XLA FFI
-    # ATTRIBUTES: baked into the call, not into the kernel, so a new capacity does not mean a new
-    # compilation. (Extents need no attribute at all: XLA carries them next to the data.)
-    attrs = [ a for b in ca.tensors if hasattr( b, "jax_attrs" ) for a in b.jax_attrs() ]
+    # scalars that are neither data nor structure -- a capacity bound, a bare `int` argument. They
+    # cross as XLA FFI ATTRIBUTES: baked into the call, not into the kernel, so a new value does
+    # not mean a new compilation. (Extents need no attribute at all: XLA carries them next to the
+    # data.) Gathered by folding the node tree, each node answering for itself.
+    attrs = [ a for n in ca.nodes() if hasattr( n, "jax_attrs" ) for a in n.jax_attrs() ]
 
     # the headers the arguments ask for (an aggregate names its struct header), then whatever the
     # body itself listed. Collected blind: the call never knows which node brought a header, nor

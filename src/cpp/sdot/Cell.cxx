@@ -1,6 +1,5 @@
 #pragma once
 
-#include "Cell/CellBoundary.h"
 #include "Cell.h"
 
 #define UTP SDOT_TEMPLATE_DECL_FOR_Cell
@@ -68,7 +67,12 @@ UTP void DTP::init_as_aligned_simplex( SI cut_id ) {
         cut_ids( num_cut = n ) = cut_id;
 }
 
-UTP void DTP::init_unbounded() {
+UTP void DTP::init_as_hypercube( auto &&origin, auto &&axes, SI cut_id ) {
+    INFO( origin );
+    INFO( axes );
+}
+
+UTP void DTP::init_as_unbounded() {
     init_as_aligned_simplex( CellBoundary::INFINITE );
 }
 

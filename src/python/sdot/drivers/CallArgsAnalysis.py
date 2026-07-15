@@ -1,6 +1,7 @@
 from ..util.aggregate import get_attribute
 from ..util.annotations import annotations
 from .CallArg_Aggregate import CallArg_Aggregate
+from .CallArg_Attr import CallArg_Attr
 from .CallArg_Errors import CallArg_Errors, ERRORS_VAR_NAME
 from .IoCategory import IoCategory
 from .CallArg import CallArg
@@ -45,15 +46,14 @@ class CallArgsAnalysis:
     tensors: list   # the buffers to bind, in FFI order
     args: dict
 
-    def __init__( self, args : dict, device, output_attributes = (), capacities = {} ) -> None:
+    def __init__( self, args : dict, device, output_attributes = (), capacities = {}, output_attribute_exceptions = () ) -> None:
         self.device = device
         self.output_paths = list( output_attributes )
+        self.output_exceptions = list( output_attribute_exceptions )
         self.declared_outputs = set()
+        self.declared_exceptions = set()
         self.type_names = {}
-        self.axis_names = []
         self.batch_axes = []
-        self.error_vars = []
-        self.tensors = []
         self.args = {}
 
         # paths resolve against the objects, so a capacity keyed by path becomes one keyed by
@@ -68,28 +68,97 @@ class CallArgsAnalysis:
         for name, inst in args.items():
             self.args[ name ] = self.make_CallArg( name, name, inst )
 
-        # what the kernel writes when something goes wrong -- last, so that everything that can
-        # fail has been given its id by then. It is a buffer of the call, not of an argument: no
-        # object of the caller's has anything to do with it.
+        # what the kernel writes when something goes wrong -- built last, so it takes the FFI slot
+        # after every argument's. It is a buffer of the call, not of an argument: no object of the
+        # caller's has anything to do with it.
         self.errors = CallArg_Errors( self )
 
+        # the tree is complete: hand out the names and ids that depend on the whole of it -- a PULL
+        # over the nodes, never a push as each was built (see `nodes`, `_name_buffers`).
+        self._name_buffers()
+        self._number_error_vars()
+
         # a path that reached nothing is a typo, and a silent one would turn an output into an
-        # unbound attribute (the kernel would write into the void).
+        # unbound attribute (the kernel would write into the void). An exception that suppressed
+        # no output is just as suspect -- a typo, or a hole carved where there was nothing.
         unused = [ p for p in self.output_paths if p not in self.declared_outputs ]
         if unused:
             raise ValueError( f"output_attributes: no such attribute: { ', '.join( unused ) }" )
+        unused = [ e for e in self.output_exceptions if e not in self.declared_exceptions ]
+        if unused:
+            raise ValueError( f"output_attribute_exceptions: excludes nothing: { ', '.join( unused ) }" )
 
-    # -- errors --
-    def register_error_var( self, shape_var_ca ) -> int:
-        """Give a value that can fail its id in the error buffer -- what a record points back to."""
-        self.error_vars.append( shape_var_ca )
-        return len( self.error_vars ) - 1
+    # -- the buffers and error slots, derived from the tree --
+    @property
+    def tensors( self ):
+        """The FFI buffers to bind, in handler order: every node that binds one, in a stable
+        pre-order (args then the error buffer last -- which is exactly the arg/result order XLA
+        wants). Pulled from the tree, not a list a buffer appends itself to."""
+        return [ n for n in self.nodes() if n.is_ffi_buffer() ]
+
+    @property
+    def error_vars( self ):
+        """The counts that can overflow a capacity, indexed by their `error_id` -- what a record in
+        the error buffer points back to (`capacity_overflows`). The id IS the position here, and
+        both are the tree order, so `error_vars[ id ]` is the very node numbered `id`."""
+        return [ n for n in self.nodes() if getattr( n, "error_id", -1 ) >= 0 ]
+
+    def _name_buffers( self ):
+        """Give every FFI buffer a unique name in the handler's ONE flat namespace (shared with the
+        call's arguments): named after the attribute, disambiguated when two collide. Only the
+        buffer is renamed -- the struct member keeps the attribute name the C++ body uses. Done in
+        binding order, once the tree is built, so the names are a function of the whole call."""
+        named = []
+        for tensor in self.tensors:
+            name = _FFI_PREFIX + tensor.name
+            while name in named:
+                name += "_"
+            tensor.ffi_name = name
+            named.append( name )
+
+    def _number_error_vars( self ):
+        """Hand each count that can overflow its slot in the error buffer, in tree order: the id
+        the C++ writes is the position the host reads back here."""
+        error_id = 0
+        for node in self.nodes():
+            if getattr( node, "wants_error_id", lambda: False )():
+                node.error_id = error_id
+                error_id += 1
 
     def capacity_overflows( self ):
         """The capacities this call turned out to be too small for: `[ ( path, wanted, capacity ) ]`,
         empty if the call went through, `None` if we cannot know here (a traced buffer -- see
         `CallArg_Errors.capacity_overflows`)."""
         return self.errors.capacity_overflows( self.error_vars )
+
+    # -- the generic traversal every derived collection folds over --
+    def nodes( self ):
+        """Every `CallArg` of this call, roots and their descendants, in a stable pre-order, then
+        the call's own error buffer last (its FFI slot follows every argument's).
+
+        This is the one place the tree is walked. A collection the analysis needs -- the axes to
+        `DEFINE_AXIS`, the FFI attributes, ... -- is a fold over this, each node answering for
+        ITSELF (`cpp_axis_names`, `jax_attrs`). Nothing is pushed onto a typed list as the tree is
+        built: the analysis PULLS what it needs, when it needs it."""
+        def walk( node ):
+            yield node
+            for child in node.children():
+                yield from walk( child )
+        for arg in self.args.values():
+            yield from walk( arg )
+        yield self.errors
+
+    @property
+    def axis_names( self ):
+        """Every axis name spelled in the generated `.cpp`, deduped in first-seen order: each node
+        contributes what its TYPE references (a tensor's dimensions, a count's batch axes), so
+        every one gets a `DEFINE_AXIS`. Derived by folding the tree -- not accumulated during it."""
+        seen = []
+        for node in self.nodes():
+            for name in node.cpp_axis_names():
+                if name not in seen:
+                    seen.append( name )
+        return seen
 
     # -- what a `vmap` derives --
     def batched( self, axis_name, axis_size, batched_inputs ):
@@ -110,11 +179,10 @@ class CallArgsAnalysis:
         res = copy.copy( self )
         res.args = { n: c._clone( mapping ) for n, c in self.args.items() }
         res.errors = self.errors._clone( mapping )
-        res.error_vars = [ mapping[ id( v ) ] for v in self.error_vars ]
-        res.tensors = [ mapping[ id( t ) ] for t in self.tensors ]
-        res.axis_names = list( self.axis_names )
         res.batch_axes = list( self.batch_axes ) + [ axis_name ]
-        res.register_axis( axis_name )
+        # `tensors`, `error_vars` and `axis_names` are not carried: all three are derived from the
+        # nodes, so they follow the CLONES on their own (each keeps its `ffi_name`/`error_id`), and
+        # the batch axis reaches them through the buffers we are about to give it below.
 
         for tensor in res.tensors:
             if not tensor.takes_batch_axis():
@@ -176,7 +244,14 @@ class CallArgsAnalysis:
         return res
 
     def io_category( self, path, has_value ) -> IoCategory:
-        """Declared as an output, or else OBSERVED: holds data -> input, empty -> unbound."""
+        """Declared as an output, or else OBSERVED: holds data -> input, empty -> unbound.
+
+        An exception wins over the output subtree that contains it: a path carved out of the
+        outputs is observed like any other, as if it had never been declared."""
+        for e in self.output_exceptions:
+            if path == e or path.startswith( e + "." ):
+                self.declared_exceptions.add( e )
+                return IoCategory.INPUT if has_value else IoCategory.UNBOUND
         for p in self.output_paths:
             if path == p or path.startswith( p + "." ):
                 self.declared_outputs.add( p )
@@ -193,41 +268,18 @@ class CallArgsAnalysis:
 
     def make_CallArg( self, path, name, inst ) -> CallArg | None:
         make = getattr( type( inst ), "make_CallArg", None )
-        if make is None:
-            # default lowering: a plain aggregate, walked field by field.
-            return CallArg_Aggregate( self, path, name, inst )
-        return make( self, path, name, inst )
+        if make is not None:
+            return make( self, path, name, inst )
+        # a builtin cannot carry a `make_CallArg`: a bare `int` is a runtime attribute of the call.
+        if isinstance( inst, int ):
+            return CallArg_Attr( self, path, name, inst )
+        # default lowering: a plain aggregate, walked field by field.
+        return CallArg_Aggregate( self, path, name, inst )
 
     def attributes_of( self, inst ):
         """The declared attributes of an aggregate instance, as `Attribute` OBJECTS: `getattr`
         would hand back the read view (a ShapeVar's count, not the ShapeVar itself)."""
         return { name: get_attribute( name, inst ) for name in annotations( type( inst ) ) }
-
-    def register_tensor( self, tensor ):
-        """Register a buffer to bind, and give it a unique `ffi_name`.
-
-        The FFI buffers share one flat namespace (the handler's parameter list) with each
-        other AND with the call's arguments, whereas attribute names are only unique within
-        their aggregate: two `Cell`s both bring a `vertex_positions`, and a bare tensor
-        argument would collide with its own buffer (`auto res = tensor_view( res->... )`).
-        Hence a namespace of their own, plus disambiguation. Only the buffer is renamed: the
-        struct member keeps the attribute name the C++ body uses."""
-        name = _FFI_PREFIX + tensor.name
-        while any( t.ffi_name == name for t in self.tensors ):
-            name += "_"
-        tensor.ffi_name = name
-        self.tensors.append( tensor )
-
-    def register_axis( self, name ):
-        """An axis name a tensor spells into its C++ type: it needs a `DEFINE_AXIS` in the source.
-
-        Collected from the TENSORS rather than from the aggregates' declarations, because a
-        tensor may borrow an axis from an object that is not itself an argument of this call
-        (`Tensor[ cell.num_vertex ]`). Unbound tensors count too: a `NoneTensor` still names its
-        axes in its type (`Tuple<_num_cut, _dim>`), so the axis type must exist even with no
-        buffer bound."""
-        if name not in self.axis_names:
-            self.axis_names.append( name )
 
     def cpp_type_name( self, cls ):
         """C++ name of the struct template generated for the `@aggregate` class `cls`: its

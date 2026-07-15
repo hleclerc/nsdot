@@ -36,14 +36,15 @@ class CallArg_Tensor( CallArg ):
         else:
             self.shape = [ 0 ] * inst.rank
 
-        # every tensor spells its axes into its C++ type -- a `NoneTensor`'s `Tuple<_num_cut, _dim>`
-        # references `_num_cut` just as a bound view does -- so the axis needs a `DEFINE_AXIS`
-        # whether or not a buffer is bound. Only the buffer binding is conditional on `is_bound`.
-        for axis_name in self.axis_names:
-            call_args_analysis.register_axis( axis_name )
+    # only the BUFFER binding is conditional on `is_bound`: an unbound tensor is a `NoneTensor`,
+    # which still spells its axes in its type (`Tuple<_num_cut, _dim>`) -- so `cpp_axis_names`
+    # answers them either way, and the analysis folds those in for their `DEFINE_AXIS`.
+    def is_ffi_buffer( self ):
+        return self.io_category.is_bound
 
-        if self.io_category.is_bound:
-            call_args_analysis.register_tensor( self )
+    # -- the axes our type spells (see `CallArg.cpp_axis_names`) --
+    def cpp_axis_names( self ):
+        return self.axis_names
 
     # -- as a value a `vmap` maps over --
     def add_batch_axis( self, name, size ):
