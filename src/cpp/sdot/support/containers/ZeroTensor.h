@@ -32,6 +32,8 @@ struct ZeroTensor {
     // unchanged, at no cost, whatever the queue and the io category.
     constexpr auto   transfer_cost          ( const auto &/*queue*/, auto /*io_category*/ ) const { return Ct<double,0.0>(); }
     constexpr auto   make_available         ( auto &&/*queue*/, auto /*io_category*/, auto &&cont ) const { return cont( *this ); }
+
+    void             display                ( auto &ds ) const { ds << "ZeroTensor"; }
 };
 
 } // namespace sdot

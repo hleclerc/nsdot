@@ -18,6 +18,7 @@ public:
     /* */                 Matrix                  () {}
 
     static Matrix         with_func               ( auto &&func );
+    static Matrix         identity                ();
 
     const T&              operator()              ( auto r, auto c ) const { return _content[ r * ct_rows + c ]; }
     T&                    operator()              ( auto r, auto c ) { return _content[ r * ct_rows + c ]; }
@@ -32,7 +33,9 @@ public:
     Matrix                inverse                 () const;  ///< Gauss-Jordan on [A | I]; zero pivot row → identity row in result
 
     Vector<T,ct_cols>     solve_det               ( const auto &b ) const;
-    Vector<T,ct_cols>     solve_ge                ( const auto &b ) const; ///< Gaussian elimination with partial pivoting; zero pivot → x[p]=0 (handles degenerate cells)
+    static Vector<T,ct_cols> solve_ge             ( const auto &mat, auto b ); ///< Gaussian elimination with partial pivoting on a copy of `mat` (Matrix or TensorView); zero pivot → x[p]=0 (handles degenerate cells)
+
+    auto                  is_valid                () const { return Ct<bool,true>(); }
 
     constexpr auto        nb_rows                 () const { return Ct<int,ct_rows>(); }
     constexpr auto        nb_cols                 () const { return Ct<int,ct_cols>(); }

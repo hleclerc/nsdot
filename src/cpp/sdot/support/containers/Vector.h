@@ -30,6 +30,9 @@ public:
     const T&          operator[]               ( PI index ) const;
     T&                operator[]               ( PI index );
 
+    const T&          operator()               ( PI index ) const { return operator[]( index ); }
+    T&                operator()               ( PI index ) { return operator[]( index ); }
+
     // bool           operator<                ( const Vector &that ) const;
 
     static Vector     with_value_at            ( PI index, T value ); ///< 0 ... 0 value 0 ... 0. `value` is positionned at `index`
@@ -54,6 +57,7 @@ public:
     PI                arg_max                  () const;
     T                 max                      () const;
 
+    auto              is_valid                 () const { return Ct<bool,true>(); }
 
     friend Vector     normalized               ( const Vector &a ) { return a / norm_2( a ); }
     friend T          norm_2_p2                ( const Vector &a ) { return dot( a, a ); }

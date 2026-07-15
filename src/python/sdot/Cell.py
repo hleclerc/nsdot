@@ -32,7 +32,7 @@ class Cell:
     vertex_positions : Tensor[ "num_vertex", "dim" ]
     vertex_indices   : Tensor[ "num_vertex", "dim", dict( dtype = int ) ]
     edge_indices     : Tensor[ "num_vertex", "ein", dict( dtype = int ) ]
-    cut_vectors      : Tensor[ "num_cut", "dim" ]
+    cut_directions      : Tensor[ "num_cut", "dim" ]
     cut_offsets      : Tensor[ "num_cut" ]
     cut_ids          : Tensor[ "num_cut", dict( dtype = int ) ]
 
@@ -56,6 +56,7 @@ class Cell:
     def make_unbounded( nb_dims ):
         return Cell( nb_dims )
 
+
     def init_as_unbounded( self ):
         driver.call(
             FfiCodeParallel( name = "init_as_unbounded", fwd_code = "cell( batch_index ).init_as_unbounded();" ),
@@ -70,7 +71,10 @@ class Cell:
         axes = Tensor[ self.num_axis, self.dim ]( axes )
 
         driver.call(
-            FfiCodeParallel( name = "init_as_hypercube", fwd_code = "cell( batch_index ).init_as_hypercube( origin, axes, cut_id );" ),
+            FfiCodeParallel( name = "init_as_hypercube",
+                fwd_code = "cell( batch_index ).init_as_hypercube( origin, axes, cut_id );",
+                bwd_code = "cell( batch_index ).init_as_hypercube_bwd( origin, axes, grad_for_cell( batch_index ), grad_for_origin( batch_index ), grad_for_axes( batch_index ) );"
+            ),
             capacities = { "cell.nb_vertices": 8, "cell.nb_cuts": 8, "cell.nb_edges": 8 },
             output_attribute_exceptions = self._output_attribute_exceptions(),
             output_attributes = [ "cell" ],
@@ -79,6 +83,23 @@ class Cell:
             axes = axes,
             cell = self,
         )
+
+    @property
+    def measure( self ):
+        res = Tensor()
+
+        driver.call(
+            FfiCodeParallel( name = "measure",
+                fwd_code = "cell( batch_index ).measure( res );",
+                # bwd_code = "cell( batch_index ).measure_bwd( grad_for_cell( batch_index ), grad_for_res( batch_index ) );"
+            ),
+            output_attributes = [ "res" ],
+            cell = self,
+            res = res
+        )
+
+        return res
+
 
     def _output_attribute_exceptions( self ):
         if self.nb_dims <= 2:

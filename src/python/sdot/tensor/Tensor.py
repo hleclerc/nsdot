@@ -204,6 +204,22 @@ class Tensor( Attribute ):
         return self._raw
 
     @property
+    def tensor( self ):
+        """The dense VIEW of `raw`: its logical region, with the capacity padding cropped off.
+
+        `raw` is a homogeneous buffer sized at CAPACITY -- padding included -- because that is what
+        a kernel writes into; `tensor` slices it back to the logical `shape`, which is what one
+        usually wants to read (`c.vertex_positions.tensor` instead of `c.vertex_positions.raw[ :n ]`).
+
+        Meaningful for a DENSE (non-ragged) tensor: a ragged one has no single box to extract, so
+        this returns its bounding box (inner padding kept). Needs a statically known `shape`, so it
+        holds eagerly -- a kernel-written count is a device value under a trace, where Python cannot
+        slice by it (`shape` raises there)."""
+        if self._raw is None:
+            return None
+        return self._raw[ tuple( slice( 0, s ) for s in self.shape ) ]
+
+    @property
     def value( self ):
         return self._raw
 

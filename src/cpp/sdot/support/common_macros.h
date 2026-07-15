@@ -23,6 +23,7 @@
 #define ASSERTED_EQUAL( A, B ) ( []( auto a, auto b ) { if ( a != b ) throw std::runtime_error( #A " and " #B " are not equal" ); return a; } )( A, B )
 #define DECAYED_TYPE_OF( v )   std::decay_t<decltype( v )>
 #define IS_BASE_OF( A, V )     std::is_base_of_v<A,std::decay_t<V>>
+#define CT_VALUE( v )          std::decay_t<decltype( v )>::value
 #define FORWARD( v )           std::forward<decltype( v )>( v )
 
 // Detection idiom helpers — C++14-compatible replacement for requires{} expressions.

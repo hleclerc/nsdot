@@ -1,7 +1,8 @@
 #pragma once
 
+// #include "hipSYCL/compiler/llvm-to-backend/LLVMToBackend.hpp"
 #include "Matrix.h"
-#include "hipSYCL/compiler/llvm-to-backend/LLVMToBackend.hpp"
+#include <utility>
 #include <cmath>
 
 namespace sdot {
@@ -22,6 +23,14 @@ UTP DTP DTP::with_func( auto &&func ) {
     for( PI r = 0; r < ct_rows; ++r )
         for( PI c = 0; c < ct_cols; ++c )
             res( r, c ) = func( r, c );
+    return res;
+}
+
+UTP DTP DTP::identity() {
+    Matrix res;
+    for( PI r = 0; r < ct_rows; ++r )
+        for( PI c = 0; c < ct_cols; ++c )
+            res( r, c ) = ( r == c );
     return res;
 }
 
@@ -81,9 +90,11 @@ UTP Vector<T,ct_cols> DTP::solve_det( const auto &vec ) const {
     return res;
 }
 
-UTP Vector<T,ct_cols> DTP::solve_ge( const auto &b ) const {
-    const PI n = nb_rows();
-    Matrix A = *this;
+UTP Vector<T,ct_cols> DTP::solve_ge( const auto &mat, auto b ) {
+    const PI n = ct_rows;
+    // `mat` may be a Matrix or a bare TensorView: solve_ge copies into a working matrix anyway,
+    // so it takes anything indexable as ( r, c ) and materializes its own `A`.
+    Matrix A = with_func( [&]( PI r, PI c ) { return T( mat( r, c ) ); } );
 
     // forward elimination with partial pivoting
     for ( PI p = 0; p < n; ++p ) {
