@@ -65,19 +65,23 @@ def _normalize_tags( tags ):
 def test( name, tags = None ):
     tags = _normalize_tags( tags )
 
-    if test_phase == PHASE_COLLECT:
-        frame  = sys._getframe( 1 )
-        file   = frame.f_code.co_filename
-        line   = frame.f_lineno
-        module = frame.f_globals.get( "__name__" )
+    # un test est identifié par son SITE D'APPEL (module + ligne), pas par son nom : deux tests
+    # peuvent donc porter le même nom, y compris dans un même fichier. Le nom ne sert qu'à
+    # l'affichage et au filtrage (sous-chaîne) -- il n'a pas à être unique.
+    frame  = sys._getframe( 1 )
+    line   = frame.f_lineno
+    module = frame.f_globals.get( "__name__" )
 
-        if any( t.name == name for t in all_the_tests ):
-            raise RuntimeError( f"un test nommé { name!r } est déjà enregistré" )
+    if test_phase == PHASE_COLLECT:
+        file = frame.f_code.co_filename
         all_the_tests.append( Test( name, tags, file, line, module ) )
         return False
 
-    # phase d'exécution : seul le test ciblé exécute son corps
-    return test_filter is not None and name == test_filter.name
+    # phase d'exécution : seul l'appel ciblé (même module + même ligne) exécute son corps. On
+    # discrimine par ligne et non par nom, sinon des homonymes s'exécuteraient tous à la fois.
+    return ( test_filter is not None
+             and module == test_filter.module
+             and line == test_filter.line )
 
 
 def matches( t, filter_names, filter_tags ):

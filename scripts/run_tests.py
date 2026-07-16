@@ -82,11 +82,14 @@ def run_python_tests( filters ):
         for t in selected:
             tm.test_filter = t
             module = sys.modules[ t.module ]
+            # le site source (fichier:ligne) distingue des tests homonymes, que les noms seuls
+            # laisseraient indiscernables dans la sortie.
+            where = f"{ Path( t.file ).name }:{ t.line }"
             try:
                 importlib.reload( module )
-                print( f"{ tm.GREEN }PASS:{ tm.RESET } { t.name }", flush = True )
+                print( f"{ tm.GREEN }PASS:{ tm.RESET } { t.name } ({ where })", flush = True )
             except Exception as e:
-                print( f"{ tm.RED }FAIL:{ tm.RESET } { t.name } - { e }", flush = True )
+                print( f"{ tm.RED }FAIL:{ tm.RESET } { t.name } ({ where }) - { e }", flush = True )
                 traceback.print_exc()
                 sys.stdout.flush()
                 failures.append( ( "python", t.name, "run" ) )

@@ -1,7 +1,7 @@
 from sdot import ShapeVar, Axis, AxisList, Tensor, aggregate, driver
 from . import test
 
-if test( "basic_tensor" ):
+if test( "basic" ):
     @aggregate
     class Cell:
         vertex_positions : Tensor[ "num_vertex", "dim" ]
@@ -22,11 +22,11 @@ if test( "basic_tensor" ):
     c.vertex_positions = [ [ 1, 2 ] ]
     # Vérifier que le dtype est bien extracté
 
-    info( c.nb_vertices )
+    info( c.nb_vertices.value )
 
-    # `c.nb_vertices` now reads back the solved value (value-on-read)
-    assert c.nb_vertices == 1
-    assert c.nb_dims == 2
+    # `c.nb_vertices` is the `ShapeVar` itself; its `.value` is the solved count
+    assert c.nb_vertices.value == 1
+    assert c.nb_dims.value == 2
 
 
 
@@ -48,8 +48,8 @@ if test( "ragged" ):
     m.cell_vertices = [ [ 10, 11 ], [ 12 ] ]   # cell 0 has 2 vertices, cell 1 has 1
 
     # sizes are read from the nesting only (no data touched)
-    assert m.nb_cells == 2
-    assert list( m.nb_vtx_per_cell ) == [ 2, 1 ]
+    assert m.nb_cells.value == 2
+    assert list( m.nb_vtx_per_cell.value ) == [ 2, 1 ]
 
     # values assembled into a padded rank-2 buffer (pad = 0), functionally
     import numpy
@@ -77,8 +77,8 @@ if test( "AxisList" ):
 
 
     m = Image( values = driver.random( [ 2, 1 ] ), knots = [ [ 0, 1, 2 ], [ 0, 1 ] ] )
-    assert list( m.extent ) == [ 2, 1 ]
-    assert m.nb_dims == 2
+    assert list( m.extent.value ) == [ 2, 1 ]
+    assert m.nb_dims.value == 2
 
 
 if test( "axis_parsing" ):
@@ -120,7 +120,7 @@ if test( "axis_parsing" ):
 
 
 
-# if test( "basic" ):
+# if test( "basic_tensor" ):
 #     @aggregate
 #     class Cell:
 #         nb_dims = ShapeVar()

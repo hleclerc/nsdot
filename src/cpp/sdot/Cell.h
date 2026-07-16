@@ -16,10 +16,11 @@ struct Cell {
     using TF = DECAYED_TYPE_OF( vertex_positions )::TF;
 
     void init_as_aligned_simplex( SI cut_id );
-    void init_as_hypercube      ( auto &&origin, auto &&axes, SI cut_id = CellBoundary::BOUNDARY );
-    void init_as_unbounded      ();
 
     void init_as_hypercube_bwd  ( auto &&origin, auto &&axes, auto &&grad_cell, auto &&grad_for_origin, auto &&grad_for_axes ) const;
+    void init_as_hypercube      ( auto &&origin, auto &&axes, SI cut_id = CellBoundary::BOUNDARY );
+
+    void init_as_unbounded      ();
 
     void measure                ( auto &&res ) const;
 };

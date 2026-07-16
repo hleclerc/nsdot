@@ -27,7 +27,10 @@ class CallArg_Tensor( CallArg ):
         # is unbound like a `NoneTensor`, only it lowers to a `ZeroTensor` (see `cpp_type`).
         self.symbolic_zero = getattr( inst, "is_symbolic_zero", False )
         self.memory_space = call_args_analysis.cpp_memory_space
-        self.axis_names = [ axis.name for axis, _ in inst.specs ]
+        # An axis stays anonymous in Python, but a TensorView must name each of its dimensions.
+        # A declared (aggregate) axis brings its field name; a nameless one falls back to its
+        # position in THIS tensor (`a0`, `a1`, ...) -- a codegen-only default, local to this view.
+        self.axis_names = [ axis.name or f"a{ index }" for index, ( axis, _ ) in enumerate( inst.specs ) ]
 
         if self.io_category.is_output:
             self.shape = [ int( s ) for s in call_args_analysis.output_shape( inst, path ) ]

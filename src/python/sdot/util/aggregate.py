@@ -11,8 +11,8 @@ def aggregate( cls ):
     `aggregate` works one level of abstraction above any concrete field type: it
     knows nothing about `ShapeVar` / `Axis` / `Tensor` (mere examples), only the
     `Attribute` protocol. Each annotation is a `Parametrized` schema; a fresh
-    per-instance `Attribute` is built lazily by `get_attribute` and kept in
-    `self._attributes`.
+    per-instance `Attribute` is built lazily by `get_attribute` and kept, under
+    its field name, in the instance `__dict__`.
 
     Each field can be *injected* at construction by passing its name as a kwarg;
     an `Attribute` value is shared (several instances then agree on the same
@@ -37,8 +37,10 @@ def aggregate( cls ):
     not an error as long as some nested aggregate could consume it.
 
     Generated: an `__init__` that honors injections and instantiates every field,
-    and one data descriptor per field routing `c.field` to `get` and
-    `c.field = value` to `set`.
+    and one SET-only data descriptor per field: `c.field = value` routes to `set`,
+    while `c.field` is a plain read of the instance `__dict__` -- so it hands back
+    the `Attribute` OBJECT itself (a `ShapeVar`, an `Axis`, ...), value-on-read
+    being the concrete type's business (`c.nb_dims.value`), not the aggregate's.
     """
 
     #
@@ -46,7 +48,6 @@ def aggregate( cls ):
 
     # ------------------ __init__ ------------------
     def __base_init__( self, **kwargs ):
-        self._attributes = {}
         anns = annotations( cls )
 
         # a mapping under a FIELD's name scopes that field; everything else is visible to this
@@ -54,27 +55,30 @@ def aggregate( cls ):
         scoped = { n: v for n, v in kwargs.items() if n in anns and isinstance( v, dict ) }
         shared = { n: v for n, v in kwargs.items() if n not in scoped }
 
-        # injections: share the passed `Attribute` (same object) rather than assign it
+        # injections: share the passed `Attribute` (same object) rather than assign it. Stored
+        # straight into `__dict__` (a raw write, past the set-only descriptor which would else
+        # `.set()` it) -- the same slot every read then hands back.
         for name, type_attr in anns.items():
             sc = _field_cls( type_attr )
             value = shared.get( name )
             if value is not None and inspect.isclass( sc ) and isinstance( value, sc ):
-                self._attributes[ name ] = value
+                self.__dict__[ name ] = value
 
         # instantiate the fields; a nested aggregate inherits our scope, refined by its own
         for name, type_attr in anns.items():
-            if name in self._attributes:
+            if name in self.__dict__:
                 continue
             if _is_aggregate( type_attr ):
-                self._attributes[ name ] = type_attr( **{ **shared, **scoped.get( name, {} ) } )
-                self._attributes[ name ].name = name
+                nested = type_attr( **{ **shared, **scoped.get( name, {} ) } )
+                nested.name = name
+                self.__dict__[ name ] = nested
             else:
                 get_attribute( name, self )
 
         # prescriptions
         for key, value in shared.items():
             if key in anns:
-                if self._attributes[ key ] is not value:   # an injection is already in place
+                if self.__dict__[ key ] is not value:   # an injection is already in place
                     get_attribute( key, self ).set( value )
             elif not any( _is_aggregate( t ) for t in anns.values() ):
                 raise TypeError( f"'{ cls.__name__ }' has no field '{ key }' to initialize" )
@@ -93,47 +97,33 @@ def aggregate( cls ):
     cls.get_attribute = lambda self, name: get_attribute( name, self )
 
     # ------------------ per-field descriptors ------------------
+    # only leaf `Attribute` fields need one, to route their writes to `.set()`. A nested aggregate
+    # has no `set` (you reach into it: `p.left.nb_dims = ...`), so it needs no descriptor at all --
+    # `p.left` is just the instance our constructor stored in `__dict__`.
     for name, type_attr in annotations( cls ).items():
         if _is_attribute_field( type_attr ):
             setattr( cls, name, FieldDescriptor( name ) )
-        elif _is_aggregate( type_attr ):
-            setattr( cls, name, NestedDescriptor( name ) )
 
     return cls
 
 
 class FieldDescriptor:
-    """Data descriptor generated per `@aggregate` field.
+    """SET-only data descriptor generated per `@aggregate` field.
 
-    Reads return the per-instance read view (`attr.get()`); writes route to
-    `attr.set(value)`. Class access (`Cls.field`) returns the descriptor itself,
-    a handle on the schema.
+    It intercepts WRITES only (`c.field = value` -> `attr.set(value)`); it has no `__get__`, so a
+    read falls through to the instance `__dict__`, where `get_attribute` keeps the per-instance
+    `Attribute`. `c.field` therefore returns that OBJECT (a `ShapeVar`, an `Axis`, ...): reading a
+    value off it (`c.nb_dims.value`) is the concrete type's affair, not something the aggregate
+    imposes. Class access (`Cls.field`) returns the descriptor itself, a handle on the schema.
+
+    Having `__set__` makes it a DATA descriptor -- which would normally shadow the instance dict,
+    but only through its `__get__`; with none, CPython's lookup skips straight to `__dict__`.
     """
     def __init__( self, name ):
         self.name = name
 
-    def __get__( self, obj, objtype = None ):
-        if obj is None:
-            return self
-        return get_attribute( self.name, obj ).get()
-
     def __set__( self, obj, value ):
         get_attribute( self.name, obj ).set( value )
-
-
-class NestedDescriptor:
-    """Generated per field whose type is itself an `@aggregate`.
-
-    Such a field has no read view to speak of: `p.left` IS the nested instance (the one built
-    by our constructor and kept in `_attributes`, so that `p.left.nb_dims` reaches the very
-    `ShapeVar` the kernel wrote)."""
-    def __init__( self, name ):
-        self.name = name
-
-    def __get__( self, obj, objtype = None ):
-        if obj is None:
-            return self
-        return get_attribute( self.name, obj )
 
 
 
@@ -170,8 +160,8 @@ def _is_aggregate( type_attr ):
 
 
 def get_attribute( name, parent_inst ):
-    # already instantiated ?
-    attrs = parent_inst._attributes
+    # already instantiated ? (the per-instance `Attribute` lives under its field name in `__dict__`)
+    attrs = parent_inst.__dict__
     if name in attrs:
         return attrs[ name ]
 
@@ -190,6 +180,7 @@ def get_attribute( name, parent_inst ):
         # outlive its parent -- a borrowed `Axis` still has to be nameable in the C++ code).
         res.name = name
 
+        # a raw write, past the set-only `FieldDescriptor` (which would `.set()` the value instead).
         attrs[ name ] = res
         return res
 

@@ -185,7 +185,7 @@ class JaxDriver:
         return jax.random.uniform( jax.random.PRNGKey( seed ), tuple( shape ), dtype = dtype_ver )
 
 
-    def call( self, code : FfiCode | str, output_attributes = (), output_attribute_exceptions = (), capacities = {}, **kwargs ):
+    def call( self, code : FfiCode | str, output_attributes = (), output_exceptions = (), output_capacities = {}, **kwargs ):
         """Run the C++ `code` on the objects passed as kwargs.
 
         The objects are built by the caller; nothing is returned. Both lists below name
@@ -224,9 +224,9 @@ class JaxDriver:
         if prefix:
             prefix += "_"
 
-        capacities = dict( capacities )   # ours to grow: the caller's dict is not ours to touch
+        output_capacities = dict( output_capacities )   # ours to grow: the caller's dict is not ours to touch
         while True:
-            ca = CallArgsAnalysis( kwargs, self.device, output_attributes, capacities, output_attribute_exceptions )
+            ca = CallArgsAnalysis( kwargs, self.device, output_attributes, output_capacities, output_exceptions )
             ffi_call( code, ca, self.device, prefix )
 
             overflows = ca.capacity_overflows()
@@ -241,7 +241,7 @@ class JaxDriver:
                 return
 
             for path, wanted, capacity in overflows:
-                capacities[ path ] = max( wanted, 2 * capacity )
+                output_capacities[ path ] = max( wanted, 2 * capacity )
 
 
     # class CapacityOverflow( RuntimeError ):

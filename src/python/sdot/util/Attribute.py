@@ -11,8 +11,9 @@ class Attribute:
     A field annotation is a `Parametrized` (`Attribute[...]`) that acts as the
     class-level *schema*. `get_attribute` calls it once per parent instance to
     build a fresh per-instance `Attribute` that holds that instance's state, kept
-    in `self._attributes`. `@aggregate` installs one data descriptor per field:
-    `c.field` returns `get` (the read view), `c.field = value` routes to `set`.
+    under its field name in the instance `__dict__`. `@aggregate` installs one
+    SET-only descriptor per field: `c.field = value` routes to `set`, while
+    `c.field` reads the `Attribute` object straight back from `__dict__`.
 
     The dependency stops there: an `Attribute` knows NOTHING about `@aggregate`.
     Every ctor takes the same two keyword-only channels, and an aggregate is only

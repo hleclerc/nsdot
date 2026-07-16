@@ -85,13 +85,13 @@ if test( "basic" ):
         """ ),
         cell = cell,
         output_attributes = [ "cell.nb_vertices", "cell.vertex_positions" ],
-        capacities = { "cell.nb_vertices": 8 },   # => `vertex_positions` is allocated 8x2
+        output_capacities = { "cell.nb_vertices": 8 },   # => `vertex_positions` is allocated 8x2
         # frame = driver.array( [ [ 0 ] ] )
     )
 
     # the kernel wrote the count, and the count is what makes the tensor read 1x2 -- while the
     # BUFFER it was written into is the 8x2 the call asked for.
-    assert cell.nb_vertices == 1
+    assert cell.nb_vertices.value == 1
     assert cell.vertex_positions.shape == [ 1, 2 ]
     assert cell.vertex_positions.capacity == ( 8, 2 )
     assert cell.vertex_positions.raw.tolist()[ 0 ] == [ 1, 2 ]
@@ -165,10 +165,10 @@ if test( "partial_init" ):
         """ ),
         cell = cell,
         output_attributes = [ "cell.nb_vertices", "cell.vertex_positions" ],
-        capacities = { "cell.nb_vertices": 8 },
+        output_capacities = { "cell.nb_vertices": 8 },
     )
 
-    assert cell.nb_vertices == 1
+    assert cell.nb_vertices.value == 1
     assert cell.vertex_positions.raw.tolist()[ 0 ] == [ 1, 0 ]
 
     # nothing was bound for `vertex_indices`, and nothing came back for it either.
@@ -220,11 +220,11 @@ if test( "two_instances" ):
             "flat.nb_vertices", "flat.vertex_positions",
             "volu.nb_vertices", "volu.vertex_positions",
         ],
-        capacities = { "flat.nb_vertices": 8, "volu.nb_vertices": 4 },
+        output_capacities = { "flat.nb_vertices": 8, "volu.nb_vertices": 4 },
     )
 
     # one class, two instantiations: the compile-time `nb_dims` differ, and so do the capacities.
-    assert flat.nb_vertices == 1 and volu.nb_vertices == 1
+    assert flat.nb_vertices.value == 1 and volu.nb_vertices.value == 1
     assert flat.vertex_positions.capacity == ( 8, 2 )
     assert volu.vertex_positions.capacity == ( 4, 3 )
     assert flat.vertex_positions.raw.tolist()[ 0 ] == [ 1, 2 ]
@@ -278,10 +278,10 @@ if test( "nested" ):
         """ ),
         pair = pair,
         output_attributes = [ "pair" ],   # a whole subtree can be named at once
-        capacities = { "pair.left.nb_vertices": 8, "pair.right.nb_vertices": 4 },
+        output_capacities = { "pair.left.nb_vertices": 8, "pair.right.nb_vertices": 4 },
     )
 
-    assert pair.left.nb_vertices == 1 and pair.right.nb_vertices == 1
+    assert pair.left.nb_vertices.value == 1 and pair.right.nb_vertices.value == 1
     assert pair.left .vertex_positions.raw.tolist()[ 0 ] == [ 0, 1 ]
     assert pair.right.vertex_positions.raw.tolist()[ 0 ] == [ 0, 0, 2 ]
 
@@ -330,7 +330,7 @@ if test( "vmap" ):
             cell = cell,
             scale = scale,
             output_attributes = [ "cell.nb_vertices", "cell.vertex_positions" ],
-            capacities = { "cell.nb_vertices": 4 },
+            output_capacities = { "cell.nb_vertices": 4 },
         )
         return cell.vertex_positions.raw
 
@@ -390,25 +390,25 @@ if test( "capacity_overflow" ):
             code,
             cell = cell,
             output_attributes = [ "cell.nb_vertices", "cell.vertex_positions" ],
-            capacities = { "cell.nb_vertices": capacity },
+            output_capacities = { "cell.nb_vertices": capacity },
         )
         return cell
 
     # it fits: one run, and the capacity stays the one that was asked for.
     cell = cell_of( 2, 8 )
-    assert cell.nb_vertices == 2
+    assert cell.nb_vertices.value == 2
     assert cell.vertex_positions.capacity == ( 8, 2 )
 
     # 3 vertices into a buffer of 2 -> a second run, with `max( 3, 2 * 2 ) = 4`: a capacity that
     # was exceeded once tends to be exceeded again, so we make ROOM rather than fit the count.
     cell = cell_of( 3, 2 )
-    assert cell.nb_vertices == 3
+    assert cell.nb_vertices.value == 3
     assert cell.vertex_positions.capacity == ( 4, 2 )
     assert [ row[ 0 ] for row in cell.vertex_positions.raw.tolist() ] == [ 0, 1, 2, 0 ]
 
     # 5 into a buffer of 1 -> `max( 5, 2 * 1 ) = 5`: this time it is the count that decides.
     cell = cell_of( 5, 1 )
-    assert cell.nb_vertices == 5
+    assert cell.nb_vertices.value == 5
     assert cell.vertex_positions.capacity == ( 5, 2 )
     assert [ row[ 0 ] for row in cell.vertex_positions.raw.tolist() ] == [ 0, 1, 2, 3, 4 ]
 

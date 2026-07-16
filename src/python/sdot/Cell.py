@@ -60,8 +60,8 @@ class Cell:
     def init_as_unbounded( self ):
         driver.call(
             FfiCodeParallel( name = "init_as_unbounded", fwd_code = "cell( batch_index ).init_as_unbounded();" ),
-            capacities = { "cell.nb_vertices": 8, "cell.nb_cuts": 8, "cell.nb_edges": 8 },
-            output_attribute_exceptions = self._output_attribute_exceptions(),
+            output_capacities = { "cell.nb_vertices": 8, "cell.nb_cuts": 8, "cell.nb_edges": 8 },
+            output_exceptions = self._output_attribute_exceptions(),
             output_attributes = [ "cell" ],
             cell = self,
         )
@@ -75,8 +75,8 @@ class Cell:
                 fwd_code = "cell( batch_index ).init_as_hypercube( origin, axes, cut_id );",
                 bwd_code = "cell( batch_index ).init_as_hypercube_bwd( origin, axes, grad_for_cell( batch_index ), grad_for_origin( batch_index ), grad_for_axes( batch_index ) );"
             ),
-            capacities = { "cell.nb_vertices": 8, "cell.nb_cuts": 8, "cell.nb_edges": 8 },
-            output_attribute_exceptions = self._output_attribute_exceptions(),
+            output_capacities = { "cell.nb_vertices": 8, "cell.nb_cuts": 8, "cell.nb_edges": 8 },
+            output_exceptions = self._output_attribute_exceptions(),
             output_attributes = [ "cell" ],
             cut_id = cut_id,
             origin = origin,
@@ -86,6 +86,8 @@ class Cell:
 
     @property
     def measure( self ):
+        nb_map_items = ShapeVar()
+        nb_threads = ShapeVar()
         res = Tensor()
 
         driver.call(
@@ -93,16 +95,26 @@ class Cell:
                 fwd_code = "cell( batch_index ).measure( res );",
                 # bwd_code = "cell( batch_index ).measure_bwd( grad_for_cell( batch_index ), grad_for_res( batch_index ) );"
             ),
-            output_attributes = [ "res" ],
+            output_capacities = { "nb_map_items": self._nb_map_items(), "nb_threads": 1 },
+            output_attributes = [ "res", "item_map" ],
+            nb_map_items = nb_map_items,
+            nb_threads = nb_threads,
+            item_map = Tensor[ nb_map_items, nb_threads ](),
             cell = self,
             res = res
         )
 
         return res
 
+    def _nb_map_items( self ):
+        nb_cuts, nb_dims = self.nb_cuts.value, self.nb_dims.value
+        res = 0
+        res += nb_cuts * ( nb_dims >= 2 )
+        res += nb_cuts * nb_cuts * ( nb_dims >= 3 )
+        return res
 
     def _output_attribute_exceptions( self ):
-        if self.nb_dims <= 2:
+        if self.nb_dims.value <= 2:
             return [ "cell.vertex_indices", "cell.edge_indices" ]
         return []
 

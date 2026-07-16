@@ -3,14 +3,17 @@ from numpy.typing import ArrayLike
 from typing import TYPE_CHECKING
 import numpy
 
+from sdot.tensor.ShapeVar import ShapeVar
+
 from ..util.Attribute import Attribute, resolve_attribute
 
 from ..drivers.driver import driver
 
 from ..devices.Device import Device
 
-from .Dtype import Dtype
 from .AbstractAxis import AbstractAxis
+from .Dtype import Dtype
+from .Axis import Axis
 
 
 class Tensor( Attribute ):
@@ -42,6 +45,45 @@ class Tensor( Attribute ):
     if TYPE_CHECKING:
         def __set__( self, obj, value: ArrayLike | None ) -> None: ...
 
+
+    def __init__( self, value = None, /, *, template_args = (), template_kwargs = {}, scope = None ) -> None:
+        self.device = Device.factory( template_kwargs.get( "device", None ) )
+        self.dtype = Dtype.factory( template_kwargs.get( "dtype", None ) )
+        self._symbolic_zero = False  # a structural zero (a symbolic-zero cotangent): no buffer,
+        self._raw = None          # homogeneous value buffer (padded when ragged)
+                                     # reads as 0 -- lowers to a `ZeroTensor` (see `CallArg_Tensor`)
+        self._unroll_spans = {}   # spec index -> (start, count) for the unrolled AxisList
+        self._spec_dims = None    # spec index -> its first array dimension
+        self._sizes = None        # one size per array dimension of the value
+
+        # A declared member is either an axis NAME, looked up in `scope`, or an `AbstractAxis`
+        # object -- a tensor can then BORROW an axis (`Tensor[ cell.num_vertex ]`), hence its
+        # ShapeVars, hence its capacity, without belonging to any aggregate.
+        # A trailing `...` on a name is the unroll marker (only valid for an AxisList).
+        # At most one member may be unrolled; plain `Axis`es can sit before and/or
+        # after it (they keep one array dimension each; the unroll takes the rest).
+        self.specs = []
+        for entry in template_args:
+            if isinstance( entry, str ):
+                unroll = entry.endswith( "..." )
+                axis = resolve_attribute( entry[ :-3 ] if unroll else entry, scope, AbstractAxis )
+            else:
+                if isinstance( entry, ShapeVar ):
+                    entry = Axis( entry )
+                else:
+                    assert isinstance( entry, AbstractAxis )
+                unroll = False
+                axis = entry
+            self.specs.append( ( axis, unroll ) )
+        assert sum( u for _, u in self.specs ) <= 1, "at most one unrolled AxisList per tensor"
+
+        # let each member record, on its ShapeVars, how this tensor constrains them
+        for index, ( axis, unroll ) in enumerate( self.specs ):
+            axis.register_in( self, index, unroll )
+
+        if value is not None:
+            self.set( value )
+
     @classmethod
     def make_CallArg( cls, caa, path, name, inst ):
         from ..drivers.CallArg_Tensor import CallArg_Tensor
@@ -63,36 +105,6 @@ class Tensor( Attribute ):
     @property
     def is_symbolic_zero( self ) -> bool:
         return self._symbolic_zero
-
-    def __init__( self, value = None, /, *, template_args = (), template_kwargs = {}, scope = None ) -> None:
-        self.device = Device.factory( template_kwargs.get( "device", None ) )
-        self.dtype = Dtype.factory( template_kwargs.get( "dtype", None ) )
-        self._raw = None          # homogeneous value buffer (padded when ragged)
-        self._symbolic_zero = False  # a structural zero (a symbolic-zero cotangent): no buffer,
-                                     # reads as 0 -- lowers to a `ZeroTensor` (see `CallArg_Tensor`)
-        self._sizes = None        # one size per array dimension of the value
-        self._spec_dims = None    # spec index -> its first array dimension
-        self._unroll_spans = {}   # spec index -> (start, count) for the unrolled AxisList
-
-        # A declared member is either an axis NAME, looked up in `scope`, or an `AbstractAxis`
-        # object -- a tensor can then BORROW an axis (`Tensor[ cell.num_vertex ]`), hence its
-        # ShapeVars, hence its capacity, without belonging to any aggregate.
-        # A trailing `...` on a name is the unroll marker (only valid for an AxisList).
-        # At most one member may be unrolled; plain `Axis`es can sit before and/or
-        # after it (they keep one array dimension each; the unroll takes the rest).
-        self.specs = []
-        for entry in template_args:
-            unroll = isinstance( entry, str ) and entry.endswith( "..." )
-            axis = resolve_attribute( entry[ :-3 ] if unroll else entry, scope, AbstractAxis )
-            self.specs.append( ( axis, unroll ) )
-        assert sum( u for _, u in self.specs ) <= 1, "at most one unrolled AxisList per tensor"
-
-        # let each member record, on its ShapeVars, how this tensor constrains them
-        for index, ( axis, unroll ) in enumerate( self.specs ):
-            axis.register_in( self, index, unroll )
-
-        if value is not None:
-            self.set( value )
 
     @property
     def axes( self ):

@@ -434,7 +434,6 @@ def _call_backward( code, ca, device, prefix, inputs, outputs, diff_idx,
 
     def _blank( inst ):
         obj = type( inst ).__new__( type( inst ) )
-        obj._attributes = {}
         obj.name = getattr( inst, "name", None )   # only a NESTED aggregate carries a field name
         return obj
 
@@ -448,7 +447,7 @@ def _call_backward( code, ca, device, prefix, inputs, outputs, diff_idx,
                     r, g = _build( member, f"{ path }.{ mname }" )
                 else:
                     r = g = member   # Axis / ShapeVar / CtShapeVar: shared, so shapes resolve
-                residual._attributes[ mname ], grad._attributes[ mname ] = r, g
+                residual.__dict__[ mname ], grad.__dict__[ mname ] = r, g
             return residual, grad
 
         # a tensor leaf: the residual is bound to whatever forward value it held.
