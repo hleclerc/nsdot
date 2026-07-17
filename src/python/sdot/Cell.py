@@ -15,11 +15,11 @@ BOUNDARY = -1
 
 @aggregate
 class Cell:
-    nb_vertices      : ShapeVar #
-    nb_edges         : ShapeVar #
-    nb_cuts          : ShapeVar #
+    nb_vertices      : ShapeVar
+    nb_edges         : ShapeVar
+    nb_cuts          : ShapeVar
 
-    nb_dims          : CtShapeVar #
+    nb_dims          : CtShapeVar
 
     num_vertex       : Axis[ "nb_vertices" ]
     num_edge         : Axis[ "nb_edges" ]
@@ -93,8 +93,8 @@ class Cell:
                 fwd_code = "cell( batch_index ).init_as_hypercube( origin, axes, cut_id );",
                 bwd_code = "cell( batch_index ).init_as_hypercube_bwd( origin, axes, grad_for_cell( batch_index ), grad_for_origin( batch_index ), grad_for_axes( batch_index ) );"
             ),
-            output_capacities = self._init_capacities(),
             output_exceptions = self._output_attribute_exceptions(),
+            output_capacities = self._init_capacities(),
             output_attributes = [ "cell" ],
             cut_id = cut_id,
             origin = origin,

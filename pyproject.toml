@@ -1,0 +1,34 @@
+[build-system]
+requires = [ "hatchling" ]
+build-backend = "hatchling.build"
+
+[project]
+name = "sdot"
+version = "0.0.1"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "typing_extensions",
+    "devtools",
+]
+
+[project.optional-dependencies]
+jax = [ "jax" ]
+torch = [ "torch" ]
+
+# src-layout: only `sdot/` (not the `src/python/` prefix) lands at the wheel root.
+[tool.hatch.build.targets.wheel]
+packages = [ "src/python/sdot" ]
+
+# The C++ header tree lives outside the Python package, so pull it in next to it, at
+# `sdot/_cpp/sdot/...` -- matches compilation.cpp_include_root()'s installed-mode lookup.
+[tool.hatch.build.targets.wheel.force-include]
+"src/cpp" = "sdot/_cpp"
+
+# `python -m build` builds the wheel from the extracted sdist, so the sdist must carry the C++
+# tree too or the wheel would silently ship without headers.
+[tool.hatch.build.targets.sdist]
+only-include = [
+    "src/python",
+    "src/cpp",
+]

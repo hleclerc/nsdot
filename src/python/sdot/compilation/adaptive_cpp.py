@@ -90,6 +90,13 @@ def _cache_candidates() -> list:
     if override:
         candidates.append( Path( override ).expanduser() )
 
+    # A prebuilt toolchain shipped inside the wheel (sdot/_toolchain/...) is scanned first, so
+    # a bundled acpp wins over rebuilding one. Read-only, so cache_root() skips it for writes.
+    # No-op until a platform wheel populates it (see the packaging plan).
+    packaged = Path( __file__ ).resolve().parents[ 1 ] / "_toolchain"
+    if packaged.is_dir():
+        candidates.append( packaged )
+
     if sys.platform == "darwin":
         candidates.append( Path.home() / "Library" / "Caches" / "sdot" )
     elif os.name == "nt":
@@ -620,7 +627,7 @@ def make_executable( exe_name, src_paths, device, *, profile = None, extra_flags
     own include/runtime wiring, so we only add the project's C++ include dir. Returns the
     path to the built executable.
     """
-    from . import build_dir, _src_root
+    from . import build_dir, cpp_include_root
 
     targets = device.acpp_targets
     if targets is None:
@@ -638,12 +645,11 @@ def make_executable( exe_name, src_paths, device, *, profile = None, extra_flags
 
     omp_flags = _macos_omp_include_flags() if targets.startswith( "omp" ) else []
 
-    project_root = _src_root()
     cmd = [
         acpp,
         f"--acpp-targets={ targets }",
         "-std=c++20", "-O2",
-        "-I", project_root / "src" / "cpp",
+        "-I", cpp_include_root(),
         *omp_flags,
         *( extra_flags or [] ),
         "-o", exe,
@@ -665,7 +671,7 @@ def make_library( lib_name, src_paths, device, *, profile = None, extra_flags = 
     a hash of the inputs, a changed source naturally produces a new name and a rebuild.
     Returns the path to the built library.
     """
-    from . import build_dir, _src_root
+    from . import build_dir, cpp_include_root
 
     targets = device.acpp_targets
     if targets is None:
@@ -686,13 +692,12 @@ def make_library( lib_name, src_paths, device, *, profile = None, extra_flags = 
 
     omp_flags = _macos_omp_include_flags() if targets.startswith( "omp" ) else []
 
-    project_root = _src_root()
     cmd = [
         acpp,
         f"--acpp-targets={ targets }",
         "-std=c++20", "-O2",
         "-fPIC", "-shared",
-        "-I", project_root / "src" / "cpp",
+        "-I", cpp_include_root(),
         *omp_flags,
         *( extra_flags or [] ),
         "-o", lib,

@@ -14,6 +14,36 @@ def _src_root():
     return Path( __file__ ).resolve().parents[ 4 ]
 
 
+def _dev_repo_root():
+    """Repo root, but only when this really looks like a dev checkout (a sibling
+    src/cpp/sdot exists) -- None when running from an installed wheel."""
+    candidate = Path( __file__ ).resolve().parents[ 4 ]
+    return candidate if ( candidate / "src" / "cpp" / "sdot" ).is_dir() else None
+
+
+def cpp_include_root():
+    """The `-I` root so `#include <sdot/Cell.h>` resolves, from a dev checkout OR an
+    installed wheel.
+
+    Dev: the sibling `src/cpp` tree (edit C++ without rebuilding the wheel). Installed: the
+    `sdot/_cpp` tree the wheel ships next to the package (pure `__file__`-relative, no repo
+    assumption). The generated headers live elsewhere, on their own `-I` root -- see
+    generated_headers.include_root().
+    """
+    dev_root = _dev_repo_root()
+    if dev_root is not None:
+        return dev_root / "src" / "cpp"
+
+    packaged = Path( __file__ ).resolve().parents[ 1 ] / "_cpp"
+    if ( packaged / "sdot" / "Cell.h" ).is_file():
+        return packaged
+
+    raise RuntimeError(
+        "sdot: cannot locate the C++ header tree (neither a dev checkout's src/cpp nor "
+        "the packaged sdot/_cpp were found) -- broken install?"
+    )
+
+
 def _is_writable_dir( path: Path ):
     """Return True if `path` can be created and written into.
 
@@ -31,7 +61,7 @@ def _is_writable_dir( path: Path ):
         return False
 
 
-def _fallback_build_dir():
+def _fallback_build_dir( root: Path ):
     """A stable, per-user, per-checkout build directory under the temp dir.
 
     Used when the in-tree `build` directory is read-only (e.g. sources shipped
@@ -42,8 +72,6 @@ def _fallback_build_dir():
     `tempfile.gettempdir()` is honoured (TMPDIR/TEMP/TMP, then a sane default),
     so this works on macOS, Linux and Windows.
     """
-    root = _src_root()
-
     # Short hash of the checkout path: keeps distinct checkouts apart while
     # staying deterministic across runs.
     digest = hashlib.sha1( str( root ).encode( "utf-8" ) ).hexdigest()[ :12 ]
@@ -64,9 +92,10 @@ def build_dir():
 
     Resolution order:
       1. `SDOT_BUILD_DIR` if set (explicit override).
-      2. `<src>/build` next to the package, when writable (the dev default).
-      3. A stable per-user directory under the system temp dir, used as a
-         fallback when the sources live in a read-only location.
+      2. Dev checkout: `<repo>/build` when writable, else a stable per-user directory
+         under the system temp dir (used when the checkout is read-only).
+      3. Installed wheel (no dev checkout): the per-user cache root, the same convention
+         as the AdaptiveCpp toolchain -- never inside the venv/site-packages.
 
     The chosen directory is created if needed and returned as a `Path`.
     """
@@ -76,13 +105,23 @@ def build_dir():
         path.mkdir( parents = True, exist_ok = True )
         return path
 
-    default = _src_root() / "build"
-    if _is_writable_dir( default ):
-        return default
+    dev_root = _dev_repo_root()
+    if dev_root is not None:
+        default = dev_root / "build"
+        if _is_writable_dir( default ):
+            return default
 
-    fallback = _fallback_build_dir()
-    fallback.mkdir( parents = True, exist_ok = True )
-    return fallback
+        fallback = _fallback_build_dir( dev_root )
+        fallback.mkdir( parents = True, exist_ok = True )
+        return fallback
+
+    # installed wheel: no meaningful in-tree default -- reuse the same per-user cache
+    # convention as the AdaptiveCpp toolchain itself. (local import avoids a circular
+    # import between this module and adaptive_cpp.)
+    from .adaptive_cpp import cache_root
+    installed_default = cache_root() / "build"
+    installed_default.mkdir( parents = True, exist_ok = True )
+    return installed_default
 
 
 def additional_include_dirs():
