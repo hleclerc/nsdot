@@ -11,15 +11,6 @@ if test( "batch" ):
     info( c.vertex_positions )
     info( c.measure )
 
-# 2000 H100
-# 8500 A100
-# 25000 V100
-
-# 10000 (A100) / 10000 (V100) / 5000 (H100)
-# 10 000 V100 , 10 000 A100, 5 000 H100
-#
-# Faire un issue pour créer une branche
-
 if test( "grad_hypercube" ):
     # Dérivées des sorties d'un hypercube 2D par rapport à ses entrées `origin` et `axes`.
     # `check_grad` est agnostique : il confronte l'adjoint du driver à une différence finie, sans

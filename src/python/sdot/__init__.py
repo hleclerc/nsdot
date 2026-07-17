@@ -1,4 +1,4 @@
-from .util.aggregate import aggregate as aggregate
+from .util.aggregate import Aggregate as Aggregate
 
 from .tensor.CtShapeVar import CtShapeVar as CtShapeVar
 from .tensor.AxisList import AxisList as AxisList
@@ -12,4 +12,5 @@ from .compilation.FfiCode import FfiCode as FfiCode
 
 from .drivers.driver import driver as driver
 
+from .Image import Image as Image
 from .Cell import Cell as Cell

@@ -1,10 +1,9 @@
-from sdot import ShapeVar, Axis, AxisList, Tensor, aggregate, driver
+from sdot import ShapeVar, Axis, AxisList, Tensor, Aggregate, driver
 from . import test
 import numpy
 
 if test( "basic" ):
-    @aggregate
-    class Cell:
+    class Cell( Aggregate ):
         vertex_positions : Tensor[ "num_vertex", "dim" ]
         vertex_indices   : Tensor[ "num_vertex", "dim", { "dtype": int } ]
 
@@ -14,7 +13,6 @@ if test( "basic" ):
         nb_vertices      : ShapeVar
         nb_dims          : ShapeVar
 
-        def __init__( self, **kw ) -> None: ...
 
 
     nb_dims = ShapeVar()
@@ -32,8 +30,7 @@ if test( "basic" ):
 
 
 if test( "ragged" ):
-    @aggregate
-    class Mesh:
+    class Mesh( Aggregate ):
         cell_vertices   : Tensor[ "cell", "vtx" ]
 
         cell            : Axis[ "nb_cells" ]
@@ -42,7 +39,6 @@ if test( "ragged" ):
         nb_cells        : ShapeVar
         nb_vtx_per_cell : ShapeVar[ "cell" ]             # rank-1 (one count per cell)
 
-        def __init__( self, **kw ) -> None: ...
 
 
     m = Mesh()
@@ -62,8 +58,7 @@ if test( "ragged" ):
 
 
 if test( "AxisList" ):
-    @aggregate
-    class Image:
+    class Image( Aggregate ):
         values  : Tensor[ "img_pos..." ]
         knots   : Tensor[ "dim", "num_knot" ]
 
@@ -74,7 +69,6 @@ if test( "AxisList" ):
         nb_dims : ShapeVar
         extent  : ShapeVar[ "dim" ]             # rank-1 (one count per dim)
 
-        def __init__( self, **kw ) -> None: ...
 
 
     m = Image( values = driver.random( [ 2, 1 ] ), knots = [ [ 0, 1, 2 ], [ 0, 1 ] ] )
@@ -83,8 +77,7 @@ if test( "AxisList" ):
 
 
 if test( "axis_parsing" ):
-    @aggregate
-    class Dell:
+    class Dell( Aggregate ):
         x: ShapeVar
         y: ShapeVar
 
@@ -94,7 +87,6 @@ if test( "axis_parsing" ):
         a4: Axis[ "3 * x + 2 * y - 1" ]
         a5: Axis[ "- x + 10" ]
 
-        def __init__( self, **ka ) -> None: ...
 
     c = Dell()
 
@@ -335,14 +327,12 @@ if test( "set_backend_array" ):
 
 
 if test( "set_ragged_reassign" ):
-    @aggregate
-    class Mesh:
+    class Mesh( Aggregate ):
         cell_vertices   : Tensor[ "cell", "vtx" ]
         cell            : Axis[ "nb_cells" ]
         vtx             : Axis[ "nb_vtx_per_cell" ]
         nb_cells        : ShapeVar
         nb_vtx_per_cell : ShapeVar[ "cell" ]
-        def __init__( self, **kw ) -> None: ...
 
     m = Mesh()
     m.cell_vertices = [ [ 10, 11 ], [ 12 ] ]
@@ -391,14 +381,12 @@ if test( "shapevar_value_is_tensor" ):
 
 
 if test( "shapevar_ragged_value_is_tensor" ):
-    @aggregate
-    class Mesh:
+    class Mesh( Aggregate ):
         cell_vertices   : Tensor[ "cell", "vtx" ]
         cell            : Axis[ "nb_cells" ]
         vtx             : Axis[ "nb_vtx_per_cell" ]
         nb_cells        : ShapeVar
         nb_vtx_per_cell : ShapeVar[ "cell" ]
-        def __init__( self, **kw ) -> None: ...
 
     m = Mesh()
     m.cell_vertices = [ [ 10, 11 ], [ 12 ] ]
@@ -416,14 +404,12 @@ if test( "shapevar_ragged_value_is_tensor" ):
 
 
 if test( "tensor_reduce_ragged" ):
-    @aggregate
-    class Mesh:
+    class Mesh( Aggregate ):
         cell_vertices   : Tensor[ "cell", "vtx" ]
         cell            : Axis[ "nb_cells" ]
         vtx             : Axis[ "nb_vtx_per_cell" ]
         nb_cells        : ShapeVar
         nb_vtx_per_cell : ShapeVar[ "cell" ]
-        def __init__( self, **kw ) -> None: ...
 
     m = Mesh()
     m.cell_vertices = [ [ 1.0, 2.0 ], [ 3.0 ] ]   # cell 1 is padded -> a hole at [ 1, 1 ]

@@ -1,4 +1,4 @@
-from sdot import CtShapeVar, ShapeVar, Axis, Tensor, aggregate, driver, FfiCode
+from sdot import CtShapeVar, ShapeVar, Axis, Tensor, Aggregate, driver, FfiCode
 from . import test
 
 # An `@aggregate` instance is built BEFORE the call and passed as a plain kwarg. Inputs and
@@ -39,8 +39,7 @@ if test( "basic" ):
     # NB the class is `Cell1`, not `Cell`: a bare `Cell` would match the hand-written
     # `src/cpp/sdot/Cell.h`, and the aggregate would build on THAT struct instead of a generated
     # one. A name with no `sdot/<Name>.h` gets its struct generated whole (see `_emit_full_header`).
-    @aggregate
-    class Cell1:
+    class Cell1( Aggregate ):
         vertex_positions : Tensor[ "num_vertex", "dim" ]
 
         num_vertex       : Axis[ "nb_vertices" ]
@@ -49,7 +48,6 @@ if test( "basic" ):
         nb_vertices      : ShapeVar
         nb_dims          : CtShapeVar
 
-        def __init__( self, **kw ) -> None: ...
 
 
     # the ctor only prescribes what the cell IS: `nb_dims` is compile-time known (its count is
@@ -132,8 +130,7 @@ if test( "partial_init" ):
     # `TensorView` to be tested at runtime -- it lowers to a `NoneTensor`, a distinct TYPE with
     # no data, so the kernel discriminates at COMPILE time (and a `static_assert` can forbid
     # touching it outright).
-    @aggregate
-    class Cell2:
+    class Cell2( Aggregate ):
         vertex_positions : Tensor[ "num_vertex", "dim" ]
         vertex_indices   : Tensor[ "num_vertex", "dim", dict( dtype = int ) ]
 
@@ -143,7 +140,6 @@ if test( "partial_init" ):
         nb_vertices      : ShapeVar
         nb_dims          : CtShapeVar
 
-        def __init__( self, **kw ) -> None: ...
 
 
     cell = Cell2( nb_dims = 2 )
@@ -182,8 +178,7 @@ if test( "input_exceptions" ):
     # kernel sees a `NoneTensor` exactly as if it had never been filled. Nothing crosses the FFI
     # for it, and the underlying data stays untouched (an asserted "this kernel has no business
     # touching it", not a mutation).
-    @aggregate
-    class Cell3:
+    class Cell3( Aggregate ):
         vertex_positions : Tensor[ "num_vertex", "dim" ]
 
         num_vertex       : Axis[ "nb_vertices" ]
@@ -192,7 +187,6 @@ if test( "input_exceptions" ):
         nb_vertices      : ShapeVar
         nb_dims          : CtShapeVar
 
-        def __init__( self, **kw ) -> None: ...
 
 
     cell = Cell3( nb_dims = 2 )
@@ -237,8 +231,7 @@ if test( "input_exceptions" ):
 if test( "two_instances" ):
     # the same aggregate, twice in one call, with different compile-time shape vars: `Cell` is
     # generated as a C++ template, instantiated once per argument.
-    @aggregate
-    class Cell3:
+    class Cell3( Aggregate ):
         vertex_positions : Tensor[ "num_vertex", "dim" ]
 
         num_vertex       : Axis[ "nb_vertices" ]
@@ -247,7 +240,6 @@ if test( "two_instances" ):
         nb_vertices      : ShapeVar
         nb_dims          : CtShapeVar
 
-        def __init__( self, **kw ) -> None: ...
 
 
     flat = Cell3( nb_dims = 2 )
@@ -293,8 +285,7 @@ if test( "two_instances" ):
 if test( "nested" ):
     # an aggregate field whose type is itself an aggregate: `Cell` is generated as its own C++
     # template, and `Pair` holds two instantiations of it (and forwards their parameters).
-    @aggregate
-    class Cell4:
+    class Cell4( Aggregate ):
         vertex_positions : Tensor[ "num_vertex", "dim" ]
 
         num_vertex       : Axis[ "nb_vertices" ]
@@ -303,15 +294,12 @@ if test( "nested" ):
         nb_vertices      : ShapeVar
         nb_dims          : CtShapeVar
 
-        def __init__( self, **kw ) -> None: ...
 
 
-    @aggregate
-    class Pair:
+    class Pair( Aggregate ):
         left  : Cell4
         right : Cell4
 
-        def __init__( self, **kw ) -> None: ...
 
 
     # a mapping under a field's name scopes a prescription to that field alone.
@@ -350,8 +338,7 @@ if test( "vmap" ):
     # `batch_index` was already there, empty. Nothing here is Jax-specific: `driver.vmap` is what
     # the driver in use provides (Jax today, Torch later), and the test only ever sees driver
     # arrays.
-    @aggregate
-    class Cell5:
+    class Cell5( Aggregate ):
         vertex_positions : Tensor[ "num_vertex", "dim" ]
 
         num_vertex       : Axis[ "nb_vertices" ]
@@ -360,7 +347,6 @@ if test( "vmap" ):
         nb_vertices      : ShapeVar
         nb_dims          : CtShapeVar
 
-        def __init__( self, **kw ) -> None: ...
 
 
     code = FfiCode( name = "test_call_vmap", fwd_code = """
@@ -412,8 +398,7 @@ if test( "capacity_overflow" ):
     # CLAMPS the count -- so whatever the body writes next stays inside the buffers this call
     # allocated. Python then reserves more and runs again, until it fits. Nothing of a failed run
     # survives: an output is a fresh buffer every time.
-    @aggregate
-    class Cell6:
+    class Cell6( Aggregate ):
         vertex_positions : Tensor[ "num_vertex", "dim" ]
 
         num_vertex       : Axis[ "nb_vertices" ]
@@ -423,7 +408,6 @@ if test( "capacity_overflow" ):
         nb_wanted        : ShapeVar   # read by it: how many it is going to produce
         nb_dims          : CtShapeVar
 
-        def __init__( self, **kw ) -> None: ...
 
 
     code = FfiCode( name = "test_call_overflow", fwd_code = """
@@ -663,13 +647,11 @@ if test( "der_aggregate" ):
     # same class, mirrored member by member -- `grad_for_cell.data` is the gradient of the input
     # `cell.data`, allocated at its capacity (the shared `nn` resolves it). The residual `cell`
     # re-enters under its forward name; non-tensor members (`n`, `nn`) are shared.
-    @aggregate
-    class Vec:
+    class Vec( Aggregate ):
         data : Tensor[ "n" ]
         n    : Axis[ "nn" ]
         nn   : CtShapeVar
 
-        def __init__( self, **kw ) -> None: ...
 
     code = FfiCode( name = "test_call_der_agg",
         fwd_code = """

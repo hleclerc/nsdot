@@ -4,15 +4,24 @@ from .Attribute import Attribute
 import inspect
 
 
-def aggregate( cls ):
+class Aggregate:
     """
-    Class decorator for classes whose fields are `Attribute` declarations.
+    Base class for aggregates: classes whose fields are `Attribute` declarations.
 
-    `aggregate` works one level of abstraction above any concrete field type: it
+    `Aggregate` works one level of abstraction above any concrete field type: it
     knows nothing about `ShapeVar` / `Axis` / `Tensor` (mere examples), only the
     `Attribute` protocol. Each annotation is a `Parametrized` schema; a fresh
     per-instance `Attribute` is built lazily by `get_attribute` and kept, under
     its field name, in the instance `__dict__`.
+
+    Subclass it -- `class Cell( Aggregate ): ...` -- rather than decorating: the
+    machinery is REAL methods (`__base_init__`, `apply_batch_axes`, `get_attribute`)
+    and a real `__init__`, so a type checker / IDE sees them (no `TYPE_CHECKING`
+    stubs to hand-maintain), and a subclass with its own construction just OVERRIDES
+    `__init__` and calls `super().__base_init__( ... )` where it wants the fields set
+    up (see `tests/python/test_Cell.py`) -- plain MRO, no bytecode sniffing. Per-field
+    SET-only descriptors and the `_is_sdot_aggregate` marker are installed by
+    `__init_subclass__` at class-creation time.
 
     Each field can be *injected* at construction by passing its name as a kwarg;
     an `Attribute` value is shared (several instances then agree on the same
@@ -23,7 +32,7 @@ def aggregate( cls ):
         a = Cell( nb_dims = n )   # a and b share nb_dims
         b = Cell( nb_dims = n )
 
-    A field whose type is itself an `@aggregate` NESTS: it is built with the same
+    A field whose type is itself an `Aggregate` NESTS: it is built with the same
     kwargs, so what is written at the outer level reaches every field below it. A
     plain mapping under a field's name opens a scope for that field alone, which
     is how two nested aggregates get different values:
@@ -36,26 +45,37 @@ def aggregate( cls ):
     (`driver.call( ..., capacities = { ... } )`). A key matching no field here is
     not an error as long as some nested aggregate could consume it.
 
-    Generated: an `__init__` that honors injections and instantiates every field,
-    and one SET-only data descriptor per field: `c.field = value` routes to `set`,
-    while `c.field` is a plain read of the instance `__dict__` -- so it hands back
+    Reads: `c.field` is a plain read of the instance `__dict__` -- so it hands back
     the `Attribute` OBJECT itself (a `ShapeVar`, an `Axis`, ...), value-on-read
-    being the concrete type's business (`c.nb_dims.value`), not the aggregate's.
+    being the concrete type's business (`c.nb_dims.value`), not the aggregate's;
+    `c.field = value` routes to `set` via the per-field descriptor.
     """
-
-    #
-    cls._is_sdot_aggregate = True
 
     # convention: every aggregate carries `batch_axes`, the (possibly empty) list of axes it is
     # batched over -- read uniformly by the methods (an auxiliary output is `Tensor[ *batch_axes ]`)
     # and by `CallArgsAnalysis` (which folds them into `global_batch_indices`). A plain aggregate has
-    # none; `make_batch_class` sets them. Not an annotation, so it is not a field and gets no
-    # descriptor. Set per-class, so a subclass does not silently share its base's list.
-    if "batch_axes" not in cls.__dict__:
-        cls.batch_axes = []
+    # none; `apply_batch_axes` sets them. Left UNANNOTATED so it is not a field (no descriptor, and
+    # `annotations()` -- hence the C++ lowering -- never sees it). The class-level `[]` is a mere
+    # default: every instance reassigns `self.batch_axes` in `__base_init__`, so the shared list is
+    # never mutated in place.
+    batch_axes = []
 
-    # ------------------ __init__ ------------------
+    def __init_subclass__( cls, **kwargs ):
+        super().__init_subclass__( **kwargs )
+
+        # duck-typed marker used across the drivers (`JaxFfi`, `CallArgsAnalysis`, `_is_aggregate`).
+        cls._is_sdot_aggregate = True
+
+        # one SET-only data descriptor per leaf `Attribute` field, to route its writes to `.set()`.
+        # A nested aggregate has no `set` (you reach into it: `p.left.nb_dims = ...`), so it needs no
+        # descriptor at all -- `p.left` is just the instance our constructor stored in `__dict__`.
+        for name, type_attr in annotations( cls ).items():
+            if _is_attribute_field( type_attr ):
+                setattr( cls, name, FieldDescriptor( name ) )
+
+    # ------------------ construction ------------------
     def __base_init__( self, **kwargs ):
+        cls = type( self )
         anns = annotations( cls )
 
         # batching is a reserved construction option, not a field: `batch_axes = [ ax, ... ]` adds
@@ -102,7 +122,10 @@ def aggregate( cls ):
         if batch_axes:
             self.apply_batch_axes( batch_axes )
 
-    cls.__base_init__ = __base_init__
+    # By default `Aggregate()` builds every field. A subclass with its own construction just defines
+    # `__init__` (plain override) and calls `self.__base_init__( ... )` where it wants the fields set
+    # up (see `tests/python/test_Cell.py`).
+    __init__ = __base_init__
 
     # ------------------ batching ------------------
     def apply_batch_axes( self, batch_axes ):
@@ -116,7 +139,7 @@ def aggregate( cls ):
         unbatched one it replaces dies, taking its now-stale registrations with it. A nested
         aggregate is batched over the SAME axis objects -- joined iteration, no name to collide."""
         self.batch_axes = list( batch_axes )
-        for name, type_attr in annotations( cls ).items():
+        for name, type_attr in annotations( type( self ) ).items():
             if _is_aggregate( type_attr ):
                 get_attribute( name, self ).apply_batch_axes( self.batch_axes )
             elif _is_tensor_field( type_attr ):
@@ -124,32 +147,14 @@ def aggregate( cls ):
                 attr.name = name
                 self.__dict__[ name ] = attr
 
-    cls.apply_batch_axes = apply_batch_axes
-    # A class may keep its OWN `__init__` for custom construction -- it then calls `__base_init__`
-    # itself, where it wants the fields set up (see tests/python/test_Cell.py). But a class that
-    # only STUBS it -- `def __init__( self, **kw ) -> None: ...`, the shape it declares so a type
-    # checker accepts `Cell( nb_dims = 2 )` -- is asking us to fill it in, so we route it to
-    # `__base_init__`. Same when it defines none at all.
-    if _init_is_stub( cls ):
-        cls.__init__ = __base_init__
-
     # the scope protocol (see `resolve_attribute`): what turns the NAME an attribute reads in a
     # declaration (`Tensor[ "num_vertex" ]`) into the very object this instance holds.
-    cls.get_attribute = lambda self, name: get_attribute( name, self )
-
-    # ------------------ per-field descriptors ------------------
-    # only leaf `Attribute` fields need one, to route their writes to `.set()`. A nested aggregate
-    # has no `set` (you reach into it: `p.left.nb_dims = ...`), so it needs no descriptor at all --
-    # `p.left` is just the instance our constructor stored in `__dict__`.
-    for name, type_attr in annotations( cls ).items():
-        if _is_attribute_field( type_attr ):
-            setattr( cls, name, FieldDescriptor( name ) )
-
-    return cls
+    def get_attribute( self, name ):
+        return get_attribute( name, self )
 
 
 class FieldDescriptor:
-    """SET-only data descriptor generated per `@aggregate` field.
+    """SET-only data descriptor installed per `Aggregate` field.
 
     It intercepts WRITES only (`c.field = value` -> `attr.set(value)`); it has no `__get__`, so a
     read falls through to the instance `__dict__`, where `get_attribute` keeps the per-instance
@@ -165,25 +170,6 @@ class FieldDescriptor:
 
     def __set__( self, obj, value ):
         get_attribute( self.name, obj ).set( value )
-
-
-
-
-def _init_is_stub( cls ):
-    """Whether `@aggregate` should supply `__init__` by routing it to `__base_init__`.
-
-    True when the class defines no `__init__` of its own, or only a STUB: a body that is just
-    `...`, `pass`, or a docstring (the typing shape `def __init__( self, **kw ) -> None: ...`).
-    Such a body does nothing but return a constant -- it never touches `self`, an argument, or a
-    call -- so its bytecode loads constants and returns, and nothing else. A real `__init__` does
-    reference something (`LOAD_FAST`, `CALL`, ...), and is left untouched: it runs its own logic
-    and calls `__base_init__` where it chooses."""
-    import dis
-    init = cls.__dict__.get( "__init__" )
-    if init is None:
-        return True
-    trivial = { "RESUME", "LOAD_CONST", "RETURN_CONST", "RETURN_VALUE", "POP_TOP", "NOP" }
-    return all( instr.opname in trivial for instr in dis.get_instructions( init ) )
 
 
 def _field_cls( type_attr ):

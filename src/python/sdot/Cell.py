@@ -6,15 +6,14 @@ from .tensor.Tensor import Tensor
 from .tensor.Axis import Axis
 
 from .compilation.FfiCode import FfiCodeParallel
-from .util.aggregate import aggregate
+from .util.aggregate import Aggregate
 from .drivers.driver import driver
 
 INFINITE = -2
 BOUNDARY = -1
 
 
-@aggregate
-class Cell:
+class Cell( Aggregate ):
     nb_vertices      : ShapeVar
     nb_edges         : ShapeVar
     nb_cuts          : ShapeVar
@@ -38,11 +37,6 @@ class Cell:
     cut_directions   : Tensor[ "num_cut", "dim" ]
     cut_offsets      : Tensor[ "num_cut" ]
     cut_ids          : Tensor[ "num_cut", dict( dtype = int ) ]
-
-    if TYPE_CHECKING:
-        def __base_init__( self, *args, **kwargs ): ...
-        def apply_batch_axes( self, batch_axes ): ...
-        batch_axes: list
 
 
     def __init__( self, nb_dims, init_as_unbounded = True, batch_axes = None ):
