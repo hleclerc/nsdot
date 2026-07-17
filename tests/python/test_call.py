@@ -175,6 +175,65 @@ if test( "partial_init" ):
     assert cell.vertex_indices.raw is None
 
 
+if test( "input_exceptions" ):
+    # `vertex_positions` holds data by the second call (the first one wrote it), so it would
+    # default to an INPUT there -- `input_exceptions` is the symmetric carve-out of
+    # `output_attribute_exceptions`: it forces the attribute back to `UNBOUND` regardless, so the
+    # kernel sees a `NoneTensor` exactly as if it had never been filled. Nothing crosses the FFI
+    # for it, and the underlying data stays untouched (an asserted "this kernel has no business
+    # touching it", not a mutation).
+    @aggregate
+    class Cell3:
+        vertex_positions : Tensor[ "num_vertex", "dim" ]
+
+        num_vertex       : Axis[ "nb_vertices" ]
+        dim              : Axis[ "nb_dims" ]
+
+        nb_vertices      : ShapeVar
+        nb_dims          : CtShapeVar
+
+        def __init__( self, **kw ) -> None: ...
+
+
+    cell = Cell3( nb_dims = 2 )
+
+    driver.call(
+        FfiCode( name = "test_input_exceptions_init", fwd_code = """
+        run_parallel(
+            queue,
+            global_batch_indices,
+            []( auto batch_index, auto cell ) {
+                cell.nb_vertices( batch_index ).set( 1 );
+                cell.vertex_positions( batch_index, num_vertex = 0, dim = 0 ) = 1;
+                cell.vertex_positions( batch_index, num_vertex = 0, dim = 1 ) = 2;
+            },
+            cell_io, cell
+        );
+        """ ),
+        cell = cell,
+        output_attributes = [ "cell.nb_vertices", "cell.vertex_positions" ],
+        output_capacities = { "cell.nb_vertices": 8 },
+    )
+
+    driver.call(
+        FfiCode( name = "test_input_exceptions_use", fwd_code = """
+        run_parallel(
+            queue,
+            global_batch_indices,
+            []( auto batch_index, auto cell ) {
+                static_assert( DECAYED_TYPE_OF( cell.vertex_positions.is_valid() )::value == 0 );
+            },
+            cell_io, cell
+        );
+        """ ),
+        cell = cell,
+        input_exceptions = [ "cell.vertex_positions" ],
+    )
+
+    # the exception only kept the second call from binding it -- the data itself is untouched.
+    assert cell.vertex_positions.raw.tolist()[ 0 ] == [ 1, 2 ]
+
+
 if test( "two_instances" ):
     # the same aggregate, twice in one call, with different compile-time shape vars: `Cell` is
     # generated as a C++ template, instantiated once per argument.

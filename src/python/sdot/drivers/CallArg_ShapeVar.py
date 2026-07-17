@@ -25,6 +25,10 @@ class CallArg_ShapeVar( CallArg ):
 
         self.inst = inst
         self.path = path
+        # a count is an `int32` buffer, never differentiable -- same role as `dtype` plays for a
+        # `CallArg_Tensor`: it is what tells `JaxFfi._call_with_vjp` this is a trace CONSTANT, not
+        # a primal to seek a gradient for (`t.dtype.floating_point`, uniform across both).
+        self.dtype = Dtype.si( 32 )
         self.memory_space = call_args_analysis.cpp_memory_space
         # one count per cell of the ragged structure this var varies along (none -> a scalar).
         self.shape = [ int( s ) for axis in inst.dep_axes

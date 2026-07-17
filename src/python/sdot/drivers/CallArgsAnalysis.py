@@ -25,8 +25,8 @@ class CallArgsAnalysis:
     falls back to the default: walk its fields as a `CallArg_Aggregate`.
 
     `path` is the dotted attribute path from the call kwarg (`"cell.vertex_positions"`): it is
-    what `output_attributes` and `capacities` name, and naming an aggregate covers everything
-    below it.
+    what `output_attributes`, `input_exceptions` and `capacities` name, and naming an aggregate
+    covers everything below it.
 
     CAPACITIES live here, and nowhere else. Sizing an output is a decision about ONE allocation
     -- so it is a parameter of the call, not state on the object (which would let an object
@@ -46,12 +46,14 @@ class CallArgsAnalysis:
     tensors: list   # the buffers to bind, in FFI order
     args: dict
 
-    def __init__( self, args : dict, device, output_attributes = (), capacities = {}, output_attribute_exceptions = () ) -> None:
+    def __init__( self, args : dict, device, output_attributes = (), capacities = {}, output_attribute_exceptions = (), input_exceptions = () ) -> None:
         self.device = device
         self.output_paths = list( output_attributes )
         self.output_exceptions = list( output_attribute_exceptions )
+        self.input_exceptions = list( input_exceptions )
         self.declared_outputs = set()
         self.declared_exceptions = set()
+        self.declared_input_exceptions = set()
         self.type_names = {}
         self.batch_axes = []
         self.args = {}
@@ -102,6 +104,9 @@ class CallArgsAnalysis:
         unused = [ e for e in self.output_exceptions if e not in self.declared_exceptions ]
         if unused:
             raise ValueError( f"output_attribute_exceptions: excludes nothing: { ', '.join( unused ) }" )
+        unused = [ e for e in self.input_exceptions if e not in self.declared_input_exceptions ]
+        if unused:
+            raise ValueError( f"input_exceptions: no such attribute: { ', '.join( unused ) }" )
 
     # -- the buffers and error slots, derived from the tree --
     @property
@@ -262,7 +267,16 @@ class CallArgsAnalysis:
         """Declared as an output, or else OBSERVED: holds data -> input, empty -> unbound.
 
         An exception wins over the output subtree that contains it: a path carved out of the
-        outputs is observed like any other, as if it had never been declared."""
+        outputs is observed like any other, as if it had never been declared.
+
+        `input_exceptions` is the symmetric carve-out on the OTHER default: a path forced to
+        `UNBOUND` even though it holds data -- the caller asserting the kernel has no business
+        touching it, so it never crosses the FFI and never becomes a differentiable primal (a
+        `NoneTensor`, exactly as if it had been empty and undeclared)."""
+        for e in self.input_exceptions:
+            if path == e or path.startswith( e + "." ):
+                self.declared_input_exceptions.add( e )
+                return IoCategory.UNBOUND
         for e in self.output_exceptions:
             if path == e or path.startswith( e + "." ):
                 self.declared_exceptions.add( e )

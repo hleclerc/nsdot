@@ -31,3 +31,18 @@ if test( "grad_hypercube" ):
     check_grad( lambda o: Cell.make_hypercube( 2, o, axes   ).cut_offsets     , origin )
     check_grad( lambda a: Cell.make_hypercube( 2, origin, a ).cut_directions  , axes   )
     check_grad( lambda a: Cell.make_hypercube( 2, origin, a ).vertex_positions, axes   )
+
+
+if test( "grad_measure" ):
+    # `measure` (l'aire, en 2D) par rapport à `origin`/`axes` -- passe par `measure_bwd`'s
+    # shoelace adjoint, et par `vertex_positions` seul (`cut_directions`/`cut_offsets` sont hors
+    # du call, voir `input_exceptions` dans `Cell.py::measure`).
+    origin = driver.array( [ 0.3, -0.2 ] )
+    axes   = driver.array( [ [ 2.0, 0.1 ], [ -0.3, 1.0 ] ] )
+
+    check_grad( lambda o, a: Cell.make_hypercube( 2, o, a ).measure, origin, axes )
+
+    # une seule entrée dérivée : couvre la branche `! grad_for_cell.vertex_positions.is_valid()`
+    # côté `init_as_hypercube_bwd` (l'autre entrée n'est pas perturbée).
+    check_grad( lambda o: Cell.make_hypercube( 2, o, axes   ).measure, origin )
+    check_grad( lambda a: Cell.make_hypercube( 2, origin, a ).measure, axes   )

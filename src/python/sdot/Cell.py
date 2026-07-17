@@ -129,11 +129,19 @@ class Cell:
 
         driver.call(
             FfiCodeParallel( name = "measure",
-                # bwd_code = "cell( batch_index ).measure_bwd( grad_for_cell( batch_index ), grad_for_res( batch_index ) );",
                 fwd_code = "cell( batch_index ).measure( res( batch_index ), item_map( batch_index ), nb_map_items );",
+                bwd_code = "cell( batch_index ).measure_bwd( res( batch_index ), item_map( batch_index ), nb_map_items, "
+                           "grad_for_res( batch_index ), grad_for_cell( batch_index ).vertex_positions );",
             ),
             output_capacities = { "nb_map_items": self._nb_map_items(), "nb_threads": nt, },
             output_attributes = [ "res", "item_map", "nb_map_items" ],
+            # `measure` reads only `vertex_positions` (and `is_fully_bounded`); the nD gradient
+            # will do the same (fan triangulation, not the facet-normal formula) -- so none of
+            # these ever cross the FFI or become a differentiable primal for this call.
+            input_exceptions = [
+                "cell.vertex_indices", "cell.edge_indices",
+                "cell.cut_directions", "cell.cut_offsets", "cell.cut_ids",
+            ],
             nb_map_items = nb_map_items,
             nb_threads = nb_threads,
             item_map = Tensor[ tuple( self.batch_axes ) + ( num_map_item, num_thread ) ](),

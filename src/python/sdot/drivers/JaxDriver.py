@@ -223,10 +223,10 @@ class JaxDriver:
         return jnp.where( cond, a, b )
 
 
-    def call( self, code : FfiCode | str, output_attributes = (), output_exceptions = (), output_capacities = {}, **kwargs ):
+    def call( self, code : FfiCode | str, output_attributes = (), output_exceptions = (), input_exceptions = (), output_capacities = {}, **kwargs ):
         """Run the C++ `code` on the objects passed as kwargs.
 
-        The objects are built by the caller; nothing is returned. Both lists below name
+        The objects are built by the caller; nothing is returned. Every list below names
         attributes by dotted path (`"cell.vertex_positions"`, or `"cell"` for a whole subtree).
 
         `output_attributes` are what the kernel PRODUCES: a fresh buffer, rebound onto the
@@ -239,6 +239,13 @@ class JaxDriver:
         `output_attribute_exceptions = [ "cell.vertex_indices" ]` -- a run that leaves the vertex
         indices alone). The carved-out attribute falls back to being observed, exactly as if it
         had never been under an output.
+
+        `input_exceptions` is the symmetric carve-out on the OTHER default: a path forced to stay
+        UNBOUND even though the attribute holds data (`input_exceptions = [ "cell.cut_offsets" ]`
+        on a `cell` this kernel never reads) -- it is never transferred, and (being a `NoneTensor`
+        rather than a real buffer) never becomes a differentiable primal, so its backward never
+        needs a cotangent for it either. Use it for members an aggregate happens to carry but this
+        particular kernel has no business touching.
 
         `capacities` says how big to allocate: `{ "cell.nb_vertices": 8 }`. It belongs to the
         call and not to the object, because it is a decision about THIS allocation -- an object
@@ -264,7 +271,7 @@ class JaxDriver:
 
         output_capacities = dict( output_capacities )   # ours to grow: the caller's dict is not ours to touch
         while True:
-            ca = CallArgsAnalysis( kwargs, self.device, output_attributes, output_capacities, output_exceptions )
+            ca = CallArgsAnalysis( kwargs, self.device, output_attributes, output_capacities, output_exceptions, input_exceptions )
             ffi_call( code, ca, self.device, prefix )
 
             overflows = ca.capacity_overflows()

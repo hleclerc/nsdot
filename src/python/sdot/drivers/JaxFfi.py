@@ -442,12 +442,14 @@ def _call_backward( code, ca, device, prefix, inputs, outputs, diff_idx,
             residual, grad = _blank( inst ), _blank( inst )
             for mname in annotations( type( inst ) ):
                 member = get_attribute( mname, inst )
-                if isinstance( member, Tensor ) or _is_agg( member ):
-                    r, g = _build( member, f"{ path }.{ mname }" )
-                else:
-                    r = g = member   # Axis / ShapeVar / CtShapeVar: shared, so shapes resolve
+                r, g = _build( member, f"{ path }.{ mname }" )
                 residual.__dict__[ mname ], grad.__dict__[ mname ] = r, g
             return residual, grad
+
+        if not isinstance( inst, Tensor ):
+            return inst, inst   # Axis / ShapeVar / CtShapeVar: shared, so shapes resolve -- this
+                                 # holds whether `inst` is a nested aggregate member OR a bare
+                                 # top-level kwarg (e.g. `nb_map_items` of `Cell.measure`)
 
         # a tensor leaf: the residual is bound to whatever forward value it held.
         arr = residual_of.get( id( inst ) )

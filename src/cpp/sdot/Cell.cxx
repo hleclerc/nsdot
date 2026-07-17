@@ -269,6 +269,34 @@ UTP void DTP::init_as_hypercube_bwd( auto &&origin, auto &&axes, auto &&grad_cel
     }
 }
 
+UTP void DTP::measure_bwd( auto &&res, auto &&item_map, auto &&nb_map_items, auto &&grad_res, auto &&grad_vertex_positions ) const {
+    // infinite cell
+    if ( ! is_fully_bounded )
+        return;
+
+    // `measure`'s `cell` excludes `cut_directions`/`cut_offsets` from the call (see
+    // `Cell.py::measure`'s `input_exceptions`) -- they lower to `NoneTensor` here, so the nD
+    // gradient must stay vertex-only (fan triangulation, mirroring `measure`'s nD `fwd_code`),
+    // not the facet-normal formula a stale draft of this function used to sketch.
+
+    if ( ! grad_vertex_positions.surely_null() ) {
+        if constexpr ( ct_dim == 2 ) {
+            // 2D: shoelace formula
+            const SI nb_vertices = this->nb_vertices;
+            for ( SI i = 0; i < nb_vertices; ++i ) {
+                const SI j = ( i + 1 ) % nb_vertices;
+                grad_vertex_positions( i, 0 ) += grad_res * vertex_positions( j, 1 ) / 2;
+                grad_vertex_positions( j, 1 ) += vertex_positions( i, 0 ) * grad_res / 2;
+                grad_vertex_positions( j, 0 ) -= grad_res * vertex_positions( i, 1 ) / 2;
+                grad_vertex_positions( i, 1 ) -= vertex_positions( j, 0 ) * grad_res / 2;
+            }
+        } else {
+            // nD: fan triangulation, adjoint of `measure`'s `for_each_simplex` sum of
+            // |det( v_{s1}-v_{s0}, ..., v_{sd}-v_{s0} )| / d!
+        }
+    }
+}
+
 UTP void DTP::measure( auto &&res, auto &&item_map, auto &&nb_map_items ) const {
     // infinite cell
     if ( ! is_fully_bounded ) {

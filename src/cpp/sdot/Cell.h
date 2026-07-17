@@ -22,6 +22,7 @@ struct Cell {
 
     void init_as_unbounded      ();
 
+    void measure_bwd            ( auto &&res, auto &&item_map, auto &&nb_map_items, auto &&grad_res, auto &&grad_vertex_positions ) const;
     void measure                ( auto &&res, auto &&item_map, auto &&nb_map_items ) const;
 };
 
