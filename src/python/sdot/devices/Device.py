@@ -107,7 +107,37 @@ class Device:
     def __neq__( self, value, / ) -> bool:
         return not self.__eq__( value )
 
-    def nb_threads( self, nb_local_bytes_per_thread=0, nb_pinned_bytes_per_thread=0, nb_waves=1 ) -> int:
+    # fraction of total device/host RAM per-thread scratch is allowed to use. The rest holds the
+    # I/O buffers, the runtime and the rest of the machine, none of which we measure here -- this
+    # is a deliberately coarse cap, not a reading of what is actually free (which would be a moving
+    # runtime quantity, wrong to freeze into a compiled shape; see `Cell.measure`). Overridable
+    # per device (Cuda carries its own `mem_fraction`).
+    scratch_ram_fraction = 0.5
+
+    def nb_threads( self, batch_axes = (), **per_thread ) -> int:
+        """How many threads to SIZE per-thread scratch for.
+
+        The hardware/RAM ceiling (`_hw_thread_cap`, device-specific) capped by the total number of
+        batch items -- no point reserving more lanes than there is work -- and floored at 1. The
+        per-thread footprint is passed through in `**per_thread` (`nb_local_bytes_per_thread`, ...)
+        to the device hook; `batch_axes` is the list whose sizes multiply into the item count.
+
+        This is a HOST-side, compile-time decision: the result becomes the static extent of a
+        scratch axis, so every input must be knowable at trace time (a prescribed batch size, a
+        capacity bound). A genuinely dynamic quantity folded in here would freeze into the compiled
+        kernel -- which is why `scratch_ram_fraction` is a fixed fraction, not a live free-RAM read."""
+        n = self._hw_thread_cap( **per_thread )
+        total = 1
+        for axis in batch_axes:
+            total *= int( axis.max )
+        if batch_axes:
+            n = min( n, total )
+        return max( 1, n )
+
+    def _hw_thread_cap( self, **per_thread ) -> int:
+        """The hardware/RAM ceiling on simultaneous threads, given a per-thread footprint. Device
+        specific (cores + host RAM on CPU, SM occupancy + device RAM on CUDA); `nb_threads` wraps
+        it with the batch cap and the floor."""
         raise NotImplementedError
 
     def driver_version_for_jax( self, devices ):

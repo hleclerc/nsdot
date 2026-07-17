@@ -1,8 +1,13 @@
-from sdot import Cell, driver
+from sdot import Cell, driver, new_batch_axis
 from . import test, check_grad
 
 if test( "basic" ):
     c = Cell.make_hypercube( 2, [ 0, 0 ], [ [ 2, 0 ], [ 0, 1 ] ] )
+    info( c.vertex_positions )
+    info( c.measure )
+
+if test( "batch" ):
+    c = Cell.make_hypercube( 3, [ 0, 0, 0 ], [ [ 2, 0, 0 ], [ 0, 1, 0 ], [ 0, 0, 1 ] ], batch_axes = [ new_batch_axis( 2 ) ] )
     info( c.vertex_positions )
     info( c.measure )
 

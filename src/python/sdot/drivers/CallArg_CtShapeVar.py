@@ -20,7 +20,7 @@ class CallArg_CtShapeVar( CallArg ):
         if call_args_analysis.is_exact_output( path ):
             raise ValueError( f"CtShapeVar '{ name }' is compile-time: a kernel cannot write it" )
 
-        self.value = int( inst.value )
+        self.value = int( inst.raw )
 
     # -- driver-agnostic C++ (the same for every driver) --
     def cpp_type( self ):

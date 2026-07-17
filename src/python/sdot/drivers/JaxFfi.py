@@ -412,7 +412,6 @@ def _call_backward( code, ca, device, prefix, inputs, outputs, diff_idx,
     from .CallArgsAnalysis import CallArgsAnalysis
     from ..util.annotations import annotations
     from ..util.aggregate import get_attribute
-    from jax.custom_derivatives import SymbolicZero
 
     # leaf-indexed facts (by tensor identity), so the structural walk below can consult them.
     io_of, residual_of = {}, {}
@@ -456,11 +455,10 @@ def _call_backward( code, ca, device, prefix, inputs, outputs, diff_idx,
 
         io = io_of.get( id( inst ) )
         if io == "output" and inst.dtype.floating_point:
-            cotangent = cotangent_of.get( id( inst ) )
-            if isinstance( cotangent, SymbolicZero ):
-                grad = Tensor.like( inst, symbolic_zero = True )
-            else:
-                grad = _grad_tensor( inst, cotangent )
+            # the cotangent enters as a backward INPUT -- a real buffer (a `TensorView`) or the
+            # framework's symbolic zero (a `ZeroTensor`): both just get stored, `_grad_tensor` /
+            # `is_symbolic_zero` tell them apart, no special case here.
+            grad = _grad_tensor( inst, cotangent_of.get( id( inst ) ) )
         elif io == "input" and inst.dtype.floating_point and perturbed_of.get( id( inst ), False ):
             grad = Tensor.like( inst )
             output_paths.append( path )

@@ -18,11 +18,13 @@ que chaque corps de test s'exécute isolément et qu'un échec (assert / excepti
 soit capturé test par test, exactement comme le harnais C++.
 """
 from sdot.util.info import info, infox
+from sdot import new_batch_axis
 import sys
 
 builtins = __import__( 'builtins' )
 setattr( builtins, "infox", infox )
 setattr( builtins, "info", info )
+setattr( builtins, "new_batch_axis", new_batch_axis )
 
 
 

@@ -156,6 +156,43 @@ class TorchDriver:
     def stack( self, tensors, axis ):
         return torch.stack( tensors, dim=axis )
 
+    # A symbolic zero: a SHAPED, TYPED, BUFFERLESS value read as 0 (see `JaxDriver.symbolic_zero`).
+    # Torch has no native one, but a `meta` tensor is exactly that -- shape/dtype, no storage (any
+    # materialization raises), recognizable by `is_meta`.
+    def symbolic_zero( self, shape, dtype = None ):
+        return torch.zeros( tuple( shape ), dtype = dtype or self.dtype, device = "meta" )
+
+    def is_symbolic_zero( self, x ):
+        return isinstance( x, torch.Tensor ) and x.is_meta
+
+    # reductions -- the backend-agnostic verbs `Tensor` reduces through (`axis` is
+    # a dimension index or a tuple of them; `None` reduces everything to a scalar).
+    # Torch spells the axis `dim` and rejects `dim=None`, so full reductions drop it.
+    def sum( self, a, axis = None ):
+        return torch.sum( a ) if axis is None else torch.sum( a, dim = axis )
+
+    def prod( self, a, axis = None ):
+        return torch.prod( a ) if axis is None else torch.prod( a, dim = axis )
+
+    def max( self, a, axis = None ):
+        return torch.max( a ) if axis is None else torch.amax( a, dim = axis )
+
+    def min( self, a, axis = None ):
+        return torch.min( a ) if axis is None else torch.amin( a, dim = axis )
+
+    def mean( self, a, axis = None ):
+        return torch.mean( a ) if axis is None else torch.mean( a, dim = axis )
+
+    def all( self, a, axis = None ):
+        return torch.all( a ) if axis is None else torch.all( a, dim = axis )
+
+    def any( self, a, axis = None ):
+        return torch.any( a ) if axis is None else torch.any( a, dim = axis )
+
+    def where( self, cond, a, b ):
+        cond = torch.as_tensor( cond, device = getattr( b, "device", None ) )
+        return torch.where( cond, torch.as_tensor( a, dtype = getattr( b, "dtype", None ), device = getattr( b, "device", None ) ), b )
+
     def linalg_solve( self, A, b ):
         return torch.linalg.solve( A, b )
 

@@ -96,7 +96,7 @@ class CudaGpu( Device ):
         self._attrs = attr( 16 ), attr( 39 ), attr( 82 ), attr( 81 ), mem.value, attr( 75 ), attr( 76 )
         return self._attrs
 
-    def nb_threads( self, nb_regs_per_thread=0, nb_shared_bytes_per_thread=0,
+    def _hw_thread_cap( self, nb_regs_per_thread=0, nb_shared_bytes_per_thread=0,
                     nb_local_bytes_per_thread=0, nb_pinned_bytes_per_thread=0, nb_waves=4 ):
         attrs = self._get_attrs()
         if attrs is None:
@@ -123,7 +123,9 @@ class CudaGpu( Device ):
         if nb_pinned_bytes_per_thread > 0:
             n = min( n, _total_host_ram() // nb_pinned_bytes_per_thread )
 
-        return max( 1, n )
+        # `nb_threads` (base) applies the batch cap and the floor(1); the device RAM budget above
+        # already uses `mem_fraction`, Cuda's own analogue of `scratch_ram_fraction`.
+        return n
 
 def _load_libcuda():
     global _libcuda

@@ -46,9 +46,25 @@ def aggregate( cls ):
     #
     cls._is_sdot_aggregate = True
 
+    # convention: every aggregate carries `batch_axes`, the (possibly empty) list of axes it is
+    # batched over -- read uniformly by the methods (an auxiliary output is `Tensor[ *batch_axes ]`)
+    # and by `CallArgsAnalysis` (which folds them into `global_batch_indices`). A plain aggregate has
+    # none; `make_batch_class` sets them. Not an annotation, so it is not a field and gets no
+    # descriptor. Set per-class, so a subclass does not silently share its base's list.
+    if "batch_axes" not in cls.__dict__:
+        cls.batch_axes = []
+
     # ------------------ __init__ ------------------
     def __base_init__( self, **kwargs ):
         anns = annotations( cls )
+
+        # batching is a reserved construction option, not a field: `batch_axes = [ ax, ... ]` adds
+        # those axes on the LEFT of every tensor we declare. Popped here so it never reaches the
+        # field logic; the tensors are (re)built with the axes prepended at the end, once the plain
+        # fields exist -- the very same path a method (`init_as_hypercube( batch_axes = ... )`) takes
+        # to batch a cell after construction (see `apply_batch_axes`).
+        batch_axes = kwargs.pop( "batch_axes", None )
+        self.batch_axes = []
 
         # a mapping under a FIELD's name scopes that field; everything else is visible to this
         # class AND to every aggregate nested below it.
@@ -83,7 +99,32 @@ def aggregate( cls ):
             elif not any( _is_aggregate( t ) for t in anns.values() ):
                 raise TypeError( f"'{ cls.__name__ }' has no field '{ key }' to initialize" )
 
+        if batch_axes:
+            self.apply_batch_axes( batch_axes )
+
     cls.__base_init__ = __base_init__
+
+    # ------------------ batching ------------------
+    def apply_batch_axes( self, batch_axes ):
+        """Batch this aggregate over `batch_axes`: (re)build every tensor field with those axes
+        PREPENDED. Reachable at construction (`batch_axes = ...`, via `__base_init__`) or later,
+        before the tensors are written (`c.init_as_hypercube( batch_axes = ... )`).
+
+        The annotations -- the shared "scalar" schema -- are untouched; only the per-instance tensors
+        gain the leading axes. Rebuilding (rather than mutating `specs` in place) is what keeps the
+        dimension indices right: a fresh tensor registers each axis at its true position, and the
+        unbatched one it replaces dies, taking its now-stale registrations with it. A nested
+        aggregate is batched over the SAME axis objects -- joined iteration, no name to collide."""
+        self.batch_axes = list( batch_axes )
+        for name, type_attr in annotations( cls ).items():
+            if _is_aggregate( type_attr ):
+                get_attribute( name, self ).apply_batch_axes( self.batch_axes )
+            elif _is_tensor_field( type_attr ):
+                attr = _batched_schema( type_attr, self.batch_axes )( scope = self )
+                attr.name = name
+                self.__dict__[ name ] = attr
+
+    cls.apply_batch_axes = apply_batch_axes
     # A class may keep its OWN `__init__` for custom construction -- it then calls `__base_init__`
     # itself, where it wants the fields set up (see tests/python/test_Cell.py). But a class that
     # only STUBS it -- `def __init__( self, **kw ) -> None: ...`, the shape it declares so a type
@@ -157,6 +198,22 @@ def _is_attribute_field( type_attr ):
 def _is_aggregate( type_attr ):
     sc = _field_cls( type_attr )
     return inspect.isclass( sc ) and getattr( sc, "_is_sdot_aggregate", False )
+
+
+def _is_tensor_field( type_attr ):
+    from ..tensor.Tensor import Tensor
+    sc = _field_cls( type_attr )
+    return inspect.isclass( sc ) and issubclass( sc, Tensor )
+
+
+def _batched_schema( type_attr, axes ):
+    """`type_attr` (a Tensor field schema) with `axes` prepended to its declared axes. A bare
+    `Tensor` becomes `Tensor[ *axes ]`; a `Tensor[ "num_vertex", "dim" ]` becomes
+    `Tensor[ *axes, "num_vertex", "dim" ]`, its dtype/device kwargs preserved."""
+    from ..tensor.Tensor import Tensor
+    if isinstance( type_attr, Parametrized ):
+        return Parametrized( Tensor, *axes, *type_attr.args, dict( type_attr.kwargs ) )
+    return Parametrized( Tensor, *axes )
 
 
 def get_attribute( name, parent_inst ):

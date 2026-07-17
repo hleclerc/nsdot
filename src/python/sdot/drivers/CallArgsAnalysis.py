@@ -65,8 +65,23 @@ class CallArgsAnalysis:
             shape_var.accept_capacity( capacity )
             self.capacities[ shape_var ] = int( capacity )
 
+        # the axes this call is batched over: any aggregate argument carries them (its `batch_axes`,
+        # empty for a plain one). Their NAMES drive `global_batch_indices` (see `_batch_indices_decl`)
+        # and `batch_dim_expr`; the leading dimension they add to each tensor is handled like any
+        # other declared axis. Collected here, deduped in first-seen order.
+        for inst in args.values():
+            for axis in getattr( inst, "batch_axes", () ):
+                if axis.name not in self.batch_axes:
+                    self.batch_axes.append( axis.name )
+
         for name, inst in args.items():
-            self.args[ name ] = self.make_CallArg( name, name, inst )
+            # an arg may lower to NOTHING: an `Axis` is a declaration, not data, so `make_CallArg`
+            # answers None. Keep it out of the tree -- exactly as `CallArg_Aggregate` does for such
+            # a field -- instead of parking a None every `nodes()` walk would then trip over. The
+            # axis name still reaches the C++ through any tensor of the call that references it.
+            ca = self.make_CallArg( name, name, inst )
+            if ca is not None:
+                self.args[ name ] = ca
 
         # what the kernel writes when something goes wrong -- built last, so it takes the FFI slot
         # after every argument's. It is a buffer of the call, not of an argument: no object of the
@@ -239,7 +254,7 @@ class CallArgsAnalysis:
     def output_shape( self, tensor, path ):
         """The extents to allocate `tensor` with: its axes, evaluated on the capacities."""
         res = []
-        for axis, _ in tensor.specs:
+        for axis in tensor.axes:
             res += axis.capacity_list( lambda sv: self.capacity_of( sv, path ) )
         return res
 

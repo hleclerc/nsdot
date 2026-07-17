@@ -184,6 +184,44 @@ class JaxDriver:
         dtype_ver = Dtype.factory( dtype or self.ftype ).driver_version
         return jax.random.uniform( jax.random.PRNGKey( seed ), tuple( shape ), dtype = dtype_ver )
 
+    # A symbolic zero: a SHAPED, TYPED, BUFFERLESS value that reads as 0 -- what a `Tensor` holds
+    # in `_raw` for a symbolic-zero cotangent (lowers to a `ZeroTensor`, dropped at compile time).
+    # Jax hands us its own `SymbolicZero` in the backward; we can also mint one from a shape/dtype.
+    def symbolic_zero( self, shape, dtype = None ):
+        from jax.custom_derivatives import SymbolicZero
+        dv = Dtype.factory( dtype or self.ftype ).driver_version
+        return SymbolicZero( jax_core.ShapedArray( tuple( shape ), dv ) )
+
+    def is_symbolic_zero( self, x ):
+        from jax.custom_derivatives import SymbolicZero
+        return isinstance( x, SymbolicZero )
+
+    # reductions -- the backend-agnostic verbs `Tensor` reduces through (`axis` is
+    # a dimension index or a tuple of them; `None` reduces everything to a scalar).
+    def sum( self, a, axis = None ):
+        return jnp.sum( a, axis = axis )
+
+    def prod( self, a, axis = None ):
+        return jnp.prod( a, axis = axis )
+
+    def max( self, a, axis = None ):
+        return jnp.max( a, axis = axis )
+
+    def min( self, a, axis = None ):
+        return jnp.min( a, axis = axis )
+
+    def mean( self, a, axis = None ):
+        return jnp.mean( a, axis = axis )
+
+    def all( self, a, axis = None ):
+        return jnp.all( a, axis = axis )
+
+    def any( self, a, axis = None ):
+        return jnp.any( a, axis = axis )
+
+    def where( self, cond, a, b ):
+        return jnp.where( cond, a, b )
+
 
     def call( self, code : FfiCode | str, output_attributes = (), output_exceptions = (), output_capacities = {}, **kwargs ):
         """Run the C++ `code` on the objects passed as kwargs.

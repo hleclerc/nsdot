@@ -41,14 +41,15 @@ class Cpu( Device ):
     def __repr__( self ) -> str:
         return "Cpu"
 
-    def nb_threads( self, nb_local_bytes_per_thread=0, nb_pinned_bytes_per_thread=0, nb_waves=1 ):
+    def _hw_thread_cap( self, nb_local_bytes_per_thread=0, nb_pinned_bytes_per_thread=0, nb_waves=1 ):
         # registers managed by compiler; shared memory not applicable to CPU threads
         # both local and pinned bytes draw from host RAM
         n          = os.cpu_count() or 1
         per_thread = max( nb_local_bytes_per_thread, nb_pinned_bytes_per_thread )
         if per_thread > 0:
-            n = min( n, _total_host_ram() // per_thread )
-        return max( 1, n )
+            usable = int( _total_host_ram() * self.scratch_ram_fraction )
+            n = min( n, usable // per_thread )
+        return n
 
     def driver_version_for_jax( self, devices ):
         return devices( "cpu" )[ 0 ]

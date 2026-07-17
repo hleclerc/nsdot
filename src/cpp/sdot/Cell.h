@@ -22,7 +22,7 @@ struct Cell {
 
     void init_as_unbounded      ();
 
-    void measure                ( auto &&res ) const;
+    void measure                ( auto &&res, auto &&item_map, auto &&nb_map_items ) const;
 };
 
 }

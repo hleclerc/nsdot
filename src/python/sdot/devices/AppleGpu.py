@@ -41,15 +41,15 @@ class AppleGpu( Device ):
     def is_apple_gpu( self ):
         return True
 
-    def nb_threads( self, nb_local_bytes_per_thread = 0, **kwargs ):
+    def _hw_thread_cap( self, nb_local_bytes_per_thread = 0, **kwargs ):
         n = os.cpu_count() or 1
         if nb_local_bytes_per_thread > 0:
             try:
                 total = os.sysconf( 'SC_PHYS_PAGES' ) * os.sysconf( 'SC_PAGE_SIZE' )
-                n = min( n, total // nb_local_bytes_per_thread )
+                n = min( n, int( total * self.scratch_ram_fraction ) // nb_local_bytes_per_thread )
             except ( AttributeError, ValueError ):
                 pass
-        return max( 1, n )
+        return n
 
     def __repr__( self ) -> str:
         return "AppleGpu"

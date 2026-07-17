@@ -20,6 +20,15 @@ class AbstractAxis( Attribute ):
     count (`nb_dims`) is unknown when the class is declared.
     """
 
+    def __init__( self, *exprs, template_args = (), template_kwargs = {}, scope = None, name = None ) -> None:
+        from .ShapeVar import ShapeVar
+        self.coeffs: dict[ ShapeVar, int ] = {}
+        self.offset = 0
+        self.name = name
+        # declared (`Axis[ "nb_dims + 1" ]`) or built directly (`Axis( nb_dims )`): same args,
+        # two ways in.
+        self._init_axis( list( template_args ) + list( exprs ), scope )
+
     @classmethod
     def make_CallArg( cls, caa, path, name, inst ):
         # An axis lowers to NOTHING: it is a declaration, not data. Its extent is already baked
@@ -44,14 +53,6 @@ class AbstractAxis( Attribute ):
                     '#include "sdot/support/containers/AxisNames.h"\n\n'
                     f"DEFINE_AXIS( { name } );\n" )
         return shared_header( f"sdot/generated/axes/{ name }.h", content )
-
-    def __init__( self, *exprs, template_args = (), template_kwargs = {}, scope = None ) -> None:
-        from .ShapeVar import ShapeVar
-        self.coeffs: dict[ ShapeVar, int ] = {}
-        self.offset = 0
-        # declared (`Axis[ "nb_dims + 1" ]`) or built directly (`Axis( nb_dims )`): same args,
-        # two ways in.
-        self._init_axis( list( template_args ) + list( exprs ), scope )
 
     # ---- shared affine parser ----
     @staticmethod
@@ -121,20 +122,27 @@ class AbstractAxis( Attribute ):
         self._register_dense( tensor, index )
 
     def _register_dense( self, tensor, index ):
-        """One declared axis <-> its own array dimension (`tensor._spec_dims[ index ]`,
-        which accounts for an unrolled AxisList sibling spanning several dimensions):
-        each of our `ShapeVar`s is solved from that size (a scalar when dense, a
-        per-segment array when ragged).
-
-        The same inversion serves twice, on two different sizes: the tensor's LOGICAL sizes
-        give our count, its ALLOCATED sizes give the capacity its buffer was made with."""
+        """One declared axis <-> its own array dimension (`tensor._spec_dims()[ index ]`, which
+        accounts for an unrolled AxisList sibling spanning several dimensions). The resolver serves
+        the ALLOCATED capacity only: it inverts the tensor's BUFFER size (`allocated_sizes`, read
+        off `_raw`). The LOGICAL count is not pulled here -- `observe_size` pushes it at set time."""
         for shape_var in self.coeffs:
-            def resolve( t, allocated, axis = self, index = index, shape_var = shape_var ):
-                sizes = t.allocated_sizes if allocated else t._sizes
+            def resolve( t, axis = self, index = index, shape_var = shape_var ):
+                sizes = t.allocated_sizes
                 if sizes is None:
                     return None
-                return axis.solve_single( shape_var, sizes[ t._spec_dims[ index ] ] )
+                return axis.solve_single( shape_var, sizes[ t._spec_dims()[ index ] ] )
             shape_var.add_usage( tensor, resolve )
+
+    def observe_size( self, size ):
+        """Push the LOGICAL size observed along this axis' dimension onto its ShapeVars: invert the
+        single-variable affine (a scalar for a dense axis, a per-segment array for a ragged one).
+        A multi-variable extent cannot be inverted from a single size (as for capacity) and is
+        skipped -- exactly like `solve_single`."""
+        for shape_var in self.coeffs:
+            solved = self.solve_single( shape_var, size )
+            if solved is not None:
+                shape_var.observe( solved )
 
     # ---- extents (virtual) ----
     def capacity_list( self, capacity_of ):

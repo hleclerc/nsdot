@@ -16,10 +16,12 @@ UTP void DTP::init_as_aligned_simplex( SI cut_id ) {
     // `this->nb_dims`). Shadow it with its value, reached through the TYPE (`decltype` does not
     // touch `this`): from here `nb_dims` is a plain `constexpr` int, usable in `if constexpr`.
     is_fully_bounded = cut_id != CellBoundary::INFINITE;
-    nb_vertices = ct_dim + 1;
+    bool ok = nb_vertices.set( ct_dim + 1 );
     if constexpr ( ct_dim > 2 )
-        nb_edges = ( ct_dim + 1 ) * ct_dim / 2;
-    nb_cuts = ct_dim + 1;
+        ok &= nb_edges.set( ( ct_dim + 1 ) * ct_dim / 2 );
+    ok &= nb_cuts.set( ct_dim + 1 );
+    if ( ! ok )
+        return;
 
     // vertex_positions
     for( PI n = 0; n < nb_vertices; ++n )
@@ -32,11 +34,15 @@ UTP void DTP::init_as_aligned_simplex( SI cut_id ) {
             for( PI d = 0; d < ct_dim; ++d )
                 vertex_indices( num_vertex, d ) = d + ( d >= num_vertex );
 
-    // edge_indices
+    // edge_indices ( `o` runs over the geometry -> bound it by the CLAMPED `nb_edges`, so an
+    // under-provisioned buffer stops rather than corrupting; the overflow is already recorded )
     if constexpr ( ct_dim > 2 ) {
-        for ( PI a = 0, o = 0; a < nb_vertices; ++a ) {
+        const SI ne = nb_edges;
+        for ( PI a = 0, o = 0; a < nb_vertices && SI( o ) < ne; ++a ) {
             for ( PI b = a + 1; b < nb_vertices; ++b ) {
                 if ( a != b ) {
+                    if ( SI( o ) >= ne )
+                        break;
                     edge_indices( num_edge = o, ein = 0 ) = a;
                     edge_indices( num_edge = o, ein = 1 ) = b;
                     for( PI d = 0; d < ct_dim - 1; ++d )
@@ -77,10 +83,12 @@ UTP void DTP::init_as_hypercube( auto &&origin, auto &&axes, SI cut_id ) {
         init_as_hypercube( origin, Matrix<TF,ct_dim,ct_dim>::with_func( [&]( auto r, auto c ) { return axes( r, c ); } ), cut_id );
     } else {
         is_fully_bounded = cut_id != CellBoundary::INFINITE;
-        nb_vertices = PI( 1 ) << ct_dim;
+        bool ok = nb_vertices.set( PI( 1 ) << ct_dim );
         if constexpr ( ct_dim > 2 )
-            nb_edges = ct_dim * ( PI( 1 ) << ( ct_dim - 1 ) );
-        nb_cuts = 2 * ct_dim;
+            ok &= nb_edges.set( ct_dim * ( PI( 1 ) << ( ct_dim - 1 ) ) );
+        ok &= nb_cuts.set( 2 * ct_dim );
+        if ( ! ok )
+            return;
 
         // shared: F^T[r][c] = axis_c[r], used to compute rows of F^{-1} via solve_ge
 
@@ -105,11 +113,17 @@ UTP void DTP::init_as_hypercube( auto &&origin, auto &&axes, SI cut_id ) {
         }
 
         // edge_indices: edges in direction b, from vertex k (bit b=0) to k|(1<<b)
+        // `e` is computed from the geometry, so bound it by the CLAMPED `nb_edges`: an
+        // under-provisioned buffer stops here (the overflow was recorded by the `nb_edges = ...`
+        // above), rather than corrupting -- the edge writes then stay raw, no check on the tensor.
         if constexpr ( ct_dim > 2 ) {
-            for ( PI b = 0, e = 0; b < ct_dim; ++b ) {
+            const SI ne = nb_edges;
+            for ( PI b = 0, e = 0; b < ct_dim && SI( e ) < ne; ++b ) {
                 for ( PI k = 0; k < nb_vertices; ++k ) {
                     if ( ( k >> b ) & 1 )
                         continue;
+                    if ( SI( e ) >= ne )
+                        break;
                     edge_indices( e, 0 ) = k;
                     edge_indices( e, 1 ) = k | ( PI( 1 ) << b );
                     for ( PI d = 0, col = 2; d < ct_dim; ++d ) {
@@ -255,7 +269,7 @@ UTP void DTP::init_as_hypercube_bwd( auto &&origin, auto &&axes, auto &&grad_cel
     }
 }
 
-UTP void DTP::measure( auto &&res ) const {
+UTP void DTP::measure( auto &&res, auto &&item_map, auto &&nb_map_items ) const {
     // infinite cell
     if ( ! is_fully_bounded ) {
         res = std::numeric_limits<TF>::max();
@@ -276,6 +290,7 @@ UTP void DTP::measure( auto &&res ) const {
     }
 
     // nD: fan triangulation
+    INFO( item_map.shape(), nb_map_items );
     res = 32;
     // TF sum = 0;
     // for_each_simplex( item_map, [&] ( const auto &simplex_indices ) {

@@ -168,7 +168,7 @@ class CallArg_ShapeVar( CallArg ):
 
     def jax_input_array( self ):
         from ..drivers.driver import driver
-        return driver.array( self.inst.value, dtype = Dtype.si( 32 ) ).reshape( self._jax_buffer_shape() )
+        return driver.array( self.inst.raw, dtype = Dtype.si( 32 ) ).reshape( self._jax_buffer_shape() )
 
     def jax_out_spec( self ):
         import jax
@@ -183,4 +183,4 @@ class CallArg_ShapeVar( CallArg ):
 
 def _has_count( inst ):
     # an unresolved ShapeVar (neither prescribed nor constrained by a tensor) has no count yet.
-    return inst.value is not None
+    return inst.raw is not None

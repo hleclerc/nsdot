@@ -28,15 +28,28 @@ struct ShapeVarView {
     ErrBuf errors;   ///< the call's error buffer -- shared with everything else that can fail
     SI     id;       ///< who we are in it (see `ErrorKind::capacity_overflow`)
 
-    ShapeVarView &operator=( auto v ) {
+    /// Write the count, capacity-checked, and say whether it FIT. On overflow it records the
+    /// overflow once (atomic, into the call's error buffer) and clamps `view = max` -- so a body
+    /// looping over the count read back stays inside the buffers -- then returns `false`, which
+    /// lets the caller STOP GROWING / skip work instead of silently truncating. This is the one
+    /// place a capacity is tested: the tensors stay dumb, unchecked views (see the class doc).
+    bool set( auto v ) {
         const SI wanted = SI( v );
         if ( max >= 0 && wanted > max ) {
             errors.record( ErrorKind::capacity_overflow, id, wanted );
             view = max;
-        } else
-            view = wanted;
-        return *this;
+            return false;
+        }
+        view = wanted;
+        return true;
     }
+
+    /// Same write, bool discarded: for the sites that do not branch on whether it fit (the loops
+    /// that then read the clamped count back as their bound are safe either way).
+    // ShapeVarView &operator=( auto v ) {
+    //     set( v );
+    //     return *this;
+    // }
 
     operator SI() const { return view.value(); }
 

@@ -76,7 +76,7 @@ if test( "basic" ):
             queue,
             global_batch_indices,
             []( auto batch_index, auto cell ) {
-                cell.nb_vertices( batch_index ) = 1;
+                cell.nb_vertices( batch_index ).set( 1 );
                 cell.vertex_positions( batch_index, dim = 0, num_vertex = 0 ) = 1;
                 cell.vertex_positions( batch_index, dim = 1, num_vertex = 0 ) = 2;
             },
@@ -154,7 +154,7 @@ if test( "partial_init" ):
             queue,
             global_batch_indices,
             []( auto batch_index, auto cell ) {
-                cell.nb_vertices( batch_index ) = 1;
+                cell.nb_vertices( batch_index ).set( 1 );
                 cell.vertex_positions( batch_index, num_vertex = 0, dim = 0 ) = 1;
 
                 static_assert( DECAYED_TYPE_OF( cell.vertex_positions.is_valid() )::value == 1 );
@@ -204,11 +204,11 @@ if test( "two_instances" ):
                 // `f( batch_index ).nb_vertices` and `flat.nb_vertices( batch_index )` are the
                 // same thing. Handy when every member takes the same index.
                 auto f = flat( batch_index );
-                f.nb_vertices = 1;
+                f.nb_vertices.set( 1 );
                 f.vertex_positions( num_vertex = 0, dim = 0 ) = 1;
                 f.vertex_positions( num_vertex = 0, dim = 1 ) = 2;
 
-                volu.nb_vertices( batch_index ) = 1;
+                volu.nb_vertices( batch_index ).set( 1 );
                 volu.vertex_positions( batch_index, num_vertex = 0, dim = 2 ) = 3;
             },
             flat_io, flat, volu_io, volu
@@ -267,10 +267,10 @@ if test( "nested" ):
                 // indexing an aggregate indexes its members -- a nested one included, recursively.
                 auto p = pair( batch_index );
 
-                p.left.nb_vertices = 1;
+                p.left.nb_vertices.set( 1 );
                 p.left.vertex_positions( num_vertex = 0, dim = 1 ) = 1;
 
-                p.right.nb_vertices = 1;
+                p.right.nb_vertices.set( 1 );
                 p.right.vertex_positions( num_vertex = 0, dim = 2 ) = 2;
             },
             pair_io, pair
@@ -310,7 +310,7 @@ if test( "vmap" ):
         global_batch_indices,
         []( auto batch_index, auto cell, auto scale ) {
             auto c = cell( batch_index );
-            c.nb_vertices = 1;
+            c.nb_vertices.set( 1 );
             c.vertex_positions( num_vertex = 0, dim = 0 ) = scale( batch_index, dim = 0 );
             c.vertex_positions( num_vertex = 0, dim = 1 ) = scale( batch_index, dim = 1 );
         },
@@ -376,7 +376,7 @@ if test( "capacity_overflow" ):
 
             // the count may not fit -- and then what one READS BACK is the capacity, never more,
             // which is what makes the loop below safe whatever happens.
-            c.nb_vertices = c.nb_wanted;
+            c.nb_vertices.set( c.nb_wanted );
             for ( SI n = 0; n < SI( c.nb_vertices ); ++n )
                 c.vertex_positions( num_vertex = n, dim = 0 ) = n;
         },

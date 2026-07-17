@@ -27,7 +27,7 @@ class AxisList( AbstractAxis ):
         # ShapeVar is a rank-1 vector of that length.
         res = numpy.full( self.loop_axis.max, self.offset, dtype = int )
         for shape_var, m in self.coeffs.items():
-            res = res + m * numpy.asarray( shape_var.value, dtype = int )
+            res = res + m * numpy.asarray( shape_var.raw, dtype = int )
         return [ int( x ) for x in res ]
 
     def capacity_list( self, capacity_of ):
@@ -38,28 +38,42 @@ class AxisList( AbstractAxis ):
     def register_in( self, tensor, index, unroll ):
         assert unroll, "an AxisList must be unrolled in a tensor ('img_pos...')"
 
-        # Unrolled at `index`, this family expands into `count` static axes; the
-        # span (start, count) is filled by `Tensor.set` once a value is observed.
-        # The loop axis' ShapeVar is solved from the unroll count; each member's
-        # ShapeVar(s) from the vector of per-index sizes.
-        # `allocated` makes no difference here: an unrolled tensor is dense, so its allocated
-        # sizes are its logical ones.
+        # Unrolled at `index`, this family expands into `count` static axes spanning the buffer's
+        # dimensions `[ start, start + count )` (`tensor._unroll_span`). The resolvers serve the
+        # ALLOCATED capacity: the loop axis' ShapeVar from the span count, each member's from the
+        # buffer sizes over the span. An unrolled tensor is dense, so allocated == logical here; the
+        # LOGICAL counts are pushed at set time by `observe_span`.
         for shape_var in self.loop_axis.coeffs:
-            def resolve_count( t, allocated, axis = self.loop_axis, shape_var = shape_var, index = index ):
-                span = t._unroll_spans.get( index )
+            def resolve_count( t, axis = self.loop_axis, shape_var = shape_var, index = index ):
+                span = t._unroll_span( index )
                 if span is None:
                     return None
                 return axis.solve_single( shape_var, numpy.array( span[ 1 ], dtype = int ) )
             shape_var.add_usage( tensor, resolve_count )
 
         for shape_var in self.coeffs:
-            def resolve_vec( t, allocated, axis = self, shape_var = shape_var, index = index ):
-                span = t._unroll_spans.get( index )
-                if span is None or t._sizes is None:
+            def resolve_vec( t, axis = self, shape_var = shape_var, index = index ):
+                span  = t._unroll_span( index )
+                sizes = t.allocated_sizes
+                if span is None or sizes is None:
                     return None
                 start, count = span
-                vals = [ axis.solve_single( shape_var, t._sizes[ start + k ] ) for k in range( count ) ]
+                vals = [ axis.solve_single( shape_var, sizes[ start + k ] ) for k in range( count ) ]
                 if any( v is None for v in vals ):
                     return None
                 return numpy.array( vals, dtype = int )
             shape_var.add_usage( tensor, resolve_vec )
+
+    def observe_span( self, sizes ):
+        """Push the LOGICAL sizes of the unrolled span onto our ShapeVars: the loop axis' from how
+        many dimensions we span (`len( sizes )`), each member's from the per-index vector. Mirror of
+        the two resolvers above, but in PUSH -- so an unrolled tensor needs no `_sizes` cache."""
+        for shape_var in self.loop_axis.coeffs:
+            solved = self.loop_axis.solve_single( shape_var, numpy.array( len( sizes ), dtype = int ) )
+            if solved is not None:
+                shape_var.observe( solved )
+
+        for shape_var in self.coeffs:
+            vals = [ self.solve_single( shape_var, s ) for s in sizes ]
+            if all( v is not None for v in vals ):
+                shape_var.observe( numpy.array( vals, dtype = int ) )

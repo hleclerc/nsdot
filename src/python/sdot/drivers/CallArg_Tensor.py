@@ -30,7 +30,7 @@ class CallArg_Tensor( CallArg ):
         # An axis stays anonymous in Python, but a TensorView must name each of its dimensions.
         # A declared (aggregate) axis brings its field name; a nameless one falls back to its
         # position in THIS tensor (`a0`, `a1`, ...) -- a codegen-only default, local to this view.
-        self.axis_names = [ axis.name or f"a{ index }" for index, ( axis, _ ) in enumerate( inst.specs ) ]
+        self.axis_names = [ axis.name or f"a{ index }" for index, axis in enumerate( inst.axes ) ]
 
         if self.io_category.is_output:
             self.shape = [ int( s ) for s in call_args_analysis.output_shape( inst, path ) ]

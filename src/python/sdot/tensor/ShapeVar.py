@@ -1,5 +1,6 @@
 # from typing_extensions import Sequence, overload
 from ..util.Attribute import Attribute, resolve_attribute
+from ..drivers.driver import driver
 from numpy._typing import ArrayLike
 from typing import TYPE_CHECKING, Iterator
 import weakref
@@ -54,12 +55,20 @@ class ShapeVar( Attribute ):
 
         self.prescribed_value = None
         self._count = None     # count produced by a kernel: a driver tensor, possibly traced
+        self._observed = None  # count OBSERVED from a tensor's set value (lowest precedence): this
+                               # is where a ragged structure the padded buffer cannot hold lives --
+                               # on the ShapeVar (reachable from the axis), not cached on the tensor.
 
         if value is not None:
             self.set( value )
 
     def add_usage( self, tensor, resolver ):
         self.usages.append( ( weakref.ref( tensor ), resolver ) )
+
+    def observe( self, value ):
+        """Record a COUNT read from a tensor's set value. Pushed by `axis.observe_size` at set time,
+        it is the LOWEST tier: a kernel write (`_count`) or a user prescription both win over it."""
+        self._observed = numpy.array( value, dtype = int )
 
     def set_count( self, value ):
         """Rebind the count to what a kernel produced (a driver tensor). Nothing else moves:
@@ -77,52 +86,68 @@ class ShapeVar( Attribute ):
             value = value.value
         self.prescribed_value = numpy.array( value, dtype = int )
 
-    def get( self ) -> ArrayLike:
-        return self.value
-
-    def _solve( self, allocated = False ):
-        """Solve us from the tensors that use us: the first usage able to invert one of their
-        sizes (single-var affine inversion, unroll count, ...); `None` if none can.
-
-        `allocated` picks WHICH size: the LOGICAL one (how much is used -> our count) or the
-        ALLOCATED one (how much the buffer holds -> the capacity it was allocated with)."""
+    def _solve( self ):
+        """Solve our ALLOCATED capacity from the tensors that use us: the first usage able to invert
+        one of their BUFFER sizes (`_raw.shape`); `None` if none can. The LOGICAL count is no longer
+        solved here -- it is pushed to `_observed` at set time (see `axis.observe_size`)."""
         for tensor_ref, resolver in self.usages:
             tensor = tensor_ref()
             if tensor is None:
                 continue
-            solved = resolver( tensor, allocated )
+            solved = resolver( tensor )
             if solved is not None:
                 return numpy.asarray( solved )
         return None
 
     @property
-    def value( self ) -> ArrayLike:
-        """The COUNT. A kernel-written count wins, being the freshest truth -- and it is then a
-        DEVICE value: never size a buffer with it. `None` when we are UNRESOLVED: neither
-        prescribed nor constrained by a tensor, so there is no count to hand back yet."""
+    def raw( self ) -> ArrayLike:
+        """The raw COUNT as a backend / numpy array, or `None` while UNRESOLVED -- the same role
+        `Tensor.raw` plays: the backend buffer behind the nice object. A kernel-written count wins,
+        being the freshest truth (and it is then a DEVICE value, never size a buffer with it); then
+        a user prescription; then what was observed from a tensor's data.
+
+        Users read `value` (a `Tensor`); `raw` is the escape hatch to the backend array (what the
+        shape math and the FFI read, without wrapping) -- `sv.value.raw` gives the same thing."""
         if self._count is not None:
             return self._count
 
         if self.prescribed_value is not None:
             return self.prescribed_value
 
-        return self._solve()
+        return self._observed
+
+    @property
+    def value( self ):
+        """The count as a `Tensor` -- rank 0 for a plain scalar count, rank > 0 for a ragged one
+        (its `dep_axes` name the dimensions). `None` while unresolved. Being a `Tensor`, it converts
+        to `int` when rank 0, reduces (`.max`), iterates, and hands its backend array back as `.raw`,
+        like any other (see `Tensor`)."""
+        raw = self.raw
+        if raw is None:
+            return None
+        from .Tensor import Tensor
+        return Tensor.wrap( raw, names = [ ax.name for ax in self.dep_axes ], dtype = int )
 
     @value.setter
     def value( self, value ):
         self.set( value )
 
+    @property
+    def max( self ) -> int:
+        return driver.max( self.raw )
+
     def allocated_capacity( self ):
         """The capacity our tensors were ALLOCATED with, read off their buffers -- a fact, not
         a decision, so a chained call needs no restating of a capacity already materialized.
         `None` when we have no allocated tensor to read it from."""
-        solved = self._solve( allocated = True )
+        solved = self._solve()
         return int( numpy.max( solved ) ) if solved is not None else None
 
     def static_count( self ):
-        """Our count when PYTHON holds it (prescribed, or solved from the data of a tensor we
+        """Our count when PYTHON holds it (prescribed, or observed from the data of a tensor we
         were given). `None` when it only lives on the device -- where it cannot size anything."""
         if self.prescribed_value is not None:
             return int( numpy.max( self.prescribed_value ) )
-        solved = self._solve()
-        return int( numpy.max( solved ) ) if solved is not None else None
+        if self._observed is not None:
+            return int( numpy.max( self._observed ) )
+        return None
