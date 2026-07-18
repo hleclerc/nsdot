@@ -27,10 +27,6 @@ class CallArg_Tensor( CallArg ):
         # is unbound like a `NoneTensor`, only it lowers to a `ZeroTensor` (see `cpp_type`).
         self.symbolic_zero = getattr( inst, "is_symbolic_zero", False )
         self.memory_space = call_args_analysis.cpp_memory_space
-        # An axis stays anonymous in Python, but a TensorView must name each of its dimensions.
-        # A declared (aggregate) axis brings its field name; a nameless one falls back to its
-        # position in THIS tensor (`a0`, `a1`, ...) -- a codegen-only default, local to this view.
-        self.axis_names = [ axis.name or f"a{ index }" for index, axis in enumerate( inst.axes ) ]
 
         if self.io_category.is_output:
             self.shape = [ int( s ) for s in call_args_analysis.output_shape( inst, path ) ]
@@ -38,6 +34,15 @@ class CallArg_Tensor( CallArg ):
             self.shape = [ int( s ) for s in inst.capacity ]
         else:
             self.shape = [ 0 ] * inst.rank
+
+        # A TensorView must name each of its ARRAY dimensions. Each declared axis knows how it
+        # unrolls into ordinary names (`cpp_dim_names`, the name analogue of `max_list`): a plain
+        # `Axis` yields one; an unrolled `AxisList` yields several DISTINCT ones (`img_pos_0`,
+        # `img_pos_1`, ...) since it only DEFINES several ordinary axes and changes nothing else
+        # about the tensor. Concatenating gives one name per dimension (count == rank), each
+        # `DEFINE_AXIS`'d by the aggregate (which folds in `axis_names`). No unrolling logic lives
+        # here -- so nothing assumes a single, or any, `AxisList`.
+        self.axis_names = [ n for index, axis in enumerate( inst.axes ) for n in axis.cpp_dim_names( index ) ]
 
     # only the BUFFER binding is conditional on `is_bound`: an unbound tensor is a `NoneTensor`,
     # which still spells its axes in its type (`Tuple<_num_cut, _dim>`) -- so `cpp_axis_names`

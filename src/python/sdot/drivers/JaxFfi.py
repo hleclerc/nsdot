@@ -411,7 +411,7 @@ def _call_backward( code, ca, device, prefix, inputs, outputs, diff_idx,
     from ..tensor.Tensor import Tensor
     from .CallArgsAnalysis import CallArgsAnalysis
     from ..util.annotations import annotations
-    from ..util.aggregate import get_attribute
+    from ..util.Aggregate import Aggregate, get_attribute
 
     # leaf-indexed facts (by tensor identity), so the structural walk below can consult them.
     io_of, residual_of = {}, {}
@@ -429,7 +429,7 @@ def _call_backward( code, ca, device, prefix, inputs, outputs, diff_idx,
     grad_obj_of = {}   # id( primal input leaf ) -> its gradient tensor (a backward output)
 
     def _is_agg( obj ):
-        return getattr( type( obj ), "_is_sdot_aggregate", False )
+        return isinstance( obj, Aggregate )
 
     def _blank( inst ):
         obj = type( inst ).__new__( type( inst ) )

@@ -1,4 +1,4 @@
-from ..util.aggregate import get_attribute
+from ..util.Aggregate import get_attribute
 from ..util.annotations import annotations
 from .CallArg_Aggregate import CallArg_Aggregate
 from .CallArg_Attr import CallArg_Attr

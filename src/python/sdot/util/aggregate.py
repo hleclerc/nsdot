@@ -20,8 +20,7 @@ class Aggregate:
     stubs to hand-maintain), and a subclass with its own construction just OVERRIDES
     `__init__` and calls `super().__base_init__( ... )` where it wants the fields set
     up (see `tests/python/test_Cell.py`) -- plain MRO, no bytecode sniffing. Per-field
-    SET-only descriptors and the `_is_sdot_aggregate` marker are installed by
-    `__init_subclass__` at class-creation time.
+    SET-only descriptors are installed by `__init_subclass__` at class-creation time.
 
     Each field can be *injected* at construction by passing its name as a kwarg;
     an `Attribute` value is shared (several instances then agree on the same
@@ -62,9 +61,6 @@ class Aggregate:
 
     def __init_subclass__( cls, **kwargs ):
         super().__init_subclass__( **kwargs )
-
-        # duck-typed marker used across the drivers (`JaxFfi`, `CallArgsAnalysis`, `_is_aggregate`).
-        cls._is_sdot_aggregate = True
 
         # one SET-only data descriptor per leaf `Attribute` field, to route its writes to `.set()`.
         # A nested aggregate has no `set` (you reach into it: `p.left.nb_dims = ...`), so it needs no
@@ -183,7 +179,7 @@ def _is_attribute_field( type_attr ):
 
 def _is_aggregate( type_attr ):
     sc = _field_cls( type_attr )
-    return inspect.isclass( sc ) and getattr( sc, "_is_sdot_aggregate", False )
+    return inspect.isclass( sc ) and issubclass( sc, Aggregate )
 
 
 def _is_tensor_field( type_attr ):

@@ -1,8 +1,8 @@
 # from typing_extensions import Sequence, overload
 from ..util.Attribute import Attribute, resolve_attribute
+from typing import TYPE_CHECKING, Iterator
 from ..drivers.driver import driver
 from numpy._typing import ArrayLike
-from typing import TYPE_CHECKING, Iterator
 import weakref
 import numpy
 
@@ -47,28 +47,21 @@ class ShapeVar( Attribute ):
     def __init__( self, value = None, /, *, template_args = (), template_kwargs = {}, scope = None ) -> None:
         from .AbstractAxis import AbstractAxis
 
-        # (weakref(tensor), resolver): each `resolver(tensor)` returns our solved
-        # value from that tensor's observed sizes, or None if it cannot yet.
-        # Weak so a shared ShapeVar does not keep dropped instances' tensors alive.
+        # (weakref(tensor), logical, capacity): two resolvers per using tensor. `logical(t)` inverts
+        # our affine on the tensor's LOGICAL sizes (`t._shape`, the unpadded truth); `capacity(t)` on
+        # its ALLOCATED buffer (`t._raw.shape`, padded). Either returns None when it cannot yet. Weak
+        # refs so a shared ShapeVar does not keep dropped instances' tensors alive.
         self.usages = []
         self.dep_axes = [ resolve_attribute( d, scope, AbstractAxis ) for d in template_args ]
 
         self.prescribed_value = None
         self._count = None     # count produced by a kernel: a driver tensor, possibly traced
-        self._observed = None  # count OBSERVED from a tensor's set value (lowest precedence): this
-                               # is where a ragged structure the padded buffer cannot hold lives --
-                               # on the ShapeVar (reachable from the axis), not cached on the tensor.
 
         if value is not None:
             self.set( value )
 
-    def add_usage( self, tensor, resolver ):
-        self.usages.append( ( weakref.ref( tensor ), resolver ) )
-
-    def observe( self, value ):
-        """Record a COUNT read from a tensor's set value. Pushed by `axis.observe_size` at set time,
-        it is the LOWEST tier: a kernel write (`_count`) or a user prescription both win over it."""
-        self._observed = numpy.array( value, dtype = int )
+    def add_usage( self, tensor, logical, capacity ):
+        self.usages.append( ( weakref.ref( tensor ), logical, capacity ) )
 
     def set_count( self, value ):
         """Rebind the count to what a kernel produced (a driver tensor). Nothing else moves:
@@ -86,15 +79,17 @@ class ShapeVar( Attribute ):
             value = value.value
         self.prescribed_value = numpy.array( value, dtype = int )
 
-    def _solve( self ):
-        """Solve our ALLOCATED capacity from the tensors that use us: the first usage able to invert
-        one of their BUFFER sizes (`_raw.shape`); `None` if none can. The LOGICAL count is no longer
-        solved here -- it is pushed to `_observed` at set time (see `axis.observe_size`)."""
-        for tensor_ref, resolver in self.usages:
+    def _pull( self, kind ):
+        """Solve our count from the tensors that use us: the FIRST usage able to invert one of its
+        sizes, `None` if none can. `kind` picks which sizes -- the `"logical"` ones (`t._shape`, the
+        count) or the `"capacity"` ones (`t._raw.shape`, the allocation a chained call must reuse).
+        First-that-answers, so a witness carrying the RIGHT rank (a ragged tensor holding per-segment
+        counts) is reached the same way as a scalar one -- both invert this ShapeVar's own affine."""
+        for tensor_ref, logical, capacity in self.usages:
             tensor = tensor_ref()
             if tensor is None:
                 continue
-            solved = resolver( tensor )
+            solved = ( logical if kind == "logical" else capacity )( tensor )
             if solved is not None:
                 return numpy.asarray( solved )
         return None
@@ -104,7 +99,7 @@ class ShapeVar( Attribute ):
         """The raw COUNT as a backend / numpy array, or `None` while UNRESOLVED -- the same role
         `Tensor.raw` plays: the backend buffer behind the nice object. A kernel-written count wins,
         being the freshest truth (and it is then a DEVICE value, never size a buffer with it); then
-        a user prescription; then what was observed from a tensor's data.
+        a user prescription; then what the LOGICAL sizes of a using tensor solve to (`_pull`).
 
         Users read `value` (a `Tensor`); `raw` is the escape hatch to the backend array (what the
         shape math and the FFI read, without wrapping) -- `sv.value.raw` gives the same thing."""
@@ -114,7 +109,7 @@ class ShapeVar( Attribute ):
         if self.prescribed_value is not None:
             return self.prescribed_value
 
-        return self._observed
+        return self._pull( "logical" )
 
     @property
     def value( self ):
@@ -140,14 +135,13 @@ class ShapeVar( Attribute ):
         """The capacity our tensors were ALLOCATED with, read off their buffers -- a fact, not
         a decision, so a chained call needs no restating of a capacity already materialized.
         `None` when we have no allocated tensor to read it from."""
-        solved = self._solve()
+        solved = self._pull( "capacity" )
         return int( numpy.max( solved ) ) if solved is not None else None
 
     def static_count( self ):
-        """Our count when PYTHON holds it (prescribed, or observed from the data of a tensor we
-        were given). `None` when it only lives on the device -- where it cannot size anything."""
+        """Our count when PYTHON holds it (prescribed, or solved from the LOGICAL sizes of a tensor
+        we were given). `None` when it only lives on the device -- where it cannot size anything."""
         if self.prescribed_value is not None:
             return int( numpy.max( self.prescribed_value ) )
-        if self._observed is not None:
-            return int( numpy.max( self._observed ) )
-        return None
+        solved = self._pull( "logical" )
+        return int( numpy.max( solved ) ) if solved is not None else None

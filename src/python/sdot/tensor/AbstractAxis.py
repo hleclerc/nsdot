@@ -22,9 +22,11 @@ class AbstractAxis( Attribute ):
 
     def __init__( self, *exprs, template_args = (), template_kwargs = {}, scope = None, name = None ) -> None:
         from .ShapeVar import ShapeVar
+
         self.coeffs: dict[ ShapeVar, int ] = {}
         self.offset = 0
         self.name = name
+
         # declared (`Axis[ "nb_dims + 1" ]`) or built directly (`Axis( nb_dims )`): same args,
         # two ways in.
         self._init_axis( list( template_args ) + list( exprs ), scope )
@@ -41,6 +43,14 @@ class AbstractAxis( Attribute ):
         these so every axis it declares is spelled in its header -- even one no tensor of the call
         references (`num_edge`): a body may still name it, and the C++ type must exist for it."""
         return [ self.name ]
+
+    def cpp_dim_names( self, index ):
+        """The C++ name(s) for the ARRAY dimension(s) this axis expands into: the NAME analogue of
+        `max_list` (which does the same for extents). One entry for a plain `Axis`; several for an
+        unrolled `AxisList`. Keeping the unrolling HERE (and in the overrides) lets a caller merely
+        concatenate over a tensor's axes -- it needs no notion of how many `AxisList`s there are or
+        how wide each unrolls. `index` is the axis' position, used only for the nameless fallback."""
+        return [ self.name or f"a{ index }" ]
 
     @staticmethod
     def cpp_shared_header( name ):
@@ -113,36 +123,41 @@ class AbstractAxis( Attribute ):
         one entry for an `Axis`, `nb_dims` entries for an unrolled `AxisList`."""
         raise NotImplementedError
 
-    # ---- usage registration (virtual) ----
-    def register_in( self, tensor, index, unroll ):
-        """Record on our `ShapeVar`s that `tensor`'s dimension `index` constrains
-        them, so they can be solved from that tensor's observed sizes. `unroll`
-        (the trailing `...` in the declaration) is only valid for an `AxisList`."""
-        assert not unroll, "only an AxisList member ('name...') can be unrolled"
-        self._register_dense( tensor, index )
+    def array_dims( self, tensor ):
+        """How many ARRAY dimensions this axis occupies on `tensor`: one for a plain `Axis`, its
+        unroll width for an `AxisList` (which overrides). The count lives on the AXIS, so a tensor
+        never has to do `ndim - n_plain` arithmetic itself, nor know how many lists it holds."""
+        return 1
 
-    def _register_dense( self, tensor, index ):
-        """One declared axis <-> its own array dimension (`tensor._spec_dims()[ index ]`, which
-        accounts for an unrolled AxisList sibling spanning several dimensions). The resolver serves
-        the ALLOCATED capacity only: it inverts the tensor's BUFFER size (`allocated_sizes`, read
-        off `_raw`). The LOGICAL count is not pulled here -- `observe_size` pushes it at set time."""
+    # ---- usage registration (virtual) ----
+    def register_in( self, tensor ):
+        """Record on our `ShapeVar`s that `tensor` (which declares us among its axes) constrains them,
+        so they can be SOLVED (pulled) from it on demand -- from its logical sizes for the count, from
+        its buffer for the allocated capacity. We find our OWN position in `tensor` (`_dim_index`) so
+        the caller passes no index. A plain axis is one dimension; an `AxisList` overrides (it spans
+        several)."""
+        self._register_dense( tensor )
+
+    def _register_dense( self, tensor ):
+        """One declared axis <-> its own array dimension. Two resolvers per ShapeVar, both mapping our
+        axis to its array dimension (`_spec_dims`, which accounts for an unrolled sibling): `logical`
+        inverts our affine on the LOGICAL size there (`_shape.sizes(...)`, a 0-d scalar for a dense
+        axis or a per-segment array for a ragged one -- unpadded); `capacity` on the ALLOCATED buffer
+        size (`allocated_sizes` at that dimension). Our position is resolved at PULL time (`_dim_index`),
+        by then `tensor.axes` is complete."""
         for shape_var in self.coeffs:
-            def resolve( t, axis = self, index = index, shape_var = shape_var ):
+            def logical( t, axis = self, shape_var = shape_var ):
+                if t._shape is None:
+                    return None
+                dim = t._spec_dims()[ t._dim_index( axis ) ]
+                return axis.solve_single( shape_var, t._shape.sizes( dim ) )
+            def capacity( t, axis = self, shape_var = shape_var ):
                 sizes = t.allocated_sizes
                 if sizes is None:
                     return None
-                return axis.solve_single( shape_var, sizes[ t._spec_dims()[ index ] ] )
-            shape_var.add_usage( tensor, resolve )
-
-    def observe_size( self, size ):
-        """Push the LOGICAL size observed along this axis' dimension onto its ShapeVars: invert the
-        single-variable affine (a scalar for a dense axis, a per-segment array for a ragged one).
-        A multi-variable extent cannot be inverted from a single size (as for capacity) and is
-        skipped -- exactly like `solve_single`."""
-        for shape_var in self.coeffs:
-            solved = self.solve_single( shape_var, size )
-            if solved is not None:
-                shape_var.observe( solved )
+                dim = t._spec_dims()[ t._dim_index( axis ) ]
+                return axis.solve_single( shape_var, sizes[ dim ] )
+            shape_var.add_usage( tensor, logical, capacity )
 
     # ---- extents (virtual) ----
     def capacity_list( self, capacity_of ):

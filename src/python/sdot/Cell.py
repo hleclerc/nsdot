@@ -6,7 +6,7 @@ from .tensor.Tensor import Tensor
 from .tensor.Axis import Axis
 
 from .compilation.FfiCode import FfiCodeParallel
-from .util.aggregate import Aggregate
+from .util.Aggregate import Aggregate
 from .drivers.driver import driver
 
 INFINITE = -2
