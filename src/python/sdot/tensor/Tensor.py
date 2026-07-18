@@ -7,8 +7,8 @@ from ..util.Attribute import Attribute, resolve_attribute
 from ..drivers.driver import driver
 from ..devices.Device import Device
 
-from .AbstractAxis import AbstractAxis
 from .ReferenceShape import ReferenceShape
+from .AbstractAxis import AbstractAxis
 from .AxisList import AxisList
 from .ShapeVar import ShapeVar
 from .Dtype import Dtype
@@ -69,14 +69,10 @@ class Tensor( Attribute ):
         builds to carry a gradient (same logical shape as the value it is the gradient of). What
         goes INTO it then decides its kind: a real cotangent buffer (`set_raw`) makes it a
         `TensorView`, a symbolic-zero cotangent a `ZeroTensor`, nothing at all a `NoneTensor`."""
-        res = cls( template_kwargs = { "dtype": other.dtype, "device": other.device } )
-        res.axes = list( other.axes )   # same axes, but not re-registered on their ShapeVars
-        return res
+        return cls( template_args = other.axes, template_kwargs = { "dtype": other.dtype, "device": other.device } )
 
     @property
     def is_symbolic_zero( self ) -> bool:
-        # DERIVED from `_raw` alone: it IS the framework's bufferless-zero object, so there is no
-        # flag that could contradict the buffer. A materialized buffer is never a symbolic zero.
         return self._raw is not None and driver.is_symbolic_zero( self._raw )
 
     def set( self, value ):
