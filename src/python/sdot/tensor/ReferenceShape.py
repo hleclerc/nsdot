@@ -2,11 +2,8 @@ import numpy
 
 
 class ReferenceShape:
-    """The LOGICAL (unpadded) shape of a tensor's VALUE, described from the value ALONE.
-
-    It knows NOTHING of the declared axes: it is a pure structural fact about the data that was set,
-    so `Tensor._shape` is independent of `Tensor.axes`. One `( sizes, dep_dims )` entry per array
-    dimension of the value:
+    """The LOGICAL (unpadded) shape of a value: one `( sizes, dep_dims )` entry per array dimension,
+    describing only the nesting/`.shape` structure of that value -- nothing else (no axes, no buffer).
 
       * `sizes`    -- a numpy array of the extents along that dimension: 0-d when the dimension is
                       dense, else an array indexed by `dep_dims` (a RAGGED dimension);
@@ -15,9 +12,9 @@ class ReferenceShape:
     A dense rank-2 value gives `[ ( array(2), () ), ( array(3), () ) ]`; a value whose 2nd dimension
     is ragged along the 1st gives `[ ( array(2), () ), ( array([ 2, 1 ]), ( 0, ) ) ]`.
 
-    `Tensor._raw` may be PADDED (a ragged buffer is a bounding box); this is the UNPADDED truth, from
-    which every `ShapeVar` PULLS its count. Built once (`from_value` / `from_dense_shape`), never
-    mutated -- so it can be shared (a tensor set from another adopts its reference shape)."""
+    Immutable once built (`from_value` / `from_dense_shape`), so it can be shared -- e.g. `Tensor`
+    uses it as the source of truth its `ShapeVar`s pull their counts from, independent of the
+    (possibly padded) buffer and of the declared axes."""
 
     def __init__( self, dims ):
         self.dims = dims   # list of ( numpy array, tuple of dependency dimension indices )
