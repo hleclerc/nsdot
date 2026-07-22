@@ -325,10 +325,10 @@ UTP auto DTP::items_are_contiguous() const {
 //     } );
 // }
 
-// UTP auto DTP::size() const {
-//     static_assert( ct_rank == 1, "..." );
-//     return shape( Ct<int,0>() );
-// }
+UTP auto DTP::size() const {
+    static_assert( ct_rank == 1, "..." );
+    return shape( Ct<int,0>() );
+}
 
 // UTP auto DTP::empty() const {
 //     if constexpr ( ct_rank == 0 )
@@ -468,23 +468,28 @@ UTP auto DTP::items_are_contiguous() const {
 // // }
 
 
-// // UTP auto DTP::begin() const {
-// //     if constexpr ( ct_rank == 1 || ct_rank == 0 ) {
-// //         return data();
-// //     } else {
-// //         TODO;
-// //     }
-// // }
+UTP auto DTP::begin() const {
+    if constexpr ( ct_rank == 0 ) {
+        return StridedIterator<TF, MemorySpace>( data(), sizeof(TF) );
+    } else if constexpr ( ct_rank == 1 ) {
+        return StridedIterator<TF, MemorySpace>( data(), _strides[ 0_c ] );
+    } else {
+        TODO; // multi-dim: need nested/cartesian product iterator for row-major traversal
+    }
+}
 
-// // UTP auto DTP::end() const {
-// //     if constexpr ( ct_rank == 0 ) {
-// //         return data() + 1;
-// //     } else if constexpr ( ct_rank == 1 ) {
-// //         return data() + size();
-// //     } else {
-// //         TODO;
-// //     }
-// // }
+UTP auto DTP::end() const {
+    if constexpr ( ct_rank == 0 ) {
+        return StridedIterator<TF, MemorySpace>( data() + sizeof(TF), sizeof(TF) );
+    } else if constexpr ( ct_rank == 1 ) {
+        SI elem_count = size();
+        SI stride = _strides[ 0_c ];
+        SI past_end_offset = stride * elem_count;
+        return StridedIterator<TF, MemorySpace>( data() + past_end_offset, stride );
+    } else {
+        TODO; // multi-dim: need nested/cartesian product iterator for row-major traversal
+    }
+}
 
 
 // // UTP auto DTP::unsqueeze( auto axis ) const {

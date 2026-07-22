@@ -59,6 +59,11 @@ class ReferenceShape:
         so their logical sizes ARE their shape)."""
         return cls( [ ( numpy.array( s, dtype = int ), () ) for s in shape ] )
 
+    def appended_dense( self, size = 1 ):
+        """A new `ReferenceShape` with one more DENSE array dimension of extent `size` appended --
+        what `Tensor.append_axis` needs for a literal axis whose extent is not read off any data."""
+        return ReferenceShape( self.dims + [ ( numpy.array( size, dtype = int ), () ) ] )
+
 
 # ---- reading a value's size structure, data-free ----
 

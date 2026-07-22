@@ -71,9 +71,24 @@ class Tensor( Attribute ):
         `TensorView`, a symbolic-zero cotangent a `ZeroTensor`, nothing at all a `NoneTensor`."""
         return cls( template_args = other.axes, template_kwargs = { "dtype": other.dtype, "device": other.device } )
 
+    def append_axis( self, axis ):
+        """A new tensor sharing our buffer, with `axis` appended as one extra TRAILING axis --
+        e.g. `SumOfDiracs1d.positions` (rank 1) reused as `SumOfDiracs`'s ( `num_dirac`, `dim` )
+        positions once `dim`'s extent is known (see `SumOfDiracs1d.normalized_version`). Unset
+        (`_raw is None`) stays unset: with no buffer yet, there is nothing to reshape."""
+        res = type( self )( template_args = self.axes + [ axis ], template_kwargs = { "dtype": self.dtype, "device": self.device } )
+        if self._raw is not None:
+            res._raw = self._raw[ ..., None ]
+            res._shape = self._shape.appended_dense( 1 )
+        return res
+
     @property
     def is_symbolic_zero( self ) -> bool:
         return self._raw is not None and driver.is_symbolic_zero( self._raw )
+
+    @property
+    def is_defined( self ) -> bool:
+        return self._raw is not None
 
     def set( self, value ):
         if isinstance( value, Tensor ):
@@ -493,8 +508,12 @@ def _shape_var_at( shape_var, axes, idx ):
     write -- not a reservation) at raw position `idx`: dense (no `dep_axes`) is a
     single value (same convention as `Axis.max`); ragged is indexed by where its
     `dep_axes` sit among `axes` (a dependency this tensor does not itself carry
-    as a dimension falls back to the max over it)."""
+    as a dimension falls back to the max over it). `None` while unresolved (e.g. a
+    kernel output not yet written) -- there is then nothing to tell padding from a
+    real value with."""
     v = shape_var.raw
+    if v is None:
+        return None
     if not shape_var.dep_axes:
         return int( v.max() )
     key = tuple( idx[ axes.index( dep ) ] if dep in axes else slice( None ) for dep in shape_var.dep_axes )
@@ -506,11 +525,14 @@ def _cell_valid( axes, idx ):
     """Whether raw position `idx` holds a real value: every axis's OWN extent,
     evaluated at `idx` from its ShapeVars' current values, must cover it. Checked
     independently per axis, so ragged padding is caught in any direction, not
-    only a trailing/horizontal one."""
+    only a trailing/horizontal one. An axis whose extent cannot be evaluated (an
+    unresolved `ShapeVar`) is treated as fully valid -- with no known extent there
+    is no padding to detect, so displaying the raw buffer as is beats crashing."""
     for d, axis in enumerate( axes ):
-        extent = axis.offset + sum(
-            coeff * _shape_var_at( shape_var, axes, idx ) for shape_var, coeff in axis.coeffs.items()
-        )
+        values = [ _shape_var_at( shape_var, axes, idx ) for shape_var in axis.coeffs ]
+        if any( v is None for v in values ):
+            continue
+        extent = axis.offset + sum( coeff * v for coeff, v in zip( axis.coeffs.values(), values ) )
         if idx[ d ] >= extent:
             return False
     return True

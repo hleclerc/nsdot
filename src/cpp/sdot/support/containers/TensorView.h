@@ -10,6 +10,7 @@
 #include "../kernels/Ptr.h" // IWYU pragma: export
 #include "AxisNames.h" // IWYU pragma: export
 #include "TupleRep.h" // IWYU pragma: export
+#include "StridedIterator.h" // IWYU pragma: export
 #include <type_traits>
 // #include "container_tags.h" // IWYU pragma: export
 // #include "AxisNames.h" // IWYU pragma: export

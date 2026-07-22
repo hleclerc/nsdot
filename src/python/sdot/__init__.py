@@ -12,5 +12,9 @@ from .compilation.FfiCode import FfiCode as FfiCode
 
 from .drivers.driver import driver as driver
 
-from .Image import Image as Image
+from .distributions.SumOfDiracs1d import SumOfDiracs1d as SumOfDiracs1d
+from .distributions.SumOfDiracs import SumOfDiracs as SumOfDiracs
+from .distributions.Image import Image as Image
+
+from .OtPlan1d import OtPlan1d as OtPlan1d
 from .Cell import Cell as Cell

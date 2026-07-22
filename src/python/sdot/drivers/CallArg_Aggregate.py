@@ -97,9 +97,19 @@ class CallArg_Aggregate( CallArg ):
                               "sdot/support/kernels/transfer_cost.h" )
 
     def cpp_includes( self ):
-        """The one header the call needs for us -- and whether it is HAND-WRITTEN or generated is
-        our own business, invisible from the outside (the caller only learns that some `.h` is
-        needed). Two modes, chosen by whether the user provides `sdot/<Name>.h`:
+        """The headers the call needs for us: our OWN struct's header, plus -- whether that header
+        is hand-written or generated -- every NESTED aggregate member's, recursively. A member is a
+        type OUR struct instantiates (by CTAD, at the call site) whether the struct wrapping it is
+        manual or generated, so a hand-written header is no reason to stop descending: skipping the
+        recursion here left a manual `OtPlan1d.h` compiling with `SumOfDiracs`/`Image` undeclared,
+        even though its macro-generated members line does spell them.
+
+        `self.attributes` was built from the RUNTIME instance (`attributes_of( inst )` reads off
+        `type( inst )`, not the field's declared annotation type), so a member declared as the
+        abstract `Distribution` but holding an `Image` still contributes `Image`'s own header here,
+        not one for `Distribution` (which may not even exist).
+
+        Two modes for OUR OWN header, chosen by whether the user provides `sdot/<Name>.h`:
 
         * they do -> that MANUAL header is the struct: it drops in our macros and adds methods of
           its own (the real `Cell`, with `init_as_hypercube`). We use it as-is.
@@ -109,20 +119,21 @@ class CallArg_Aggregate( CallArg ):
         Either way we first emit the macros the struct is built from (`_emit_macros_header`)."""
         from ..compilation.generated_headers import manual_header
         self._emit_macros_header()
-        return [ manual_header( f"sdot/{ self.type_name }.h" ) or self._emit_full_header() ]
+        own = manual_header( f"sdot/{ self.type_name }.h" ) or self._emit_full_header()
+        incs = [ own ]
+        for child in self.attributes.values():
+            for inc in getattr( child, "cpp_includes", lambda: () )():
+                if inc not in incs:
+                    incs.append( inc )
+        return incs
 
     def _emit_full_header( self ):
         """Generate the struct WHOLE, for an aggregate the user did not hand-write a header for:
         the very wrapper they would write, minus any methods of their own -- it just turns the
-        macros into an actual `struct`. Returns the include path.
-
-        A nested aggregate member is a type this struct instantiates (by CTAD, at the call site),
-        so we pull in whatever DEFINES it -- its own header, manual or generated-full, recursively."""
+        macros into an actual `struct`. Returns the include path."""
         from ..compilation.generated_headers import shared_header
         lines = [ "#pragma once", "",
                   f'#include "sdot/generated/aggregates/{ self.type_name }.h"' ]
-        for child in self.attributes.values():
-            lines += [ f'#include "{ inc }"' for inc in child.cpp_includes() ]
         lines += [ "", "namespace sdot {",
                    f"SDOT_TEMPLATE_DECL_FOR_{ self.type_name }",
                    f"struct { self.type_name } {{ SDOT_ATTRIBUTES_OF_{ self.type_name } }};",

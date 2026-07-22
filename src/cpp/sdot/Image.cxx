@@ -1,10 +1,12 @@
 #pragma once
 
-#include "support/algorithms/CartesianIndices.h"   // iterate the (dynamic-rank) cell grid
+#include "support/algorithms/CartesianIndices.h" // iterate the (dynamic-rank) cell grid
+#include "support/containers/IotaTensor.h"       // IotaTensor<TF> (knots = 0,1,2) -- default `knots`
+#include "support/containers/Vector.h"           // Vector<TF,d>::zeros()          -- default `origin`
 #include "support/containers/Matrix.h"
-#include "support/containers/Vector.h"
-#include <cmath>
+#include "CstUdPiece.h"
 #include "Image.h"
+#include <cmath>
 
 #define UTP SDOT_TEMPLATE_DECL_FOR_Image
 #define DTP Image<SDOT_TEMPLATE_ARGS_FOR_Image>
@@ -62,6 +64,34 @@ UTP typename DTP::TF DTP::measure() const {
         }
         return sum;
     } );
+}
+
+UTP auto DTP::udp_start() const {
+    return Udp{
+        .index = 0,
+        .pos = knots( 0 ),
+        .mass = ( knots( 1 ) - knots( 0 ) ) * values[ 0 ],
+        .y = values[ 0 ]
+    };
+}
+
+UTP auto DTP::udp_cont( auto &&udp, auto mass_to_take, auto &&cb_parts ) const {
+    while( mass_to_take >= udp.mass ) {
+        const SI new_index = udp.index + 1;
+        const TF x1 = knots( new_index );
+        if ( const TF y = udp.y )
+            cb_parts( CstUdPiece{ .x0 = udp.pos, .x1 = x1, .y = y } );
+
+        udp.index = new_index;
+        udp.pos = x1;
+        udp.y = values[ new_index ];
+
+        udp.mass = ( knots( new_index + 1 ) - x1 ) * udp.y;
+    }
+
+    const TF x1 = udp.pos + mass_to_take / udp.y;
+    cb_parts( CstUdPiece{ .x0 = udp.pos, .x1 = x1, .y = udp.y } );
+    udp.pos = x1;
 }
 
 }

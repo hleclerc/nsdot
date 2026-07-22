@@ -5,4 +5,4 @@ if test( "basic" ):
     # ds = SumOfDiracs( [ 1, 2, 3, 4 ] )
     # op = OtPlan1D( ds, di )
     di = Image( values = [[ 1, 0, 1 ]] )
-    info( di.measure )
+    assert di.measure == 2

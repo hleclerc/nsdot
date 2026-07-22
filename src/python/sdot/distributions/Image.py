@@ -1,17 +1,19 @@
 from typing import TYPE_CHECKING, cast, overload
 
-from .tensor.CtShapeVar import CtShapeVar
-from .tensor.ShapeVar import ShapeVar
-from .tensor.AxisList import AxisList
-from .tensor.Tensor import Tensor
-from .tensor.Axis import Axis
+from ..tensor.CtShapeVar import CtShapeVar
+from ..tensor.ShapeVar import ShapeVar
+from ..tensor.AxisList import AxisList
+from ..tensor.Tensor import Tensor
+from ..tensor.Axis import Axis
 
-from .compilation.FfiCode import FfiCodeParallel
-from .util.Aggregate import Aggregate
-from .drivers.driver import driver
+from ..compilation.FfiCode import FfiCodeParallel
+from ..util.Aggregate import Aggregate
+from ..drivers.driver import driver
+
+from .Distribution import Distribution
 
 
-class Image( Aggregate ):
+class Image( Distribution ):
     """
         Piecewise constant function.
 
@@ -28,11 +30,14 @@ class Image( Aggregate ):
     dim              : Axis[ "nb_dims" ]
     dir              : Axis[ "nb_dims" ]
 
+    target_mass      : Tensor
     values           : Tensor[ "img_pos..." ]
 
     origin           : Tensor[ "dim" ]
     frame            : Tensor[ "dir", "dim" ]
     knots            : Tensor[ "dim", "num_knot" ]
+
+
 
     @property
     def measure( self ):
@@ -48,3 +53,6 @@ class Image( Aggregate ):
             res = res
         )
         return res
+
+    def normalized_version( self ):
+        return self

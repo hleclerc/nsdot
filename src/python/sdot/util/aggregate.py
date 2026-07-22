@@ -89,11 +89,15 @@ class Aggregate:
 
         # injections: share the passed `Attribute` (same object) rather than assign it. Stored
         # straight into `__dict__` (a raw write, past the set-only descriptor which would else
-        # `.set()` it) -- the same slot every read then hands back.
+        # `.set()` it) -- the same slot every read then hands back. A `Tensor` is excluded: its
+        # axes are OUR schema's (`Tensor[ "num_vertex", "dim" ]`, resolved in OUR scope), never
+        # the ones the caller's tensor happened to carry (e.g. from another aggregate's fields, or
+        # an anonymous axis from `append_axis`) -- so it always goes through the schema-built path
+        # below and adopts the value via `.set()` (buffer + `_shape` only) instead of by identity.
         for name, type_attr in anns.items():
             sc = _field_cls( type_attr )
             value = shared.get( name )
-            if value is not None and inspect.isclass( sc ) and isinstance( value, sc ):
+            if value is not None and inspect.isclass( sc ) and isinstance( value, sc ) and not _is_tensor_field( type_attr ):
                 self.__dict__[ name ] = value
 
         # instantiate the fields; a nested aggregate inherits our scope, refined by its own
