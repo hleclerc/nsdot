@@ -1,7 +1,21 @@
 from .Parametrized import Parametrized
 from .annotations import annotations
 from .Attribute import Attribute
+from .ComputedAttribute import ComputedAttribute
 import inspect
+
+
+def _unwrap_computed_attribute( type_attr ):
+    """If type_attr is ComputedAttribute[Type, deps...], return (Type, deps).
+
+    Otherwise return (type_attr, ()).
+    """
+    if isinstance( type_attr, Parametrized ) and type_attr.cls is ComputedAttribute:
+        # args = (RealType, "dep1", "dep2", ...)
+        real_type = type_attr.args[0] if type_attr.args else None
+        dependencies = type_attr.args[1:] if len( type_attr.args ) > 1 else ()
+        return real_type, dependencies
+    return type_attr, ()
 
 
 class Aggregate:
@@ -60,6 +74,15 @@ class Aggregate:
     batch_axes = []
 
     def __init_subclass__( cls, **kwargs ):
+        # Track which computed attributes depend on each field, for invalidation.
+        # Built at class time: scan annotations for ComputedAttribute instances.
+        cls._computed_attr_deps = {}  # field_name -> list of ComputedAttribute names that depend on it
+        for name, type_attr in annotations( cls ).items():
+            sc = _field_cls( type_attr )
+            if inspect.isclass( sc ) and issubclass( sc, ComputedAttribute ):
+                # This field is a ComputedAttribute; record its dependencies.
+                # We'll revisit when instantiating to link them properly.
+                pass
         super().__init_subclass__( **kwargs )
 
         # one SET-only data descriptor per leaf `Attribute` field, to route its writes to `.set()`.
@@ -73,6 +96,10 @@ class Aggregate:
     def __base_init__( self, **kwargs ):
         cls = type( self )
         anns = annotations( cls )
+
+        # Track computed attributes and what they depend on, for cache invalidation.
+        self._computed_attrs = {}  # field_name -> ComputedAttribute
+        self._dependent_computed = {}  # dependency_name -> list of computed field names
 
         # batching is a reserved construction option, not a field: `batch_axes = [ ax, ... ]` adds
         # those axes on the LEFT of every tensor we declare. Popped here so it never reaches the
@@ -104,12 +131,32 @@ class Aggregate:
         for name, type_attr in anns.items():
             if name in self.__dict__:
                 continue
+
+            # Check if this is a ComputedAttribute declaration
+            real_type, dependencies = _unwrap_computed_attribute( type_attr )
+
             if _is_aggregate( type_attr ):
                 nested = type_attr( **{ **shared, **scoped.get( name, {} ) } )
                 nested.name = name
                 self.__dict__[ name ] = nested
             else:
-                get_attribute( name, self )
+                # Use real_type (unwrapped) if it's a ComputedAttribute
+                if real_type is not None:
+                    # It's a ComputedAttribute[RealType, deps]
+                    # Create the real attribute (Tensor, ShapeVar, etc.)
+                    attr = get_attribute( name, self, real_type )
+                    # Also create a ComputedAttribute tracker for invalidation
+                    computed_tracker = ComputedAttribute()
+                    computed_tracker.name = name
+                    self._computed_attrs[ name ] = computed_tracker
+                    # Register dependencies
+                    for dep_name in dependencies:
+                        if dep_name not in self._dependent_computed:
+                            self._dependent_computed[ dep_name ] = []
+                        self._dependent_computed[ dep_name ].append( name )
+                else:
+                    # Regular attribute, no computed tracking
+                    attr = get_attribute( name, self, type_attr )
 
         # prescriptions
         for key, value in shared.items():
@@ -140,10 +187,14 @@ class Aggregate:
         aggregate is batched over the SAME axis objects -- joined iteration, no name to collide."""
         self.batch_axes = list( batch_axes )
         for name, type_attr in annotations( type( self ) ).items():
-            if _is_aggregate( type_attr ):
+            # Unwrap ComputedAttribute to get the real type
+            real_type, _ = _unwrap_computed_attribute( type_attr )
+            type_to_check = real_type if real_type is not None else type_attr
+
+            if _is_aggregate( type_to_check ):
                 get_attribute( name, self ).apply_batch_axes( self.batch_axes )
-            elif _is_tensor_field( type_attr ):
-                attr = _batched_schema( type_attr, self.batch_axes )( scope = self )
+            elif _is_tensor_field( type_to_check ):
+                attr = _batched_schema( type_to_check, self.batch_axes )( scope = self )
                 attr.name = name
                 self.__dict__[ name ] = attr
 
@@ -170,6 +221,10 @@ class FieldDescriptor:
 
     def __set__( self, obj, value ):
         get_attribute( self.name, obj ).set( value )
+        # Invalidate any computed attributes that depend on this field
+        if hasattr( obj, '_dependent_computed' ):
+            for computed_name in obj._dependent_computed.get( self.name, [] ):
+                obj._computed_attrs[ computed_name ].invalidate()
 
 
 def _field_cls( type_attr ):
@@ -202,29 +257,37 @@ def _batched_schema( type_attr, axes ):
     return Parametrized( Tensor, *axes )
 
 
-def get_attribute( name, parent_inst ):
+def get_attribute( name, parent_inst, type_attr=None ):
+    """Get or create an Attribute for a field.
+
+    Args:
+        name: field name
+        parent_inst: the Aggregate instance
+        type_attr: optional override of the annotation type (used for ComputedAttribute unwrapping)
+    """
     # already instantiated ? (the per-instance `Attribute` lives under its field name in `__dict__`)
     attrs = parent_inst.__dict__
     if name in attrs:
         return attrs[ name ]
 
-    # in annotation ?
-    dct = annotations( parent_inst.__class__ )
-    if name in dct:
+    # Resolve type_attr from annotation if not provided
+    if type_attr is None:
+        dct = annotations( parent_inst.__class__ )
+        if name not in dct:
+            raise ValueError( f"There's no attribute '{ name }' in '{ type( parent_inst ) }'" )
         type_attr = dct[ name ]
-        if _is_attribute_field( type_attr ):
-            # the parent is not a ctor argument, it is the SCOPE the declaration's names are
-            # resolved in -- an `Attribute` is built the same way with or without one.
-            res = type_attr( scope = parent_inst )
-        else:
-            res = type_attr()
 
-        # the field name is the aggregate's to give: an `Attribute` does not know it (and may
-        # outlive its parent -- a borrowed `Axis` still has to be nameable in the C++ code).
-        res.name = name
+    if _is_attribute_field( type_attr ):
+        # the parent is not a ctor argument, it is the SCOPE the declaration's names are
+        # resolved in -- an `Attribute` is built the same way with or without one.
+        res = type_attr( scope = parent_inst )
+    else:
+        res = type_attr()
 
-        # a raw write, past the set-only `FieldDescriptor` (which would `.set()` the value instead).
-        attrs[ name ] = res
-        return res
+    # the field name is the aggregate's to give: an `Attribute` does not know it (and may
+    # outlive its parent -- a borrowed `Axis` still has to be nameable in the C++ code).
+    res.name = name
 
-    raise ValueError( f"There's no attribute '{ name }' in '{ type( parent_inst ) }'" )
+    # a raw write, past the set-only `FieldDescriptor` (which would `.set()` the value instead).
+    attrs[ name ] = res
+    return res

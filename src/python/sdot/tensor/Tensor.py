@@ -87,6 +87,10 @@ class Tensor( Attribute ):
         return self._raw is not None and driver.is_symbolic_zero( self._raw )
 
     @property
+    def is_undefined( self ) -> bool:
+        return self._raw is None
+
+    @property
     def is_defined( self ) -> bool:
         return self._raw is not None
 

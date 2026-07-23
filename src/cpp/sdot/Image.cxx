@@ -21,15 +21,15 @@ UTP auto DTP::with_defaults( auto &&cont ) const {
     // a fixed type and no `operator=`, so replacing its VALUE means replacing its TYPE.
     //
     // The brace-init is POSITIONAL, so its order must match `SDOT_ATTRIBUTES_OF_Image` (the field
-    // declaration order in `Image.py`, axes skipped): nb_dims, shape, values, origin, frame, knots.
-    // `::sdot::Image` (qualified) names the TEMPLATE so CTAD re-deduces; bare `Image` would mean the
-    // current instantiation and defeat the substitution.
+    // declaration order across the MRO, axes skipped): target_mass, nb_dims, shape, values, origin,
+    // frame, knots, current_mass. `::sdot::Image` (qualified) names the TEMPLATE so CTAD re-deduces;
+    // bare `Image` would mean the current instantiation and defeat the substitution.
     if constexpr ( ! CT_VALUE( origin.is_valid() ) )
-        return ::sdot::Image{ nb_dims, shape, values, Vector<TF,ct_dim>::zeros(), frame, knots }.with_defaults( FORWARD( cont ) );
+        return ::sdot::Image{ target_mass, nb_dims, shape, values, Vector<TF,ct_dim>::zeros(), frame, knots, current_mass }.with_defaults( FORWARD( cont ) );
     else if constexpr ( ! CT_VALUE( frame.is_valid() ) )
-        return ::sdot::Image{ nb_dims, shape, values, origin, Matrix<TF,ct_dim>::identity(), knots }.with_defaults( FORWARD( cont ) );
+        return ::sdot::Image{ target_mass, nb_dims, shape, values, origin, Matrix<TF,ct_dim>::identity(), knots, current_mass }.with_defaults( FORWARD( cont ) );
     else if constexpr ( ! CT_VALUE( knots.is_valid() ) )
-        return ::sdot::Image{ nb_dims, shape, values, origin, frame, IotaTensor<TF>{} }.with_defaults( FORWARD( cont ) );
+        return ::sdot::Image{ target_mass, nb_dims, shape, values, origin, frame, IotaTensor<TF>{}, current_mass }.with_defaults( FORWARD( cont ) );
     else
         return cont( *this );
 }

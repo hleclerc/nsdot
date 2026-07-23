@@ -5,6 +5,7 @@ from ..tensor.ShapeVar import ShapeVar
 from ..tensor.AxisList import AxisList
 from ..tensor.Tensor import Tensor
 from ..tensor.Axis import Axis
+from ..util.ComputedAttribute import ComputedAttribute
 
 from ..compilation.FfiCode import FfiCodeParallel
 
@@ -12,8 +13,7 @@ from .Distribution import Distribution
 
 
 class SumOfDiracs( Distribution ):
-    """
-    """
+    """Sum of weighted Dirac point masses."""
 
     nb_diracs        : ShapeVar
     nb_dims          : CtShapeVar
@@ -24,6 +24,8 @@ class SumOfDiracs( Distribution ):
     positions        : Tensor[ "num_dirac", "dim" ]
     weights          : Tensor[ "num_dirac" ]
 
+    # Mass is computed from weights; when weights change, mass is invalidated
+    mass             : ComputedAttribute[ Tensor, ("weights",) ]
 
     def __init__( self, positions, weights = None ):
         self.__base_init__( positions = positions, weights = weights, nb_dims = 1 )
