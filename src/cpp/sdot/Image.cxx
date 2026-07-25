@@ -66,32 +66,92 @@ UTP typename DTP::TF DTP::measure() const {
     } );
 }
 
+UTP void DTP::measure_bwd( auto &&grad_values, auto &&grad_mass ) const {
+    // `mass` is linear in `values` (see `measure`): mass = Sum_c values(c) * |det(frame)| * spacing(c),
+    // so grad_values(c) = grad_mass * |det(frame)| * spacing(c). Guarded at compile time: an
+    // unperturbed `values` arrives as a `NoneTensor` (no `operator=`), so the block must vanish.
+    if constexpr ( CT_VALUE( grad_values.is_valid() ) ) {
+        with_defaults( [&]( auto &&img ) {
+            using ImgT = DECAYED_TYPE_OF( img );
+            using TF = typename ImgT::TF;
+            constexpr int d = ImgT::ct_dim;
+
+            const auto F = Matrix<TF,d>::with_func( [&]( auto r, auto c ) { return TF( img.frame( r, c ) ); } );
+            const TF fdet = std::abs( F.determinant() );
+            const TF gm = grad_mass; // scalar cotangent of `current_mass`
+
+            auto shape = img.values.shape();
+            CartesianIndices<DECAYED_TYPE_OF( shape )> cells{ shape };
+            for ( PI flat = 0; flat < cells.size(); ++flat ) {
+                cells[ flat ].apply_values( [&]( auto ...i ) {
+                    PI axis = 0;
+                    TF spacing = 1;
+                    ( ( spacing *= TF( img.knots( axis, i + 1 ) ) - TF( img.knots( axis, i ) ), ++axis ), ... );
+                    grad_values( i... ) = gm * fdet * spacing;
+                } );
+            }
+        } );
+    }
+}
+
+// The unidimensional-piece walk runs in PHYSICAL detector coordinates: cell edge i sits at
+// `x(i) = origin(0) + frame(0,0) * knots(i)` (1D), so `origin`/`frame` are honored exactly as in
+// `measure` (whose cell volume is |det(frame)| * knot spacing). A cell's mass is therefore
+// `frame(0,0) * ( knots(i+1) - knots(i) ) * value` -- integral of the density over the physical
+// width -- while `y` stays the DENSITY (so `mass / y` is a physical length). The default
+// origin=0 / frame=identity collapses `x(i)` back to `knots(i)`, reproducing the plain-knot walk.
+// Callers reach these through `with_defaults`, so `origin`/`frame`/`knots` are always populated.
+// Assumes `frame(0,0) > 0` (an increasing detector axis), like the sorted-by-position diracs.
 UTP auto DTP::udp_start() const {
+    const TF sc = frame( 0, 0 );
+    const TF of = origin( 0 );
     return Udp{
         .index = 0,
-        .pos = knots( 0 ),
-        .mass = ( knots( 1 ) - knots( 0 ) ) * values[ 0 ],
+        .pos = of + sc * knots( 0 ),
+        .mass = sc * ( knots( 1 ) - knots( 0 ) ) * values[ 0 ],
         .y = values[ 0 ]
     };
 }
 
 UTP auto DTP::udp_cont( auto &&udp, auto mass_to_take, auto &&cb_parts ) const {
-    while( mass_to_take >= udp.mass ) {
+    const SI nb_cells = values.size();
+    const TF sc = frame( 0, 0 );
+    const TF of = origin( 0 );
+
+    // Consume whole cells while the current one cannot satisfy the whole request.
+    // The `udp.index + 1 < nb_cells` guard keeps every access in bounds: the caller
+    // only ever asks for the total remaining mass, so on the last cell we fall through
+    // to the partial take below (and a floating-point overshoot cannot walk past the end).
+    while( mass_to_take >= udp.mass && udp.index + 1 < nb_cells ) {
+        mass_to_take -= udp.mass;
+
         const SI new_index = udp.index + 1;
-        const TF x1 = knots( new_index );
-        if ( const TF y = udp.y )
-            cb_parts( CstUdPiece{ .x0 = udp.pos, .x1 = x1, .y = y } );
+        const TF x1 = of + sc * knots( new_index );
+        // Emit even when y == 0: it contributes nothing to the cost / barycenter (`w2_dist` and
+        // `first_moment` carry the y factor) but its `second_moment_about` feeds the direct term of
+        // d cost / d y_c, which is non-zero on a zero-density cell.
+        cb_parts( CstUdPiece{ .x0 = udp.pos, .x1 = x1, .y = udp.y } );
 
         udp.index = new_index;
         udp.pos = x1;
         udp.y = values[ new_index ];
 
-        udp.mass = ( knots( new_index + 1 ) - x1 ) * udp.y;
+        udp.mass = sc * ( knots( new_index + 1 ) - knots( new_index ) ) * udp.y;
     }
 
-    const TF x1 = udp.pos + mass_to_take / udp.y;
-    cb_parts( CstUdPiece{ .x0 = udp.pos, .x1 = x1, .y = udp.y } );
-    udp.pos = x1;
+    // Partial take inside the current cell. Interior zero-density cells are already SKIPPED by the
+    // loop above (their mass is 0, so `mass_to_take >= udp.mass` always advances past them); the only
+    // way `udp.y` can be 0 here is a TRAILING run of empty cells at the target's right end. There is
+    // no mass to place there -- the residual `mass_to_take` is the floating-point remainder of an
+    // exhausted target -- so we skip the take rather than divide by zero. The dirac's cost and
+    // barycenter come entirely from the (nonzero) pieces already emitted, as a zero-`y` piece
+    // contributes nothing to either (`w2_dist` / `first_moment` carry the `y` factor).
+    if ( udp.y != 0 ) {
+        const TF x1 = udp.pos + mass_to_take / udp.y;
+        cb_parts( CstUdPiece{ .x0 = udp.pos, .x1 = x1, .y = udp.y } );
+        udp.pos = x1;
+        udp.mass -= mass_to_take; // remaining mass of the current cell, for the next dirac
+    }
 }
 
 }

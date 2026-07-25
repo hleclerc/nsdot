@@ -156,11 +156,17 @@ class JaxDriver:
     def zeros( self, shape, dtype = None ):
         return jnp.zeros( shape, dtype = Dtype.factory( dtype or self.ftype ).driver_version )
 
+    def full( self, shape, value, dtype = None ):
+        return jnp.full( shape, value, dtype = Dtype.factory( dtype or self.ftype ).driver_version )
+
     def stack( self, tensors, axis = 0 ):
         return jnp.stack( tensors, axis = axis )
 
     def pad( self, tensor, pad_width ):
         return jnp.pad( tensor, pad_width )
+
+    def transpose( self, a, axes = None ):
+        return jnp.transpose( a, axes )
 
     def vmap( self, func ):
         """Map `func` over a new leading axis. A `driver.call` inside it is not replayed item by

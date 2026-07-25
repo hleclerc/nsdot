@@ -42,12 +42,16 @@ class OtPlan1d( Aggregate ):
         if not isinstance( src_dist, SumOfDiracs ):
             raise RuntimeError( "For now, at least one of the 2 distributions must be a sum of diracs" )
 
-        # attr init
+        # attr init. The batch axes are carried by the (already batched) inputs -- reuse THEM so the
+        # plan is co-iterated with its distributions: `apply_batch_axes` batches our own outputs
+        # (`cost`, `barycenters`) while the idempotency guard leaves the injected `src_dist`/`dst_dist`
+        # untouched (they are already batched over the same axes).
         self.__base_init__(
             nb_diracs = src_dist.nb_diracs.value,
             nb_dims = src_dist.nb_dims.value,
             src_dist = src_dist,
             dst_dist = dst_dist,
+            batch_axes = src_dist.batch_axes,
         )
 
         # computations
@@ -56,10 +60,14 @@ class OtPlan1d( Aggregate ):
     def update_outputs( self ):
         driver.call(
             FfiCodeParallel( name = "update_outputs_OtPlan1d",
-                fwd_code = "plan( batch_index ).update_outputs( sorted_indices );",
+                # `sorted_indices( batch_index )` yields the per-batch rank-1 scratch the C++ expects
+                # (`begin()/end()`, `sorted_indices( k )`); with no batch the optional index falls
+                # through and the whole tensor is returned, so this covers both cases.
+                fwd_code = "plan( batch_index ).update_outputs( sorted_indices( batch_index ) );",
+                bwd_code = "plan( batch_index ).update_outputs_bwd( grad_for_plan( batch_index ), sorted_indices( batch_index ) );",
             ),
             # output_capacities = { "plan.nb_diracs": self.src.nb_diracs.value },
             output_attributes = [ "plan.barycenters", "plan.cost", "plan.nb_diracs", "sorted_indices" ],
-            sorted_indices = Tensor[ self.num_dirac, *self.batch_axes ](),
+            sorted_indices = Tensor[ *self.batch_axes, self.num_dirac, dict( dtype = int ) ](),
             plan = self
         )

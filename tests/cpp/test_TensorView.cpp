@@ -11,6 +11,8 @@
 #include "sdot/support/common_macros.h"
 #include "sdot/support/kernels/CpuHostMemorySpace.h"
 #include "main.h"
+#include <algorithm>
+#include <numeric>
 
 using namespace sdot;
 
@@ -56,6 +58,28 @@ TEST_CASE( "TensorView — indexation (positions + axes nommés)", "" ) {
     // ref() écrit en place
     t( 1, dim = 1 ).ref() = 40;
     CHECK( data[ 3 ] == 40 );
+}
+
+
+TEST_CASE( "TensorView — itérateur rang 1 (std::iota / std::sort)", "" ) {
+    // contigu : iota écrit en place, la distance end - begin est correcte, sort réordonne.
+    double data[] = { 9, 9, 9, 9, 9 };
+    auto t = tensor_view( data, tuple( 5 ) );
+
+    CHECK( t.end() - t.begin() == 5 );                 // operator- (sens + unité)
+    std::iota( t.begin(), t.end(), 0.0 );              // les écritures persistent
+    CHECK( data[ 0 ] == 0 && data[ 2 ] == 2 && data[ 4 ] == 4 );
+
+    std::sort( t.begin(), t.end(), []( double a, double b ) { return a > b; } );
+    CHECK( data[ 0 ] == 4 && data[ 4 ] == 0 );
+
+    // stride non contigu (16 octets = un double sur deux) : on ne trie que les indices pairs,
+    // les impairs restent intacts -- valide que le stride est bien interprété.
+    double raw[] = { 5, -1, 3, -1, 1, -1 };
+    auto s = tensor_view( raw, tuple( 3 ), tuple( UnnamedAxis{} ), tuple( 16 ) );
+    std::sort( s.begin(), s.end(), []( double a, double b ) { return a < b; } );
+    CHECK( raw[ 0 ] == 1 && raw[ 2 ] == 3 && raw[ 4 ] == 5 );
+    CHECK( raw[ 1 ] == -1 && raw[ 3 ] == -1 && raw[ 5 ] == -1 );
 }
 
 

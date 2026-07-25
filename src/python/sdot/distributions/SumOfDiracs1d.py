@@ -26,14 +26,15 @@ class SumOfDiracs1d( Distribution ):
     weights          : Tensor[ "num_dirac" ]
 
 
-    def __init__( self, positions, weights = None ):
-        self.__base_init__( positions = positions, weights = weights, nb_dims = 1 )
+    def __init__( self, positions, weights = None, **kwargs ):
+        self.__base_init__( positions = positions, weights = weights, nb_dims = 1, **kwargs )
 
     def normalized_version( self ):
         dim = Axis[ self.nb_dims ]()
         return SumOfDiracs(
             positions = self.positions.append_axis( dim ),
             weights = self.weights,
+            batch_axes = self.batch_axes,
         ).normalized_version()
 
     @property

@@ -434,6 +434,10 @@ def _call_backward( code, ca, device, prefix, inputs, outputs, diff_idx,
     def _blank( inst ):
         obj = type( inst ).__new__( type( inst ) )
         obj.name = getattr( inst, "name", None )   # only a NESTED aggregate carries a field name
+        # carry the batch axes over: the backward is an ordinary call, so `CallArgsAnalysis` must see
+        # them on the residual/grad aggregates to build `global_batch_indices` and let the body's
+        # `plan( batch_index )` squeeze the batch (without this the backward would run unbatched).
+        obj.batch_axes = list( getattr( inst, "batch_axes", [] ) )
         return obj
 
     def _build( inst, path ):

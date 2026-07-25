@@ -469,10 +469,12 @@ UTP auto DTP::size() const {
 
 
 UTP auto DTP::begin() const {
+    // `data()` is a `Ptr<TF>` advancing by ELEMENTS, so the iterator stride must be in elements:
+    // byte stride / sizeof(TF).
     if constexpr ( ct_rank == 0 ) {
-        return StridedIterator<TF, MemorySpace>( data(), sizeof(TF) );
+        return StridedIterator<TF, MemorySpace>( data(), 1 );
     } else if constexpr ( ct_rank == 1 ) {
-        return StridedIterator<TF, MemorySpace>( data(), _strides[ 0_c ] );
+        return StridedIterator<TF, MemorySpace>( data(), _strides[ 0_c ] / SI( sizeof( TF ) ) );
     } else {
         TODO; // multi-dim: need nested/cartesian product iterator for row-major traversal
     }
@@ -480,12 +482,10 @@ UTP auto DTP::begin() const {
 
 UTP auto DTP::end() const {
     if constexpr ( ct_rank == 0 ) {
-        return StridedIterator<TF, MemorySpace>( data() + sizeof(TF), sizeof(TF) );
+        return StridedIterator<TF, MemorySpace>( data() + 1, 1 );
     } else if constexpr ( ct_rank == 1 ) {
-        SI elem_count = size();
-        SI stride = _strides[ 0_c ];
-        SI past_end_offset = stride * elem_count;
-        return StridedIterator<TF, MemorySpace>( data() + past_end_offset, stride );
+        const SI elem_stride = _strides[ 0_c ] / SI( sizeof( TF ) );
+        return StridedIterator<TF, MemorySpace>( data() + size() * elem_stride, elem_stride );
     } else {
         TODO; // multi-dim: need nested/cartesian product iterator for row-major traversal
     }

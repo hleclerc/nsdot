@@ -260,6 +260,23 @@ if test( "tensor_index" ):
     assert by_name._dim_names() == [ "row" ]
 
 
+if test( "tensor_transpose" ):
+    t = _named_2x3()                               # axes `row` (2), `col` (3)
+
+    tt = t.T                                        # reverse -> `col` (3), `row` (2)
+    assert numpy.asarray( tt ).tolist() == [ [ 1, 4 ], [ 2, 5 ], [ 3, 6 ] ]
+    assert tt._dim_names() == [ "col", "row" ]
+
+    # explicit permutation, by axis NAME -- the names follow the move
+    by_name = t.transpose( "col", "row" )
+    assert numpy.asarray( by_name ).tolist() == numpy.asarray( tt ).tolist()
+    assert by_name._dim_names() == [ "col", "row" ]
+
+    # matmul chains through it: t (2x3) @ t.T (3x2) -> 2x2
+    g = t @ t.T
+    assert numpy.asarray( g ).tolist() == [ [ 14, 32 ], [ 32, 77 ] ]
+
+
 if test( "tensor_protocol" ):
     s = Tensor( 17 )                               # rank 0
     assert int( s ) == 17

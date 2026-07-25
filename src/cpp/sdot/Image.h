@@ -22,6 +22,10 @@ struct Image {
     // total measure of the piecewise-constant function: sum over cells of value * cell volume.
     TF     measure      () const;
 
+    // adjoint of `measure` w.r.t. `values`: since mass = Sum_c values(c) * cell_volume(c) is linear
+    // in `values`, grad_values(c) = grad_mass * cell_volume(c). `grad_mass` is the scalar cotangent.
+    void   measure_bwd  ( auto &&grad_values, auto &&grad_mass ) const;
+
     // unidimension piece
     struct Udp          { SI index; TF pos; TF mass; TF y; };
     auto   udp_start    () const;

@@ -51,13 +51,14 @@ class Image( Distribution ):
                 nb_dims = self.nb_dims.value,
                 shape = self.shape.value,
 
-                values = self.target_mass / mass * self.values,
+                values = self.values * ( self.target_mass / mass ).broadcast_over_trailing( self.values.rank ),
 
                 origin = self.origin,
                 frame = self.frame,
                 knots = self.knots,
 
-                current_mass = self.target_mass
+                current_mass = self.target_mass,
+                batch_axes = self.batch_axes,
             )
 
         return self
@@ -65,10 +66,10 @@ class Image( Distribution ):
     def _update_current_mass( self ):
         # res = Tensor[ tuple( self.batch_axes ) ]()
         driver.call(
-            FfiCodeParallel( name = "measure",
+            FfiCodeParallel( name = "mass",
                 fwd_code = "image.current_mass( batch_index ) = image( batch_index ).measure();",
-                # bwd_code = "cell( batch_index ).measure_bwd( res( batch_index ), item_map( batch_index ), nb_map_items, "
-                           # "grad_for_res( batch_index ), grad_for_cell( batch_index ).vertex_positions );",
+                bwd_code = "image( batch_index ).measure_bwd( grad_for_image( batch_index ).values, "
+                           "grad_for_image( batch_index ).current_mass );",
             ),
             output_attributes = [ "image.current_mass" ],
             image = self,

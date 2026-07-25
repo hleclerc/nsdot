@@ -71,6 +71,18 @@ class Tensor( Attribute ):
         `TensorView`, a symbolic-zero cotangent a `ZeroTensor`, nothing at all a `NoneTensor`."""
         return cls( template_args = other.axes, template_kwargs = { "dtype": other.dtype, "device": other.device } )
 
+    @classmethod
+    def full( cls, value, *, template_args = (), template_kwargs = {}, scope = None ) -> "Tensor":
+        """A tensor filled with `value` everywhere, built straight from its axes
+        (`Tensor[ axis ].full( v )`) -- no shape to pass: `shape` already reads it off
+        the axes, the same way it would for any other tensor built on them."""
+        res = cls( template_args = template_args, template_kwargs = template_kwargs, scope = scope )
+        fill = value.tensor if isinstance( value, Tensor ) else value
+        shape = res.shape
+        res._raw = driver.full( shape, fill, dtype = res.dtype )
+        res._shape = ReferenceShape.from_dense_shape( shape )
+        return res
+
     def append_axis( self, axis ):
         """A new tensor sharing our buffer, with `axis` appended as one extra TRAILING axis --
         e.g. `SumOfDiracs1d.positions` (rank 1) reused as `SumOfDiracs`'s ( `num_dirac`, `dim` )
@@ -80,6 +92,17 @@ class Tensor( Attribute ):
         if self._raw is not None:
             res._raw = self._raw[ ..., None ]
             res._shape = self._shape.appended_dense( 1 )
+        return res
+
+    def broadcast_over_trailing( self, rank ):
+        """A view with trailing size-1 axes appended until it reaches `rank` dimensions. The
+        elementwise operators broadcast POSITIONALLY (right-aligned, like numpy), so a per-batch
+        scalar -- whose only axis is the LEADING batch one -- would not line up against a full
+        batched tensor. Padding it on the right lets the batch axes meet and the rest broadcast
+        (see the per-batch normalization in `Image`/`SumOfDiracs`)."""
+        res = self
+        while res.rank < rank:
+            res = res.append_axis( Axis[ "1" ]() )
         return res
 
     @property
@@ -326,10 +349,26 @@ class Tensor( Attribute ):
         for i in range( len( self ) ):
             yield self[ i ]
 
-    # ---- elementwise operators (scalar or same-shape `Tensor`/array; result keeps our names) ----
+    # ---- elementwise operators (scalar/array or `Tensor`, numpy broadcasting; names ride along) ----
     def _binary( self, other, op ):
         b = other.tensor if isinstance( other, Tensor ) else other
-        return self._wrap( op( self.tensor, b ), self._dim_names() )
+        raw = op( self.tensor, b )
+        return self._wrap( raw, self._broadcast_names( other, getattr( raw, "ndim", 0 ) ) )
+
+    def _broadcast_names( self, other, ndim ):
+        """The axis names of an elementwise result, `ndim` of them. Broadcasting is numpy's --
+        RIGHT-aligned -- so we align both operands' names on the right and keep, per dimension, the
+        one that is named (the higher-rank operand carries the leading axes, e.g. a per-batch
+        `mass` on the RHS of `target_mass / mass` keeps `batch_0`, which taking only the LHS's names
+        would drop)."""
+        a = self._dim_names()
+        b = other._dim_names() if isinstance( other, Tensor ) else []
+        res = []
+        for i in range( ndim ):
+            na = a[ len( a ) - ndim + i ] if len( a ) - ndim + i >= 0 else None
+            nb = b[ len( b ) - ndim + i ] if len( b ) - ndim + i >= 0 else None
+            res.append( na if na is not None else nb )
+        return res
 
     def __add__     ( self, o ): return self._binary( o, lambda a, b: a +  b )
     def __radd__    ( self, o ): return self._binary( o, lambda a, b: b +  a )
@@ -357,6 +396,25 @@ class Tensor( Attribute ):
     # `__eq__` returns a Tensor (elementwise), so instances are no longer value-comparable as keys;
     # keep IDENTITY hashing (a `Tensor` is never used as a by-value dict key -- `ShapeVar` is).
     __hash__ = object.__hash__
+
+    # ---- axis permutation (numpy-like: positions or axis names; the names follow the move) ----
+    def transpose( self, *axes ):
+        """A view with the dimensions PERMUTED. No argument reverses the order (`t.T`); otherwise
+        each entry is a dimension position or an axis NAME. Reads the LOGICAL values (`self.tensor`)
+        and returns a fresh derived tensor, so the surviving names ride along with the permutation."""
+        if not axes:
+            perm = tuple( reversed( range( self.rank ) ) )
+        else:
+            if len( axes ) == 1 and isinstance( axes[ 0 ], ( tuple, list ) ):
+                axes = tuple( axes[ 0 ] )
+            perm = tuple( self._axis_pos( a ) for a in axes )
+        names = self._dim_names()
+        new_names = [ names[ p ] if p < len( names ) else None for p in perm ]
+        return self._wrap( driver.transpose( self.tensor, perm ), new_names )
+
+    @property
+    def T( self ):
+        return self.transpose()
 
     # ---- reductions (`axis` = None / int / axis name / a tuple of those) ----
     def _reduce( self, op, axis, identity ):

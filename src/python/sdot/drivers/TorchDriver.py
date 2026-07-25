@@ -138,6 +138,9 @@ class TorchDriver:
     def zeros( self, shape, dtype = None ):
         return torch.zeros( shape, dtype = dtype or self.dtype, device = self.device )
 
+    def full( self, shape, value, dtype = None ):
+        return torch.full( tuple( shape ), value, dtype = dtype or self.dtype, device = self.device )
+
     def ones( self, shape, dtype = None ):
         return torch.ones( shape, dtype = dtype or self.dtype, device = self.device )
 
@@ -198,6 +201,11 @@ class TorchDriver:
 
     def moveaxis( self, tensor, source, destination ):
         return torch.moveaxis( tensor, source, destination )
+
+    def transpose( self, a, axes = None ):
+        if axes is None:
+            axes = tuple( reversed( range( a.ndim ) ) )
+        return a.permute( *axes )
 
     def hstack( self, lst ):
         return torch.hstack( lst )

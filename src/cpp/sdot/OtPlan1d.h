@@ -13,6 +13,7 @@ struct OtPlan1d {
     using TF            = DECAYED_TYPE_OF( cost )::TF;
 
     void  update_outputs( auto &&sorted_indices );
+    void  update_outputs_bwd( auto &&grad_plan, auto &&sorted_indices ) const;
 };
 
 }

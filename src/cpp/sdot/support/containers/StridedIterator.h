@@ -5,9 +5,10 @@
 
 namespace sdot {
 
-/// Random-access iterator for strided data (stride in bytes).
-/// Works with std algorithms, handles multi-dimensional tensors
-/// by iterating over the last (innermost) axis.
+/// Random-access iterator for strided data. `stride` is in ELEMENTS (of `T`), matching
+/// `Ptr<T>::operator+`, which advances by elements -- NOT in bytes. `TensorView` divides its
+/// byte strides by `sizeof(T)` before building the iterator.
+/// Works with std algorithms; a TensorView iterates over its (innermost) axis.
 template<class T, class MemorySpace>
 class StridedIterator {
 public:
@@ -18,7 +19,7 @@ public:
     using iterator_category = std::random_access_iterator_tag;
 
     StridedIterator() = default;
-    explicit StridedIterator(Ptr<T, MemorySpace> data, SI stride = sizeof(T))
+    explicit StridedIterator(Ptr<T, MemorySpace> data, SI stride = 1)
         : _data(data), _stride(stride) {}
 
     // dereferencing
@@ -67,10 +68,10 @@ public:
         return it + n;
     }
 
-    // distance
+    // distance: number of steps from `other` to `*this` ( *this - other ). `_data.raw` is a `T*`,
+    // so the subtraction is already in elements; dividing by the element stride gives the count.
     difference_type operator-(const StridedIterator& other) const {
-        auto byte_diff = other._data.raw - _data.raw;
-        return byte_diff / _stride;
+        return ( _data.raw - other._data.raw ) / _stride;
     }
 
     // comparison
