@@ -44,6 +44,39 @@ class CallArg_Tensor( CallArg ):
         # here -- so nothing assumes a single, or any, `AxisList`.
         self.axis_names = [ n for index, axis in enumerate( inst.axes ) for n in axis.cpp_dim_names( index ) ]
 
+        # the PHYSICAL layout this buffer has (input: the one it already carries) or should get
+        # (output: chosen from the device's batch alignment + this dtype's itemsize). `self.shape`
+        # stays the LOGICAL extents (what the kernel iterates); the layout adds the physical
+        # buffer_shape + per-axis strides. At alignment 1 (or no batch) it is IDENTITY -> the lowering
+        # below is byte-identical to the contiguous one, so nothing changes for today's calls.
+        #
+        # `layout` is a LAZY property, not computed here: a `jax.vmap` prepends a leading dim by
+        # calling `add_batch_axis` AFTER `__init__`, mutating `self.shape`; computing the layout now
+        # would freeze a stale `buffer_shape`. The vmap path is also its own (contiguous) universe --
+        # the framework handed us the extra dim -- so it never wants our batch-flatten policy.
+        import numpy
+        self.itemsize = int( numpy.dtype( self.dtype.driver_version ).itemsize )
+        self._alignment_bytes = call_args_analysis.batch_alignment_bytes
+        self._dim_is_batch = list( inst._dim_batch() )
+        self._device = call_args_analysis.device
+        self._has_vmap = False
+
+    @property
+    def layout( self ):
+        from ..tensor.PhysicalLayout import PhysicalLayout
+        if self._has_vmap:
+            return PhysicalLayout.contiguous( self.shape )      # vmap owns its leading dim -> contiguous
+        if self.io_category.is_output:
+            # the device's physical-order POLICY (None by default -> logical order, identity layout);
+            # a device that prefers another order reorders the non-batch axes here (strides keep the
+            # logical view). Only outputs choose a layout; inputs carry the one they already have.
+            phys_num = self._device.physical_axis_num( self.axis_names ) if self._device else None
+            return PhysicalLayout.of( self.shape, self._dim_is_batch,
+                                      self._alignment_bytes, self.itemsize, phys_num )
+        if self.io_category.is_input:
+            return self.inst.buffer_layout
+        return PhysicalLayout.contiguous( self.shape )          # unbound -> NoneTensor, unused
+
     # only the BUFFER binding is conditional on `is_bound`: an unbound tensor is a `NoneTensor`,
     # which still spells its axes in its type (`Tuple<_num_cut, _dim>`) -- so `cpp_axis_names`
     # answers them either way, and the analysis folds those in for their `DEFINE_AXIS`.
@@ -62,6 +95,7 @@ class CallArg_Tensor( CallArg ):
         handed us)."""
         self.axis_names = [ name ] + self.axis_names
         self.shape = [ int( size ) ] + self.shape
+        self._has_vmap = True   # the framework owns this leading dim -> stay contiguous (see `layout`)
 
     def batch_dim_expr( self, name ):
         if name not in self.axis_names:
@@ -79,6 +113,17 @@ class CallArg_Tensor( CallArg ):
     def _cpp_shape_tuple( self ):
         # the extents come from the BUFFER, not from `self.shape`: see `CallArg.jax_dim`.
         return "tuple( " + ", ".join( self.jax_dim( d ) for d in range( len( self.shape ) ) ) + " )"
+
+    def _cpp_logical_shape_tuple( self ):
+        # the LOGICAL extents as literals -- used with a NON-contiguous layout, where the buffer's
+        # physical dims (flattened/reordered) no longer match the logical axes, so `jax_dim` (which
+        # reads the buffer) cannot serve them. Batch extents are prescribed and the rest are the
+        # capacities this call allocates: all known at trace time.
+        return "tuple( " + ", ".join( f"SI( { int( e ) } )" for e in self.shape ) + " )"
+
+    def _cpp_strides_tuple( self ):
+        # the per-LOGICAL-axis BYTE strides of the physical layout (what `tensor_view`'s 4th arg wants).
+        return "tuple( " + ", ".join( f"SI( { s } )" for s in self.layout.strides_bytes( self.itemsize ) ) + " )"
 
     def _cpp_axis_tuple( self ):
         return "tuple( " + ", ".join( self.axis_names ) + " )"
@@ -101,16 +146,23 @@ class CallArg_Tensor( CallArg ):
             kind = "ZeroTensor" if self.symbolic_zero else "NoneTensor"
             return ( f"{ kind }<{ self._cpp_scalar() }, { self._cpp_shape_type() }, "
                      f"{ self._cpp_axis_names_type() }>" )
+        # a NON-contiguous layout spells its Strides in the type too (a runtime `Tuple<SI,...>`);
+        # the contiguous default leaves the template's default Strides (so today's type is unchanged).
+        strides = "" if self.layout.is_identity else f", { self._cpp_shape_type() }"
         return ( f"TensorView<{ self._cpp_scalar() }, { self._cpp_shape_type() }, "
-                 f"{ self.memory_space }, { self._cpp_axis_names_type() }>" )
+                 f"{ self.memory_space }, { self._cpp_axis_names_type() }{ strides }>" )
 
     def cpp_view( self ):
         # a `NoneTensor` has nothing to view: it value-initializes.
         if not self.io_category.is_bound:
             return f"{ self.cpp_type() }{{}}"
         ptr = self.jax_data_ptr()
-        return ( f"tensor_view<{ self.memory_space }>( { ptr }, { self._cpp_shape_tuple() }, "
-                 f"{ self._cpp_axis_tuple() } )" )
+        if self.layout.is_identity:
+            return ( f"tensor_view<{ self.memory_space }>( { ptr }, { self._cpp_shape_tuple() }, "
+                     f"{ self._cpp_axis_tuple() } )" )
+        # non-contiguous: LOGICAL extents (literals) + physical BYTE strides -> the 4-arg overload.
+        return ( f"tensor_view<{ self.memory_space }>( { ptr }, { self._cpp_logical_shape_tuple() }, "
+                 f"{ self._cpp_axis_tuple() }, { self._cpp_strides_tuple() } )" )
 
     # -- as a member of an aggregate: one type parameter, spelled out at instantiation --
     def cpp_tpl_param( self ):
@@ -135,7 +187,9 @@ class CallArg_Tensor( CallArg ):
         return f"ffi::BufferR{ len( self._jax_buffer_shape() ) }<{ self._jax_ffi_elem() }>"
 
     def _jax_buffer_shape( self ):
-        return self.shape
+        # the PHYSICAL buffer XLA allocates / binds: the layout's `buffer_shape` (flattened+padded
+        # batch when non-contiguous, else `self.shape`). The C++ view reinterprets it logically.
+        return self.layout.buffer_shape
 
     def jax_cpp_init( self ):
         return self.cpp_view()
@@ -149,3 +203,7 @@ class CallArg_Tensor( CallArg ):
 
     def jax_write_back( self, array ):
         self.inst.set_raw( array )
+        # hand the result tensor its physical layout so downstream ops read it back logically (via
+        # `Tensor.tensor`'s gather). Identity stays `None` -> the plain contiguous default.
+        if not self.layout.is_identity:
+            self.inst._layout = self.layout

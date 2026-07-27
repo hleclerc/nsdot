@@ -51,7 +51,7 @@ class Image( Distribution ):
                 nb_dims = self.nb_dims.value,
                 shape = self.shape.value,
 
-                values = self.values * ( self.target_mass / mass ).broadcast_over_trailing( self.values.rank ),
+                values = self.target_mass / mass * self.values,
 
                 origin = self.origin,
                 frame = self.frame,

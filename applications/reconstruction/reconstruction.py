@@ -3,6 +3,7 @@ import numpy as np
 from sdot import SumOfDiracs1d, OtPlan1d, Tensor, driver
 
 from .Sinogram import Sinogram
+from .optimizers import GradientDescent
 
 
 def loss( sinogram: Sinogram, positions ):
@@ -30,25 +31,34 @@ def random_positions( nb_diracs: int, extent: float, seed: int = 0 ) -> Tensor:
     return Tensor( ( rng.random( ( nb_diracs, 2 ) ) - 0.5 ) * extent )
 
 
-def reconstruct( sinogram: Sinogram, positions, lr: float = 0.2, nb_steps: int = 100, callback = None ):
+def reconstruct( sinogram: Sinogram, positions, optimizer = None, lr: float = None, nb_steps: int = None, callback = None ):
     """Descente de gradient sur `positions` pour diminuer `loss`, sinogramme FIXÉ.
 
-    Boucle simple (le passage en batch viendra) : à chaque pas on suit l'opposé du
-    gradient de la perte par rapport aux positions, obtenu par `driver.grad` (mode
-    adjoint, qui traverse le backward d'`OtPlan1d`). `positions` : Tensor ou [ n, 2 ].
+    `optimizer` : instance d'Optimizer. Si None, utilise GradientDescent(lr, nb_steps).
+    `lr` et `nb_steps` : paramètres rétro-compatibles pour GradientDescent (défaut 0.2 et 100).
+    À chaque pas on suit l'opposé du gradient de la perte par rapport aux positions,
+    obtenu par `driver.grad` (mode adjoint, qui traverse le backward d'`OtPlan1d`).
+    `positions` : Tensor ou [ n, 2 ].
 
     `callback( step, positions_tensor )` est appelé après chaque pas si fourni.
     Renvoie les positions optimisées, sous forme de Tensor.
     """
+    if optimizer is None:
+        if lr is None:
+            lr = 0.2
+        if nb_steps is None:
+            nb_steps = 100
+        optimizer = GradientDescent(lr=lr, nb_steps=nb_steps)
+
     p = positions.raw if isinstance( positions, Tensor ) else driver.array( positions )
 
     def scalar_loss( q ):
         return loss( sinogram, Tensor.wrap( q, [ "num_dirac", "dim" ] ) ).tensor
 
-    grad = driver.grad( scalar_loss )
-    for step in range( nb_steps ):
-        p = p - lr * grad( p )
+    def wrap_callback( step, x ):
         if callback is not None:
-            callback( step, Tensor.wrap( p, [ "num_dirac", "dim" ] ) )
+            callback( step, Tensor.wrap( x, [ "num_dirac", "dim" ] ) )
 
-    return Tensor.wrap( p, [ "num_dirac", "dim" ] )
+    p_opt = optimizer.minimize( scalar_loss, p, callback=wrap_callback )
+
+    return Tensor.wrap( p_opt, [ "num_dirac", "dim" ] )

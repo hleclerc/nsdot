@@ -27,6 +27,11 @@ class AbstractAxis( Attribute ):
         self.offset = 0
         self.name = name
 
+        # a batch axis sorts BEFORE ordinary ones in the logical layout an elementwise op produces
+        # (see `Tensor._binary`). A plain axis is not one; `new_batch_axis` sets this. Physical axis
+        # order (e.g. a leading batch on GPU) is a separate, later concern -- it will not touch this.
+        self.is_batch = False
+
         # declared (`Axis[ "nb_dims + 1" ]`) or built directly (`Axis( nb_dims )`): same args,
         # two ways in.
         self._init_axis( list( template_args ) + list( exprs ), scope )

@@ -158,16 +158,29 @@ class Aggregate:
                     # Regular attribute, no computed tracking
                     attr = get_attribute( name, self, type_attr )
 
+        # batching happens BEFORE the prescriptions so a prescribed INPUT tensor is set onto the
+        # already-batched schema: its leading dims then line up, axis for axis, with the batch axes
+        # we prepended (the ShapeVars pull their counts positionally, see `Tensor.set`). Doing it
+        # after would rebuild the tensor fields and DROP the values we just set.
+        if batch_axes:
+            self.apply_batch_axes( batch_axes )
+
         # prescriptions
         for key, value in shared.items():
             if key in anns:
                 if self.__dict__[ key ] is not value:   # an injection is already in place
+                    # a prescribed INPUT tensor whose leading dims do NOT match the batch extents is
+                    # SHARED across the batch (e.g. `target_mass`, or a detector `origin`/`frame` that
+                    # is the same at every angle): rebuild its field UNBATCHED so its C++ type omits
+                    # the batch axis. The batch `AxisIndex` is optional, so the kernel's
+                    # `x( batch_index )` simply lets the index fall through for such a member.
+                    real_type, _ = _unwrap_computed_attribute( anns[ key ] )
+                    is_tensor = _is_tensor_field( real_type if real_type is not None else anns[ key ] )
+                    if self.batch_axes and is_tensor and not _carries_batch_dims( value, self.batch_axes ):
+                        self._rebuild_field_unbatched( key )
                     get_attribute( key, self ).set( value )
             elif not any( _is_aggregate( t ) for t in anns.values() ):
                 raise TypeError( f"'{ cls.__name__ }' has no field '{ key }' to initialize" )
-
-        if batch_axes:
-            self.apply_batch_axes( batch_axes )
 
     # By default `Aggregate()` builds every field. A subclass with its own construction just defines
     # `__init__` (plain override) and calls `self.__base_init__( ... )` where it wants the fields set
@@ -192,11 +205,28 @@ class Aggregate:
             type_to_check = real_type if real_type is not None else type_attr
 
             if _is_aggregate( type_to_check ):
-                get_attribute( name, self ).apply_batch_axes( self.batch_axes )
+                # a nested aggregate is co-iterated over the SAME axis objects -- but only if it does
+                # not ALREADY carry them: an injected, already-batched input (e.g. `OtPlan1d`'s
+                # `src_dist`) must not be re-batched, which would double the axes and drop its values.
+                nested = get_attribute( name, self )
+                if list( nested.batch_axes ) != list( self.batch_axes ):
+                    nested.apply_batch_axes( self.batch_axes )
             elif _is_tensor_field( type_to_check ):
                 attr = _batched_schema( type_to_check, self.batch_axes )( scope = self )
                 attr.name = name
                 self.__dict__[ name ] = attr
+
+    def _rebuild_field_unbatched( self, name ):
+        """Replace the (batched) tensor field `name` with a fresh one built straight from its
+        annotation -- i.e. WITHOUT the batch axes. Used when a prescribed value turns out to be
+        shared across the batch (see `__base_init__`)."""
+        type_attr = annotations( type( self ) )[ name ]
+        real_type, _ = _unwrap_computed_attribute( type_attr )
+        schema = real_type if real_type is not None else type_attr
+        attr = schema( scope = self )
+        attr.name = name
+        self.__dict__[ name ] = attr
+        return attr
 
     # the scope protocol (see `resolve_attribute`): what turns the NAME an attribute reads in a
     # declaration (`Tensor[ "num_vertex" ]`) into the very object this instance holds.
@@ -245,6 +275,17 @@ def _is_tensor_field( type_attr ):
     from ..tensor.Tensor import Tensor
     sc = _field_cls( type_attr )
     return inspect.isclass( sc ) and issubclass( sc, Tensor )
+
+
+def _carries_batch_dims( value, batch_axes ):
+    """Does `value`'s leading shape match the batch extents? A prescribed input that does carry the
+    batch dims is a genuinely batched input (one slice per batch element); one that does not is
+    shared across the batch. Read from the shape ALONE -- never touches the data."""
+    from ..tensor.Tensor import Tensor
+    import numpy
+    sizes = [ int( ax.max ) for ax in batch_axes ]
+    shape = list( value.shape ) if isinstance( value, Tensor ) else list( numpy.shape( value ) )
+    return shape[ :len( sizes ) ] == sizes
 
 
 def _batched_schema( type_attr, axes ):

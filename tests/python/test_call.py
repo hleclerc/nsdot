@@ -689,3 +689,107 @@ if test( "der_aggregate" ):
     # d loss / d cell.data = [ 2, 3 ], returned through `grad_for_cell.data`
     g = driver.grad( loss )( driver.array( [ 1.0, 1.0 ] ) )
     assert [ float( v ) for v in g ] == [ 2, 3 ]
+
+
+if test( "batch_alignment_forced" ):
+    # PHYSICAL LAYOUT, end to end. Our OWN batch machinery (`batch_axes`, not a jax vmap) runs the
+    # kernel over a leading axis. With a hardware BYTE alignment, the flattened batch dimension is
+    # PADDED so its byte size aligns -- the output buffer is physically larger than the logical
+    # batch count. The kernel still iterates only the real items (`global_batch_indices` is the
+    # prescribed batch size, not the capacity), and the result reads back LOGICALLY identical.
+    #
+    # This exercises the non-identity path completely: a padded `jax_out_spec`, the 4-arg
+    # `tensor_view` (logical extents + physical BYTE strides), and `Tensor.tensor`'s gather.
+    from sdot.tensor.batch import new_batch_axis
+
+    class Cell7( Aggregate ):
+        scale            : Tensor[ "dim" ]
+        vertex_positions : Tensor[ "num_vertex", "dim" ]
+
+        num_vertex       : Axis[ "nb_vertices" ]
+        dim              : Axis[ "nb_dims" ]
+
+        nb_vertices      : ShapeVar
+        nb_dims          : CtShapeVar
+
+
+    code = FfiCode( name = "test_call_batch_align", fwd_code = """
+    run_parallel(
+        queue,
+        global_batch_indices,
+        []( auto batch_index, auto cell ) {
+            auto c = cell( batch_index );
+            c.nb_vertices.set( 1 );
+            c.vertex_positions( num_vertex = 0, dim = 0 ) = c.scale( dim = 0 );
+            c.vertex_positions( num_vertex = 0, dim = 1 ) = c.scale( dim = 1 );
+        },
+        cell_io, cell
+    );
+    """ )
+
+    def run( alignment ):
+        cell = Cell7( nb_dims = 2, batch_axes = [ new_batch_axis( 3 ) ] )
+        cell.scale = driver.array( [ [ 1, 2 ], [ 3, 4 ], [ 5, 6 ] ] )
+        driver.call(
+            code,
+            cell = cell,
+            output_attributes = [ "cell.nb_vertices", "cell.vertex_positions" ],
+            output_capacities = { "cell.nb_vertices": 4 },
+            batch_alignment = alignment,
+        )
+        return cell.vertex_positions
+
+    plain  = run( 1 )
+    padded = run( 32 )    # 32 bytes / 8 (fp64) = 4 items -> batch of 3 rounds up to 4
+
+    # padding really happened: the physical buffer gained rows (leading dim 4, not 3) ...
+    assert padded.raw.shape[ 0 ] == 4
+    assert plain.raw.shape[ 0 ] == 3
+
+    # ... yet the LOGICAL value read back is byte-for-byte the one the unpadded run produced:
+    # each batch item wrote its own `scale` row into vertex 0.
+    want = [ [ [ 1, 2 ] ], [ [ 3, 4 ] ], [ [ 5, 6 ] ] ]
+    assert plain.tensor.tolist()  == want
+    assert padded.tensor.tolist() == want
+
+
+if test( "physical_axis_reorder" ):
+    # PHASE 3: a physical-order REORDER. The input tensor is stored COLUMN-MAJOR (its two axes
+    # permuted in memory), a layout with NON-MONOTONIC strides. The kernel indexes it by LOGICAL
+    # name (`row=`, `col=`) and must recover the right values -- proving the 4-arg `tensor_view`
+    # honours an arbitrary per-axis stride, so a hardware reorder is pure performance.
+    import numpy
+    from sdot.tensor.PhysicalLayout import PhysicalLayout
+    from sdot.tensor.ReferenceShape import ReferenceShape
+    from sdot import Axis, ShapeVar, Tensor
+
+    code = FfiCode( name = "test_call_phys_reorder", fwd_code = """
+    run_parallel( queue, global_batch_indices,
+        []( auto batch_index, auto m, auto out ) {
+            out( batch_index, row = 0, col = 0 ) = m( batch_index, row = 0, col = 0 );
+            out( batch_index, row = 0, col = 1 ) = m( batch_index, row = 0, col = 1 );
+            out( batch_index, row = 1, col = 0 ) = m( batch_index, row = 1, col = 0 );
+            out( batch_index, row = 1, col = 1 ) = m( batch_index, row = 1, col = 1 );
+        },
+        InpList(), m, OutList(), out
+    );
+    """ )
+
+    row = Axis( ShapeVar( 2 ), name = "row" )
+    col = Axis( ShapeVar( 2 ), name = "col" )
+
+    # logical m = [ [ 1, 2 ], [ 3, 4 ] ], but laid out column-major: phys strides [ row=1, col=2 ].
+    L = PhysicalLayout.of( [ 2, 2 ], [ False, False ], phys_num = [ 1, 0 ] )
+    assert L.buffer_shape == [ 2, 2 ] and L.strides == [ 1, 2 ] and not L.is_identity
+
+    m = Tensor[ row, col ]()
+    m._raw   = driver.array( [ [ 1, 3 ], [ 2, 4 ] ] )   # the physical (column-major) buffer
+    m._shape = ReferenceShape.from_dense_shape( [ 2, 2 ] )
+    m._layout = L
+    assert numpy.asarray( m.tensor ).tolist() == [ [ 1, 2 ], [ 3, 4 ] ]   # reads back logical
+
+    out = Tensor[ row, col ]()
+    driver.call( code, m = m, out = out, output_attributes = [ "out" ] )
+
+    # the kernel read the permuted input by name and copied it: the logical value is preserved.
+    assert numpy.asarray( out.tensor ).tolist() == [ [ 1, 2 ], [ 3, 4 ] ]

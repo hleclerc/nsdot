@@ -49,8 +49,11 @@ class Sinogram( Aggregate ):
         angles = np.pi * np.arange( nb_angles ) / nb_angles                        # [ nb_angles ]
         self.angles = angles
         self.normals = np.stack( [ np.cos( angles ), np.sin( angles ) ], axis = 1 )  # [ nb_angles, 2 ]
-        # même géométrie, côté Tensor : sert la projection différentiable (`project_points`)
-        self.normals_t = Tensor( self.normals )
+        # même géométrie, côté Tensor : sert la projection différentiable (`project_points`). Les
+        # normales portent un axe coordonnée `_xy` (dim 2) PARTAGÉ, sur lequel la projection contracte
+        # PAR RÉFÉRENCE (pas de `@` qui supposerait un ordre d'axes). L'axe des angles leur est propre.
+        self._xy = Axis( ShapeVar( 2 ) )
+        self.normals_t = Tensor[ Axis( ShapeVar( int( nb_angles ) ) ), self._xy ]( self.normals )
 
         # les valeurs démarrent à 0 ; `add_disk` les accumule
         self.__base_init__(
@@ -72,14 +75,17 @@ class Sinogram( Aggregate ):
     def project_points( self, points ) -> Tensor:
         """Coordonnées détecteur des `points` (shape [ n, 2 ]) pour chaque angle.
 
-        Renvoie un `Tensor` [ nb_angles, n ] : s[ k, i ] = points[ i ] · n_θk. Tout passe
-        par l'algèbre `Tensor` (donc par le driver) : la projection est DIFFÉRENTIABLE
-        et compatible trace, ce que la reconstruction exige (gradient / `positions`).
+        Renvoie un `Tensor` [ nb_angles, n ] : s[ k, i ] = points[ i ] · n_θk. La projection est une
+        CONTRACTION PAR RÉFÉRENCE sur l'axe coordonnée partagé `_xy` (`normals.dot( points, over=_xy )`)
+        -- aucun `@`, donc aucune hypothèse d'ordre d'axes. Tout passe par l'algèbre `Tensor`, donc
+        c'est DIFFÉRENTIABLE et compatible trace (ce qu'exige le gradient de la reconstruction).
         """
-        pts = points if isinstance( points, Tensor ) else Tensor( points )
-        if pts.rank != 2 or pts.shape[ 1 ] != 2:
+        val = points if isinstance( points, Tensor ) else Tensor( points )
+        if val.rank != 2 or val.shape[ 1 ] != 2:
             raise ValueError( "points doit être de shape [ n, 2 ]" )
-        return self.normals_t @ pts.T                                              # [ nb_angles, n ]
+        # les points partagent l'axe `_xy` des normales ; leur axe « point » leur est propre
+        pts = Tensor[ Axis( ShapeVar() ), self._xy ]( val )
+        return self.normals_t.dot( pts, over = self._xy )                          # [ nb_angles, n ]
 
     # -- accumulation ------------------------------------------------------
 

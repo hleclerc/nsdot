@@ -32,4 +32,5 @@ def new_batch_axis( size ):
     aggregate constructor; reuse one object across aggregates to co-iterate them."""
     axis = Axis( ShapeVar( size ) )
     axis.name = f"batch_{ next( _batch_counter ) }"
+    axis.is_batch = True    # sorts first in the logical layout of an elementwise result
     return axis

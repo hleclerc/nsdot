@@ -277,6 +277,86 @@ if test( "tensor_transpose" ):
     assert numpy.asarray( g ).tolist() == [ [ 14, 32 ], [ 32, 77 ] ]
 
 
+if test( "tensor_ref_broadcast" ):
+    from sdot import new_batch_axis
+
+    row = Axis( ShapeVar(), name = "row" )
+    col = Axis( ShapeVar(), name = "col" )
+    m = Tensor[ row, col, dict( dtype = int ) ]( [ [ 1, 2, 3 ], [ 4, 5, 6 ] ] )   # row(2) x col(3)
+    v = Tensor[ col, dict( dtype = int ) ]( [ 10, 20, 30 ] )                       # shares the `col` OBJECT
+
+    # an elementwise op MAPS by axis REFERENCE: the shared `col` object lines up, `row` (only in `m`)
+    # broadcasts. Operand order sets the order of the NON-batch axes (first-seen), so `v * m` lists
+    # `col` first -- the same tensor as `m * v`, merely stored transposed (downstream aligns by ref).
+    assert ( m * v )._dim_names() == [ "row", "col" ]
+    assert numpy.asarray( m * v ).tolist() == [ [ 10, 40, 90 ], [ 40, 100, 180 ] ]
+    assert ( v * m )._dim_names() == [ "col", "row" ]
+    assert numpy.asarray( v * m ).tolist() == [ [ 10, 40 ], [ 40, 100 ], [ 90, 180 ] ]
+
+    # a DIFFERENT axis object does NOT align, even with the SAME name (reference, not name): the two
+    # `col`s are distinct axes, so the op is their outer product over two separate dimensions.
+    col2 = Axis( ShapeVar(), name = "col" )
+    w = Tensor[ col2, dict( dtype = int ) ]( [ 1, 2, 3 ] )
+    ow = v * w
+    assert numpy.asarray( ow ).shape == ( 3, 3 )
+    assert ow._dim_names() == [ "col", "col" ]
+
+    # a BATCH axis sorts FIRST in the result layout, whichever operand carries it (and however the
+    # non-batch axes are arranged). No manual reshape: a per-batch value spreads over the rest.
+    b = new_batch_axis( 2 )
+    bt = Tensor[ b, dict( dtype = int ) ]( [ 100, 200 ] )                          # batch(2)
+    r = m * bt
+    assert r._dim_names() == [ b.name, "row", "col" ]                              # batch leading
+    assert ( bt * m )._dim_names() == [ b.name, "row", "col" ]
+    assert numpy.asarray( r )[ 0 ].tolist() == [ [ 100, 200, 300 ], [ 400, 500, 600 ] ]
+    assert numpy.asarray( r )[ 1 ].tolist() == [ [ 200, 400, 600 ], [ 800, 1000, 1200 ] ]
+
+
+if test( "tensor_dot" ):
+    # `dot` CONTRACTS over a shared axis object, assuming no axis order (unlike `@`). Here `xy` (2) is
+    # shared; the free axes `a` (2) and `b` (3) survive -> a plain matrix product, but by REFERENCE.
+    xy = Axis( ShapeVar(), name = "xy" )
+    a  = Axis( ShapeVar(), name = "a" )
+    b  = Axis( ShapeVar(), name = "b" )
+    left  = Tensor[ a, xy, dict( dtype = int ) ]( [ [ 1, 0 ], [ 0, 2 ] ] )          # a(2) x xy(2)
+    right = Tensor[ b, xy, dict( dtype = int ) ]( [ [ 1, 1 ], [ 2, 0 ], [ 0, 3 ] ] )  # b(3) x xy(2)
+
+    out = left.dot( right, over = xy )                                              # contracts xy
+    assert out._dim_names() == [ "a", "b" ]                                         # free axes survive
+    # out[i,j] = sum_xy left[i,xy]*right[j,xy]
+    assert numpy.asarray( out ).tolist() == [ [ 1, 2, 0 ], [ 2, 0, 6 ] ]
+    # matches the positional matmul left @ right.T, but chosen by axis, not by order
+    assert numpy.asarray( out ).tolist() == numpy.asarray( left @ right.T ).tolist()
+
+
+if test( "tensor_physical_layout_view" ):
+    # a Tensor whose buffer is laid out NON-contiguously (batch axis flattened + padded) still reads
+    # back its LOGICAL values: `.tensor` gathers them through the layout (the physical<->logical
+    # boundary). Everything else reads `.tensor`, so ops/results stay logical whatever the storage.
+    from sdot.tensor.PhysicalLayout import PhysicalLayout
+    from sdot.tensor.ReferenceShape import ReferenceShape
+    from sdot import driver
+
+    logical = numpy.array( [ [ 1, 2, 3 ], [ 4, 5, 6 ] ], dtype = float )   # logical [2,3]
+    raw = numpy.zeros( ( 4, 3 ) ); raw[ :2 ] = logical                     # batch(2)->flat padded to 4
+    L = PhysicalLayout.of( [ 2, 3 ], [ True, False ], alignment_bytes = 32, itemsize = 8 )
+    assert L.buffer_shape == [ 4, 3 ] and L.strides == [ 3, 1 ] and L.caps == [ 2, 3 ]
+
+    b = Axis( ShapeVar( 2 ), name = "b" )
+    c = Axis( ShapeVar( 3 ), name = "c" )
+    t = Tensor[ b, c ]()
+    t._raw   = driver.array( raw )
+    t._shape = ReferenceShape.from_dense_shape( [ 2, 3 ] )
+    t._layout = L
+
+    assert list( t.shape ) == [ 2, 3 ]
+    assert t.capacity == ( 2, 3 )                     # per LOGICAL dim: the padding lives in the flat phys dim
+    assert numpy.asarray( t.tensor ).tolist() == [ [ 1, 2, 3 ], [ 4, 5, 6 ] ]   # padding + flatten peeled off
+
+    # an elementwise op reads `.tensor`, so it works transparently on the laid-out tensor
+    assert numpy.asarray( t + t ).tolist() == [ [ 2, 4, 6 ], [ 8, 10, 12 ] ]
+
+
 if test( "tensor_protocol" ):
     s = Tensor( 17 )                               # rank 0
     assert int( s ) == 17

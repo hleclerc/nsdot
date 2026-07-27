@@ -54,6 +54,12 @@ class Tensor( Attribute ):
 
         self._shape = None
         self._raw = None
+        # the PHYSICAL arrangement of `_raw` relative to the logical axes: `None` means the plain
+        # contiguous layout (buffer in logical order, no reorder, padding only from a ragged `_shape`),
+        # which is every tensor today. A construction site (a kernel output, `fill`, ...) may set an
+        # explicit `PhysicalLayout` (flattened/padded/reordered batch) -- ops carry it by reference.
+        # It lives on the TENSOR, not the axes: the same axis sits differently in different buffers.
+        self._layout = None
 
         if value is not None:
             self.set( value )
@@ -92,17 +98,6 @@ class Tensor( Attribute ):
         if self._raw is not None:
             res._raw = self._raw[ ..., None ]
             res._shape = self._shape.appended_dense( 1 )
-        return res
-
-    def broadcast_over_trailing( self, rank ):
-        """A view with trailing size-1 axes appended until it reaches `rank` dimensions. The
-        elementwise operators broadcast POSITIONALLY (right-aligned, like numpy), so a per-batch
-        scalar -- whose only axis is the LEADING batch one -- would not line up against a full
-        batched tensor. Padding it on the right lets the batch axes meet and the rest broadcast
-        (see the per-batch normalization in `Image`/`SumOfDiracs`)."""
-        res = self
-        while res.rank < rank:
-            res = res.append_axis( Axis[ "1" ]() )
         return res
 
     @property
@@ -147,20 +142,32 @@ class Tensor( Attribute ):
         self._raw = raw
 
     @property
+    def buffer_layout( self ):
+        """The single per-Tensor description of how `_raw` is laid out physically vs the logical axes
+        (see `_layout`): the explicit one if set, else the plain CONTIGUOUS layout derived from the
+        allocated extents -- so today's tensors answer exactly as before. This is where `capacity`,
+        the ShapeVar capacity inversion and the FFI lowering will read the buffer's shape/strides
+        from, in ONE place, unifying padding (ragged / batch) and physical order."""
+        from .PhysicalLayout import PhysicalLayout
+        if self._layout is not None:
+            return self._layout
+        return PhysicalLayout.contiguous( [ 0 ] * self.rank if self.raw is None else list( self.raw.shape ) )
+
+    @property
     def capacity( self ):
-        """What our buffer IS: the allocated extents, read off it. An input is bound at THIS
+        """What our buffer IS: the allocated extents per LOGICAL dimension. An input is bound at THIS
         size -- an output that wants to grow must not force us to inflate the input."""
-        if self.raw is None:
-            return [ 0 ] * self.rank
-        return self.raw.shape
+        return tuple( self.buffer_layout.caps )
 
     @property
     def allocated_sizes( self ):
-        """One allocated size per ARRAY dimension, read off the buffer: what a `ShapeVar` inverts to
-        learn the capacity it was allocated with (its `_raw.shape`). `None` while unbound."""
+        """The allocated capacity per LOGICAL dimension -- what a `ShapeVar` inverts to learn the
+        capacity it was allocated with. Read from `buffer_layout` (NOT `_raw.shape` directly), so a
+        non-contiguous / flattened / padded buffer answers with the per-axis capacity rather than the
+        raw physical extents. `None` while unbound. For the plain layout `caps == _raw.shape`."""
         if self.raw is None:
             return None
-        return [ numpy.array( s, dtype = int ) for s in self.raw.shape ]
+        return [ numpy.array( c, dtype = int ) for c in self.buffer_layout.caps ]
 
 
     def _read_axes( self, axes, scope ):
@@ -252,10 +259,31 @@ class Tensor( Attribute ):
         Meaningful for a DENSE (non-ragged) tensor: a ragged one has no single box to extract, so
         this returns its bounding box (inner padding kept). Needs a statically known `shape`, so it
         holds eagerly -- a kernel-written count is a device value under a trace, where Python cannot
-        slice by it (`shape` raises there). A symbolic zero has no buffer to view -> `None`."""
+        slice by it (`shape` raises there). A symbolic zero has no buffer to view -> `None`.
+
+        With an explicit non-contiguous `_layout` (flattened / padded / reordered buffer) the plain
+        slice does not apply: the LOGICAL view is GATHERED from the physical buffer via the layout's
+        strides (a differentiable gather). This is the one physical->logical boundary; everything else
+        reads `tensor`, so ops and results stay logical whatever the storage."""
         if self.raw is None:
             return None
+        if self._layout is not None and not self._layout.is_identity:
+            return self._gather_logical()
         return self.raw[ tuple( slice( 0, s ) for s in self.shape ) ]
+
+    def _gather_logical( self ):
+        """The logical dense view of a non-contiguously laid-out buffer: `flat[ offsets ]` where
+        `offsets[ i0, ..., ik ] = sum_d i_d * stride_d` (element strides from `_layout`), so a
+        flattened/padded/reordered buffer is read back in logical order. `offsets` is a static index
+        grid; the gather rides the backend (differentiable)."""
+        extents = self.shape
+        strides = self._layout.strides
+        offsets = numpy.zeros( tuple( extents ), dtype = int )
+        for i, ( e, s ) in enumerate( zip( extents, strides ) ):
+            shape = [ 1 ] * len( extents )
+            shape[ i ] = e
+            offsets = offsets + numpy.arange( e, dtype = int ).reshape( shape ) * int( s )
+        return self._raw.reshape( -1 )[ offsets ]
 
     # @property
     # def value( self ):
@@ -284,8 +312,9 @@ class Tensor( Attribute ):
     def wrap( cls, raw, names = None, dtype = None, device = None ):
         """A DETACHED tensor around an existing backend buffer: no aggregate, fresh DEFAULT axes
         (one per array dimension, named from `names`, observed straight from the dense buffer). This
-        is how an op result is built (`_wrap`), and how a `ShapeVar` hands its count back as a
-        `Tensor` -- the buffer is the whole contract, the axes carry the names."""
+        is how a `ShapeVar` hands its count back as a `Tensor`, and the FRESH-axis path for an op
+        result that keeps no axis identity (`matmul`) -- the buffer is the whole contract, the axes
+        just carry the names. An op that DOES preserve identity uses `_wrap_axes` instead."""
         res = cls( template_kwargs = { "dtype": dtype, "device": device } )
         res._raw = raw
         if names is not None:
@@ -297,28 +326,46 @@ class Tensor( Attribute ):
             res.axes = axes
             for axis in axes:
                 axis.register_in( res )
-            # a wrapped buffer is dense: its LOGICAL sizes ARE its shape (no padding). Record them so
-            # the fresh ShapeVars pull their counts (a symbolic zero carries no readable shape here).
-            if raw is not None and not driver.is_symbolic_zero( raw ):
-                res._shape = ReferenceShape.from_dense_shape( raw.shape )
+        # a wrapped buffer is dense: its LOGICAL sizes ARE its shape (no padding). Record them so the
+        # fresh ShapeVars pull their counts, AND so an axis-less result (no names, e.g. a `matmul`)
+        # still has a `_shape` to reshape from (`append_axis`). A symbolic zero carries no readable one.
+        if raw is not None and not driver.is_symbolic_zero( raw ):
+            res._shape = ReferenceShape.from_dense_shape( raw.shape )
         return res
 
     def _dim_names( self ):
         """One axis name (or `None`) per ARRAY dimension, read uniformly off the axes (an unrolled
         AxisList spreads its name over its spanned dimensions)."""
-        names = []
+        return self._dim_attr( lambda axis: axis.name )
+
+    def _dim_batch( self ):
+        """One `is_batch` flag per ARRAY dimension (same layout as `_dim_names`)."""
+        return self._dim_attr( lambda axis: getattr( axis, "is_batch", False ) )
+
+    def _dim_axes( self ):
+        """One axis OBJECT per array dimension (an unrolled AxisList repeated over the dims it
+        spans). The per-reference analogue of `_dim_names` -- what an elementwise op aligns on."""
+        return self._dim_attr( lambda axis: axis )
+
+    def _dim_attr( self, of ):
+        res = []
         for axis in self.axes:
             if _is_unrolled( axis ):
                 count = self._axis_array_dims( axis )
                 count = count if count is not None else len( axis.max_list() )
-                names += [ axis.name ] * count
+                res += [ of( axis ) ] * count
             else:
-                names.append( axis.name )
-        return names
+                res.append( of( axis ) )
+        return res
 
     def _axis_pos( self, key ):
-        """A dimension index, from an int (returned as is) or an axis NAME (looked up in
-        `_dim_names`)."""
+        """A dimension index, from an axis OBJECT (matched by identity -- the robust key), an int
+        (returned as is), or an axis NAME (looked up in `_dim_names`)."""
+        if isinstance( key, AbstractAxis ):
+            for i, a in enumerate( self._dim_axes() ):
+                if a is key:
+                    return i
+            raise ValueError( "axis object not among this tensor's dimensions" )
         if isinstance( key, str ):
             names = self._dim_names()
             if key not in names:
@@ -349,25 +396,66 @@ class Tensor( Attribute ):
         for i in range( len( self ) ):
             yield self[ i ]
 
-    # ---- elementwise operators (scalar/array or `Tensor`, numpy broadcasting; names ride along) ----
+    # ---- elementwise operators -------------------------------------------------------------------
+    # An op is a MAP over axes matched BY REFERENCE -- the axis OBJECT itself, not its name (names are
+    # optional in Python and fragile; two homonymous but independent axes are genuinely distinct). A
+    # SHARED axis (the same object threaded through several tensors, e.g. a batch axis) lines up; an
+    # axis only one side has is broadcast (size 1 on the other). The result's layout is canonical --
+    # batch axes first (`Axis.is_batch`), then first-seen -- so `a * b` and `b * a` agree and a
+    # per-batch value spreads over a full batched tensor with no reshape. Needs each ARRAY dim to map
+    # to a DISTINCT axis object; a bare `Tensor( array )` (no axes) or a multi-dim `AxisList` (one
+    # object over several dims) falls back to positional broadcasting. `@` is not here: it contracts.
     def _binary( self, other, op ):
+        la = self._ref_layout()
+        if la is not None:
+            if isinstance( other, Tensor ):
+                lb = other._ref_layout()
+                if lb is not None:
+                    return self._ref_binary( other, la, lb, op )
+            else:
+                raw = op( self.tensor, other )
+                if getattr( raw, "shape", () ) == getattr( self.tensor, "shape", () ):
+                    return self._wrap_axes( raw, la )   # scalar/array broadcast: our axes survive
         b = other.tensor if isinstance( other, Tensor ) else other
-        raw = op( self.tensor, b )
-        return self._wrap( raw, self._broadcast_names( other, getattr( raw, "ndim", 0 ) ) )
+        names = self._dim_names()
+        return self._wrap( op( self.tensor, b ), names if len( names ) == self.rank else None )
 
-    def _broadcast_names( self, other, ndim ):
-        """The axis names of an elementwise result, `ndim` of them. Broadcasting is numpy's --
-        RIGHT-aligned -- so we align both operands' names on the right and keep, per dimension, the
-        one that is named (the higher-rank operand carries the leading axes, e.g. a per-batch
-        `mass` on the RHS of `target_mass / mass` keeps `batch_0`, which taking only the LHS's names
-        would drop)."""
-        a = self._dim_names()
-        b = other._dim_names() if isinstance( other, Tensor ) else []
-        res = []
-        for i in range( ndim ):
-            na = a[ len( a ) - ndim + i ] if len( a ) - ndim + i >= 0 else None
-            nb = b[ len( b ) - ndim + i ] if len( b ) - ndim + i >= 0 else None
-            res.append( na if na is not None else nb )
+    def _ref_layout( self ):
+        """One axis OBJECT per array dimension when each dim maps to a DISTINCT axis (so a map by
+        reference is unambiguous), else `None`. A rank-0 tensor qualifies with an empty list."""
+        axes = self._dim_axes()
+        if len( axes ) != self.rank:
+            return None
+        for i, a in enumerate( axes ):
+            if any( a is b for b in axes[ :i ] ):
+                return None
+        return axes
+
+    def _ref_binary( self, other, la, lb, op ):
+        # canonical order (by IDENTITY): batch axes first, then first-seen (self, then other).
+        order = []
+        for want_batch in ( True, False ):
+            for dims in ( la, lb ):
+                for ax in dims:
+                    if bool( getattr( ax, "is_batch", False ) ) == want_batch and not any( ax is o for o in order ):
+                        order.append( ax )
+        raw = op( _aligned_to( self.tensor, la, order ), _aligned_to( other.tensor, lb, order ) )
+        return self._wrap_axes( raw, order )
+
+    def _wrap_axes( self, raw, dim_axes ):
+        """A detached tensor around `raw` whose dimensions ARE `dim_axes` -- the very axis OBJECTS, so
+        identity (hence names and `is_batch`) rides along into the next op. Consecutive repeats (an
+        `AxisList` over several dims) collapse to one entry. The axes are NOT re-registered: their
+        ShapeVars are already sized, and `shape` reads the sizes straight off them."""
+        axes = []
+        for ax in dim_axes:
+            if not axes or axes[ -1 ] is not ax:
+                axes.append( ax )
+        res = type( self )( template_kwargs = { "dtype": self.dtype, "device": self.device } )
+        res.axes = axes
+        res._raw = raw
+        if raw is not None and not driver.is_symbolic_zero( raw ):
+            res._shape = ReferenceShape.from_dense_shape( raw.shape )
         return res
 
     def __add__     ( self, o ): return self._binary( o, lambda a, b: a +  b )
@@ -381,10 +469,25 @@ class Tensor( Attribute ):
     def __floordiv__( self, o ): return self._binary( o, lambda a, b: a // b )
     def __mod__     ( self, o ): return self._binary( o, lambda a, b: a %  b )
     def __pow__     ( self, o ): return self._binary( o, lambda a, b: a ** b )
-    def __matmul__  ( self, o ): return self._binary( o, lambda a, b: a @  b )
 
-    def __neg__( self ): return self._wrap( -self.tensor, self._dim_names() )
-    def __abs__( self ): return self._wrap( abs( self.tensor ), self._dim_names() )
+    def __matmul__  ( self, o ):
+        # matmul CONTRACTS dimensions -- it is not a per-axis map, so it must not go through the
+        # ref-aligned path. Positional, and the contracted layout has no meaningful surviving axis
+        # identity, so none is carried. Prefer `dot` (contraction BY REFERENCE) over `@`.
+        b = o.tensor if isinstance( o, Tensor ) else o
+        return self._wrap( self.tensor @ b, None )
+
+    def dot( self, other, over ):
+        """Contract with `other` over the SHARED axis `over` -- the reference-based analogue of a
+        matmul, and unlike `@` it assumes NO axis order: it is `( self * other ).sum( over )`. The
+        elementwise product lines `over` up by IDENTITY (so it must be the SAME axis object on both
+        sides) and outer-products the free axes; the sum then contracts `over`. `over` is an axis
+        object (or a name / position `sum` accepts). E.g. detector projection = normals `.dot`
+        points over the shared coordinate axis, giving `[ angles, points ]` free."""
+        return ( self * other ).sum( over )
+
+    def __neg__( self ): return self._wrap_axes( -self.tensor, self._dim_axes() )
+    def __abs__( self ): return self._wrap_axes( abs( self.tensor ), self._dim_axes() )
 
     def __eq__( self, o ): return self._binary( o, lambda a, b: a == b )
     def __ne__( self, o ): return self._binary( o, lambda a, b: a != b )
@@ -408,9 +511,9 @@ class Tensor( Attribute ):
             if len( axes ) == 1 and isinstance( axes[ 0 ], ( tuple, list ) ):
                 axes = tuple( axes[ 0 ] )
             perm = tuple( self._axis_pos( a ) for a in axes )
-        names = self._dim_names()
-        new_names = [ names[ p ] if p < len( names ) else None for p in perm ]
-        return self._wrap( driver.transpose( self.tensor, perm ), new_names )
+        dims = self._dim_axes()
+        return self._wrap_axes( driver.transpose( self.tensor, perm ),
+                                [ dims[ p ] for p in perm if p < len( dims ) ] )
 
     @property
     def T( self ):
@@ -427,11 +530,13 @@ class Tensor( Attribute ):
         if holes is not None:
             data = driver.where( holes, identity, data )
         if axis is None:
-            return self._wrap( op( data ), [] )
+            return self._wrap_axes( op( data ), [] )
         keys = axis if isinstance( axis, ( tuple, list ) ) else ( axis, )
         pos  = tuple( self._axis_pos( k ) for k in keys )
-        names = [ n for d, n in enumerate( self._dim_names() ) if d not in pos ]
-        return self._wrap( op( data, axis = pos ), names )
+        # the survivors keep their axis OBJECTS, so two reductions of the same tensor (e.g. `sum` and
+        # `_valid_counts` in `mean`) share them and line up by reference.
+        survivors = [ a for d, a in enumerate( self._dim_axes() ) if d not in pos ]
+        return self._wrap_axes( op( data, axis = pos ), survivors )
 
     def sum ( self, axis = None ): return self._reduce( driver.sum,  axis, 0 )
     def prod( self, axis = None ): return self._reduce( driver.prod, axis, 1 )
@@ -450,11 +555,11 @@ class Tensor( Attribute ):
         holes = self._hole_mask()
         valid = numpy.ones( tuple( self.shape ), dtype = int ) if holes is None else ( ~holes ).astype( int )
         if axis is None:
-            return self._wrap( driver.array( int( valid.sum() ), dtype = int ), [] )
+            return self._wrap_axes( driver.array( int( valid.sum() ), dtype = int ), [] )
         keys = axis if isinstance( axis, ( tuple, list ) ) else ( axis, )
         pos  = tuple( self._axis_pos( k ) for k in keys )
-        names = [ n for d, n in enumerate( self._dim_names() ) if d not in pos ]
-        return self._wrap( driver.array( valid.sum( axis = pos ), dtype = int ), names )
+        survivors = [ a for d, a in enumerate( self._dim_axes() ) if d not in pos ]
+        return self._wrap_axes( driver.array( valid.sum( axis = pos ), dtype = int ), survivors )
 
     def _hole_mask( self ):
         """A boolean array over the bounding box (`shape`), True at each PADDING position -- the
@@ -474,20 +579,19 @@ class Tensor( Attribute ):
 
     # ---- indexing: numpy-positional, or ( "axis_name", index ) to select by name ----
     def __getitem__( self, key ):
-        names = self._dim_names()
+        dims = self._dim_axes()
         if isinstance( key, tuple ) and len( key ) and isinstance( key[ 0 ], str ):
             name, idx = key
             pos = self._axis_pos( name )
             key = tuple( idx if d == pos else slice( None ) for d in range( self.rank ) )
         elif not isinstance( key, tuple ):
             key = ( key, )
-        # pad the trailing dimensions with full slices, then track which axes survive (an int index
-        # drops its dimension; a slice / array keeps it) to carry the right names onto the result.
+        # pad the trailing dimensions with full slices, then keep the axis OBJECTS of the surviving
+        # dimensions (an int index drops its dimension; a slice / array keeps it).
         key = key + ( slice( None ), ) * ( self.rank - len( key ) )
         result = self.tensor[ key ]
-        new_names = [ names[ d ] if d < len( names ) else None
-                      for d, k in enumerate( key ) if not isinstance( k, int ) ]
-        return self._wrap( result, new_names )
+        survivors = [ dims[ d ] for d, k in enumerate( key ) if not isinstance( k, int ) and d < len( dims ) ]
+        return self._wrap_axes( result, survivors )
 
     def __repr__( self ):
         names  = self._dim_names()
@@ -509,6 +613,17 @@ class Tensor( Attribute ):
 # the type, so a tensor stores only the axis, never a separate unroll flag (see `Tensor.__init__`).
 def _is_unrolled( axis ):
     return isinstance( axis, AxisList )
+
+
+def _aligned_to( arr, dims, order ):
+    """`arr`, whose dimensions are the axis objects `dims`, viewed with its dimensions permuted into
+    `order` and a size-1 axis inserted wherever `order` holds an axis `arr` does not have. After this
+    both operands of an elementwise op share the SAME axis order, so a plain broadcast is a map by
+    reference (a missing -- hence size-1 -- axis broadcasts). Matched by IDENTITY (`dims` distinct)."""
+    pos = { id( ax ): i for i, ax in enumerate( dims ) }
+    present = [ ax for ax in order if id( ax ) in pos ]
+    arr = driver.transpose( arr, [ pos[ id( ax ) ] for ax in present ] )
+    return arr[ tuple( slice( None ) if id( ax ) in pos else None for ax in order ) ]
 
 
 # containers recursed into by `_assemble` (a whitelist: anything else is a leaf)

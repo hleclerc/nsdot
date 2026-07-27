@@ -46,8 +46,11 @@ class CallArgsAnalysis:
     tensors: list   # the buffers to bind, in FFI order
     args: dict
 
-    def __init__( self, args : dict, device, output_attributes = (), capacities = {}, output_attribute_exceptions = (), input_exceptions = () ) -> None:
+    def __init__( self, args : dict, device, output_attributes = (), capacities = {}, output_attribute_exceptions = (), input_exceptions = (), batch_alignment = None ) -> None:
         self.device = device
+        # BYTE alignment for the flattened batch dimension of the tensors THIS call lays out (see
+        # `PhysicalLayout` / `CallArg_Tensor`): the per-call value if given, else the device default.
+        self.batch_alignment_bytes = device.resolve_batch_alignment( batch_alignment )
         self.output_paths = list( output_attributes )
         self.output_exceptions = list( output_attribute_exceptions )
         self.input_exceptions = list( input_exceptions )

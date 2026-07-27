@@ -6,6 +6,11 @@ _libcuda = None
 
 
 class CudaGpu( Device ):
+    # a memory-transaction size in BYTES: the flattened batch is padded so its byte size aligns to a
+    # coalescing block (see `Device.batch_alignment` / `PhysicalLayout`). In items this is 32 for fp32,
+    # 16 for fp64.
+    batch_alignment = 128
+
     def __init__( self, device_id, mem_fraction = 0.5 ):
         self.device_id = device_id
         self.mem_fraction = mem_fraction  # fraction of total_dev_mem reserved for per-thread scratch

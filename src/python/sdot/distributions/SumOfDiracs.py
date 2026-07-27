@@ -37,7 +37,7 @@ class SumOfDiracs( Distribution ):
         # normalize
         if self.target_mass.is_defined:
             if self.weights.is_defined:
-                weights = self.weights * ( self.target_mass / mass ).broadcast_over_trailing( self.weights.rank )
+                weights = self.target_mass / mass * self.weights
             else:
                 weights = Tensor[ *self.batch_axes, self.num_dirac ].full( self.target_mass / self.nb_diracs.value )
 

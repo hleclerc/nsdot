@@ -114,6 +114,24 @@ class Device:
     # per device (Cuda carries its own `mem_fraction`).
     scratch_ram_fraction = 0.5
 
+    # hardware alignment in BYTES for the flattened batch dimension (see `PhysicalLayout`): its item
+    # capacity is padded so its byte size is a multiple of this -- hence the ITEM padding differs for
+    # fp32 vs fp64. 1 = no meaningful alignment (the CPU default, so the layout is inert); a GPU
+    # overrides it with a coalescing / transaction size. A per-call `batch_alignment` wins.
+    batch_alignment = 1
+
+    def resolve_batch_alignment( self, override = None ) -> int:
+        """The alignment to use: the per-call `override` if given, else this device's default."""
+        return int( self.batch_alignment if override is None else override )
+
+    def physical_axis_num( self, axis_names ):
+        """Hardware physical-order numbers, one int per axis (lower = more leading), used by
+        `PhysicalLayout` to place an output tensor's NON-batch axes in the order this device prefers
+        -- a pure-performance reorder (strides keep the logical view). `None` (the default) keeps the
+        logical order, so no device reorders anything until it overrides this. A device that does
+        care (e.g. a column-major-friendly GPU) returns a list keyed off the `axis_names`."""
+        return None
+
     def nb_threads( self, batch_axes = (), **per_thread ) -> int:
         """How many threads to SIZE per-thread scratch for.
 
