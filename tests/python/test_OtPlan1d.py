@@ -1,5 +1,5 @@
 from sdot import Image, OtPlan1d, SumOfDiracs1d, driver
-from . import test, check_grad
+from sdot.testing import test, check_grad
 
 # driver.ftype = "FP64"
 

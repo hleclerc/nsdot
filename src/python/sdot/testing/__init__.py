@@ -2,7 +2,7 @@
 
 Un fichier de test ressemble à :
 
-    from .test_main import test
+    from sdot.testing import test        # ( + check_grad si besoin )
 
     if test( "my test", [ "[fast]" ] ):
         assert 0 == 0
@@ -19,6 +19,7 @@ soit capturé test par test, exactement comme le harnais C++.
 """
 from sdot.util.info import info, infox
 from sdot import new_batch_axis
+from .grad_check import check_grad
 import sys
 
 builtins = __import__( 'builtins' )

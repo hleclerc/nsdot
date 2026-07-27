@@ -1,5 +1,5 @@
 from sdot.tensor.ReferenceShape import ReferenceShape
-from . import test
+from sdot.testing import test
 import numpy
 
 

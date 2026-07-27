@@ -81,8 +81,8 @@ result = reconstruct(sino, positions, optimizer=opt)
 ### Convergence Profiles
 
 See generated plots:
-- `benchmark_results/convergence_10k_demo.png` — Loss vs Iteration and Loss vs Time
-- `benchmark_results/performance_summary.png` — Multi-metric comparison
+- `../benchmarks/results/convergence_10k_demo.png` — Loss vs Iteration and Loss vs Time
+- `../benchmarks/results/performance_summary.png` — Multi-metric comparison
 
 The plots clearly show:
 - **Iteration efficiency**: L-BFGS dominates (steepest curve)
@@ -151,25 +151,26 @@ LBFGS(max_iter=200, ftol=1e-8)
 ```
 applications/reconstruction/
 ├── optimizers.py          # Core optimizer implementations
-├── reconstruction.py      # Main reconstruction code (updated)
-├── benchmark.py           # Full benchmark suite
-├── quick_plot.py          # Fast visualization generator
-├── test_convergence.py    # Convergence tests
-├── OPTIMIZERS.md          # Detailed algorithm guide
-├── BENCHMARK_RESULTS.md   # Detailed results & analysis
-└── README_OPTIMIZERS.md   # This file
+├── reconstruction.py      # Main reconstruction code
+├── Sinogram.py            # Sinogram model
+├── convergence.py         # Convergence comparison util
+├── tests/                 # Harness tests (test_reconstruction.py, test_sinogram.py)
+├── experiments/           # Ad-hoc scripts (warm_start.py)
+├── viz/                   # plot.py — interactive reconstruction viz
+├── benchmarks/            # benchmark.py, quick_plot.py + results/ figures
+└── docs/                  # OPTIMIZERS.md, BENCHMARK_RESULTS.md, README_OPTIMIZERS.md
 ```
 
 ## Testing
 
 ### Run Tests
 ```bash
-make -f .private/Makefile test_reconstruction
+make test T=reconstruction        # (env activé) — ou: make -f .private/Makefile test T=reconstruction
 ```
 
 ### Run Custom Benchmark
 ```python
-from benchmark import benchmark_optimizers, plot_convergence
+from applications.reconstruction.benchmarks.benchmark import benchmark_optimizers, plot_convergence
 
 # Benchmark on your own problem
 results, init_loss = benchmark_optimizers(

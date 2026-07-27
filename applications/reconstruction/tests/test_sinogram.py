@@ -1,15 +1,8 @@
-import sys
-from pathlib import Path
-
-# le code vit dans applications/ (hors package sdot) : on ajoute `applications/` au path
-# et on importe le package `reconstruction`
-sys.path.insert( 0, str( Path( __file__ ).resolve().parents[ 2 ] / "applications" ) )
-
 import numpy as np
 
 from reconstruction.Sinogram import Sinogram
 from sdot import SumOfDiracs1d, OtPlan1d
-from . import test
+from sdot.testing import test
 
 
 # -- construction / état initial -----------------------------------------

@@ -50,7 +50,15 @@ def reconstruct( sinogram: Sinogram, positions, optimizer = None, lr: float = No
             nb_steps = 100
         optimizer = GradientDescent(lr=lr, nb_steps=nb_steps)
 
-    p = positions.raw if isinstance( positions, Tensor ) else driver.array( positions )
+    # Extract raw JAX array from Tensor or use directly
+    if isinstance( positions, Tensor ):
+        p = positions.raw
+    else:
+        p = driver.array( positions )
+
+    # Verify initial state by computing loss
+    if callback is not None:
+        callback( -1, Tensor.wrap( p, [ "num_dirac", "dim" ] ) )  # Report initial state
 
     def scalar_loss( q ):
         return loss( sinogram, Tensor.wrap( q, [ "num_dirac", "dim" ] ) ).tensor

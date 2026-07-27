@@ -1,5 +1,5 @@
 from sdot import Cell, driver, new_batch_axis
-from . import test, check_grad
+from sdot.testing import test, check_grad
 
 if test( "basic" ):
     c = Cell.make_hypercube( 2, [ 0, 0 ], [ [ 2, 0 ], [ 0, 1 ] ] )

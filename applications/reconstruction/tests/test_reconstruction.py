@@ -1,15 +1,9 @@
-from pathlib import Path
-import sys
-
-# le code vit dans applications/ (hors package sdot) : on ajoute `applications/` au path
-sys.path.insert( 0, str( Path( __file__ ).resolve().parents[ 2 ] / "applications" ) )
-
 import numpy as np
 
 from reconstruction.Sinogram import Sinogram
 from reconstruction.reconstruction import loss, reconstruct, random_positions
 from reconstruction.optimizers import GradientDescent, LBFGS
-from . import test
+from sdot.testing import test
 
 
 def _disk_sinogram( nb_angles = 8, nb_bins = 201, extent = 6.0, center = ( 0.3, -0.2 ), radius = 1.0 ):

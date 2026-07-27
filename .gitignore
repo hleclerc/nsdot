@@ -12,6 +12,8 @@ lib/
 *.dylib
 *.out
 
+applications/reconstruction/benchmarks/results/*.png
+graphify-out/
 .private/
 .cache/
 

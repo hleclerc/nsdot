@@ -1,5 +1,5 @@
 from sdot import CtShapeVar, ShapeVar, Axis, Tensor, Aggregate, driver, FfiCode
-from . import test
+from sdot.testing import test
 
 # An `@aggregate` instance is built BEFORE the call and passed as a plain kwarg. Inputs and
 # outputs are DISJOINT (as in XLA): a kernel never writes what it reads, so there is no

@@ -6,9 +6,9 @@ from pathlib import Path
 
 from sdot import Tensor
 
-from .Sinogram import Sinogram
-from .reconstruction import random_positions, loss, reconstruct
-from .optimizers import GradientDescent, GradientDescentLineSearch, LBFGS, Adam
+from ..Sinogram import Sinogram
+from ..reconstruction import random_positions, loss, reconstruct
+from ..optimizers import GradientDescent, GradientDescentLineSearch, LBFGS, Adam
 
 
 def benchmark_optimizers(
@@ -280,7 +280,8 @@ if __name__ == "__main__":
     ]
 
     results_list = []
-    output_dir = Path("benchmark_results")
+    # sorties à côté de ce script (applications/reconstruction/benchmarks/results/), pas dans le CWD
+    output_dir = Path(__file__).parent / "results"
     output_dir.mkdir(exist_ok=True)
 
     for nb_angles, nb_bins, nb_diracs in problems:

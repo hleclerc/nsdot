@@ -1,7 +1,7 @@
 import math
 
 from sdot.tensor.PhysicalLayout import PhysicalLayout, items_per_alignment
-from . import test
+from sdot.testing import test
 
 
 def _contiguous( shape ):

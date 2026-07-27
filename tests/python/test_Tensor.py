@@ -1,5 +1,5 @@
 from sdot import ShapeVar, Axis, AxisList, Tensor, Aggregate, driver
-from . import test
+from sdot.testing import test
 import numpy
 
 if test( "basic" ):

@@ -84,7 +84,7 @@ def create_demo_plot():
 
     plt.tight_layout()
 
-    output_path = Path('benchmark_results') / 'convergence_10k_demo.png'
+    output_path = Path(__file__).parent / 'results' / 'convergence_10k_demo.png'
     output_path.parent.mkdir(exist_ok=True)
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
     print(f"✓ Saved to {output_path}")
@@ -128,7 +128,8 @@ def create_demo_plot():
     ax.legend(lines1 + lines2 + lines3, labels1 + labels2 + labels3, loc='upper left', fontsize=11)
 
     plt.tight_layout()
-    output_path2 = Path('benchmark_results') / 'performance_summary.png'
+    output_path2 = Path(__file__).parent / 'results' / 'performance_summary.png'
+    output_path2.parent.mkdir(exist_ok=True)
     plt.savefig(output_path2, dpi=150, bbox_inches='tight')
     print(f"✓ Saved to {output_path2}")
     plt.close()
