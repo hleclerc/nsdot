@@ -178,6 +178,15 @@ class JaxDriver:
         through the VJP rule the call registers (see `JaxFfi._call_with_vjp`)."""
         return jax.grad( func, argnums = argnums )
 
+    def jit( self, func ):
+        """Trace + compile `func` ONCE and reuse the executable across calls. A `driver.call` inside
+        it is a proper FFI primitive, so it survives the trace unchanged; only the surrounding
+        tensor algebra is fused by XLA. Reusing the jitted function across optimizer steps is what
+        removes the per-step retrace/lower cost (bounded, flat memory) instead of re-lowering the
+        whole graph each iteration. Under this trace, a `driver.call` cannot grow a capacity from
+        Python, so an overflow is reported at run time via `jax.debug.callback` (see `call`)."""
+        return jax.jit( func )
+
     def vjp( self, func, *primals ):
         """`( func( *primals ), pullback )` -- the framework's reverse-mode primitive. Lets a test
         seed an output cotangent directly (a symbolic zero included), without going through a
@@ -229,7 +238,7 @@ class JaxDriver:
         return jnp.where( cond, a, b )
 
 
-    def call( self, code : FfiCode | str, output_attributes = (), output_exceptions = (), input_exceptions = (), output_capacities = {}, batch_alignment = None, **kwargs ):
+    def call( self, code : FfiCode | str, output_attributes = (), output_exceptions = (), input_exceptions = (), output_capacities = {}, batch_alignment = None, has_dynamic_capacity = True, **kwargs ):
         """Run the C++ `code` on the objects passed as kwargs.
 
         The objects are built by the caller; nothing is returned. Every list below names
@@ -285,7 +294,16 @@ class JaxDriver:
                 # under a `jit` / `vmap` trace, the buffer holds a traced value: Python cannot
                 # look at it here, hence cannot grow anything and run again. What it can still do
                 # is not return silently truncated results -- so the check moves to run time.
-                jax.debug.callback( _raise_on_error, ca.errors.raw )
+                #
+                # `has_dynamic_capacity` lets the caller drop that run-time check when NONE of the
+                # outputs has a kernel-decided count (all sizes prescribed upstream, e.g. OtPlan1d
+                # outputs sized from `nb_diracs`): overflow is then impossible and the check is pure
+                # overhead -- a `jax.debug.callback` that XLA cannot elide and that forces a
+                # device->host SYNC per call (a few % on CPU, a pipeline stall on GPU). It stays True
+                # by default because it cannot be decided a priori from the call args alone; only the
+                # caller knows whether a count is prescribed or produced.
+                if has_dynamic_capacity:
+                    jax.debug.callback( _raise_on_error, ca.errors.raw )
                 return
 
             if not overflows:

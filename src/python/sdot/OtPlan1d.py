@@ -61,13 +61,19 @@ class OtPlan1d( Aggregate ):
         driver.call(
             FfiCodeParallel( name = "update_outputs_OtPlan1d",
                 # `sorted_indices( batch_index )` yields the per-batch rank-1 scratch the C++ expects
-                # (`begin()/end()`, `sorted_indices( k )`); with no batch the optional index falls
-                # through and the whole tensor is returned, so this covers both cases.
-                fwd_code = "plan( batch_index ).update_outputs( sorted_indices( batch_index ) );",
+                # (`sorted_indices( k )`); with no batch the optional index falls through and the whole
+                # tensor is returned, so this covers both cases. `radix_tmp` is the radix ping-pong buffer.
+                fwd_code = "plan( batch_index ).update_outputs( sorted_indices( batch_index ), radix_tmp( batch_index ) );",
                 bwd_code = "plan( batch_index ).update_outputs_bwd( grad_for_plan( batch_index ), sorted_indices( batch_index ) );",
             ),
             # output_capacities = { "plan.nb_diracs": self.src.nb_diracs.value },
-            output_attributes = [ "plan.barycenters", "plan.cost", "plan.nb_diracs", "sorted_indices" ],
+            # `sorted_indices` is the one scratch the backward reads (a residual); `radix_tmp` is forward-only
+            # scratch (listed so the call allocates it; backward ignores it).
+            output_attributes = [ "plan.barycenters", "plan.cost", "plan.nb_diracs", "sorted_indices", "radix_tmp" ],
+            # every output count is prescribed from `nb_diracs`, so no capacity can overflow: skip the
+            # per-call run-time overflow check (a device->host sync under jit). See driver.call.
+            has_dynamic_capacity = False,
             sorted_indices = Tensor[ *self.batch_axes, self.num_dirac, dict( dtype = int ) ](),
+            radix_tmp = Tensor[ *self.batch_axes, self.num_dirac, dict( dtype = int ) ](),
             plan = self
         )

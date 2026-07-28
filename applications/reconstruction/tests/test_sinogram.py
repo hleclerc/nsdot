@@ -87,6 +87,19 @@ if test( "image_plugs_into_otplan1d" ):
     cost = float( otp.cost )
     assert np.isfinite( cost ) and cost >= 0.0
 
+if test( "single_angle_batched_image" ):
+    # régression : un axe de batch d'EXTENT 1 ne doit pas faire passer les membres PARTAGÉS
+    # (origin/frame) de l'image batchée pour des entrées batchées. Sinon leurs NOMS gagnent
+    # `num_angle` sans que le buffer gagne le rang -> `Image::measure()` (kernel `mass`) ne compile
+    # plus (`without_index` sur un `Tuple<>`). Le chemin batché doit tourner à nb_angles = 1.
+    s = Sinogram( nb_angles = 1, nb_bins = 101, extent = 8.0 )
+    s.add_disk( center = [ 0.0, 0.0 ], radius = 1.0 )
+
+    projected = s.project_points( np.array( [ [ -0.4, 0.1 ], [ 0.3, -0.2 ], [ 0.1, 0.5 ] ] ) )  # [ 1, 3 ]
+    src = SumOfDiracs1d( positions = projected, batch_axes = [ s.num_angle ] )
+    cost = OtPlan1d( src, s.batched_image() ).cost
+    assert np.all( np.isfinite( np.asarray( cost ) ) )
+
 
 # -- validation des arguments --------------------------------------------
 

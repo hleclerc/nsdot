@@ -32,7 +32,10 @@ class GradientDescent(Optimizer):
         from sdot import driver
 
         x = x0.copy() if isinstance(x0, np.ndarray) else np.array(x0)
-        grad = driver.grad(scalar_loss)
+        # jit ONCE and reuse across steps: without it each step re-traces + re-lowers the whole
+        # graph (unbounded RSS growth, ~4x slower). The C++ `driver.call` survives the trace as an
+        # FFI primitive; only the surrounding tensor algebra is fused by XLA. See driver.jit.
+        grad = driver.jit(driver.grad(scalar_loss))
 
         for step in range(self.nb_steps):
             x = x - self.lr * grad(x)
@@ -57,16 +60,17 @@ class LBFGS(Optimizer):
 
         # Flatten to 1D for scipy
         x0_flat = x0.reshape(-1)
-        grad = driver.grad(scalar_loss)
+        # jit ONCE (compiled on the flat 1D signature scipy calls with) and reuse across iterations.
+        loss_j = driver.jit(lambda xf: scalar_loss(xf.reshape(shape_orig)))
+        grad_j = driver.jit(lambda xf: driver.grad(scalar_loss)(xf.reshape(shape_orig)).reshape(-1))
 
         step_counter = [0]  # mutable counter for callback
 
         def loss_flat(x_flat):
-            return scalar_loss(x_flat.reshape(shape_orig))
+            return loss_j(x_flat)
 
         def grad_flat(x_flat):
-            g = grad(x_flat.reshape(shape_orig))
-            return g.reshape(-1)
+            return grad_j(x_flat)
 
         def scipy_callback(x_flat):
             if callback is not None:
@@ -98,18 +102,19 @@ class GradientDescentLineSearch(Optimizer):
         from sdot import driver
 
         x = x0.copy() if isinstance(x0, np.ndarray) else np.array(x0)
-        grad = driver.grad(scalar_loss)
+        grad = driver.jit(driver.grad(scalar_loss))
+        loss_j = driver.jit(scalar_loss)
 
         for step in range(self.nb_steps):
             g = grad(x)
-            loss_curr = scalar_loss(x)
+            loss_curr = loss_j(x)
 
             # Backtracking line search: find step size that decreases loss
             alpha = self.lr
             max_backtracks = 20
             for _ in range(max_backtracks):
                 x_new = x - alpha * g
-                loss_new = scalar_loss(x_new)
+                loss_new = loss_j(x_new)
                 if loss_new <= loss_curr - self.c1 * alpha * np.dot(g.reshape(-1), g.reshape(-1)):
                     break
                 alpha *= self.rho
@@ -138,7 +143,7 @@ class Adam(Optimizer):
         from sdot import driver
 
         x = x0.copy() if isinstance(x0, np.ndarray) else np.array(x0)
-        grad = driver.grad(scalar_loss)
+        grad = driver.jit(driver.grad(scalar_loss))
 
         m = np.zeros_like(x)  # first moment
         v = np.zeros_like(x)  # second moment

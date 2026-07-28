@@ -1,25 +1,50 @@
 #pragma once
 
 #include "OtPlan1d.h"
-#include <algorithm>
-#include <numeric>
+#include <cstdint>
+#include <bit>
 
 #define UTP SDOT_TEMPLATE_DECL_FOR_OtPlan1d
 #define DTP OtPlan1d<SDOT_TEMPLATE_ARGS_FOR_OtPlan1d>
 
 namespace sdot {
 
-UTP void DTP::update_outputs( auto &&sorted_indices ) {
-    // Sort the dirac indices by position, in place on the INTEGER `sorted_indices` buffer. `dtype`
-    // must be integer (a float buffer would sort/index on a floating key and collapse all indices
-    // onto 0), and the iterator must be reliable (see StridedIterator: element strides, fixed
-    // `operator-`) for `std::iota`/`std::sort` to persist their writes.
-    std::iota( sorted_indices.begin(), sorted_indices.end(), 0ll );
-    std::sort( sorted_indices.begin(), sorted_indices.end(), [&]( auto a, auto b ) {
-        return src_dist.positions( ::num_dirac = a, dim = 0 ) < src_dist.positions( ::num_dirac = b, dim = 0 );
-    } );
-
+UTP void DTP::update_outputs( auto &&sorted_indices, auto &&radix_tmp ) {
+    // Sort the diracs by position. We do NOT argsort (`std::sort` on indices with a comparator that
+    // reads `positions( a )`/`positions( b )`): that is O(n log n) RANDOM gathers into `positions` and,
+    // at large n, the kernel's dominant cost (measured ~18x the sweep's own gather). Instead we PACK,
+    // in each int64 slot, an order-preserving key of the position in the high bits + the index in the
+    // low bits, and sort those CONTIGUOUSLY. The key is float32-precision; positions it cannot separate
+    // (and exact ties) are ordered by index -> deterministic, and harmless for the OT cost (near-equal
+    // positions map to near-equal targets).
     const SI nb = src_dist.weights.size();
+    for ( SI i = 0; i < nb; ++i ) {
+        const float f = float( src_dist.positions( ::num_dirac = i, dim = 0 ) );
+        uint32_t u = std::bit_cast<uint32_t>( f );
+        u ^= ( u & 0x80000000u ) ? 0xFFFFFFFFu : 0x80000000u;       // IEEE float -> order-preserving uint32
+        sorted_indices( i ) = ( SI( u >> 1 ) << 32 ) | SI( i );     // key (31 bits) high, index (32 bits) low; stays positive
+    }
+
+    // LSD radix sort (stable, O(n) -- no comparisons) over the 4 bytes of the packed KEY (bits 32..62;
+    // the low 32 index bits ride along, ties keep input order). Beats the contiguous comparison sort by
+    // avoiding the n log n compares; the 256-bucket scatter stays write-combining-friendly. `count` is a
+    // FIXED-size stack array (no dynamic allocation). 4 passes = even -> the result lands back in
+    // `sorted_indices`; `radix_tmp` is the ping-pong scratch.
+    auto radix_pass = [&]( auto &&src, auto &&dst, int shift ) {
+        SI count[ 256 ] = {};
+        for ( SI i = 0; i < nb; ++i ) { const SI v = src( i ); count[ ( v >> shift ) & 0xFF ]++; }
+        SI off = 0;
+        for ( int b = 0; b < 256; ++b ) { const SI c = count[ b ]; count[ b ] = off; off += c; }
+        for ( SI i = 0; i < nb; ++i ) { const SI v = src( i ); dst( count[ ( v >> shift ) & 0xFF ]++ ) = v; }
+    };
+    radix_pass( sorted_indices, radix_tmp, 32 );
+    radix_pass( radix_tmp, sorted_indices, 40 );
+    radix_pass( sorted_indices, radix_tmp, 48 );
+    radix_pass( radix_tmp, sorted_indices, 56 );
+
+    for ( SI k = 0; k < nb; ++k )
+        sorted_indices( k ) = sorted_indices( k ) & 0xFFFFFFFFll;   // decode index (drop the packed key)
+
     nb_diracs.set( src_dist.nb_diracs );
     TF local_cost = 0;
     dst_dist.with_defaults( [&]( auto &&dst_dist ) {

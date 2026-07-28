@@ -176,7 +176,7 @@ class Aggregate:
                     # `x( batch_index )` simply lets the index fall through for such a member.
                     real_type, _ = _unwrap_computed_attribute( anns[ key ] )
                     is_tensor = _is_tensor_field( real_type if real_type is not None else anns[ key ] )
-                    if self.batch_axes and is_tensor and not _carries_batch_dims( value, self.batch_axes ):
+                    if self.batch_axes and is_tensor and not _carries_batch_dims( value, self.batch_axes, self.__dict__[ key ] ):
                         self._rebuild_field_unbatched( key )
                     get_attribute( key, self ).set( value )
             elif not any( _is_aggregate( t ) for t in anns.values() ):
@@ -277,15 +277,27 @@ def _is_tensor_field( type_attr ):
     return inspect.isclass( sc ) and issubclass( sc, Tensor )
 
 
-def _carries_batch_dims( value, batch_axes ):
-    """Does `value`'s leading shape match the batch extents? A prescribed input that does carry the
-    batch dims is a genuinely batched input (one slice per batch element); one that does not is
-    shared across the batch. Read from the shape ALONE -- never touches the data."""
+def _carries_batch_dims( value, batch_axes, batched_attr ):
+    """Does `value` carry the batch axes as genuine leading dims (a per-batch-element input), or is
+    it SHARED across the batch? Read from the shape ALONE -- never touches the data.
+
+    Matching leading dims is NECESSARY but not SUFFICIENT: when a batch extent is 1 (or coincides
+    with a shared member's own leading extent), a shared member's shape passes that test too -- e.g.
+    a detector `origin` of shape [ 1 ] against a single-angle batch [ 1 ]. So we also require the
+    FULL rank of a batched value: `batched_attr` already carries the prepended batch axes, so a
+    genuine per-element input has ALL of its array dims (batch + own), whereas a shared value is
+    short by exactly `len( batch_axes )`. When the batched rank is not yet knowable, fall back to the
+    leading-dims verdict alone (the pre-existing behavior)."""
     from ..tensor.Tensor import Tensor
     import numpy
     sizes = [ int( ax.max ) for ax in batch_axes ]
     shape = list( value.shape ) if isinstance( value, Tensor ) else list( numpy.shape( value ) )
-    return shape[ :len( sizes ) ] == sizes
+    if shape[ :len( sizes ) ] != sizes:
+        return False
+    dims = [ batched_attr._axis_array_dims( a ) for a in batched_attr.axes ]
+    if any( d is None for d in dims ):
+        return True
+    return len( shape ) == sum( dims )
 
 
 def _batched_schema( type_attr, axes ):
