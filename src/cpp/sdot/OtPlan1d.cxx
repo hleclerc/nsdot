@@ -9,14 +9,17 @@
 
 namespace sdot {
 
-UTP void DTP::update_outputs( auto &&sorted_indices, auto &&radix_tmp ) {
-    // Sort the diracs by position. We do NOT argsort (`std::sort` on indices with a comparator that
-    // reads `positions( a )`/`positions( b )`): that is O(n log n) RANDOM gathers into `positions` and,
-    // at large n, the kernel's dominant cost (measured ~18x the sweep's own gather). Instead we PACK,
-    // in each int64 slot, an order-preserving key of the position in the high bits + the index in the
-    // low bits, and sort those CONTIGUOUSLY. The key is float32-precision; positions it cannot separate
-    // (and exact ties) are ordered by index -> deterministic, and harmless for the OT cost (near-equal
-    // positions map to near-equal targets).
+UTP void DTP::sort_diracs( auto &&sorted_indices, auto &&radix_tmp ) const {
+    // Sort the diracs by position INTO `sorted_indices` (a per-thread scratch row). We do NOT argsort
+    // (`std::sort` on indices with a comparator that reads `positions( a )`/`positions( b )`): that is
+    // O(n log n) RANDOM gathers into `positions` and, at large n, the kernel's dominant cost (measured
+    // ~18x the sweep's own gather). Instead we PACK, in each int64 slot, an order-preserving key of the
+    // position in the high bits + the index in the low bits, and sort those CONTIGUOUSLY. The key is
+    // float32-precision; positions it cannot separate (and exact ties) are ordered by index ->
+    // deterministic, and harmless for the OT cost (near-equal positions map to near-equal targets).
+    //
+    // Shared by the forward AND the backward: the per-thread scratch is transient (not a residual), so
+    // the backward RE-DERIVES the order here into its own fresh scratch rather than reading it back.
     const SI nb = src_dist.weights.size();
     for ( SI i = 0; i < nb; ++i ) {
         const float f = float( src_dist.positions( ::num_dirac = i, dim = 0 ) );
@@ -44,6 +47,11 @@ UTP void DTP::update_outputs( auto &&sorted_indices, auto &&radix_tmp ) {
 
     for ( SI k = 0; k < nb; ++k )
         sorted_indices( k ) = sorted_indices( k ) & 0xFFFFFFFFll;   // decode index (drop the packed key)
+}
+
+UTP void DTP::update_outputs( auto &&sorted_indices, auto &&radix_tmp ) {
+    const SI nb = src_dist.weights.size();
+    sort_diracs( sorted_indices, radix_tmp );
 
     nb_diracs.set( src_dist.nb_diracs );
     TF local_cost = 0;
@@ -66,11 +74,13 @@ UTP void DTP::update_outputs( auto &&sorted_indices, auto &&radix_tmp ) {
     cost = local_cost;
 }
 
-UTP void DTP::update_outputs_bwd( auto &&grad_plan, auto &&sorted_indices ) const {
+UTP void DTP::update_outputs_bwd( auto &&grad_plan, auto &&sorted_indices, auto &&radix_tmp ) const {
     //   cost = Sum_k Integral_{t_k}^{t_{k+1}} y(x) (x - p_{s(k)})^2 dx,
-    // with diracs sorted by position (order s = `sorted_indices`, reused as a forward residual --
-    // no re-sort here), and t_k = M^{-1}(W_k) the target quantile at the cumulative source mass
-    // W_k = Sum_{j<k} w_{s(j)}.
+    // with diracs sorted by position (order s = `sorted_indices`), and t_k = M^{-1}(W_k) the target
+    // quantile at the cumulative source mass W_k = Sum_{j<k} w_{s(j)}. The scratch is PER-THREAD and
+    // transient (not a forward residual), so the order is RE-DERIVED here via `sort_diracs` -- but
+    // only in the weights/values block that actually walks it; the positions gradient is
+    // order-independent (closed form per dirac) and needs no sort.
     //
     // Each gradient below is guarded at compile time on `is_valid()`: an unperturbed input reaches
     // us as a `NoneTensor` (no `operator=`), so its block must vanish -- see [[differentiation]].
@@ -103,6 +113,7 @@ UTP void DTP::update_outputs_bwd( auto &&grad_plan, auto &&sorted_indices ) cons
     //   d cost / d y_c     += second_moment_about(p_{s(k)}) - Phi_k * (x1 - x0).
     if constexpr ( CT_VALUE( grad_plan.src_dist.weights.is_valid() ) ||
                    CT_VALUE( grad_plan.dst_dist.values.is_valid() ) ) {
+        sort_diracs( sorted_indices, radix_tmp );   // re-derive the sorted order into our own scratch
         dst_dist.with_defaults( [&]( auto &&img ) {
             // NB: read each weight into a scalar `TF w` before passing it to `udp_cont`. That method
             // MUTATES its `mass_to_take` argument (`mass_to_take -= udp.mass`); handing it the tensor

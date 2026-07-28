@@ -46,8 +46,13 @@ class CallArgsAnalysis:
     tensors: list   # the buffers to bind, in FFI order
     args: dict
 
-    def __init__( self, args : dict, device, output_attributes = (), capacities = {}, output_attribute_exceptions = (), input_exceptions = (), batch_alignment = None ) -> None:
+    def __init__( self, args : dict, device, output_attributes = (), capacities = {}, output_attribute_exceptions = (), input_exceptions = (), batch_alignment = None, scratch_attributes = () ) -> None:
         self.device = device
+        # SCRATCH outputs: allocated + written like any output in the FORWARD, but the BACKWARD does
+        # NOT receive them as residuals (their forward values are transient per-thread garbage). It
+        # re-allocates a fresh writable buffer under the same name and re-derives what it needs (a
+        # re-sort). Read by `_call_backward`; the forward treats them as ordinary outputs.
+        self.scratch_paths = list( scratch_attributes )
         # BYTE alignment for the flattened batch dimension of the tensors THIS call lays out (see
         # `PhysicalLayout` / `CallArg_Tensor`): the per-call value if given, else the device default.
         self.batch_alignment_bytes = device.resolve_batch_alignment( batch_alignment )

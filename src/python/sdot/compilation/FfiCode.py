@@ -29,11 +29,21 @@ class FfiCode( AbstractFfiCode ):
     of the source).
     """
 
-    def __init__( self, fwd_code, bwd_code = "", name = "", batch_axes = (), includes = () ) -> None:
+    def __init__( self, fwd_code, bwd_code = "", name = "", batch_axes = (), includes = (),
+                  thread_cap = None ) -> None:
         self._code = dict( fwd = fwd_code, bwd = bwd_code )
         self.batch_axes = tuple( batch_axes )
         self.includes = tuple( includes )
         self.name = name
+        # cap on the number of work-items a `FfiCodeParallel` launches (see `code_for`): with it a
+        # body's PER-THREAD scratch is sized on threads, not items, so a huge batch does not blow up
+        # memory. A C++ EXPRESSION string, evaluated at the `run_parallel` call site (where the mapped
+        # args are in scope) -- e.g. `"sorted_indices.shape( 0 )"`, the RUNTIME extent of the scratch's
+        # thread axis. Kept an expression, NOT a baked int, so the same compiled kernel serves every
+        # machine/RAM (the thread count is read at run time, never in the source hash). `None` = one
+        # work-item per item (the default). Carried through `for_backward` / `with_batch_axis` so the
+        # backward and every `vmap` keep the same cap.
+        self.thread_cap = thread_cap
 
     def code_for( self, code_type: str, call_args_analysis ) -> str:
         return self._code[ code_type ]
@@ -47,7 +57,7 @@ class FfiCode( AbstractFfiCode ):
         body is our backward one. Run through the normal path, so a `FfiCodeParallel` scaffolds
         the backward exactly as it does the forward (see `_call_backward`)."""
         return type( self )( self._code[ "bwd" ], name = ( self.name or "sdot" ) + "_bwd",
-                             includes = self.includes )
+                             includes = self.includes, thread_cap = self.thread_cap )
 
     def with_batch_axis( self ):
         """The same code, mapped over one more axis: what a `vmap` runs. The name is derived from
@@ -55,7 +65,8 @@ class FfiCode( AbstractFfiCode ):
         `type( self )` keeps the subclass, so a `FfiCodeParallel` stays one under `vmap`."""
         name = f"vmap_{ len( self.batch_axes ) }"
         return name, type( self )( self._code[ "fwd" ], self._code[ "bwd" ], self.name,
-                                   self.batch_axes + ( name, ), self.includes )
+                                   self.batch_axes + ( name, ), self.includes,
+                                   thread_cap = self.thread_cap )
 
 
 class FfiCodeParallel( FfiCode ):
@@ -68,18 +79,47 @@ class FfiCodeParallel( FfiCode ):
     argument, plus the `batch_index`), and the `<arg>_io, <arg>` pairs `run_parallel` maps over
     (an io policy or tag, then the value). Add an argument to the call and it appears in both,
     without the body changing.
+
+    Three names are RESERVED (injected by the scaffold, not call arguments): `batch_index` (the
+    item's multi-index), `thread_index` (the work-item number, 0..nb_threads-1, stable over the
+    strided loop -- index a PER-THREAD scratch with it) and `nb_threads` (their count). A body
+    indexes `scratch( thread_index )` to get a row exclusive to its work-item, independent of the
+    item count; a body that does not need them just ignores the two `auto` params. A call kwarg
+    must not be named `thread_index`/`nb_threads`/`batch_index` (they would shadow the injected
+    params) -- the scaffold OWNS `nb_threads`, so a call reads it from the body, never passes it.
     """
 
     def code_for( self, code_type: str, call_args_analysis ) -> str:
         body = self._code[ code_type ]
         names = list( call_args_analysis.args )
-        params = ", ".join( [ "auto batch_index" ] + [ f"auto { n }" for n in names ] )
+        params = ", ".join( [ "auto batch_index", "auto thread_index", "auto nb_threads" ]
+                            + [ f"auto { n }" for n in names ] )
         mapped = ", ".join( call_args_analysis.args[ n ].cpp_run_parallel_pair() for n in names )
+
+        # No cap: the plain lambda, one work-item per item (`run_parallel` then launches `nb_items`
+        # threads). This is the default and what every non-scratch kernel uses.
+        if self.thread_cap is None:
+            return ( "run_parallel(\n"
+                     "    queue,\n"
+                     "    global_batch_indices,\n"
+                     f"    []( { params } ) {{\n"
+                     f"        { body }\n"
+                     "    },\n"
+                     f"    { mapped }\n"
+                     ");" )
+
+        # Capped: `with_max_threads` wraps the lambda with a `max_nb_threads` hook that `run_parallel`
+        # reads to launch at most `min( nb_items, cap )` work-items, each striding over its share of
+        # items and reusing its `scratch( thread_index )` row. `thread_cap` is a C++ EXPRESSION read at
+        # RUN TIME (e.g. `sorted_indices.shape( 0 )`, the scratch's thread-axis extent), so the same
+        # compiled kernel serves every machine -- nothing about the thread count enters the source. The
+        # wrapper lives at namespace scope because a local struct cannot carry the templated hook the
+        # kernel needs (see run_parallel.h).
         return ( "run_parallel(\n"
                  "    queue,\n"
                  "    global_batch_indices,\n"
-                 f"    []( { params } ) {{\n"
+                 f"    with_max_threads( { self.thread_cap }, []( { params } ) {{\n"
                  f"        { body }\n"
-                 "    },\n"
+                 "    } ),\n"
                  f"    { mapped }\n"
                  ");" )

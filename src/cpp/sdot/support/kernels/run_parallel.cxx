@@ -42,8 +42,20 @@ namespace detail::RunParallel {
                     // l'item passé au kernel est `item_list[index]` : un Range renvoie l'index plat,
                     // `indices_of(t)` renvoie le multi-indice correspondant. Les reducers (s'il y en a)
                     // précèdent les arguments normaux, comme dans la signature de `func`.
-                    for ( int index = thread_id; index < nb_items; index += nb_threads )
-                        func( item_list[ index ], reducers..., args... );
+                    //
+                    // Un corps peut OPTIONNELLEMENT recevoir, juste après l'item, le NUMÉRO de work-item
+                    // `int( thread_id )` (0..nb_threads-1, unique et stable sur toute la boucle striée)
+                    // et leur COMPTE `nb_threads` : de quoi indexer un scratch PER-THREAD race-free
+                    // (`scratch( thread_index )`), dont la taille ne dépend PAS du nombre d'items. Les
+                    // corps générés par `FfiCodeParallel` déclarent ces deux params ; les foncteurs
+                    // internes (`ErrorBuffer::fill_with`, ...) ne les prennent pas -> on choisit la forme
+                    // d'appel au compile-time selon ce que `func` accepte.
+                    for ( int index = thread_id; index < nb_items; index += nb_threads ) {
+                        if constexpr ( requires { func( item_list[ index ], int( thread_id ), nb_threads, reducers..., args... ); } )
+                            func( item_list[ index ], int( thread_id ), nb_threads, reducers..., args... );
+                        else
+                            func( item_list[ index ], reducers..., args... );
+                    }
                 } );
             } );
         } );

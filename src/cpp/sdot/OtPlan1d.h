@@ -12,8 +12,9 @@ struct OtPlan1d {
     SCInt ct_dim        = DECAYED_TYPE_OF( nb_dims )::value;
     using TF            = DECAYED_TYPE_OF( cost )::TF;
 
+    void  sort_diracs( auto &&sorted_indices, auto &&radix_tmp ) const;
     void  update_outputs( auto &&sorted_indices, auto &&radix_tmp );
-    void  update_outputs_bwd( auto &&grad_plan, auto &&sorted_indices ) const;
+    void  update_outputs_bwd( auto &&grad_plan, auto &&sorted_indices, auto &&radix_tmp ) const;
 };
 
 }

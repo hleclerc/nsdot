@@ -477,6 +477,14 @@ def _call_backward( code, ca, device, prefix, inputs, outputs, diff_idx,
     for name, arg in ca.args.items():
         if not hasattr( arg, "inst" ):
             continue
+        # SCRATCH: the backward gets a FRESH writable buffer under the same name (an output of the
+        # backward call), NOT the forward's transient per-thread values as a residual. The body
+        # re-derives into it whatever it needs (a re-sort). Capacity resolves on its own -- the
+        # thread axis is a `CtShapeVar` (static), the item axis is shared with a residual it mirrors.
+        if name in ca.scratch_paths:
+            kwargs[ name ] = Tensor.like( arg.inst )
+            output_paths.append( name )
+            continue
         residual, grad = _build( arg.inst, "grad_for_" + name )
         kwargs[ name ] = residual
         kwargs[ "grad_for_" + name ] = grad

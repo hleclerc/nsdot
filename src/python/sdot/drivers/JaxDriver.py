@@ -238,7 +238,7 @@ class JaxDriver:
         return jnp.where( cond, a, b )
 
 
-    def call( self, code : FfiCode | str, output_attributes = (), output_exceptions = (), input_exceptions = (), output_capacities = {}, batch_alignment = None, has_dynamic_capacity = True, **kwargs ):
+    def call( self, code : FfiCode | str, output_attributes = (), output_exceptions = (), input_exceptions = (), output_capacities = {}, batch_alignment = None, has_dynamic_capacity = True, scratch_attributes = (), **kwargs ):
         """Run the C++ `code` on the objects passed as kwargs.
 
         The objects are built by the caller; nothing is returned. Every list below names
@@ -286,7 +286,7 @@ class JaxDriver:
 
         output_capacities = dict( output_capacities )   # ours to grow: the caller's dict is not ours to touch
         while True:
-            ca = CallArgsAnalysis( kwargs, self.device, output_attributes, output_capacities, output_exceptions, input_exceptions, batch_alignment )
+            ca = CallArgsAnalysis( kwargs, self.device, output_attributes, output_capacities, output_exceptions, input_exceptions, batch_alignment, scratch_attributes )
             ffi_call( code, ca, self.device, prefix )
 
             overflows = ca.capacity_overflows()
