@@ -15,6 +15,10 @@ from .Distribution import Distribution
 class SumOfDiracs( Distribution ):
     """Sum of weighted Dirac point masses."""
 
+    # a 1D-dirac source OtPlan1d can sort/sweep (see the `position(i)` C++ contract); the projected
+    # variant carries the same flag, so OtPlan1d dispatches on capability, not on a concrete type.
+    _is_dirac_source = True
+
     nb_diracs        : ShapeVar
     nb_dims          : CtShapeVar
 

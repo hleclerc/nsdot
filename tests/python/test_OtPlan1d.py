@@ -8,7 +8,7 @@ if test( "basic" ):
     src = SumOfDiracs1d( positions = [ 0, 1 ] )
     dst = Image( values = [ 1, 0, 1 ] )
 
-    otp = OtPlan1d( src, dst )
+    otp = OtPlan1d( src, dst, with_barycenters = True )
 
     info( otp.cost )
     info( otp.barycenters )
@@ -17,7 +17,7 @@ if test( "cost_uniform" ):
     # Un seul dirac (masse 1) face à une densité uniforme sur [0,1] (masse 1) : le coût est
     # exactement Integral_0^1 (x - 0.5)^2 dx = 1/12, et le barycentre de la tranche cible est 0.5.
     # Ce cas franchit aussi la garde de bornes `udp_cont` (une seule cellule, boucle non entrée).
-    otp = OtPlan1d( SumOfDiracs1d( positions = [ 0.5 ] ), Image( values = [ 1 ] ) )
+    otp = OtPlan1d( SumOfDiracs1d( positions = [ 0.5 ] ), Image( values = [ 1 ] ), with_barycenters = True )
 
     assert abs( float( otp.cost ) - 1 / 12 ) < 1e-6
     assert abs( float( otp.barycenters.sum() ) - 0.5 ) < 1e-6

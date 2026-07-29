@@ -60,6 +60,9 @@ class CallArg_Tensor( CallArg ):
         self._dim_is_batch = list( inst._dim_batch() )
         self._device = call_args_analysis.device
         self._has_vmap = False
+        # the call's batch axes, to tell a SHARED output (accumulated into by every item) from a
+        # per-item one -- see `cpp_seed_member`.
+        self._call_batch_axes = list( call_args_analysis.batch_axes )
 
     @property
     def layout( self ):
@@ -163,6 +166,22 @@ class CallArg_Tensor( CallArg ):
         # non-contiguous: LOGICAL extents (literals) + physical BYTE strides -> the 4-arg overload.
         return ( f"tensor_view<{ self.memory_space }>( { ptr }, { self._cpp_logical_shape_tuple() }, "
                  f"{ self._cpp_axis_tuple() }, { self._cpp_strides_tuple() } )" )
+
+    # -- seeding: what an output must hold before the body runs --
+    def cpp_seed_member( self, owner_name ):
+        """Zero a SHARED float OUTPUT of a BATCHED call, before the body runs.
+
+        Such an output carries NONE of the call's batch axes, yet the call has some: every item
+        writes the SAME buffer, so the kernel ACCUMULATES into it (e.g. a ProjectedSumOfDiracs points
+        gradient, atomic-added by every angle) and it must start at zero. A per-item output (one that
+        carries a batch axis) is written once per item -- no seed; and with no batch there is no
+        accumulation at all. `fill_with( queue, 0 )` goes through the queue, so it is ordered before
+        the body's kernel. Unbound (NoneTensor/ZeroTensor) and integer/int scratch have nothing to seed."""
+        if not ( self.io_category.is_bound and self.io_category.is_output and self.dtype.floating_point ):
+            return ""
+        if not self._call_batch_axes or any( b in self.axis_names for b in self._call_batch_axes ):
+            return ""
+        return f"{ owner_name }.{ self.name }.fill_with( queue, 0 );"
 
     # -- as a member of an aggregate: one type parameter, spelled out at instantiation --
     def cpp_tpl_param( self ):

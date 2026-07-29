@@ -1,10 +1,12 @@
 #include <sdot/support/containers/Vector.h>
+#include "sdot/support/common_macros.h"
+#include <array>
 #include "main.h"
 
 using namespace sdot;
 
-auto array( auto...values ) {
-    return std::array{ values... };
+auto array( auto a, auto...values ) {
+    return std::array<DECAYED_TYPE_OF( a ),1+sizeof...( values )>{ a, values... };
 }
 
 TEST_CASE( "Vector", "" ) {

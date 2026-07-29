@@ -1,6 +1,6 @@
 import numpy as np
 
-from sdot import SumOfDiracs1d, OtPlan1d, Tensor, driver
+from sdot import ProjectedSumOfDiracs, OtPlan1d, Tensor, driver
 
 from .Sinogram import Sinogram
 from .optimizers import GradientDescent
@@ -15,12 +15,17 @@ def loss( sinogram: Sinogram, positions ):
     Tout est BATCHÉ sur `num_angle` (l'axe de batch du sinogramme) : un seul `OtPlan1d`
     traite les `nb_angles` transports d'un coup (`cost` est de rang 1, un coût par angle),
     au lieu d'une boucle Python. Chaque tranche normalise ses deux distributions à la masse
-    1 (diracs uniformes, image `target_mass = 1`). La projection passe par l'algèbre `Tensor`,
-    donc le coût reste différentiable par rapport à `positions`.
-    """
-    projected = sinogram.project_points( positions )        # Tensor [ num_angle, n ]
+    1 (diracs uniformes, image `target_mass = 1`).
 
-    src = SumOfDiracs1d( positions = projected, batch_axes = [ sinogram.num_angle ] )
+    La projection `s = point·normale` N'EST PAS matérialisée : `ProjectedSumOfDiracs` garde les
+    `points` 2D PARTAGÉS (une seule copie pour tous les angles) et la `normale` PAR ANGLE, et le
+    kernel calcule la position 1D à la volée -- au lieu d'un tenseur `[ nb_angles, n ]` (80 Go à
+    1e7 diracs x 1000 angles). Reste différentiable par rapport à `positions` : le backward
+    scatter-atomique le gradient de la position projetée sur les points 2D partagés.
+    """
+    points = positions if isinstance( positions, Tensor ) else Tensor( positions )
+    src = ProjectedSumOfDiracs( points = points, normal = sinogram.normals_t,
+                                batch_axes = [ sinogram.num_angle ] )
     dst = sinogram.batched_image()
     return OtPlan1d( src, dst ).cost.sum()                   # somme sur les angles
 
