@@ -1,9 +1,8 @@
 #
+typing_extensions
 nanobind
 devtools
 numpy
-# meson
-# ninja
 
 # Packaging
 cibuildwheel

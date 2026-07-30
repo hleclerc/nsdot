@@ -1,29 +1,36 @@
-# Apptainer/Singularity image for the CUDA (GPU) toolchain.
+# Apptainer/Singularity image for the CUDA (GPU) toolchain — the *reference* environment.
 #
-# Locks the whole version chain that was fighting us on bare metal:
+# Locks the whole version chain:
 #   AdaptiveCpp 25.10  →  LLVM/Clang 20  →  CUDA 12.8  →  one compiler (clang-20)  →  one libstdc++
 # and bakes a pre-built AdaptiveCpp ("full" profile, cuda backend) into an in-image cache so the
-# runtime never rebuilds it. JAX (CUDA) and PyTorch (CUDA) are installed in /opt/venv.
+# runtime never rebuilds it.
+#
+# Kernels are compiled for the `generic` (SSCP) target, so the image needs no CUDA toolkit at
+# *run* time and one acpp serves both devices — see `compilation.adaptive_cpp.resolve_targets`.
+#
+# ONE VENV PER FRAMEWORK — /opt/venv (jax) and /opt/venv-torch (torch). They must not share one:
+# both pull the `nvidia-*-cu12` wheels, with different pins, and whichever pip resolves LAST wins
+# for both. That is what broke the previous image: torch cu124 pinned nvidia-cudnn-cu12==9.1.0.70
+# on top of a jaxlib built against 9.8, and every jax GPU computation died with
+# `RET_CHECK failure ... dnn_support != nullptr`. Nothing to do with --nv or the host.
 #
 # Build (from the repo root, so the %files paths resolve):
-#   # 1. Créer les dossiers temporaires
+#   # 1. Créer les dossiers temporaires (le sandbox de build vit dans APPTAINER_TMPDIR : ~30 GB)
 #   export DATA=/data
 #   mkdir -p $DATA/singularity_tmp $DATA/singularity_cache
 #   export APPTAINER_TMPDIR=$DATA/singularity_tmp
 #   export APPTAINER_CACHEDIR=$DATA/singularity_cache
 #   apptainer build --fakeroot containers/cuda.sif containers/cuda.def
-# Run the C++ test suite (GPU needs --nv to expose the driver):
-#   apptainer exec --nv containers/cuda.sif python scripts/run_cpp_tests.py
+# Run the test suite (GPU needs --nv to expose the driver):
+#   apptainer exec --nv containers/cuda.sif env SDOT_DEVICE=cuda python scripts/run_tests.py
 #
-# NOTE: the base image tag and the torch wheel channel are the two things to bump over time;
-# they are isolated at the top of %post.
 
 Bootstrap: docker
 From: nvidia/cuda:12.8.1-devel-ubuntu24.04
 
 %files
-    # Just the package — enough to call ensure_acpp() at build time (no GPU needed to *build* acpp).
-    . /opt/sdot
+    requirements.txt /opt/sdot/requirements.txt
+    src              /opt/sdot/src
 
 %environment
     # First candidate cache root.  Read-only at runtime (baked into the image); acpp and
@@ -34,15 +41,29 @@ From: nvidia/cuda:12.8.1-devel-ubuntu24.04
     export PATH=/opt/venv/bin:/usr/lib/llvm-20/bin:$PATH
     export DEBIAN_FRONTEND=noninteractive
 
-    # Assure que les bibliothèques du conteneur passent AVANT celles injectées par --nv
-    export LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
+    # DROP the CUDA toolkit from the runtime library path. The base image exports
+    # LD_LIBRARY_PATH=/usr/local/cuda/lib64 as a Docker ENV (apptainer replays it in
+    # /.singularity.d/env/10-docker2singularity.sh, which runs BEFORE this block), and the
+    # dynamic loader searches LD_LIBRARY_PATH *before* a library's own RUNPATH. The pip
+    # `nvidia-*-cu12` wheels jax resolves through RUNPATH are 12.9 while the image toolkit is
+    # 12.8, so libcusparse.so.12 (wheel) ended up bound to the toolkit's libnvJitLink.so.12:
+    #   undefined symbol: __nvJitLinkGetErrorLogSize_12_9
+    # -> the plugin died in its version check and jax silently fell back to CPU
+    #    ("no platforms that are instances of gpu are present. Platforms present are: cpu").
+    # /usr/local/cuda is a BUILD-time toolkit: nothing needs it at run time. Kernels are
+    # compiled for `generic` (no libcudart), and acpp's librt-backend-cuda.so finds its
+    # libcudart.so.12 through its own RUNPATH — verified with ldd once this is unset.
+    # 99-base.sh runs after us and turns the empty value into /.singularity.d/libs, which is
+    # where --nv injects the driver; an explicit `--env LD_LIBRARY_PATH=...` still wins
+    # (99-runtimevars.sh is later still).
+    unset LD_LIBRARY_PATH
 
 %post
     set -eux
 
     # ---- versions to bump over time -------------------------------------------------
     LLVM_VER=20
-    TORCH_CHANNEL=cu124          # PyTorch CUDA wheel channel (must be <= the image's CUDA)
+    TORCH_CHANNEL=cu128          # PyTorch CUDA wheel channel (must be <= the image's CUDA)
     export SDOT_ACPP_VERSION=v25.10.0
     # ---------------------------------------------------------------------------------
 
@@ -68,19 +89,28 @@ From: nvidia/cuda:12.8.1-devel-ubuntu24.04
     export CC=clang-${LLVM_VER}
     export CXX=clang++-${LLVM_VER}
 
-    # Python runtime: JAX (CUDA) + PyTorch (CUDA), isolated in a venv.
+    # Python runtime: ONE VENV PER FRAMEWORK (see the header). /opt/venv is the default one
+    # (jax, on PATH); torch lives apart so their nvidia-*-cu12 pins can never overwrite each other.
     python3 -m venv /opt/venv
     /opt/venv/bin/pip install --no-cache-dir --upgrade pip
     /opt/venv/bin/pip install --no-cache-dir -r /opt/sdot/requirements.txt
     /opt/venv/bin/pip install --no-cache-dir "jax[cuda12]"
-    /opt/venv/bin/pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/${TORCH_CHANNEL}
 
-    # Pre-build AdaptiveCpp into the in-image cache (both profiles):
-    #   minimal — CPU/OpenMP, no LLVM needed; used by Device.factory("cpu") inside the image
-    #   full/cuda — generic JIT + CUDA; used by Device.factory("cuda")
-    # Prefixes are deterministic (version+profile+backends+boost+arch), so the runtime never recompiles.
-    PYTHONPATH=/opt/sdot/src/python /opt/venv/bin/python -c \
-        "from sdot.compilation.adaptive_cpp import ensure_acpp; print('acpp minimal:', ensure_acpp('minimal'))"
+    python3 -m venv /opt/venv-torch
+    /opt/venv-torch/bin/pip install --no-cache-dir --upgrade pip
+    /opt/venv-torch/bin/pip install --no-cache-dir -r /opt/sdot/requirements.txt
+    /opt/venv-torch/bin/pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/${TORCH_CHANNEL}
+
+    # Guard the invariant, at build time rather than at the user's first GPU call: torch must
+    # NOT be in the jax venv, or its nvidia-*-cu12 pins silently downgrade jax's CUDA libs.
+    /opt/venv/bin/python -c "import importlib.util, sys; sys.exit( importlib.util.find_spec( 'torch' ) is not None )"
+    /opt/venv/bin/python -c "import importlib.metadata as m; print( 'jax cudnn:', m.version( 'nvidia-cudnn-cu12' ) )"
+
+    # Pre-build AdaptiveCpp into the in-image cache: only the "full" profile (SSCP/generic) is
+    # needed now — `resolve_targets` reuses an acpp whose backend set is a superset, so the CPU
+    # device compiles with this very same one. (A `minimal` build would only be needed to force
+    # the ahead-of-time OpenMP target via SDOT_ACPP_TARGET=omp.)
+    # The prefix is deterministic (version+profile+backends+boost+arch): the runtime never rebuilds.
     PYTHONPATH=/opt/sdot/src/python /opt/venv/bin/python -c \
         "from sdot.compilation.adaptive_cpp import ensure_acpp; print('acpp full/cuda:', ensure_acpp('full', ('cuda',)))"
 
@@ -90,13 +120,38 @@ From: nvidia/cuda:12.8.1-devel-ubuntu24.04
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 %test
-    # Sanity: both acpp profiles present and the python stack imports.
+    # No GPU is available during a build, so this checks everything that does not need one.
+    # (Until 2026-07 these assertions never ran: `adaptive_cpp.is_available` called `infox`,
+    # which prints and then `sys.exit(0)` — the block passed vacuously.)
     SDOT_CACHE_DIR=/opt/sdot-cache PYTHONPATH=/opt/sdot/src/python /opt/venv/bin/python -c \
         "from sdot.compilation.adaptive_cpp import is_available; \
-         assert is_available('minimal'), 'acpp minimal missing'; \
          assert is_available('full', ('cuda',)), 'acpp full/cuda missing'; \
-         print('acpp minimal ok, acpp full/cuda ok')"
-    /opt/venv/bin/python -c "import jax, torch; print('jax', jax.__version__, '| torch', torch.__version__)"
+         print('acpp full/cuda ok')"
+    /opt/venv/bin/python -c "import jax; print('jax', jax.__version__)"
+    /opt/venv-torch/bin/python -c "import torch; print('torch', torch.__version__)"
+
+    # The CUDA libs jax loads must resolve AMONG THEMSELVES (wheel -> wheel), not against the
+    # image's /usr/local/cuda toolkit. dlopen'ing them needs no GPU, so this catches at build
+    # time the LD_LIBRARY_PATH shadowing described in %environment — which otherwise only shows
+    # up on a GPU machine, as jax silently falling back to CPU.
+    /opt/venv/bin/python -c "
+import ctypes, pathlib, nvidia
+root = pathlib.Path( nvidia.__file__ ).parent
+for so in sorted( root.glob( '*/lib/lib*.so.*' ) ):
+    if 'nccl' in so.name or 'nvshmem' in so.name: continue   # need a driver/fabric to load
+    ctypes.CDLL( str( so ) )
+print( 'nvidia wheels self-consistent' )"
+
+    # End-to-end on the CPU device: codegen → acpp (generic) → Jax FFI → run. This also proves
+    # the SSCP *host* JIT works, which is what the `generic` target relies on for Device("cpu").
+    # ACPP_APPDB_DIR: the JIT cache defaults to $HOME/.acpp, and $HOME is not writable here.
+    SDOT_CACHE_DIR=/opt/sdot-cache PYTHONPATH=/opt/sdot/src/python ACPP_APPDB_DIR=/tmp/acpp-appdb \
+    SDOT_DEVICE=cpu JAX_PLATFORMS=cpu /opt/venv/bin/python -c \
+        "import numpy as np; from sdot import Cell; \
+         c = Cell.make_hypercube( 2, [ 0, 0 ], [ [ 2, 0 ], [ 0, 1 ] ] ); \
+         m = float( np.asarray( c.measure ) ); \
+         assert abs( m - 2.0 ) < 1e-9, m; \
+         print( 'Cell.measure ok:', m )"
 
 %labels
     org.sdot.role    cuda-toolchain
@@ -105,8 +160,16 @@ From: nvidia/cuda:12.8.1-devel-ubuntu24.04
     org.sdot.cuda    12.8
 
 %help
-    CUDA build+runtime image for sdot. Both AdaptiveCpp profiles are prebuilt in /opt/sdot-cache:
-      - minimal (CPU/OpenMP) — for Device.factory("cpu")
-      - full/cuda            — for Device.factory("cuda")
-    Run with --nv to expose the host GPU driver, e.g.:
-      apptainer exec --nv containers/cuda.sif python scripts/run_cpp_tests.py
+    CUDA build+runtime image for sdot. One AdaptiveCpp ("full" profile, cuda backend) is prebuilt
+    in /opt/sdot-cache and serves BOTH devices, because kernels are compiled for the `generic`
+    (SSCP) target — the GPU architecture is resolved at run time, by JIT.
+
+    Two venvs, on purpose (their nvidia-*-cu12 pins conflict): /opt/venv = jax (on PATH),
+    /opt/venv-torch = torch.
+
+    Run with --nv to expose the host GPU driver:
+      apptainer exec --nv containers/cuda.sif env SDOT_DEVICE=cuda python scripts/run_tests.py
+      apptainer exec      containers/cuda.sif env SDOT_DEVICE=cpu JAX_PLATFORMS=cpu python scripts/run_tests.py
+      apptainer exec --nv containers/cuda.sif python -m sdot.toolchain    # what this machine can compile for
+
+    `python` is /opt/venv/bin/python; the suite needs the repo on PYTHONPATH (see .private/Makefile).
