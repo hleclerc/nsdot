@@ -6,6 +6,11 @@
 # runtime never rebuilds it. JAX (CUDA) and PyTorch (CUDA) are installed in /opt/venv.
 #
 # Build (from the repo root, so the %files paths resolve):
+#   # 1. Créer les dossiers temporaires
+#   export DATA=/data
+#   mkdir -p $DATA/singularity_tmp $DATA/singularity_cache
+#   export APPTAINER_TMPDIR=$DATA/singularity_tmp
+#   export APPTAINER_CACHEDIR=$DATA/singularity_cache
 #   apptainer build --fakeroot containers/cuda.sif containers/cuda.def
 # Run the C++ test suite (GPU needs --nv to expose the driver):
 #   apptainer exec --nv containers/cuda.sif python scripts/run_cpp_tests.py
@@ -28,6 +33,9 @@ From: nvidia/cuda:12.8.1-devel-ubuntu24.04
     export LLVM_CONFIG=/usr/bin/llvm-config-20
     export PATH=/opt/venv/bin:/usr/lib/llvm-20/bin:$PATH
     export DEBIAN_FRONTEND=noninteractive
+
+    # Assure que les bibliothèques du conteneur passent AVANT celles injectées par --nv
+    export LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
 
 %post
     set -eux

@@ -47,7 +47,15 @@ class CudaGpu( Device ):
         return True
 
     @property
-    def acpp_targets( self ):
+    def acpp_reachable( self ):
+        return True
+
+    @property
+    def acpp_aot_targets( self ):
+        # Only used when the SSCP toolchain is unavailable. Note that this path bakes in the
+        # compute capability AND needs a full CUDA toolkit at compile time (clang's CUDA
+        # support caps at CUDA 12.8, so a CUDA 13 host cannot compile it at all) -- which is
+        # precisely why `generic` is the default.
         attrs = self._get_attrs()
         if attrs is None:
             return "cuda"
@@ -55,7 +63,7 @@ class CudaGpu( Device ):
         return f"cuda:sm_{ sm_major }{ sm_minor }"
 
     @property
-    def acpp_profile( self ):
+    def acpp_aot_profile( self ):
         return "full"
 
     @property
@@ -64,12 +72,18 @@ class CudaGpu( Device ):
 
     @property
     def ffi_platform( self ):
-        return "cuda"
+        # "gpu", NOT "cuda": `jaxlib.xla_client.register_custom_call_target` translates the
+        # platform through `xla_platform_names = { 'cpu': 'Host', 'gpu': 'CUDA' }` and passes
+        # anything else through untouched. Registering under "cuda" therefore files the handler
+        # in a bucket nothing ever reads, and the call fails at run time with
+        # `No FFI handler registered for <name> on a platform CUDA`. "gpu" is also what maps to
+        # ROCM on an AMD build of jaxlib.
+        return "gpu"
 
     @property
     def device_is_present( self ):
         # acpp-reachable AND a real CUDA driver/device available (libcuda loads, attrs read).
-        return self.acpp_targets is not None and self._get_attrs() is not None
+        return self.acpp_reachable and self._get_attrs() is not None
 
     def driver_version_for_jax( self, devices ):
         return devices( "gpu" )[ self.device_id ]

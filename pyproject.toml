@@ -16,6 +16,10 @@ dependencies = [
 jax = [ "jax" ]
 torch = [ "torch" ]
 
+# Diagnose a machine and acquire the compiler toolchain when the bundled one does not cover it.
+[project.scripts]
+sdot-toolchain = "sdot.toolchain:main"
+
 # src-layout: only `sdot/` (not the `src/python/` prefix) lands at the wheel root.
 [tool.hatch.build.targets.wheel]
 packages = [ "src/python/sdot" ]

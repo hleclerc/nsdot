@@ -69,21 +69,38 @@ class Device:
     # ── AdaptiveCpp / Jax-FFI mapping ─────────────────────────────────────────
     # Consumed by sdot.compilation.adaptive_cpp (make_executable / make_library) and by the
     # Jax FFI registration. Defaults describe a device NOT reachable through acpp (e.g. Apple
-    # GPU / Metal): `acpp_targets is None` makes the acpp builders raise. Reachable devices
+    # GPU / Metal): `acpp_reachable` False makes the acpp builders raise. Reachable devices
     # override these.
+    #
+    # NOTE: the *target* is normally NOT a property of the device. The default compilation
+    # path is `generic` (AdaptiveCpp's SSCP flow): one target-independent binary, JIT-compiled
+    # for whatever hardware is present at run time. What lives here is only what genuinely
+    # depends on the device: whether acpp can reach it, which backend the acpp *build* must
+    # enable, and the ahead-of-time fallback used when the SSCP toolchain is unavailable.
+    # The policy itself is `compilation.adaptive_cpp.resolve_targets`.
     @property
-    def acpp_targets( self ):
-        """`--acpp-targets` value (e.g. "omp", "cuda:sm_80"); None if not acpp-reachable."""
+    def acpp_reachable( self ) -> bool:
+        """Whether AdaptiveCpp can target this device at all (False for e.g. Apple GPU / Metal)."""
+        return False
+
+    @property
+    def acpp_aot_targets( self ):
+        """`--acpp-targets` for the AHEAD-OF-TIME fallback ("omp", "cuda:sm_80"); None if there
+        is none. This is the ONLY place a GPU architecture is ever named — under `generic` the
+        architecture is a run-time detail, which is exactly the point."""
         return None
 
     @property
-    def acpp_profile( self ):
-        """AdaptiveCpp feature profile ("minimal" | "full")."""
+    def acpp_aot_profile( self ):
+        """AdaptiveCpp feature profile the AOT fallback needs ("minimal" | "full")."""
         return "minimal"
 
     @property
     def acpp_backends( self ):
-        """GPU backends to enable when building acpp (e.g. ("cuda",)); () for CPU-only."""
+        """GPU backends to enable when BUILDING acpp (e.g. ("cuda",)); () for CPU-only.
+
+        Needed even under `generic`: the SSCP JIT emits PTX, but talking to the card still
+        goes through the compiled-in CUDA backend plugin (which only dlopens the driver)."""
         return ()
 
     @property
@@ -97,7 +114,7 @@ class Device:
 
         Default: reachable iff acpp can target it (covers Cpu -> True, Apple GPU / Metal ->
         False). Devices whose hardware may be absent (CUDA) refine this."""
-        return self.acpp_targets is not None
+        return self.acpp_reachable
 
     def __eq__( self, value, / ) -> bool:
         if not isinstance( value, Device ):

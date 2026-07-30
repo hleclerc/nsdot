@@ -318,7 +318,9 @@ UTP void DTP::measure( auto &&res, auto &&item_map, auto &&nb_map_items ) const 
     }
 
     // nD: fan triangulation
-    INFO( item_map.shape(), nb_map_items );
+    // NB: no INFO()/std::cout here — this body is compiled into the kernel, and under the
+    // `generic` (SSCP) target the kernel is JIT-compiled into its OWN shared library, so any
+    // host-library symbol it names becomes an undefined symbol at dlopen time (`_ZSt4cout`).
     res = 32;
     // TF sum = 0;
     // for_each_simplex( item_map, [&] ( const auto &simplex_indices ) {

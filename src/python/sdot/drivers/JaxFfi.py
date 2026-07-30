@@ -6,7 +6,7 @@ registered with `jax.ffi.register_ffi_target`. The returned target name feeds
 `jax.ffi.ffi_call`, which inserts the call into the XLA program (works eager and under
 `jax.jit`, on CPU and — later — CUDA).
 
-Two caches, both keyed by a content hash of (source + device):
+Two caches, both keyed by a content hash of (source + compilation target):
 * disk : the compiled `.so`/`.dylib` (handled by `make_library`; a changed source yields a
          new hash, hence a new file and a rebuild).
 * RAM  : `_loaded` keeps the `ctypes` handle mapped and marks the target as already
@@ -27,7 +27,7 @@ import jax
 import jax.numpy as jnp
 import numpy
 
-from ..compilation.adaptive_cpp import make_library
+from ..compilation.adaptive_cpp import make_library, resolve_targets, ACPP_VERSION
 from ..compilation import build_dir
 from ..util.encode_base_62 import encode_base_62
 from .CallArg_Errors import ERRORS_VAR_NAME
@@ -87,7 +87,18 @@ def compile_and_register( source: str, device, prefix: str = "" ) -> str:
     if not prefix:
         prefix = "sdot_ffi_"
 
-    name = prefix + encode_base_62( source + "|" + str( device ) )
+    # Cache key = what actually changes the binary: the source, and how it is compiled.
+    # Dropping the device OBJECT from the key is safe because the source always carries the
+    # device anyway (`_CALL_TEMPLATE` substitutes `device.cpp_queue_type`), so a CPU and a CUDA
+    # handler can never hash to the same name -- which matters, since this name is also the Jax
+    # target and registration is per platform. What we gain: `str( CudaGpu:1 )` used to compile
+    # the very same library twice on a two-GPU node, while conversely it never mentioned the
+    # compute capability -- so under the ahead-of-time targets a cache shared between machines
+    # (a cluster home, a baked container image) could hand an sm_75 binary to an sm_90 card.
+    # Naming the target fixes both, and under `generic` the architecture stops being part of
+    # the question at all.
+    targets, _, _ = resolve_targets( device )
+    name = prefix + encode_base_62( f"{ source }|{ targets }|{ ACPP_VERSION }" )
     if name in _loaded:
         return name
 
@@ -100,7 +111,13 @@ def compile_and_register( source: str, device, prefix: str = "" ) -> str:
         extra_flags = _ffi_include_flags(),
     )
 
-    lib = ctypes.cdll.LoadLibrary( str( lib_path ) )
+    # RTLD_GLOBAL, deliberately: under the `generic` target the kernel is JIT-compiled at run
+    # time into a SEPARATE shared library, which the AdaptiveCpp runtime dlopens. Any host
+    # symbol that library needs (libstdc++, libm, ...) has to be resolvable in the process's
+    # global namespace, and python itself brings none of them. Loading our handler globally
+    # publishes them (the flag propagates to its dependencies). With RTLD_LOCAL the JIT'd
+    # library fails to load with an `undefined symbol` — at run time, long after compiling fine.
+    lib = ctypes.CDLL( str( lib_path ), mode = ctypes.RTLD_GLOBAL )
     handler = getattr( lib, _HANDLER_SYMBOL )
     jax.ffi.register_ffi_target(
         name, jax.ffi.pycapsule( handler ), platform = device.ffi_platform,
@@ -136,6 +153,7 @@ _CALL_TEMPLATE = """\
 #include "sdot/support/containers/ErrorBuffer.h"
 #include "sdot/support/containers/NoneTensor.h"
 #include "sdot/support/containers/ZeroTensor.h"
+#include "sdot/support/containers/FillTensor.h"
 #include <cstdint>
 #include <iostream>
 
@@ -382,6 +400,11 @@ def _grad_tensor( inst, array ):
     from ..tensor.Tensor import Tensor
     res = Tensor.like( inst )
     res.set_raw( array )
+    # a FILL re-enters the backward as a fill too (its residual is the same scalar): keep it symbolic
+    # so it lowers to a `FillTensor` again, not a scalar-buffer TensorView with a [n] logical shape.
+    if getattr( inst, "is_fill", False ):
+        res._fill  = True
+        res._shape = inst._shape
     return res
 
 

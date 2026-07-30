@@ -5,15 +5,19 @@ package `pip install`-able and self-contained, we do *not* rely on a system-wide
 AdaptiveCpp is built on demand into a per-user cache directory and reused across runs.
 
 Compilation always goes through the `acpp` driver — it injects its own include paths and
-links its runtime, so callers only have to point it at the right `--acpp-targets`.
+links its runtime, so callers only have to point it at the right `--acpp-targets`. Which
+target that is, is decided by `resolve_targets` (policy, not a device property): `generic`
+whenever the SSCP toolchain is available, an ahead-of-time target otherwise.
 
 Feature profiles
 -----------------
 * "minimal" : CPU only (OpenMP, `omp.library-only`). Needs only CMake + a C++ compiler.
-              No LLVM. The portable default that works on every platform Jax/Torch support.
-* "full"    : enables the runtime-adaptive generic JIT (SSCP) flow plus CUDA/HIP/Intel
-              backends *when their toolchains are present*. Requires an official LLVM >= 15.
-              We never build LLVM ourselves — it must be provided by the system/CI.
+              No LLVM. The fallback that works on every platform Jax/Torch support, and what
+              a machine with no LLVM at all still gets.
+* "full"    : enables the `generic` JIT (SSCP) flow plus CUDA/HIP/Intel backends *when their
+              toolchains are present*. Requires an official LLVM >= 15. We never build LLVM
+              ourselves — it must be provided by the system/CI, or come prebuilt with us.
+              This is the profile the distributed toolchain ships.
 
 AdaptiveCpp has **no Metal backend**: on macOS only the CPU backends exist, so Apple-GPU
 work is handled by a separate (non-acpp) path.
@@ -26,8 +30,6 @@ import tarfile
 import shutil
 import sys
 import os
-
-from sdot.util.info import infox
 
 # Pinned AdaptiveCpp release. Overridable for testing / bumping. A git ref (tag or branch)
 # is also accepted: if no release tarball matches, we fall back to `git clone`.
@@ -46,6 +48,18 @@ BOOST_VERSION = os.getenv( "SDOT_BOOST_VERSION", "1.86.0" )
 BOOST_LIBS = ( "context", "fiber", "atomic", "filesystem" )
 
 VALID_PROFILES = ( "minimal", "full" )
+
+# The default compilation target: AdaptiveCpp's SSCP flow ("single source, single compiler
+# pass"). A kernel is compiled ONCE into target-independent LLVM IR embedded in the binary,
+# then JIT-compiled at run time for whatever device is actually there. Compared to the
+# ahead-of-time targets ("omp", "cuda:sm_80") it means:
+#   - no vendor toolchain on the user's machine (PTX goes straight to the driver: no nvcc,
+#     no ptxas, no fatbinary, not even libcudart -- which is what makes a CUDA-13 host, whose
+#     AOT path clang cannot compile at all, work anyway),
+#   - one binary per source instead of one per GPU architecture, so the compile cache becomes
+#     shareable and precompiled kernels become a realistic thing to distribute.
+# It requires an acpp built with the "full" profile (LLVM >= 15) -- the toolchain we ship.
+GENERIC_TARGET = "generic"
 
 # GPU backends are driven *explicitly* (ON for those a device asks for, OFF for the rest)
 # instead of letting AdaptiveCpp auto-enable whatever it finds: a stray OpenCL/Level-Zero on
@@ -151,8 +165,7 @@ def acpp_prefix( profile: str = "minimal", backends = () ) -> Path:
     paths at build time.
     """
     _check_profile( profile )
-    tag = f"{ ACPP_VERSION }-{ profile }-{ _backends_tag( backends ) }-boost{ BOOST_VERSION }-{ platform.machine() }"
-    subdir = Path( "adaptivecpp" ) / tag
+    subdir = Path( "adaptivecpp" ) / _prefix_tag( profile, backends )
     for root in _cache_candidates():
         candidate = root / subdir
         if ( candidate / "bin" / "acpp" ).is_file():
@@ -168,8 +181,97 @@ def acpp_path( profile: str = "minimal", backends = () ) -> Path:
 def is_available( profile: str = "minimal", backends = () ) -> bool:
     """True if `acpp` for this configuration is already built and runnable."""
     p = acpp_path( profile, backends )
-    infox( p )
     return p.is_file() and os.access( p, os.X_OK )
+
+
+# ───────────────────────────── target resolution ─────────────────────────────
+
+
+def _prefix_tag( profile: str, backends ) -> str:
+    return f"{ ACPP_VERSION }-{ profile }-{ _backends_tag( backends ) }-boost{ BOOST_VERSION }-{ platform.machine() }"
+
+
+def usable_backend_set( profile: str, backends ) -> tuple | None:
+    """Backends of an already-built acpp that can serve a request for (profile, `backends`).
+
+    An install is usable when its backend set is a SUPERSET of the requested one: an acpp built
+    with the CUDA backend compiles CPU code just as well, so a GPU machine needs one acpp, not
+    two. Returns that install's backend tuple (possibly the requested one), or None if nothing
+    suitable is built. Only the backend set may differ — version, Boost and arch must match,
+    since they are what the prefix encodes.
+    """
+    wanted = set( backends )
+    head, tail = f"{ ACPP_VERSION }-{ profile }-", f"-boost{ BOOST_VERSION }-{ platform.machine() }"
+
+    best = None
+    for root in _cache_candidates():
+        base = root / "adaptivecpp"
+        if not base.is_dir():
+            continue
+        for d in sorted( base.iterdir() ):
+            name = d.name
+            if not ( name.startswith( head ) and name.endswith( tail ) ) or not ( d / "bin" / "acpp" ).is_file():
+                continue
+            tag = name[ len( head ) : -len( tail ) ]
+            found = set() if tag == "cpu" else set( tag.split( "+" ) )
+            # prefer an exact match, else the smallest superset (least unrelated machinery)
+            if wanted <= found and ( best is None or len( found ) < len( best ) ):
+                best = found
+    return None if best is None else tuple( sorted( best ) )
+
+
+# memoized per device: the answer only depends on the environment and on what is installed,
+# while the question is asked on every `driver.call` (through `JaxFfi.compile_and_register`) --
+# and answering it means listing directories. A build happening mid-process would make an entry
+# stale, which is why `sdot-toolchain install` is a separate process.
+_resolved_targets = {}
+
+
+def resolve_targets( device ) -> tuple:
+    """How to compile for *device*: ( targets, profile, backends ).
+
+    The target is deliberately NOT read off the device (see `Device.acpp_aot_targets`): it is a
+    policy, applied here, in this order.
+
+      1. `SDOT_ACPP_TARGET` — the explicit escape hatch ("generic", "omp", "cuda:sm_75", ...),
+         for benchmarking one flow against the other or working around a broken JIT.
+      2. `generic`, if an SSCP-capable acpp is already there (bundled in the wheel, or in the
+         user cache): nothing to build, and one binary covers every architecture.
+      3. the device's ahead-of-time target when it only needs the cheap `minimal` profile —
+         i.e. the CPU/OpenMP case. Keeps a machine with no LLVM at all working out of the box.
+      4. `generic` otherwise: for a GPU the AOT path needs the very same `full` acpp build
+         PLUS a vendor toolchain, so it is strictly the harder of the two.
+    """
+    if not device.acpp_reachable:
+        raise RuntimeError(
+            f"{ device } is not reachable through AdaptiveCpp (e.g. Apple GPU / Metal); "
+            "use its dedicated backend instead."
+        )
+
+    key = str( device )
+    if key in _resolved_targets:
+        return _resolved_targets[ key ]
+    _resolved_targets[ key ] = res = _resolve_targets( device )
+    return res
+
+
+def _resolve_targets( device ) -> tuple:
+    backends = tuple( device.acpp_backends )
+
+    override = os.getenv( "SDOT_ACPP_TARGET" )
+    if override:
+        profile = "minimal" if override.startswith( "omp" ) else "full"
+        return override, profile, ( usable_backend_set( profile, backends ) or backends )
+
+    generic_backends = usable_backend_set( "full", backends )
+    if generic_backends is not None:
+        return GENERIC_TARGET, "full", generic_backends
+
+    aot = device.acpp_aot_targets
+    if aot is not None and device.acpp_aot_profile == "minimal":
+        return aot, "minimal", backends
+
+    return GENERIC_TARGET, "full", backends
 
 
 # ──────────────────────────────── build tools ────────────────────────────────
@@ -586,6 +688,14 @@ def ensure_acpp( profile: str = "minimal", backends = (), *, force: bool = False
 # ──────────────────────────── compiling SYCL code ────────────────────────────
 
 
+def _needs_omp_headers( targets: str ) -> bool:
+    """Whether this target compiles host code against `<omp.h>` (macOS only concern).
+
+    True for the OpenMP AOT target, and for `generic` too: its host backend is that same
+    OpenMP one, it is only the kernel codegen that changes."""
+    return targets.startswith( "omp" ) or targets == GENERIC_TARGET
+
+
 def _macos_omp_include_flags() -> list:
     """Extra `-I` flags so `<omp.h>` resolves when targeting the OpenMP backend on macOS.
 
@@ -622,28 +732,22 @@ def _macos_omp_include_flags() -> list:
 def make_executable( exe_name, src_paths, device, *, profile = None, extra_flags = None ):
     """Compile & link `src_paths` into an executable using the `acpp` driver.
 
-    SYCL counterpart of `make_executable`: the target device chooses the AdaptiveCpp
-    target (`device.acpp_targets`) and the required feature profile. `acpp` handles its
-    own include/runtime wiring, so we only add the project's C++ include dir. Returns the
-    path to the built executable.
+    SYCL counterpart of `make_executable`: `resolve_targets` decides the AdaptiveCpp target
+    and the feature profile it needs (`generic` by default). `acpp` handles its own
+    include/runtime wiring, so we only add the project's C++ include dir. Returns the path to
+    the built executable.
     """
     from . import build_dir, cpp_include_root
 
-    targets = device.acpp_targets
-    if targets is None:
-        raise RuntimeError(
-            f"{ device } is not reachable through AdaptiveCpp (e.g. Apple GPU / Metal); "
-            "use its dedicated backend instead."
-        )
-
-    profile = profile or device.acpp_profile
-    acpp = ensure_acpp( profile, device.acpp_backends )
+    targets, resolved_profile, backends = resolve_targets( device )
+    profile = profile or resolved_profile
+    acpp = ensure_acpp( profile, backends )
 
     out_dir = build_dir()
     out_dir.mkdir( parents = True, exist_ok = True )
     exe = out_dir / exe_name
 
-    omp_flags = _macos_omp_include_flags() if targets.startswith( "omp" ) else []
+    omp_flags = _macos_omp_include_flags() if _needs_omp_headers( targets ) else []
 
     cmd = [
         acpp,
@@ -673,12 +777,7 @@ def make_library( lib_name, src_paths, device, *, profile = None, extra_flags = 
     """
     from . import build_dir, cpp_include_root
 
-    targets = device.acpp_targets
-    if targets is None:
-        raise RuntimeError(
-            f"{ device } is not reachable through AdaptiveCpp (e.g. Apple GPU / Metal); "
-            "use its dedicated backend instead."
-        )
+    targets, resolved_profile, backends = resolve_targets( device )
 
     out_dir = build_dir()
     out_dir.mkdir( parents = True, exist_ok = True )
@@ -687,10 +786,10 @@ def make_library( lib_name, src_paths, device, *, profile = None, extra_flags = 
     if lib.exists() and not _env_flag( "SDOT_FORCE_BUILD" ):
         return lib
 
-    profile = profile or device.acpp_profile
-    acpp = ensure_acpp( profile, device.acpp_backends )
+    profile = profile or resolved_profile
+    acpp = ensure_acpp( profile, backends )
 
-    omp_flags = _macos_omp_include_flags() if targets.startswith( "omp" ) else []
+    omp_flags = _macos_omp_include_flags() if _needs_omp_headers( targets ) else []
 
     cmd = [
         acpp,

@@ -85,7 +85,13 @@ class Tensor( Attribute ):
         res = cls( template_args = template_args, template_kwargs = template_kwargs, scope = scope )
         fill = value.tensor if isinstance( value, Tensor ) else value
         shape = res.shape
-        res._raw = driver.full( shape, fill, dtype = res.dtype )
+        # NB: a SYMBOLIC-fill path (a storageless C++ `FillTensor`, `res._fill = True` + a scalar
+        # `_raw`) is prototyped (see FillTensor.h and the `is_fill` branches in Tensor / CallArg_Tensor)
+        # but NOT yet wired in: it needs the fill to survive the symbolic algebra it flows through -- the
+        # `target/mass * weights` of a second `normalized_version` (a `c * fill` must stay a fill), and
+        # the backward RESIDUAL rank. Until then `full` MATERIALIZES: `[ n ]` weights are 80MB, already
+        # small (the [nb_angles, n] blow-up is fixed by the shared `[ num_dirac ]` shape upstream).
+        res._raw   = driver.full( shape, fill, dtype = res.dtype )
         res._shape = ReferenceShape.from_dense_shape( shape )
         return res
 
@@ -105,6 +111,13 @@ class Tensor( Attribute ):
         return self._raw is not None and driver.is_symbolic_zero( self._raw )
 
     @property
+    def is_fill( self ) -> bool:
+        """A symbolic constant (`Tensor.full`): its `_raw` is a single scalar, its logical shape lives
+        in the axes, and it lowers to a storageless `FillTensor`. Not a `TensorView` -- CallArg_Tensor
+        binds the scalar buffer and spells the logical shape in the view."""
+        return getattr( self, "_fill", False )
+
+    @property
     def is_undefined( self ) -> bool:
         return self._raw is None
 
@@ -114,12 +127,15 @@ class Tensor( Attribute ):
 
     def set( self, value ):
         if isinstance( value, Tensor ):
-            self._raw = value._raw           # carries the kind along (buffer / symbolic zero / None)
+            self._raw = value._raw           # carries the kind along (buffer / symbolic zero / None / FILL)
             # adopt the source's reference shape: it describes the SAME buffer we just took, so it is
             # our logical shape too, whatever our own axes are (a `ShapeVar` reads it via the axis
             # layout, see `register_in`). `None` when the source has none (a kernel output whose
             # counts live in its ShapeVars) -- we then pull our capacity off the shared buffer.
             self._shape = value._shape
+            # a symbolic FILL keeps its kind too: `_raw` is a scalar, `_shape` the logical extents, so
+            # without this flag we would relower the scalar as a rank-0 TensorView (see `is_fill`).
+            self._fill = getattr( value, "_fill", False )
             return
 
         # The LOGICAL shape is a pure fact about `value` (see `ReferenceShape`), read WITHOUT touching
@@ -157,6 +173,11 @@ class Tensor( Attribute ):
     def capacity( self ):
         """What our buffer IS: the allocated extents per LOGICAL dimension. An input is bound at THIS
         size -- an output that wants to grow must not force us to inflate the input."""
+        if self.is_fill:
+            # a fill has no [shape] buffer; its logical extents ARE its capacity, and they are read
+            # from its STORED reference shape -- NOT recomputed from the axes, which a backward residual
+            # may not have resolved yet (the C++ view reads the true extent from a sibling at run time).
+            return tuple( self._shape.capacities() )
         return tuple( self.buffer_layout.caps )
 
     @property
@@ -165,8 +186,9 @@ class Tensor( Attribute ):
         capacity it was allocated with. Read from `buffer_layout` (NOT `_raw.shape` directly), so a
         non-contiguous / flattened / padded buffer answers with the per-axis capacity rather than the
         raw physical extents. `None` while unbound. For the plain layout `caps == _raw.shape`."""
-        if self.raw is None:
-            return None
+        if self.raw is None or self.is_fill:
+            return None   # a fill backs no per-axis capacity a ShapeVar could invert (its count comes
+                          # from a real sibling buffer); skip it, do not read the scalar's [] shape
         return [ numpy.array( c, dtype = int ) for c in self.buffer_layout.caps ]
 
 

@@ -31,7 +31,12 @@ class Cpu( Device ):
         return True
 
     @property
-    def acpp_targets( self ):
+    def acpp_reachable( self ):
+        return True
+
+    @property
+    def acpp_aot_targets( self ):
+        # the library-only OpenMP backend: no LLVM, hence the fallback that works everywhere
         return "omp"
 
     @property

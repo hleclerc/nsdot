@@ -26,6 +26,11 @@ class CallArg_Tensor( CallArg ):
         # a symbolic-zero cotangent: it IS there (reads as 0), but no storage backs it -- so it
         # is unbound like a `NoneTensor`, only it lowers to a `ZeroTensor` (see `cpp_type`).
         self.symbolic_zero = getattr( inst, "is_symbolic_zero", False )
+        # a symbolic FILL (`Tensor.full`): a single scalar backs the value; it BINDS a rank-0 buffer
+        # but its C++ view is a storageless `FillTensor` over the LOGICAL shape (its extents read from
+        # a sibling real buffer at emit time -- hence the back-ref to the analysis).
+        self.is_fill = getattr( inst, "is_fill", False )
+        self._caa = call_args_analysis
         self.memory_space = call_args_analysis.cpp_memory_space
 
         if self.io_category.is_output:
@@ -101,7 +106,9 @@ class CallArg_Tensor( CallArg ):
         self._has_vmap = True   # the framework owns this leading dim -> stay contiguous (see `layout`)
 
     def batch_dim_expr( self, name ):
-        if name not in self.axis_names:
+        # a fill has only a scalar buffer -- it cannot answer a real extent, so it never resolves an
+        # axis size for anyone (a fill's OWN extents are read FROM the real buffers, not the reverse).
+        if self.is_fill or name not in self.axis_names:
             return None
         return self.jax_dim( self.axis_names.index( name ) )
 
@@ -145,6 +152,10 @@ class CallArg_Tensor( CallArg ):
         `NoneTensor` (absent -- a compile-time fact) or a `ZeroTensor` (a symbolic zero, read as
         0). Where the data lives is in the type too (`memory_space`): on a GPU, XLA already put
         this buffer in device memory."""
+        if self.is_fill:
+            # storageless constant over the logical shape; every element reads one scalar (see FillTensor.h).
+            return ( f"FillTensor<{ self._cpp_scalar() }, { self._cpp_shape_type() }, "
+                     f"{ self._cpp_axis_names_type() }>" )
         if not self.io_category.is_bound:
             kind = "ZeroTensor" if self.symbolic_zero else "NoneTensor"
             return ( f"{ kind }<{ self._cpp_scalar() }, { self._cpp_shape_type() }, "
@@ -159,6 +170,11 @@ class CallArg_Tensor( CallArg ):
         # a `NoneTensor` has nothing to view: it value-initializes.
         if not self.io_category.is_bound:
             return f"{ self.cpp_type() }{{}}"
+        if self.is_fill:
+            # the scalar data ptr + the LOGICAL extents, each read from a sibling REAL buffer that
+            # carries the axis (the analysis finds it, like a batch extent) -- so no extent is baked.
+            extents = ", ".join( self._caa.batch_dim_expr( a ) for a in self.axis_names )
+            return f"{ self.cpp_type() }{{ { self.jax_data_ptr() }, tuple( { extents } ) }}"
         ptr = self.jax_data_ptr()
         if self.layout.is_identity:
             return ( f"tensor_view<{ self.memory_space }>( { ptr }, { self._cpp_shape_tuple() }, "
@@ -208,6 +224,8 @@ class CallArg_Tensor( CallArg ):
     def _jax_buffer_shape( self ):
         # the PHYSICAL buffer XLA allocates / binds: the layout's `buffer_shape` (flattened+padded
         # batch when non-contiguous, else `self.shape`). The C++ view reinterprets it logically.
+        if self.is_fill:
+            return []   # a single scalar backs the whole (logical) fill -- a rank-0 buffer
         return self.layout.buffer_shape
 
     def jax_cpp_init( self ):
