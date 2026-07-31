@@ -61,6 +61,64 @@ namespace detail::RunParallel {
         } );
     }
 
+    /// Variante coopérative de `_do_submit` : un `nd_range` (au lieu d'un `range` plat), un work-GROUPE
+    /// par item (au lieu d'un work-item), `group_size` work-items coopérant dedans via la mémoire
+    /// locale (`local_scratch`, un `int32` `local_accessor` construit ici depuis le handler -- sa
+    /// taille est un ENTIER RUNTIME, jamais figée dans le type : `generic`/SSCP compile une fois et
+    /// JIT-exécute par machine, une taille figée casserait ça). `nb_threads` devient `nb_groups`
+    /// (même budget RAM qu'avant : coopérer ne change PAS le scratch O(n) par item concurrent, ça
+    /// change juste combien de work-items l'attaquent). Un `group_id` est UNIFORME sur tous les
+    /// work-items d'un même groupe (cf commentaire dans le kernel) -- condition nécessaire pour que
+    /// les `group_barrier` du corps ne soient pas UB.
+    sycl::event _do_submit_grouped( sycl::queue q, const auto &deps, auto &&func, auto &&item_list,
+                            int nb_items, int nb_groups, int group_size, int local_elems, auto reductions, auto &&...args ) {
+        return reductions.apply_values( [&]( auto... infos ) {
+            return q.submit( [&]( sycl::handler &h ) {
+                for ( const auto &e : deps.events )
+                    h.depends_on( e );
+                sycl::local_accessor<std::int32_t,1> local_scratch( sycl::range<1>( local_elems ), h );
+                h.parallel_for( sycl::nd_range<1>( sycl::range<1>( nb_groups * group_size ), sycl::range<1>( group_size ) ),
+                                sycl::reduction( infos[ 0_c ], infos[ 1_c ], infos[ 2_c ] )...,
+                                [=]( sycl::nd_item<1> nd_item, auto &...reducers ) {
+                    const int group_id    = int( nd_item.get_group_linear_id() );
+                    const int local_index = int( nd_item.get_local_linear_id() );
+                    const int local_size  = int( nd_item.get_local_range( 0 ) );
+                    auto group = nd_item.get_group();
+                    // `group_id` est le même pour tous les work-items du groupe (uniforme) -> valide
+                    // vis-à-vis des `group_barrier`/`local_scratch` que le corps peut appeler dedans.
+                    // STABLE sur toute la boucle striée (comme `thread_index` dans `_do_submit`) : le
+                    // corps s'en sert pour indexer SA propre ligne de scratch per-groupe
+                    // (`scratch( group_index )`), la même à chaque angle traité par ce groupe.
+                    for ( int index = group_id; index < nb_items; index += nb_groups )
+                        func( item_list[ index ], group_id, local_index, local_size, group, local_scratch, reducers..., args... );
+                } );
+            } );
+        } );
+    }
+
+    sycl::event _submit_kernel_grouped( sycl::queue q, const auto &deps, auto &&func, auto &&item_list,
+                                int nb_items, int nb_groups, int group_size, int local_elems,
+                                std::vector<std::function<void()>> &finalizers,
+                                auto reductions, auto &&head, auto &&...tail ) {
+        if constexpr ( is_reduction_target<DECAYED_TYPE_OF( head )> ) {
+            using T = DECAYED_TYPE_OF( *head.host );
+            T  identity = sycl::known_identity_v<DECAYED_TYPE_OF( head.op ),T>;
+            T *usm      = sycl::malloc_shared<T>( 1, q );
+            *usm = identity;
+            finalizers.push_back( [usm,host=head.host,q]() { *host = *usm; sycl::free( usm, q ); } );
+            return _submit_kernel_grouped( q, deps, FORWARD( func ), FORWARD( item_list ), nb_items, nb_groups, group_size, local_elems,
+                                   finalizers, reductions.with_appended_value( tuple( usm, identity, head.op ) ), FORWARD( tail )... );
+        } else
+            return _do_submit_grouped( q, deps, FORWARD( func ), FORWARD( item_list ), nb_items, nb_groups, group_size, local_elems, reductions, FORWARD( head ), FORWARD( tail )... );
+    }
+
+    sycl::event _submit_kernel_grouped( sycl::queue q, const auto &deps, auto &&func, auto &&item_list,
+                                int nb_items, int nb_groups, int group_size, int local_elems,
+                                std::vector<std::function<void()>> &/*finalizers*/,
+                                auto reductions ) {
+        return _do_submit_grouped( q, deps, FORWARD( func ), FORWARD( item_list ), nb_items, nb_groups, group_size, local_elems, reductions );
+    }
+
     /// Pèle les `ReductionTarget` (forcément en tête des args, contrainte SYCL : les reducers suivent
     /// immédiatement l'item). Pour chacun on alloue l'USM, on l'initialise à l'identité, on enregistre
     /// un finalizer (recopie USM -> hôte puis free), et on l'accumule dans `reductions`.
@@ -102,11 +160,26 @@ namespace detail::RunParallel {
         // capture PAR VALEUR du kernel : il est asynchrone (on ne wait pas ici), donc autonome.
         sycl::queue q = queue.queue;
         std::vector<std::function<void()>> finalizers;
-        sycl::event ev = _submit_kernel( q, deps, FORWARD( func ), FORWARD( item_list ),
-                                         nb_items, nb_threads, finalizers, tuple(), FORWARD( args )... );
-        QueueEvent qe( ev );
-        qe.finalizers = std::move( finalizers );
-        return qe;
+
+        // chemin coopératif (nd_range) : opt-in via `func.group_size(...)`/`local_mem_elems(...)`
+        // (`with_group_kernel`, cf run_parallel.h), même mécanisme opt-in que `max_nb_threads`
+        // ci-dessus -- absent (tout kernel qui ne demande pas de groupe, ex `Cell.measure`), on
+        // garde le chemin `range` plat inchangé, ci-dessous.
+        if constexpr ( requires { func.group_size( args... ); func.local_mem_elems( args... ); } ) {
+            const int group_size  = func.group_size( args... );
+            const int local_elems = func.local_mem_elems( args... );
+            sycl::event ev = _submit_kernel_grouped( q, deps, FORWARD( func ), FORWARD( item_list ),
+                                             nb_items, nb_threads, group_size, local_elems, finalizers, tuple(), FORWARD( args )... );
+            QueueEvent qe( ev );
+            qe.finalizers = std::move( finalizers );
+            return qe;
+        } else {
+            sycl::event ev = _submit_kernel( q, deps, FORWARD( func ), FORWARD( item_list ),
+                                             nb_items, nb_threads, finalizers, tuple(), FORWARD( args )... );
+            QueueEvent qe( ev );
+            qe.finalizers = std::move( finalizers );
+            return qe;
+        }
     }
 
     // corps de run_parallel, avec dépendances explicites `deps` (peut être Dependencies<0>)

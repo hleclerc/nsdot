@@ -1,0 +1,224 @@
+# Apptainer/Singularity image for PyTorch on CUDA — TORCH-ONLY, built on the OFFICIAL image.
+#
+# Proof of concept for a deeper fix than containers/cuda.def's `--env LD_LIBRARY_PATH=...`
+# workaround. Root cause (see cuda.def's %environment for the full story): a base image
+# derived from `nvidia/cuda:*-devel` registers /usr/local/cuda in /etc/ld.so.conf.d/, and
+# --nv's legacy GPU support reads that and reinjects it into LD_LIBRARY_PATH — AFTER
+# %environment runs, shadowing whatever CUDA libs the framework's own wheels actually want
+# (RUNPATH loses to LD_LIBRARY_PATH). Fixing this "for real" means the FINAL image must never
+# carry a system CUDA toolkit at all — no /usr/local/cuda, no matching ld.so.conf entry, no
+# path for --nv to rediscover and reinject.
+#
+# TWO-STAGE build:
+#   Stage "toolchain" (nvidia/cuda:12.8.1-devel-ubuntu24.04) — builds AdaptiveCpp ("full"
+#   profile, cuda backend), needing the devel headers + the driver-API stub (`libcuda.so`,
+#   never shipped as a pip wheel — checked: absent from nvidia-cuda-cccl/-runtime/-nvcc/-cupti
+#   wheels). This stage is entirely DISCARDED; only /opt/sdot-cache crosses into the final one.
+#   Stage "final" (pytorch/pytorch:2.13.0-cuda12.6-cudnn9-runtime) — the OFFICIAL PyTorch
+#   image. Verified empirically (2026-07-30, on an RTX 2080 Ti / driver 580.173.02):
+#     - its /etc/ld.so.conf.d/ has ZERO cuda-related entries (just the standard multiarch
+#       dirs) — nothing for --nv to shadow anything with, structurally, regardless of --nv
+#       vs --nvccli.
+#     - torch's own libs (e.g. libtorch_cuda.so) use a $ORIGIN-relative RPATH into
+#       .../nvidia/<pkg>/lib — the exact same self-contained "wheel" layout jax uses. No
+#       version drift to manage: the PyTorch team pins torch/CUDA/cuDNN together and tests
+#       them as one artifact, upstream.
+#     - torch/CUDA/cuDNN etc. are pip-installed system-wide (no venv): torch is ALREADY
+#       correct in this image, so we only add sdot's own extra deps (numpy, ...) on top —
+#       no two-venv juggling like cuda.def's jax/torch split, because there is only one
+#       framework here (see the planned containers/cuda-jax.def for its counterpart).
+#
+# acpp's librt-backend-cuda.so, built in the toolchain stage, bakes an absolute (here,
+# ABSENT) `/usr/local/cuda/lib64` into its own RUNPATH for libcudart.so.12, alongside
+# `$ORIGIN/../` (see the %post below): rather than re-fight LD_LIBRARY_PATH (which --nv AND
+# --nvccli can overwrite outright, so an %environment export is not reliable — see cuda.def),
+# a copy of torch's OWN libcudart.so.12 is dropped into that $ORIGIN/../ directory at %post
+# time. Resolved by RUNPATH, not by any environment variable — robust to --nv/--nvccli/none.
+#
+# Build (from the repo root):
+#   export DATA=/data
+#   mkdir -p $DATA/singularity_tmp $DATA/singularity_cache
+#   export APPTAINER_TMPDIR=$DATA/singularity_tmp
+#   export APPTAINER_CACHEDIR=$DATA/singularity_cache
+#   apptainer build --fakeroot containers/cuda-torch.sif containers/cuda-torch.def
+# Run the test suite (GPU: use --nvccli, see %help for why not --nv):
+#   apptainer exec --nvccli containers/cuda-torch.sif env SDOT_DEVICE=cuda python scripts/run_tests.py
+
+Bootstrap: docker
+From: nvidia/cuda:12.8.1-devel-ubuntu24.04
+Stage: toolchain
+
+%files
+    requirements.txt /opt/sdot/requirements.txt
+    src              /opt/sdot/src
+
+%post
+    set -eux
+
+    LLVM_VER=20
+    export SDOT_ACPP_VERSION=v25.10.0
+
+    export DEBIAN_FRONTEND=noninteractive
+    export SDOT_CACHE_DIR=/opt/sdot-cache
+    export CUDA_HOME=/usr/local/cuda
+
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        build-essential cmake ninja-build git ca-certificates \
+        wget gnupg lsb-release software-properties-common \
+        python3 python3-pip python3-venv
+
+    # LLVM / Clang 20 (+ openmp) from the official apt.llvm.org repo — needed here to BUILD
+    # acpp. The final stage installs the SAME clang/LLVM (see below): acpp's compiler front
+    # end (clang++) is invoked again there, every time sdot compiles a new kernel.
+    wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+    chmod +x /tmp/llvm.sh
+    /tmp/llvm.sh ${LLVM_VER} all
+    apt-get install -y --no-install-recommends libomp-${LLVM_VER}-dev
+    rm -f /tmp/llvm.sh
+
+    export CC=clang-${LLVM_VER}
+    export CXX=clang++-${LLVM_VER}
+
+    # Throwaway venv, only to invoke ensure_acpp(); this whole stage is discarded afterwards.
+    # `import sdot` reaches numpy at the very first submodule (tensor/ShapeVar.py), so
+    # requirements.txt is needed here even though nothing else from it is exercised.
+    python3 -m venv /opt/build-venv
+    /opt/build-venv/bin/pip install --no-cache-dir --upgrade pip
+    /opt/build-venv/bin/pip install --no-cache-dir --break-system-packages -r /opt/sdot/requirements.txt
+    PYTHONPATH=/opt/sdot/src/python /opt/build-venv/bin/python -c \
+        "from sdot.compilation.adaptive_cpp import ensure_acpp; print('acpp full/cuda:', ensure_acpp('full', ('cuda',)))"
+
+    # the cache must stay readable by the unprivileged runtime user
+    chmod -R a+rX /opt/sdot-cache
+
+
+Bootstrap: docker
+From: pytorch/pytorch:2.13.0-cuda12.6-cudnn9-runtime
+Stage: final
+
+%files
+    requirements.txt /opt/sdot/requirements.txt
+    src              /opt/sdot/src
+
+%files from toolchain
+    /opt/sdot-cache /opt/sdot-cache
+
+%environment
+    export SDOT_CACHE_DIR=/opt/sdot-cache
+    export DEBIAN_FRONTEND=noninteractive
+    # No CUDA_HOME / LLVM_CONFIG here on purpose: this stage never (re)builds acpp, only RUNS
+    # the one baked into /opt/sdot-cache — is_available()/acpp_prefix() just scan for an
+    # existing bin/acpp (src/python/sdot/compilation/adaptive_cpp.py), no toolkit needed.
+    # No LD_LIBRARY_PATH override either: unlike cuda.def, this image never registers a system
+    # CUDA path in /etc/ld.so.conf.d/, so there is nothing for --nv/--nvccli to shadow.
+
+%post
+    set -eux
+    export DEBIAN_FRONTEND=noninteractive
+    LLVM_VER=20
+
+    # `acpp` is not just a runtime JIT consumer of prebuilt bitcode — it IS the compiler front
+    # end (a wrapper around clang++) that sdot invokes AGAIN every time it compiles a new
+    # kernel (make_library/make_executable, on demand, at first use — verified by hitting
+    # exactly this: "acpp error: fatal: ... No such file or directory:
+    # '/usr/lib/llvm-20/bin/clang++'" when this stage only had the two runtime .so's). So a
+    # real clang++-20 must be installed here too, not just libLLVM/libomp — the CUDA devel
+    # headers/toolkit are still NOT needed for this (SYCL source has no CUDA-specific
+    # includes; the SSCP front end never touches cuda.h), only the compiler itself.
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        wget gnupg ca-certificates lsb-release software-properties-common
+    wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+    chmod +x /tmp/llvm.sh
+    /tmp/llvm.sh ${LLVM_VER} all
+    apt-get install -y --no-install-recommends libomp-${LLVM_VER}-dev
+    rm -f /tmp/llvm.sh
+    apt-get purge -y wget gnupg lsb-release software-properties-common
+    apt-get autoremove -y
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+    # See the file header: acpp's librt-backend-cuda.so wants libcudart.so.12 via RUNPATH
+    # ($ORIGIN/../, plus an absolute /usr/local/cuda/lib64 that does not exist here). Reuse
+    # torch's own copy (same pip-wheel layout jax uses) rather than installing anything new.
+    ACPP_LIB=$(find /opt/sdot-cache/adaptivecpp -maxdepth 3 -path '*/lib/hipSYCL' -printf '%h\n' | head -1)
+    test -n "$ACPP_LIB"   # fail loudly at build time rather than silently no-op the cp below
+    cp /usr/local/lib/python3.12/dist-packages/nvidia/cuda_runtime/lib/libcudart.so.12 "$ACPP_LIB/"
+
+    pip install --no-cache-dir --break-system-packages -r /opt/sdot/requirements.txt
+
+%test
+    # %test's rootfs is a read-only overlay (verified: `mount` shows `overlay on / ... (ro,
+    # ...)`) — nothing under /opt is writable at this point no matter its permission bits,
+    # which is why a dir pre-created+chmod'd there in %post ("Read-only file system") failed.
+    # Only /tmp is writable: a genuine tmpfs (rw,nosuid,nodev), mode 1777 — but it's also a
+    # FRESH mount per invocation, so anything made under it during %post is already gone by
+    # %test time. We run as root here (`id` confirmed it), and mkdir'ing it right here still
+    # was not enough: writing the actual app-db entry under it ("apps/smoke-<hash>") kept
+    # failing with Permission denied, specifically under this --fakeroot build (a real `sudo
+    # apptainer build`, as cuda.def uses, does not hit this) — this tmpfs has `usrquota`
+    # enabled, and --fakeroot's mapped "root" is a real subuid on the host, not actual uid 0,
+    # so it is plausibly quota-constrained where genuine root is exempt. Not worth chasing on
+    # a one-shot build-time smoke test: just skip the JIT cache WRITE entirely.
+    mkdir -p /tmp/acpp-appdb
+    export ACPP_RT_NO_JIT_CACHE_POPULATION=1
+
+    SDOT_CACHE_DIR=/opt/sdot-cache PYTHONPATH=/opt/sdot/src/python python -c \
+        "from sdot.compilation.adaptive_cpp import is_available; \
+         assert is_available('full', ('cuda',)), 'acpp full/cuda missing'; \
+         print('acpp full/cuda ok')"
+    python -c "import torch; print('torch', torch.__version__, torch.version.cuda)"
+
+    # Raw SYCL smoke test, compiled straight through acpp — deliberately NOT going through
+    # sdot's Cell/driver/FFI stack: that stack picks a framework driver (jax or torch) and, in
+    # this torch-only image, lands on TorchDriver — which is an early stub (unlike JaxDriver),
+    # a separate and much bigger project than validating this container. What this container
+    # is actually meant to prove is the toolchain itself: acpp (generic/SSCP) compiles a fresh
+    # kernel and its JIT runs correctly here, with libcudart.so.12 resolved via RUNPATH (see
+    # the %post above) rather than any env var.
+    # No GPU at build time, hence the CPU device (sycl::cpu_selector_v) — the SAME acpp
+    # binary/backends serve the GPU device too, exercised separately with --nvccli at runtime.
+    ACPP=$(SDOT_CACHE_DIR=/opt/sdot-cache PYTHONPATH=/opt/sdot/src/python python -c \
+        "from sdot.compilation.adaptive_cpp import acpp_path; print( acpp_path( 'full', ( 'cuda', ) ) )")
+    cat > /tmp/smoke.cpp <<'EOF'
+#include <sycl/sycl.hpp>
+#include <cstdio>
+int main() {
+    sycl::queue q( sycl::cpu_selector_v );
+    constexpr int N = 1024;
+    int *buf = sycl::malloc_shared< int >( N, q );
+    q.parallel_for( sycl::range< 1 >( N ), [ = ]( sycl::id< 1 > i ) { buf[ i ] = int( i ); } ).wait();
+    long sum = 0;
+    for ( int i = 0; i < N; ++i ) sum += buf[ i ];
+    sycl::free( buf, q );
+    if ( sum != long( N ) * ( N - 1 ) / 2 ) { printf( "FAIL: sum=%ld\n", sum ); return 1; }
+    printf( "sycl smoke ok: sum=%ld on %s\n", sum, q.get_device().get_info< sycl::info::device::name >().c_str() );
+    return 0;
+}
+EOF
+    ACPP_APPDB_DIR=/tmp/acpp-appdb "$ACPP" --acpp-targets=generic -O2 -o /tmp/smoke /tmp/smoke.cpp
+    ACPP_APPDB_DIR=/tmp/acpp-appdb /tmp/smoke
+
+%labels
+    org.sdot.role    cuda-torch-toolchain
+    org.sdot.acpp    v25.10.0
+    org.sdot.llvm    20
+    org.sdot.torch   2.13.0
+    org.sdot.cuda    12.6
+
+%help
+    Torch-only CUDA runtime image for sdot, built FROM the official pytorch/pytorch image
+    (torch/CUDA/cuDNN pinned together upstream — no wheel-vs-toolkit version drift to manage,
+    unlike containers/cuda.def). AdaptiveCpp ("full" profile, cuda backend) is built in a
+    throwaway toolchain stage (nvidia/cuda:12.8.1-devel) and only /opt/sdot-cache crosses
+    into this image.
+
+    Use --nvccli, not --nv: this image carries NO system CUDA toolkit (no /usr/local/cuda, no
+    matching /etc/ld.so.conf.d entry), so --nv's legacy mode has nothing to shadow — but
+    --nvccli (NVIDIA Container Toolkit) is the cleaner, supported path and needs no
+    LD_LIBRARY_PATH override at all (unlike cuda.def):
+      apptainer exec --nvccli containers/cuda-torch.sif env SDOT_DEVICE=cuda python scripts/run_tests.py
+      apptainer exec          containers/cuda-torch.sif env SDOT_DEVICE=cpu  python scripts/run_tests.py
+
+    `python` is the image's system python; torch is already installed by the base image.
+    The suite needs the repo on PYTHONPATH (see .private/Makefile).

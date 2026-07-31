@@ -175,6 +175,19 @@ class Device:
         it with the batch cap and the floor."""
         raise NotImplementedError
 
+    def group_size( self, **per_group_item ) -> int:
+        """How many work-items cooperate in ONE SYCL work-group (the second level of parallelism:
+        `nb_threads` sizes how many CONCURRENT items/groups run, this sizes how many work-items
+        attack EACH one). A SEPARATE, orthogonal decision from `nb_threads`/`_hw_thread_cap` (that
+        one is a whole-device/global-memory occupancy question; this one is a per-block/local-memory
+        one) -- do not try to unify them.
+
+        Default `1`: a work-group of size 1 makes the cooperative code path degenerate EXACTLY to
+        the single-work-item algorithm it generalizes (a `sycl::group` of size 1 hitting
+        `group_barrier`/a `local_accessor` is well-defined and cheap) -- so any device that does not
+        override this is automatically safe, at the cost of no actual cooperation."""
+        return 1
+
     def driver_version_for_jax( self, devices ):
         raise NotImplementedError
 

@@ -2,8 +2,8 @@ import numpy as np
 import torch
 
 from .TorchFramework import TorchFramework
-from .Device import Device
-from .Dtype import Dtype
+from ..devices.Device import Device
+from ..tensor.Dtype import Dtype
 
 class TorchDriver:
     """

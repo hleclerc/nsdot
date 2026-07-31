@@ -26,6 +26,32 @@ MaxThreads<std::decay_t<Func>> with_max_threads( int cap, Func &&func ) {
     return { cap, FORWARD( func ) };
 }
 
+/// Same idea as `MaxThreads`, one level up: each launched work-ITEM becomes a work-GROUP of
+/// `group_size` cooperating work-items (a `sycl::nd_range` launch instead of a flat range) --
+/// `cap` still bounds the number of GROUPS (`max_nb_threads`, unchanged meaning: a body's
+/// per-group scratch is sized on concurrent groups, not items). `local_elems` sizes a raw
+/// `int32` `sycl::local_accessor` (`_do_submit` builds it from the handler, see run_parallel.cxx)
+/// that the body gets as `local_scratch` -- deliberately a raw SYCL local view, not wrapped in a
+/// `Tensor`: the cooperative algorithm (histogram/scan/scatter) lives entirely in the C++ body,
+/// this facility only has to launch the nd_range and hand it the group + local memory. `func`'s
+/// optional `local_index`/`local_size`/`group`/`local_scratch` params (see `_do_submit`) pass
+/// straight through, same opt-in `if constexpr(requires{...})` mechanism as `thread_index`.
+template<class Func>
+struct GroupKernel {
+    int  cap;
+    int  size;
+    int  local_elems;
+    Func func;
+    int  max_nb_threads( auto &&... ) const { return cap; }
+    int  group_size( auto &&... )     const { return size; }
+    int  local_mem_elems( auto &&... ) const { return local_elems; }
+    void operator()( auto &&...args ) const { func( FORWARD( args )... ); }
+};
+template<class Func>
+GroupKernel<std::decay_t<Func>> with_group_kernel( int cap, int group_size, int local_elems, Func &&func ) {
+    return { cap, group_size, local_elems, FORWARD( func ) };
+}
+
 /// call func for each list item, parallel way.
 ///   func may define directly (in method) or indirectly (via surdefinitions) the limits in terms of nb threads, ...
 ///

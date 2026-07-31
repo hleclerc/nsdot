@@ -11,6 +11,7 @@ lib/
 *.cpython*
 *.dylib
 *.out
+*.sif
 
 applications/reconstruction/benchmarks/results/*.png
 graphify-out/

@@ -30,20 +30,34 @@ class FfiCode( AbstractFfiCode ):
     """
 
     def __init__( self, fwd_code, bwd_code = "", name = "", batch_axes = (), includes = (),
-                  thread_cap = None ) -> None:
+                  thread_cap = None, group_size = None, local_mem_elems = None ) -> None:
         self._code = dict( fwd = fwd_code, bwd = bwd_code )
         self.batch_axes = tuple( batch_axes )
         self.includes = tuple( includes )
         self.name = name
-        # cap on the number of work-items a `FfiCodeParallel` launches (see `code_for`): with it a
-        # body's PER-THREAD scratch is sized on threads, not items, so a huge batch does not blow up
-        # memory. A C++ EXPRESSION string, evaluated at the `run_parallel` call site (where the mapped
-        # args are in scope) -- e.g. `"sorted_indices.shape( 0 )"`, the RUNTIME extent of the scratch's
-        # thread axis. Kept an expression, NOT a baked int, so the same compiled kernel serves every
-        # machine/RAM (the thread count is read at run time, never in the source hash). `None` = one
-        # work-item per item (the default). Carried through `for_backward` / `with_batch_axis` so the
-        # backward and every `vmap` keep the same cap.
+        # cap on the number of work-items (work-GROUPS, if `group_size` is set) a `FfiCodeParallel`
+        # launches (see `code_for`): with it a body's PER-THREAD (or per-group) scratch is sized on
+        # concurrent workers, not items, so a huge batch does not blow up memory. A C++ EXPRESSION
+        # string, evaluated at the `run_parallel` call site (where the mapped args are in scope) --
+        # e.g. `"sorted_indices.shape( 0 )"`, the RUNTIME extent of the scratch's thread axis. Kept
+        # an expression, NOT a baked int, so the same compiled kernel serves every machine/RAM (the
+        # count is read at run time, never in the source hash). `None` = one work-item per item (the
+        # default). Carried through `for_backward` / `with_batch_axis` so the backward and every
+        # `vmap` keep the same cap.
         self.thread_cap = thread_cap
+        # opt into a SECOND level of SYCL parallelism: each launched work-item becomes a work-GROUP
+        # of `group_size` cooperating work-items (an `nd_range` launch), instead of one lone
+        # work-item per `thread_cap` slot. Also a C++ EXPRESSION (same runtime-not-baked reasoning as
+        # `thread_cap`), e.g. `"num_local.shape( 0 )"`. Requires `thread_cap` (the cap becomes a cap
+        # on concurrent GROUPS, same RAM-budget meaning as before -- cooperating doesn't shrink the
+        # O(n)-per-concurrent-item scratch, it just puts more workers on each one). `None` (default)
+        # = no group, the plain per-item work-item scaffold (what every non-cooperative kernel uses).
+        self.group_size = group_size
+        # size (element count) of the raw `int32` local-memory scratch (`local_scratch`) the body
+        # gets when `group_size` is set -- another C++ EXPRESSION, typically composed from
+        # `group_size`'s own expression (e.g. `f"{group_size} * 256"` for a per-work-item histogram
+        # row of 256 buckets). Meaningless without `group_size`.
+        self.local_mem_elems = local_mem_elems
 
     def code_for( self, code_type: str, call_args_analysis ) -> str:
         return self._code[ code_type ]
@@ -57,7 +71,8 @@ class FfiCode( AbstractFfiCode ):
         body is our backward one. Run through the normal path, so a `FfiCodeParallel` scaffolds
         the backward exactly as it does the forward (see `_call_backward`)."""
         return type( self )( self._code[ "bwd" ], name = ( self.name or "sdot" ) + "_bwd",
-                             includes = self.includes, thread_cap = self.thread_cap )
+                             includes = self.includes, thread_cap = self.thread_cap,
+                             group_size = self.group_size, local_mem_elems = self.local_mem_elems )
 
     def with_batch_axis( self ):
         """The same code, mapped over one more axis: what a `vmap` runs. The name is derived from
@@ -66,7 +81,8 @@ class FfiCode( AbstractFfiCode ):
         name = f"vmap_{ len( self.batch_axes ) }"
         return name, type( self )( self._code[ "fwd" ], self._code[ "bwd" ], self.name,
                                    self.batch_axes + ( name, ), self.includes,
-                                   thread_cap = self.thread_cap )
+                                   thread_cap = self.thread_cap, group_size = self.group_size,
+                                   local_mem_elems = self.local_mem_elems )
 
 
 class FfiCodeParallel( FfiCode ):
@@ -87,14 +103,49 @@ class FfiCodeParallel( FfiCode ):
     item count; a body that does not need them just ignores the two `auto` params. A call kwarg
     must not be named `thread_index`/`nb_threads`/`batch_index` (they would shadow the injected
     params) -- the scaffold OWNS `nb_threads`, so a call reads it from the body, never passes it.
+
+    When `group_size` is set, a DIFFERENT set of names is reserved instead of `thread_index`/
+    `nb_threads`: `group_index` (the work-GROUP's number, 0..nb_groups-1, stable over the strided
+    loop -- the group-level analogue of `thread_index`, index a PER-GROUP scratch with it, e.g.
+    `scratch( group_index )`), `local_index` (the work-item's rank WITHIN its work-group,
+    0..local_size-1), `local_size` (their count), `group` (the raw `sycl::group<1>` -- for
+    `group_barrier( group )`, passed through undressed on purpose: this is the second SYCL
+    parallelism level, exposed directly rather than wrapped) and `local_scratch` (a raw `int32`
+    `local_accessor` view, sized by `local_mem_elems`, SHARED by every work-item of the group --
+    race-free access is the body's own responsibility, via `local_index`/`group_barrier`, exactly
+    like real SYCL local memory). `batch_index` keeps its meaning: which item (e.g. angle) this
+    GROUP was assigned, one work-group per item now instead of one work-item -- since a group's
+    `group_index` (hence its scratch row) is REUSED across every item it strides over, a body MUST
+    end with a `group_barrier` after its last read of that scratch, so a work-item that finishes
+    early does not race ahead into the next item and overwrite the row while a slower sibling
+    (e.g. the `local_index==0` leader finishing a sequential sweep) is still reading it.
     """
 
     def code_for( self, code_type: str, call_args_analysis ) -> str:
         body = self._code[ code_type ]
         names = list( call_args_analysis.args )
+        mapped = ", ".join( call_args_analysis.args[ n ].cpp_run_parallel_pair() for n in names )
+
+        # Cooperative (nd_range): a work-GROUP per item, `group_size` work-items inside it sharing
+        # `local_scratch`. `with_group_kernel` wraps the lambda with the `max_nb_threads` (cap on
+        # concurrent GROUPS -- same RAM-budget meaning `thread_cap` always had),`group_size` and
+        # `local_mem_elems` hooks `run_parallel` reads (see run_parallel.h/.cxx). All three are C++
+        # EXPRESSIONS read at RUN TIME (never baked ints), so one compiled kernel (`generic`/SSCP)
+        # serves every machine.
+        if self.group_size is not None:
+            params = ", ".join( [ "auto batch_index", "auto group_index", "auto local_index", "auto local_size",
+                                  "auto group", "auto local_scratch" ] + [ f"auto { n }" for n in names ] )
+            return ( "run_parallel(\n"
+                     "    queue,\n"
+                     "    global_batch_indices,\n"
+                     f"    with_group_kernel( { self.thread_cap }, { self.group_size }, { self.local_mem_elems }, []( { params } ) {{\n"
+                     f"        { body }\n"
+                     "    } ),\n"
+                     f"    { mapped }\n"
+                     ");" )
+
         params = ", ".join( [ "auto batch_index", "auto thread_index", "auto nb_threads" ]
                             + [ f"auto { n }" for n in names ] )
-        mapped = ", ".join( call_args_analysis.args[ n ].cpp_run_parallel_pair() for n in names )
 
         # No cap: the plain lambda, one work-item per item (`run_parallel` then launches `nb_items`
         # threads). This is the default and what every non-scratch kernel uses.

@@ -1,4 +1,7 @@
+import numpy
+
 from sdot import Image, OtPlan1d, SumOfDiracs1d, driver
+from sdot.devices.Cpu import Cpu
 from sdot.testing import test, check_grad
 
 # driver.ftype = "FP64"
@@ -45,6 +48,33 @@ if test( "grad_values" ):
     info( values )
 
     check_grad( lambda v: OtPlan1d( SumOfDiracs1d( positions = [ 0.2, 0.5, 0.9 ] ), Image( values = v ) ).cost, values )
+
+if test( "group_size_cooperative" ):
+    # Force `local_size > 1` on CPU (never the perf path there -- see `Cpu.group_size`'s docstring --
+    # but the only place to cheaply exercise the cooperative chunked-histogram-scatter `sort_diracs`
+    # against a case `local_size == 1` would trivially degenerate around). The final 4-pass sort is
+    # bit-identical regardless of `local_size` (each pass is stable w.r.t. its own input order,
+    # chunk-by-chunk, ascending index -- ties still resolve by original index, exactly like the
+    # sequential algorithm), so the WHOLE computation (leader-only sweep, unchanged) must come out
+    # bit-identical too -- not just close.
+    positions = [ 0.9, 0.1, 0.5, 0.3, 0.7, 0.05, 0.95, 0.42, 0.63, 0.18 ]
+    values = [ 1, 2, 0, 3, 1 ]
+
+    otp_ref = OtPlan1d( SumOfDiracs1d( positions = positions ), Image( values = values ), with_barycenters = True )
+    cost_ref = float( otp_ref.cost )
+    bary_ref = numpy.asarray( otp_ref.barycenters ).tolist()
+
+    orig_group_size = Cpu.group_size
+    Cpu.group_size = lambda self, **_: 4
+    try:
+        otp = OtPlan1d( SumOfDiracs1d( positions = positions ), Image( values = values ), with_barycenters = True )
+        assert float( otp.cost ) == cost_ref
+        assert numpy.asarray( otp.barycenters ).tolist() == bary_ref
+
+        weights = driver.array( [ 1.0 ] * len( positions ) )
+        check_grad( lambda w: OtPlan1d( SumOfDiracs1d( positions = positions, weights = w ), Image( values = values ) ).cost, weights )
+    finally:
+        Cpu.group_size = orig_group_size
 
 if test( "grad_weights" ):
     # Dérivée de `cost` par rapport aux poids des diracs : somme suffixe des sauts de potentiel Phi.

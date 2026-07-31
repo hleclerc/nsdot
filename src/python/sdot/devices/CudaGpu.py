@@ -146,6 +146,23 @@ class CudaGpu( Device ):
         # already uses `mem_fraction`, Cuda's own analogue of `scratch_ram_fraction`.
         return n
 
+    def group_size( self, nb_shared_bytes_per_group_item=0, max_group_size=128, **_ ):
+        """How many work-items cooperate per work-group -- a per-BLOCK shared-memory/occupancy
+        question, separate from `nb_threads`/`_hw_thread_cap`'s whole-device/global-memory one
+        (don't unify them). Start at `max_group_size` and halve until the group's total shared-
+        memory usage (`candidate * nb_shared_bytes_per_group_item`) fits one SM's shared-memory
+        budget, also capped at the hardware's max threads/SM; floored at 1."""
+        attrs = self._get_attrs()
+        if attrs is None:
+            raise RuntimeError( "CUDA device attributes unavailable (libcuda not found)" )
+        _, max_thr_per_sm, _, shm_per_sm, *_ = attrs
+
+        n = min( max_group_size, max_thr_per_sm )
+        if nb_shared_bytes_per_group_item > 0:
+            while n > 1 and n * nb_shared_bytes_per_group_item > shm_per_sm:
+                n //= 2
+        return max( 1, n )
+
 def _load_libcuda():
     global _libcuda
     if _libcuda is None:

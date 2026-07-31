@@ -56,6 +56,18 @@ class Cpu( Device ):
             n = min( n, usable // per_thread )
         return n
 
+    def group_size( self, **per_group_item ):
+        # AdaptiveCpp's own docs: "Don't use nd_range parallel for unless you absolutely have to,
+        # as it is difficult to map efficiently to CPUs" -- this device only ever selects the
+        # `omp.library-only` backend (`acpp_aot_targets = "omp"`, no Clang-plugin-accelerated
+        # `omp.accelerated` path configured), which implements nd_range barriers via Boost.Fiber
+        # (cooperative user-space fibers): "the relative cost of a barrier... is significantly
+        # higher... kernels relying on barriers may experience substantial performance degradation."
+        # Stay at the degenerate `1` (see `Device.group_size`) on purpose -- do NOT raise this to
+        # "use more cores per group" without re-reading that doc, it would make things slower, not
+        # faster; CPU parallelism already comes from `nb_threads`/`_hw_thread_cap` above.
+        return 1
+
     def driver_version_for_jax( self, devices ):
         return devices( "cpu" )[ 0 ]
 
