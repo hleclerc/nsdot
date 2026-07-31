@@ -96,7 +96,10 @@ class OtPlan1d( Aggregate ):
         """
         n  = int( self.nb_diracs.value )
         nt = driver.device.nb_threads( batch_axes = self.batch_axes, nb_local_bytes_per_thread = 3 * 8 * n )
-        gs = driver.device.group_size( nb_shared_bytes_per_group_item = 256 * 4 )
+        # `+1` row: `update_outputs`'s `local_mem_elems` allocates one extra shared row (the
+        # cross-chunk bucket offsets) on top of the one-per-work-item rows -- tell `group_size` about
+        # that fixed overhead so its shared-memory budget check matches what actually gets allocated.
+        gs = driver.device.group_size( nb_shared_bytes_per_group_item = 256 * 4, nb_shared_bytes_fixed = 256 * 4 )
         num_group = Axis( ShapeVar( nt ), name = "num_group" )
         num_local = Axis( ShapeVar( gs ), name = "num_local" )
         return {

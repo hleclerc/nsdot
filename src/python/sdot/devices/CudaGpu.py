@@ -14,7 +14,7 @@ class CudaGpu( Device ):
     def __init__( self, device_id, mem_fraction = 0.5 ):
         self.device_id = device_id
         self.mem_fraction = mem_fraction  # fraction of total_dev_mem reserved for per-thread scratch
-        self._attrs = None  # (nb_sm, max_thr_per_sm, regs_per_sm, shm_per_sm, total_dev_mem, sm_major, sm_minor)
+        self._attrs = None  # (nb_sm, max_thr_per_sm, regs_per_sm, shm_per_sm, total_dev_mem, sm_major, sm_minor, shm_per_block)
 
     @property
     def name( self ):
@@ -110,9 +110,11 @@ class CudaGpu( Device ):
         # CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_MULTIPROCESSOR       = 39
         # CU_DEVICE_ATTRIBUTE_MAX_REGISTERS_PER_MULTIPROCESSOR     = 82
         # CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_MULTIPROCESSOR = 81
+        # CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK          = 8
         # CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR             = 75
         # CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR             = 76
-        self._attrs = attr( 16 ), attr( 39 ), attr( 82 ), attr( 81 ), mem.value, attr( 75 ), attr( 76 )
+        self._attrs = ( attr( 16 ), attr( 39 ), attr( 82 ), attr( 81 ), mem.value, attr( 75 ), attr( 76 ),
+                        attr( 8 ) )
         return self._attrs
 
     def _hw_thread_cap( self, nb_regs_per_thread=0, nb_shared_bytes_per_thread=0,
@@ -146,20 +148,30 @@ class CudaGpu( Device ):
         # already uses `mem_fraction`, Cuda's own analogue of `scratch_ram_fraction`.
         return n
 
-    def group_size( self, nb_shared_bytes_per_group_item=0, max_group_size=128, **_ ):
+    def group_size( self, nb_shared_bytes_per_group_item=0, nb_shared_bytes_fixed=0, max_group_size=128, **_ ):
         """How many work-items cooperate per work-group -- a per-BLOCK shared-memory/occupancy
         question, separate from `nb_threads`/`_hw_thread_cap`'s whole-device/global-memory one
         (don't unify them). Start at `max_group_size` and halve until the group's total shared-
-        memory usage (`candidate * nb_shared_bytes_per_group_item`) fits one SM's shared-memory
-        budget, also capped at the hardware's max threads/SM; floored at 1."""
+        memory usage (`candidate * nb_shared_bytes_per_group_item + nb_shared_bytes_fixed`, the
+        latter for any extra rows a caller allocates on top of one-per-item, e.g. a shared
+        cross-group row) fits under the PER-BLOCK budget, also capped at the hardware's max
+        threads/SM; floored at 1.
+
+        Deliberately `shm_per_block` (`MAX_SHARED_MEMORY_PER_BLOCK`, the no-opt-in static default,
+        49152B on Turing), NOT `shm_per_sm` (`..._PER_MULTIPROCESSOR`, 65536B on Turing): AdaptiveCpp's
+        CUDA backend launches SSCP/generic kernels via the driver API without ever calling
+        `cuFuncSetAttribute( CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, ... )`, so a launch
+        requesting more than the static per-block default fails at submission with
+        `CUDA_ERROR_INVALID_VALUE` (`error code = CU:1`) -- silently, no compile-time signal -- even
+        though the SM could physically hold more."""
         attrs = self._get_attrs()
         if attrs is None:
             raise RuntimeError( "CUDA device attributes unavailable (libcuda not found)" )
-        _, max_thr_per_sm, _, shm_per_sm, *_ = attrs
+        _, max_thr_per_sm, _, _, _, _, _, shm_per_block = attrs
 
         n = min( max_group_size, max_thr_per_sm )
         if nb_shared_bytes_per_group_item > 0:
-            while n > 1 and n * nb_shared_bytes_per_group_item > shm_per_sm:
+            while n > 1 and n * nb_shared_bytes_per_group_item + nb_shared_bytes_fixed > shm_per_block:
                 n //= 2
         return max( 1, n )
 

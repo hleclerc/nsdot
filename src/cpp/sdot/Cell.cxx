@@ -281,14 +281,18 @@ UTP void DTP::measure_bwd( auto &&res, auto &&item_map, auto &&nb_map_items, aut
 
     if ( ! grad_vertex_positions.surely_null() ) {
         if constexpr ( ct_dim == 2 ) {
-            // 2D: shoelace formula
+            // 2D: shoelace formula. Each vertex's gradient gets a contribution from its two
+            // neighboring edges -- written here as ONE expression per output element (`prev`/`next`)
+            // rather than two `+=`/`-=` scatters into a shared accumulator: this call carries no
+            // batch axis, so `CallArg_Tensor.cpp_seed_member` does not zero-seed `grad_vertex_positions`
+            // (its rule assumes a per-item output is written once) -- an accumulating `+=` here would
+            // silently add onto whatever garbage was already in the freshly-allocated device buffer.
             const SI nb_vertices = this->nb_vertices;
             for ( SI i = 0; i < nb_vertices; ++i ) {
-                const SI j = ( i + 1 ) % nb_vertices;
-                grad_vertex_positions( i, 0 ) += grad_res * vertex_positions( j, 1 ) / 2;
-                grad_vertex_positions( j, 1 ) += vertex_positions( i, 0 ) * grad_res / 2;
-                grad_vertex_positions( j, 0 ) -= grad_res * vertex_positions( i, 1 ) / 2;
-                grad_vertex_positions( i, 1 ) -= vertex_positions( j, 0 ) * grad_res / 2;
+                const SI p = ( i + nb_vertices - 1 ) % nb_vertices;
+                const SI n = ( i + 1 ) % nb_vertices;
+                grad_vertex_positions( i, 0 ) = grad_res * ( vertex_positions( n, 1 ) - vertex_positions( p, 1 ) ) / 2;
+                grad_vertex_positions( i, 1 ) = grad_res * ( vertex_positions( p, 0 ) - vertex_positions( n, 0 ) ) / 2;
             }
         } else {
             // nD: fan triangulation, adjoint of `measure`'s `for_each_simplex` sum of

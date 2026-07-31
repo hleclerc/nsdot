@@ -314,10 +314,16 @@ if test( "nested" ):
                 // indexing an aggregate indexes its members -- a nested one included, recursively.
                 auto p = pair( batch_index );
 
+                // every coordinate of the one written row is set explicitly: a fresh output buffer
+                // is NOT guaranteed zero-initialized on every device (XLA's GPU allocator does not
+                // zero fresh device memory, unlike a first-touch CPU page).
                 p.left.nb_vertices.set( 1 );
+                p.left.vertex_positions( num_vertex = 0, dim = 0 ) = 0;
                 p.left.vertex_positions( num_vertex = 0, dim = 1 ) = 1;
 
                 p.right.nb_vertices.set( 1 );
+                p.right.vertex_positions( num_vertex = 0, dim = 0 ) = 0;
+                p.right.vertex_positions( num_vertex = 0, dim = 1 ) = 0;
                 p.right.vertex_positions( num_vertex = 0, dim = 2 ) = 2;
             },
             pair_io, pair
