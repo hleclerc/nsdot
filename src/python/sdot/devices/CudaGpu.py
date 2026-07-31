@@ -11,10 +11,13 @@ class CudaGpu( Device ):
     # 16 for fp64.
     batch_alignment = 128
 
-    def __init__( self, device_id, mem_fraction = 0.5 ):
-        self.device_id = device_id
+    def __init__( self, device_id, mem_fraction = 0.5, _attrs = None ):
         self.mem_fraction = mem_fraction  # fraction of total_dev_mem reserved for per-thread scratch
-        self._attrs = None  # (nb_sm, max_thr_per_sm, regs_per_sm, shm_per_sm, total_dev_mem, sm_major, sm_minor, shm_per_block)
+        self.device_id = device_id
+        self._attrs = _attrs # (nb_sm, max_thr_per_sm, regs_per_sm, shm_per_sm, total_dev_mem, sm_major, sm_minor, shm_per_block)
+
+    def copy( self ) -> 'Device':
+        return CudaGpu( self.device_id, self.mem_fraction, self._attrs )
 
     @property
     def name( self ):

@@ -6,6 +6,8 @@ class Device:
 
     driver_version: any
 
+    _default_device = None
+
     @staticmethod
     def factory( value ) -> 'Device':
         if isinstance( value, Device ):
@@ -35,8 +37,15 @@ class Device:
 
     @staticmethod
     def default() -> 'Device':
-        from .Cpu import Cpu
-        return Cpu()
+        if Device._default_device is None:
+            from ..drivers.driver import driver
+            if driver.available_gpus:
+                from .CudaGpu import CudaGpu
+                Device._default_device = CudaGpu( 0 )
+            else:
+                from .Cpu import Cpu
+                Device._default_device = Cpu()
+        return Device._default_device
 
     @property
     def name( self ) -> str:
@@ -202,3 +211,6 @@ class Device:
     @property
     def is_cpu( self ):
         return False
+
+
+_default_device = None

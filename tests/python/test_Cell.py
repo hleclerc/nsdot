@@ -3,13 +3,14 @@ from sdot.testing import test, check_grad
 
 if test( "basic" ):
     c = Cell.make_hypercube( 2, [ 0, 0 ], [ [ 2, 0 ], [ 0, 1 ] ] )
-    info( c.vertex_positions )
-    info( c.measure )
+    # info( c.vertex_positions )
+    assert c.measure == 2
 
 if test( "batch" ):
-    c = Cell.make_hypercube( 3, [ 0, 0, 0 ], [ [ 2, 0, 0 ], [ 0, 1, 0 ], [ 0, 0, 1 ] ], batch_axes = [ new_batch_axis( 2 ) ] )
-    info( c.vertex_positions )
-    info( c.measure )
+    # c = Cell.make_hypercube( 3, [ 0, 0, 0 ], [ [ 2, 0, 0 ], [ 0, 1, 0 ], [ 0, 0, 1 ] ], batch_axes = [ new_batch_axis( 2 ) ] )
+    c = Cell.make_hypercube( 2, [ 0, 0 ], [ [ 2, 0 ], [ 0, 1 ] ], batch_axes = [ new_batch_axis( 2 ) ] )
+    # info( c.vertex_positions )
+    assert tuple( c.measure.tensor ) == ( 2, 2 )
 
 if test( "grad_hypercube" ):
     # Dérivées des sorties d'un hypercube 2D par rapport à ses entrées `origin` et `axes`.

@@ -97,7 +97,7 @@ class Cell( Aggregate ):
         )
 
     @property
-    def measure( self ):
+    def measure( self ) -> Tensor:
         nb_map_items = ShapeVar()
         nb_threads = ShapeVar()
 
