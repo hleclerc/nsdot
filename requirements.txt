@@ -3,6 +3,7 @@ typing_extensions
 nanobind
 devtools
 numpy
+scipy
 
 # Packaging
 cibuildwheel

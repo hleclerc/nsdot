@@ -6,8 +6,13 @@
 # --nv's legacy GPU support reads that and reinjects it into LD_LIBRARY_PATH — AFTER
 # %environment runs, shadowing whatever CUDA libs the framework's own wheels actually want
 # (RUNPATH loses to LD_LIBRARY_PATH). Fixing this "for real" means the FINAL image must never
-# carry a system CUDA toolkit at all — no /usr/local/cuda, no matching ld.so.conf entry, no
-# path for --nv to rediscover and reinject.
+# have a system CUDA toolkit REGISTERED anywhere the loader searches by default — no
+# /usr/local/cuda in ld.so.conf.d, no path for --nv to rediscover and reinject. It does still
+# recreate a couple of individual files under a bare /usr/local/cuda/... (see %post: acpp's
+# own build bakes a couple of ABSOLUTE, hardcoded paths — not just library-search-path ones —
+# for libcudart.so.12's RUNPATH fallback and for libdevice.10.bc, a data file with no env-var
+# override at all). Neither is a toolkit install and neither touches ld.so.conf, so --nv's
+# legacy path-rediscovery has nothing to find there.
 #
 # TWO-STAGE build:
 #   Stage "toolchain" (nvidia/cuda:12.8.1-devel-ubuntu24.04) — builds AdaptiveCpp ("full"
@@ -147,22 +152,19 @@ Stage: final
 
     pip install --no-cache-dir --break-system-packages -r /opt/sdot/requirements.txt
 
-%test
-    # %test's rootfs is a read-only overlay (verified: `mount` shows `overlay on / ... (ro,
-    # ...)`) — nothing under /opt is writable at this point no matter its permission bits,
-    # which is why a dir pre-created+chmod'd there in %post ("Read-only file system") failed.
-    # Only /tmp is writable: a genuine tmpfs (rw,nosuid,nodev), mode 1777 — but it's also a
-    # FRESH mount per invocation, so anything made under it during %post is already gone by
-    # %test time. We run as root here (`id` confirmed it), and mkdir'ing it right here still
-    # was not enough: writing the actual app-db entry under it ("apps/smoke-<hash>") kept
-    # failing with Permission denied, specifically under this --fakeroot build (a real `sudo
-    # apptainer build`, as cuda.def uses, does not hit this) — this tmpfs has `usrquota`
-    # enabled, and --fakeroot's mapped "root" is a real subuid on the host, not actual uid 0,
-    # so it is plausibly quota-constrained where genuine root is exempt. Not worth chasing on
-    # a one-shot build-time smoke test: just skip the JIT cache WRITE entirely.
-    mkdir -p /tmp/acpp-appdb
-    export ACPP_RT_NO_JIT_CACHE_POPULATION=1
+    # A SECOND CUDA-toolkit artifact acpp's SSCP path needs, found only at real GPU RUNTIME
+    # (this one is invisible to `ldd` — it's bitcode data consumed by LLVM's NVPTX backend at
+    # JIT time, not a linked shared library): "LLVMToBackend: Could not open file
+    # /usr/local/cuda/nvvm/libdevice/libdevice.10.bc" (confirmed hardcoded — `strings` on
+    # libllvm-to-ptx.so shows the literal path, no ACPP_* env override exists). libdevice
+    # supplies the CUDA math intrinsics (sin/exp/...) used when lowering to PTX. Same fix as
+    # libcudart: recreate the exact path acpp was built to expect and drop in torch's OWN copy
+    # (triton, a torch dependency, bundles one for the exact same reason — JIT PTX codegen).
+    mkdir -p /usr/local/cuda/nvvm/libdevice
+    cp /usr/local/lib/python3.12/dist-packages/triton/backends/nvidia/lib/libdevice.10.bc \
+        /usr/local/cuda/nvvm/libdevice/libdevice.10.bc
 
+%test
     SDOT_CACHE_DIR=/opt/sdot-cache PYTHONPATH=/opt/sdot/src/python python -c \
         "from sdot.compilation.adaptive_cpp import is_available; \
          assert is_available('full', ('cuda',)), 'acpp full/cuda missing'; \
@@ -178,6 +180,17 @@ Stage: final
     # the %post above) rather than any env var.
     # No GPU at build time, hence the CPU device (sycl::cpu_selector_v) — the SAME acpp
     # binary/backends serve the GPU device too, exercised separately with --nvccli at runtime.
+    #
+    # COMPILE only here, do not RUN: running it needs to write the JIT app-db entry
+    # ("apps/smoke-<hash>"), which reproducibly failed with Permission denied under /tmp in
+    # THIS --fakeroot BUILD sandbox specifically (mkdir'ing the parent dir first, and even
+    # ACPP_RT_NO_JIT_CACHE_POPULATION=1, did not help) — /tmp here is a tmpfs with `usrquota`
+    # enabled, and --fakeroot's "root" is a real mapped subuid on the host, not actual uid 0,
+    # so it is plausibly quota-constrained where genuine root (as `sudo apptainer build` runs,
+    # e.g. cuda.def) is exempt. This is specific to the BUILD-time sandbox, not the actual
+    # runtime container (a normal `apptainer exec`, no fakeroot involved) — so it is not worth
+    # chasing here. The compile step alone already proves clang++/LLVM/acpp work end-to-end;
+    # actual EXECUTION is verified for real, on the GPU, by run_cuda_torch_sif (.private/Makefile).
     ACPP=$(SDOT_CACHE_DIR=/opt/sdot-cache PYTHONPATH=/opt/sdot/src/python python -c \
         "from sdot.compilation.adaptive_cpp import acpp_path; print( acpp_path( 'full', ( 'cuda', ) ) )")
     cat > /tmp/smoke.cpp <<'EOF'
@@ -196,8 +209,9 @@ int main() {
     return 0;
 }
 EOF
-    ACPP_APPDB_DIR=/tmp/acpp-appdb "$ACPP" --acpp-targets=generic -O2 -o /tmp/smoke /tmp/smoke.cpp
-    ACPP_APPDB_DIR=/tmp/acpp-appdb /tmp/smoke
+    "$ACPP" --acpp-targets=generic -O2 -o /tmp/smoke /tmp/smoke.cpp
+    test -x /tmp/smoke
+    echo "smoke compiled ok"
 
 %labels
     org.sdot.role    cuda-torch-toolchain
