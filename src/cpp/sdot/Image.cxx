@@ -22,14 +22,15 @@ UTP auto DTP::with_defaults( auto &&cont ) const {
     //
     // The brace-init is POSITIONAL, so its order must match `SDOT_ATTRIBUTES_OF_Image` (the field
     // declaration order across the MRO, axes skipped): target_mass, nb_dims, shape, values, origin,
-    // frame, knots, current_mass. `::sdot::Image` (qualified) names the TEMPLATE so CTAD re-deduces;
-    // bare `Image` would mean the current instantiation and defeat the substitution.
+    // frame, knots, current_mass, nb_cells_cum, cell_cum_mass. `::sdot::Image` (qualified) names the
+    // TEMPLATE so CTAD re-deduces; bare `Image` would mean the current instantiation and defeat the
+    // substitution.
     if constexpr ( ! CT_VALUE( origin.is_valid() ) )
-        return ::sdot::Image{ target_mass, nb_dims, shape, values, Vector<TF,ct_dim>::zeros(), frame, knots, current_mass }.with_defaults( FORWARD( cont ) );
+        return ::sdot::Image{ target_mass, nb_dims, shape, values, Vector<TF,ct_dim>::zeros(), frame, knots, current_mass, nb_cells_cum, cell_cum_mass }.with_defaults( FORWARD( cont ) );
     else if constexpr ( ! CT_VALUE( frame.is_valid() ) )
-        return ::sdot::Image{ target_mass, nb_dims, shape, values, origin, Matrix<TF,ct_dim>::identity(), knots, current_mass }.with_defaults( FORWARD( cont ) );
+        return ::sdot::Image{ target_mass, nb_dims, shape, values, origin, Matrix<TF,ct_dim>::identity(), knots, current_mass, nb_cells_cum, cell_cum_mass }.with_defaults( FORWARD( cont ) );
     else if constexpr ( ! CT_VALUE( knots.is_valid() ) )
-        return ::sdot::Image{ target_mass, nb_dims, shape, values, origin, frame, IotaTensor<TF>{}, current_mass }.with_defaults( FORWARD( cont ) );
+        return ::sdot::Image{ target_mass, nb_dims, shape, values, origin, frame, IotaTensor<TF>{}, current_mass, nb_cells_cum, cell_cum_mass }.with_defaults( FORWARD( cont ) );
     else
         return cont( *this );
 }
@@ -152,6 +153,66 @@ UTP auto DTP::udp_cont( auto &&udp, auto mass_to_take, auto &&cb_parts ) const {
         udp.pos = x1;
         udp.mass -= mass_to_take; // remaining mass of the current cell, for the next dirac
     }
+}
+
+UTP auto DTP::udp_at( auto &&cell_cum_mass, auto target_mass ) const {
+    const SI nb_cells = values.size();
+    const TF sc = frame( 0, 0 );
+    const TF of = origin( 0 );
+
+    // Binary search for the SMALLEST cell index `c` with `cell_cum_mass(c+1) >= target_mass` -- NOT
+    // the largest `c` with `cell_cum_mass(c) <= target_mass`. The two rules agree everywhere EXCEPT
+    // across a run of zero-mass cells sharing the same cumulative value as `target_mass`, and only the
+    // smallest-c rule reproduces what the sequential walk actually does there: `udp_start()` never
+    // pre-advances past a leading zero-density cell (advancing only ever happens inside `udp_cont`'s
+    // own while-loop, driven by an actual dirac's `mass_to_take`), and a boundary landing exactly on a
+    // cell edge resolves to the LAST cell whose mass ended there (`udp.y` possibly nonzero, `udp.mass`
+    // exactly 0), matching `udp_cont`'s own state right after a partial-take finishes exactly on an
+    // edge -- the following zero-mass run is only entered by the NEXT `udp_cont` call, exactly like the
+    // sequential algorithm's own next call would. For any `c > 0` chosen by this rule, `y(c)` is
+    // PROVABLY nonzero (`cell_cum_mass(c) < target_mass` forces `cell_cum_mass(c) < cell_cum_mass(c+1)`,
+    // i.e. cell `c` itself carries mass) -- only `c == 0` can have `y(c) == 0`, and only when
+    // `target_mass == 0` exactly, guarded below like `udp_cont`'s own partial-take guard.
+    SI lo = 0, hi = nb_cells - 1; // invariant: answer in [lo,hi]
+    while ( lo < hi ) {
+        const SI mid = lo + ( hi - lo ) / 2;
+        if ( TF( cell_cum_mass( mid + 1 ) ) >= TF( target_mass ) ) hi = mid;
+        else                                                       lo = mid + 1;
+    }
+    const SI c = lo; // a float overshoot past the array's own total (independent chunked-summation
+                      // rounding between `cell_cum_mass` and the caller's own target mass) cannot walk
+                      // past the end -- same bound-safety reasoning as `udp_cont`'s `index+1 < nb_cells`.
+
+    const TF base = TF( cell_cum_mass( c ) );
+    const TF y    = values[ c ];
+    const TF x0   = of + sc * knots( c );
+    return Udp{
+        .index = c,
+        .pos   = ( y != 0 ) ? x0 + ( TF( target_mass ) - base ) / y : x0,
+        .mass  = TF( cell_cum_mass( c + 1 ) ) - TF( target_mass ), // array-consistent (not recomputed
+                                                                    // from knots*y), stays coherent with
+                                                                    // whatever rounding built the array
+        .y     = y
+    };
+}
+
+// Sequential build of `cell_cum_mass` -- exactly the cell-mass formula `udp_start`/`udp_cont` use
+// inline above, but walked once end-to-end and cached (see `Image.py`'s `cell_cum_mass`
+// `ComputedAttribute`) instead of being rebuilt by every `OtPlan1d` forward/backward call. One
+// thread does a whole angle -- `nb_cells` is small enough that no cooperative scan is worth it.
+UTP void DTP::fill_cell_cum_mass( auto &&cell_cum_mass ) const {
+    with_defaults( [&]( auto &&img ) {
+        const SI nb_cells = img.values.size();
+        const TF sc = img.frame( 0, 0 );
+        auto cell_mass = [&]( SI c ) { return sc * ( TF( img.knots( c + 1 ) ) - TF( img.knots( c ) ) ) * TF( img.values[ c ] ); };
+
+        TF running = 0;
+        for ( SI c = 0; c < nb_cells; ++c ) {
+            cell_cum_mass( c ) = running;
+            running += cell_mass( c );
+        }
+        cell_cum_mass( nb_cells ) = running; // sentinel: total target mass
+    } );
 }
 
 }

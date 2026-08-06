@@ -160,6 +160,22 @@ class CudaGpu( Device ):
         cross-group row) fits under the PER-BLOCK budget, also capped at the hardware's max
         threads/SM; floored at 1.
 
+        `max_group_size` was briefly forced to `1` (no cooperation) after measuring that
+        cooperating on the SORT ALONE was a net negative for `OtPlan1d`: the forward was flat across
+        `group_size` and the backward got monotonically worse, because the leader-only sequential
+        `udp_cont` SWEEP dominated and a wider work-group just reserved more of an SM's resources
+        while work-item 0 did all the work. Once the sweep itself was ALSO made cooperative (jump-
+        started per chunk via `Image::udp_at`, see [[group-cooperative-sort]]), a fresh sweep on the
+        same hardware (600 angles, n=1e4, RTX 2080 Ti) showed the backward improving MONOTONICALLY
+        with `group_size` (140.9ms at 1 -> 44.6ms at 32, the largest value the 256-bucket radix sort's
+        shared-memory footprint allows) -- so `max_group_size` reverts to `128` (the original default,
+        which this budget check clamps down to 32 in practice for `OtPlan1d`'s footprint). The forward
+        stayed flat even with the sweep parallelized too, for a reason not yet root-caused (suspected:
+        a separate, non-cooperative kernel elsewhere in the per-call graph, e.g. `Image`'s own mass-
+        normalization call, dominating forward's wall time) -- flagged, not blocking, since reverting
+        this default doesn't regress the forward either way (still flat) and clearly helps the
+        backward. Re-measure before changing this again.
+
         Deliberately `shm_per_block` (`MAX_SHARED_MEMORY_PER_BLOCK`, the no-opt-in static default,
         49152B on Turing), NOT `shm_per_sm` (`..._PER_MULTIPROCESSOR`, 65536B on Turing): AdaptiveCpp's
         CUDA backend launches SSCP/generic kernels via the driver API without ever calling

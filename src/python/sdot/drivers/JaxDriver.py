@@ -211,6 +211,13 @@ class JaxDriver:
         from jax.custom_derivatives import SymbolicZero
         return isinstance( x, SymbolicZero )
 
+    # detaches `x` from the gradient tape: a value computed FROM a perturbed input but that itself
+    # carries no meaningful gradient (e.g. `Image.cell_cum_mass`, a routing helper -- see
+    # `distributions/Image.py::_update_cell_cum_mass`). Applied where such a value is COMPUTED, not
+    # at each read site: once detached, nothing downstream ever sees a gradient trace through it.
+    def stop_gradient( self, x ):
+        return jax.lax.stop_gradient( x )
+
     # reductions -- the backend-agnostic verbs `Tensor` reduces through (`axis` is
     # a dimension index or a tuple of them; `None` reduces everything to a scalar).
     def sum( self, a, axis = None ):

@@ -1,7 +1,7 @@
 # Apptainer/Singularity image for PyTorch on CUDA — TORCH-ONLY, built on the OFFICIAL image.
 #
-# Proof of concept for a deeper fix than containers/cuda.def's `--env LD_LIBRARY_PATH=...`
-# workaround. Root cause (see cuda.def's %environment for the full story): a base image
+# Same runtime-layout fix as containers/cuda-jax.def, without mixing the two frameworks.
+# Root cause: a base image
 # derived from `nvidia/cuda:*-devel` registers /usr/local/cuda in /etc/ld.so.conf.d/, and
 # --nv's legacy GPU support reads that and reinjects it into LD_LIBRARY_PATH — AFTER
 # %environment runs, shadowing whatever CUDA libs the framework's own wheels actually want
@@ -30,13 +30,13 @@
 #       them as one artifact, upstream.
 #     - torch/CUDA/cuDNN etc. are pip-installed system-wide (no venv): torch is ALREADY
 #       correct in this image, so we only add sdot's own extra deps (numpy, ...) on top —
-#       no two-venv juggling like cuda.def's jax/torch split, because there is only one
-#       framework here (see the planned containers/cuda-jax.def for its counterpart).
+#       no two-venv juggling, because there is only one framework here
+#       (see containers/cuda-jax.def for its counterpart).
 #
 # acpp's librt-backend-cuda.so, built in the toolchain stage, bakes an absolute (here,
 # ABSENT) `/usr/local/cuda/lib64` into its own RUNPATH for libcudart.so.12, alongside
 # `$ORIGIN/../` (see the %post below): rather than re-fight LD_LIBRARY_PATH (which --nv AND
-# --nvccli can overwrite outright, so an %environment export is not reliable — see cuda.def),
+# --nvccli can overwrite outright, so an %environment export is not reliable),
 # a copy of torch's OWN libcudart.so.12 is dropped into that $ORIGIN/../ directory at %post
 # time. Resolved by RUNPATH, not by any environment variable — robust to --nv/--nvccli/none.
 #
@@ -46,8 +46,8 @@
 #   export APPTAINER_TMPDIR=$DATA/singularity_tmp
 #   export APPTAINER_CACHEDIR=$DATA/singularity_cache
 #   apptainer build --fakeroot containers/cuda-torch.sif containers/cuda-torch.def
-# Run the test suite (GPU: use --nvccli, see %help for why not --nv):
-#   apptainer exec --nvccli containers/cuda-torch.sif env SDOT_DEVICE=cuda python scripts/run_tests.py
+# Run the test suite (GPU: --nv binds the host driver):
+#   apptainer exec --nv containers/cuda-torch.sif env SDOT_DEVICE=cuda python scripts/run_tests.py
 
 Bootstrap: docker
 From: nvidia/cuda:12.8.1-devel-ubuntu24.04
@@ -115,7 +115,7 @@ Stage: final
     # No CUDA_HOME / LLVM_CONFIG here on purpose: this stage never (re)builds acpp, only RUNS
     # the one baked into /opt/sdot-cache — is_available()/acpp_prefix() just scan for an
     # existing bin/acpp (src/python/sdot/compilation/adaptive_cpp.py), no toolkit needed.
-    # No LD_LIBRARY_PATH override either: unlike cuda.def, this image never registers a system
+    # No LD_LIBRARY_PATH override either: this image never registers a system
     # CUDA path in /etc/ld.so.conf.d/, so there is nothing for --nv/--nvccli to shadow.
 
 %post
@@ -187,7 +187,7 @@ Stage: final
     # ACPP_RT_NO_JIT_CACHE_POPULATION=1, did not help) — /tmp here is a tmpfs with `usrquota`
     # enabled, and --fakeroot's "root" is a real mapped subuid on the host, not actual uid 0,
     # so it is plausibly quota-constrained where genuine root (as `sudo apptainer build` runs,
-    # e.g. cuda.def) is exempt. This is specific to the BUILD-time sandbox, not the actual
+    # e.g. the former single-stage CUDA image) is exempt. This is specific to the BUILD-time sandbox, not the actual
     # runtime container (a normal `apptainer exec`, no fakeroot involved) — so it is not worth
     # chasing here. The compile step alone already proves clang++/LLVM/acpp work end-to-end;
     # actual EXECUTION is verified for real, on the GPU, by run_cuda_torch_sif (.private/Makefile).
@@ -223,15 +223,14 @@ EOF
 %help
     Torch-only CUDA runtime image for sdot, built FROM the official pytorch/pytorch image
     (torch/CUDA/cuDNN pinned together upstream — no wheel-vs-toolkit version drift to manage,
-    unlike containers/cuda.def). AdaptiveCpp ("full" profile, cuda backend) is built in a
+    unlike an image based directly on a CUDA devel base). AdaptiveCpp ("full" profile, cuda backend) is built in a
     throwaway toolchain stage (nvidia/cuda:12.8.1-devel) and only /opt/sdot-cache crosses
     into this image.
 
-    Use --nvccli, not --nv: this image carries NO system CUDA toolkit (no /usr/local/cuda, no
-    matching /etc/ld.so.conf.d entry), so --nv's legacy mode has nothing to shadow — but
-    --nvccli (NVIDIA Container Toolkit) is the cleaner, supported path and needs no
-    LD_LIBRARY_PATH override at all (unlike cuda.def):
-      apptainer exec --nvccli containers/cuda-torch.sif env SDOT_DEVICE=cuda python scripts/run_tests.py
+    Use --nv to expose the host NVIDIA driver. This image carries no system CUDA toolkit
+    registered in /etc/ld.so.conf.d, so legacy --nv has no toolkit path to shadow. --nvccli is
+    also usable where the site configures it:
+      apptainer exec --nv containers/cuda-torch.sif env SDOT_DEVICE=cuda python scripts/run_tests.py
       apptainer exec          containers/cuda-torch.sif env SDOT_DEVICE=cpu  python scripts/run_tests.py
 
     `python` is the image's system python; torch is already installed by the base image.

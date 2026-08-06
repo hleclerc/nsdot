@@ -30,6 +30,19 @@ struct Image {
     struct Udp          { SI index; TF pos; TF mass; TF y; };
     auto   udp_start    () const;
     auto   udp_cont     ( auto &&udp, auto mass_to_take, auto &&cb_parts ) const;
+
+    // jump directly to the `Udp` state a sequential walk would be in after having consumed exactly
+    // `target_mass` -- via binary search over a PRECOMPUTED per-cell cumulative-mass array (built by
+    // `fill_cell_cum_mass`), instead of walking there step by step. Lets independent work-items each
+    // resume the walk at their own chunk's boundary in parallel.
+    auto   udp_at       ( auto &&cell_cum_mass, auto target_mass ) const;
+
+    // fills `cell_cum_mass[0..nb_cells]` (exclusive prefix of each cell's mass, sentinel = total
+    // mass) -- cached on the PYTHON side as `Image.cell_cum_mass` (a `ComputedAttribute`, see
+    // `distributions/Image.py`) so `OtPlan1d` reads it ready-made instead of rebuilding it on every
+    // forward/backward call. Sequential (one thread does a whole angle): `nb_cells` is small enough
+    // that no cooperative scan is worth the complexity here.
+    void   fill_cell_cum_mass( auto &&cell_cum_mass ) const;
 };
 
 }

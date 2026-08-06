@@ -49,10 +49,18 @@ class ComputedAttribute( Attribute ):
         self._cache_valid = False
 
     def __class_getitem__( cls, item ):
-        """Allow ComputedAttribute[Type, ("dep1", "dep2")] syntax."""
+        """Allow ComputedAttribute[Type, ("dep1", "dep2")] syntax.
+
+        `item` is `(RealType, deps)` with `deps` itself a tuple -- FLATTENED here into separate
+        `Parametrized` args (`Parametrized(cls, RealType, "dep1", "dep2")`), not passed through as
+        one nested tuple: `Aggregate.__base_init__` registers one `_dependent_computed` entry PER
+        dependency NAME, so each can be looked up by a single field's own name when it is set
+        (`FieldDescriptor.__set__`) -- a single tuple-shaped key would never match."""
         from .Parametrized import Parametrized
 
         if isinstance( item, tuple ):
-            return Parametrized( cls, *item )
+            real_type, deps = item
+            deps = deps if isinstance( deps, tuple ) else ( deps, )
+            return Parametrized( cls, real_type, *deps )
         else:
             return Parametrized( cls, item )

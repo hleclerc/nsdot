@@ -251,10 +251,17 @@ class FieldDescriptor:
 
     def __set__( self, obj, value ):
         get_attribute( self.name, obj ).set( value )
-        # Invalidate any computed attributes that depend on this field
+        # Invalidate any computed attributes that depend on this field. `invalidate()` itself only
+        # flips a flag on the SEPARATE tracker (`_computed_attrs`, kept apart for bookkeeping) --
+        # the REAL attribute (`obj.__dict__[ computed_name ]`, what `obj.computed_name.is_undefined`
+        # actually reads, e.g. `Image.mass`'s `current_mass.is_undefined` check) is reset here too,
+        # so a lazy re-check after invalidation sees it as unresolved again instead of stale.
         if hasattr( obj, '_dependent_computed' ):
             for computed_name in obj._dependent_computed.get( self.name, [] ):
                 obj._computed_attrs[ computed_name ].invalidate()
+                real_attr = obj.__dict__.get( computed_name )
+                if real_attr is not None and hasattr( real_attr, "set_raw" ):
+                    real_attr.set_raw( None )
 
 
 def _field_cls( type_attr ):

@@ -428,6 +428,12 @@ class Tensor( Attribute ):
     # to a DISTINCT axis object; a bare `Tensor( array )` (no axes) or a multi-dim `AxisList` (one
     # object over several dims) falls back to positional broadcasting. `@` is not here: it contracts.
     def _binary( self, other, op ):
+        # a raw (non-`Tensor`) operand carries its OWN dtype (e.g. a numpy float64 constant computed
+        # host-side), which would otherwise promote the op's result away from `self.dtype` (jax's
+        # numpy-style promotion, notably FP32 + F64 -> F64 once x64 is enabled) -- coerced upfront so
+        # the result always stays in `self.dtype`, like `set()` already guarantees for a fresh value.
+        if not isinstance( other, Tensor ) and not driver.is_symbolic_zero( other ):
+            other = driver.array( other, dtype = self.dtype, device = self.device )
         la = self._ref_layout()
         if la is not None:
             if isinstance( other, Tensor ):

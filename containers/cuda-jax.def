@@ -1,0 +1,145 @@
+# Apptainer image for JAX on NVIDIA GPUs.
+#
+# JAX and PyTorch deliberately have separate reference images.  Their CUDA pip wheels pin
+# different nvidia-*-cu12 dependency sets, so installing both into one environment lets pip
+# replace a framework's validated CUDA stack with the other's.  Use cuda-torch.def for PyTorch.
+#
+# The final stage contains no system CUDA toolkit and relies on JAX's self-contained pip wheels
+# for CUDA user-space libraries.  At runtime, Apptainer binds libcuda.so and the device nodes from
+# the host (`--nv` or `--nvccli`), so rebuilding the image is not needed when the host driver is
+# upgraded.  A CUDA 12-capable driver is still required; AdaptiveCpp's generic target JITs PTX,
+# so a driver that is too old for the generated PTX cannot be made compatible by the container.
+#
+# AdaptiveCpp v25.10.0 supports LLVM releases through 20.  Keep LLVM 20 until AdaptiveCpp
+# explicitly supports a newer release; CUDA 12.8 is the newest toolkit clang-20 accepts here.
+#
+# Build from the repository root:
+#   apptainer build --fakeroot containers/cuda-jax.sif containers/cuda-jax.def
+# Run (standard --nv is supported; --nvccli is also usable where configured):
+#   apptainer exec --nv containers/cuda-jax.sif env SDOT_DEVICE=cuda python scripts/run_tests.py
+
+Bootstrap: docker
+From: nvidia/cuda:12.8.1-devel-ubuntu24.04
+Stage: toolchain
+
+%files
+    requirements.txt /opt/sdot/requirements.txt
+    src              /opt/sdot/src
+
+%post
+    set -eux
+    LLVM_VER=20
+    export SDOT_ACPP_VERSION=v25.10.0
+    export DEBIAN_FRONTEND=noninteractive
+    export SDOT_CACHE_DIR=/opt/sdot-cache
+    export CUDA_HOME=/usr/local/cuda
+
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        build-essential cmake ninja-build git ca-certificates \
+        wget gnupg lsb-release software-properties-common \
+        python3 python3-pip python3-venv
+    wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+    chmod +x /tmp/llvm.sh
+    /tmp/llvm.sh ${LLVM_VER} all
+    apt-get install -y --no-install-recommends libomp-${LLVM_VER}-dev
+    rm -f /tmp/llvm.sh
+
+    export CC=clang-${LLVM_VER}
+    export CXX=clang++-${LLVM_VER}
+    python3 -m venv /opt/build-venv
+    /opt/build-venv/bin/pip install --no-cache-dir --upgrade pip
+    /opt/build-venv/bin/pip install --no-cache-dir -r /opt/sdot/requirements.txt
+    PYTHONPATH=/opt/sdot/src/python /opt/build-venv/bin/python -c \
+        "from sdot.compilation.adaptive_cpp import ensure_acpp; print('acpp full/cuda:', ensure_acpp('full', ('cuda',)))"
+    chmod -R a+rX /opt/sdot-cache
+
+
+Bootstrap: docker
+From: ubuntu:24.04
+Stage: final
+
+%files
+    requirements.txt /opt/sdot/requirements.txt
+    src              /opt/sdot/src
+
+%files from toolchain
+    /opt/sdot-cache /opt/sdot-cache
+    /usr/local/cuda/nvvm/libdevice/libdevice.10.bc /opt/sdot-libdevice.10.bc
+
+%environment
+    export SDOT_CACHE_DIR=/opt/sdot-cache
+    export PATH=/opt/venv-jax/bin:/usr/lib/llvm-20/bin:$PATH
+    export DEBIAN_FRONTEND=noninteractive
+    # Do not set CUDA_HOME or LD_LIBRARY_PATH.  JAX's pip wheels use their own RUNPATHs, while
+    # --nv injects only the host driver libraries needed to communicate with the GPU.
+
+%post
+    set -eux
+    LLVM_VER=20
+    export DEBIAN_FRONTEND=noninteractive
+
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        ca-certificates wget gnupg lsb-release software-properties-common \
+        python3 python3-pip python3-venv
+    wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+    chmod +x /tmp/llvm.sh
+    /tmp/llvm.sh ${LLVM_VER} all
+    apt-get install -y --no-install-recommends libomp-${LLVM_VER}-dev
+    rm -f /tmp/llvm.sh
+    apt-get purge -y wget gnupg lsb-release software-properties-common
+    apt-get autoremove -y
+
+    python3 -m venv /opt/venv-jax
+    /opt/venv-jax/bin/pip install --no-cache-dir --upgrade pip
+    /opt/venv-jax/bin/pip install --no-cache-dir -r /opt/sdot/requirements.txt
+    /opt/venv-jax/bin/pip install --no-cache-dir "jax[cuda12]"
+
+    # acpp's CUDA runtime plugin contains the absolute toolkit RUNPATH it was built with.
+    # Put JAX's own libcudart at the preceding $ORIGIN/../ fallback, so neither --nv nor a host
+    # CUDA toolkit can select a mismatched libcudart.
+    ACPP_LIB=$(find /opt/sdot-cache/adaptivecpp -maxdepth 3 -path '*/lib/hipSYCL' -printf '%h\n' | head -1)
+    test -n "$ACPP_LIB"
+    # `nvidia.cuda_runtime` is a PEP 420 namespace package, hence __file__ is None.
+    JAX_CUDART=$(/opt/venv-jax/bin/python -c "import pathlib, nvidia.cuda_runtime as m; print(pathlib.Path(next(iter(m.__path__))) / 'lib/libcudart.so.12')")
+    test -f "$JAX_CUDART"
+    cp "$JAX_CUDART" "$ACPP_LIB/"
+
+    # libdevice is LLVM bitcode, not a dynamic library.  AdaptiveCpp 25.10 looks for this fixed
+    # path during PTX JIT, so retain only that build-time artifact, not the CUDA toolkit itself.
+    mkdir -p /usr/local/cuda/nvvm/libdevice
+    cp /opt/sdot-libdevice.10.bc /usr/local/cuda/nvvm/libdevice/libdevice.10.bc
+    rm -f /opt/sdot-libdevice.10.bc
+    chmod -R a+rX /opt/sdot-cache
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+%test
+    SDOT_CACHE_DIR=/opt/sdot-cache PYTHONPATH=/opt/sdot/src/python python -c \
+        "from sdot.compilation.adaptive_cpp import is_available; assert is_available('full', ('cuda',)); print('acpp full/cuda ok')"
+    python -c "import importlib.util, jax; assert importlib.util.find_spec('torch') is None; print('jax', jax.__version__)"
+    python -c "
+import ctypes, pathlib, nvidia
+for root in map(pathlib.Path, nvidia.__path__):
+  for so in sorted(root.glob('*/lib/lib*.so.*')):
+    if 'nccl' not in so.name and 'nvshmem' not in so.name:
+        ctypes.CDLL(str(so))
+print('nvidia wheels self-consistent')"
+    SDOT_CACHE_DIR=/opt/sdot-cache PYTHONPATH=/opt/sdot/src/python ACPP_APPDB_DIR=/tmp/acpp-appdb \
+    SDOT_DEVICE=cpu JAX_PLATFORMS=cpu python -c \
+        "import numpy as np; from sdot import Cell; c = Cell.make_hypercube(2, [0, 0], [[2, 0], [0, 1]]); m = float(np.asarray(c.measure)); assert abs(m - 2.0) < 1e-9, m; print('Cell.measure ok:', m)"
+
+%labels
+    org.sdot.role    cuda-jax-toolchain
+    org.sdot.acpp    v25.10.0
+    org.sdot.llvm    20
+    org.sdot.cuda    12.8
+
+%help
+    JAX-only CUDA runtime image for sdot. JAX's CUDA libraries come from `jax[cuda12]`; the host
+    supplies the NVIDIA driver at execution time. PyTorch belongs in cuda-torch.sif, not here.
+
+    Standard Apptainer GPU support works because this final image has no CUDA toolkit registered
+    in ld.so.conf.d:
+      apptainer exec --nv containers/cuda-jax.sif env SDOT_DEVICE=cuda python scripts/run_tests.py
+      apptainer exec      containers/cuda-jax.sif env SDOT_DEVICE=cpu JAX_PLATFORMS=cpu python scripts/run_tests.py

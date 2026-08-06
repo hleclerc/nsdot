@@ -6,7 +6,7 @@ from .Sinogram import Sinogram
 from .optimizers import GradientDescent
 
 
-def loss( sinogram: Sinogram, positions ):
+def loss( sinogram: Sinogram, positions, with_barycenters: bool = False ):
     """Coût de reconstruction : somme, sur les angles, du coût de transport optimal
     1D entre les diracs projetés et le profil mesuré.
 
@@ -22,12 +22,18 @@ def loss( sinogram: Sinogram, positions ):
     kernel calcule la position 1D à la volée -- au lieu d'un tenseur `[ nb_angles, n ]` (80 Go à
     1e7 diracs x 1000 angles). Reste différentiable par rapport à `positions` : le backward
     scatter-atomique le gradient de la position projetée sur les points 2D partagés.
+
+    `with_barycenters` : transmis tel quel à `OtPlan1d` -- quand le SEUL gradient demandé est
+    celui des positions (le cas de `reconstruct`/le benchmark de gradient), stocker les
+    barycentres évite au backward de re-trier + re-balayer chaque angle (voir
+    `OtPlan1d.__init__`'s docstring). Coûte un buffer `[nb_angles, n]` en plus ; à activer si ce
+    coût mémoire est acceptable pour le gain de vitesse du backward.
     """
     points = positions if isinstance( positions, Tensor ) else Tensor( positions )
     src = ProjectedSumOfDiracs( points = points, normal = sinogram.normals_t,
                                 batch_axes = [ sinogram.num_angle ] )
     dst = sinogram.batched_image()
-    return OtPlan1d( src, dst ).cost.sum()                   # somme sur les angles
+    return OtPlan1d( src, dst, with_barycenters = with_barycenters ).cost.sum()  # somme sur les angles
 
 
 def random_positions( nb_diracs: int, extent: float, seed: int = 0 ) -> Tensor:

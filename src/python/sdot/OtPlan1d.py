@@ -72,7 +72,7 @@ class OtPlan1d( Aggregate ):
         self.update_outputs()
 
     def _scratch( self ):
-        """The three PER-GROUP sort scratch tensors + the group axis + the group-SIZE marker tensor,
+        """The PER-GROUP sort + sweep scratch tensors + the group axis + the group-SIZE marker tensor,
         shared by every OtPlan1d kernel.
 
         NOT per-angle: `[ num_group, num_dirac ]`, so memory scales with CONCURRENT ANGLES (a RAM
@@ -93,23 +93,41 @@ class OtPlan1d( Aggregate ):
         `group_size`/`thread_cap` can read `.shape( 0 )` off an already-mapped call argument, exactly
         like `thread_cap` already does for `nt` via `sorted_indices.shape( 0 )` (never a literal, so one
         compiled kernel serves every machine). See [[otplan1d-kernel-profile]].
+
+        `group_scan` backs the PARALLEL sweep (see `chunked_weight_prefix`/`update_outputs`): a small
+        TF-valued per-group scratch row (`gs+1` entries) for the cooperative chunked-reduction idiom
+        shared by every scan in there (weight-prefix, phi-subtotal scan, cost reduction) --
+        `local_scratch` (the sort's local-memory accessor) is a fixed `int32` local buffer sized for
+        the radix buckets and cannot carry a `TF` sum, hence this separate GLOBAL per-group tensor.
+        `cell_cum_mass` itself is NOT scratch anymore: it lives on `dst_dist` (`Image.cell_cum_mass`,
+        a cached `ComputedAttribute`, see `Image.ensure_cell_cum_mass`), computed once instead of
+        rebuilt by every forward/backward call here.
         """
         n  = int( self.nb_diracs.value )
         nt = driver.device.nb_threads( batch_axes = self.batch_axes, nb_local_bytes_per_thread = 3 * 8 * n )
-        # `+1` row: `update_outputs`'s `local_mem_elems` allocates one extra shared row (the
-        # cross-chunk bucket offsets) on top of the one-per-work-item rows -- tell `group_size` about
-        # that fixed overhead so its shared-memory budget check matches what actually gets allocated.
+        # `NB_BUCKETS = 256` (8-bit radix digit, see `OtPlan1d.cxx::sort_diracs`) -- MUST match that
+        # constant by hand. `+1` row: `update_outputs`'s `local_mem_elems` allocates one extra shared
+        # row (the cross-chunk bucket offsets) on top of the one-per-work-item rows -- tell
+        # `group_size` about that fixed overhead so its shared-memory budget check matches what
+        # actually gets allocated. (On CUDA this budget check is now moot in practice: measured
+        # net-negative, `CudaGpu.group_size` defaults to `1` regardless -- see its docstring.)
         gs = driver.device.group_size( nb_shared_bytes_per_group_item = 256 * 4, nb_shared_bytes_fixed = 256 * 4 )
         num_group = Axis( ShapeVar( nt ), name = "num_group" )
         num_local = Axis( ShapeVar( gs ), name = "num_local" )
+        num_scan  = Axis( ShapeVar( gs + 1 ), name = "num_local_scan" )   # `+1` = the phi_total broadcast slot
         return {
             "sorted_indices":   Tensor[ num_group, self.num_dirac, dict( dtype = int ) ](),
             "radix_tmp":        Tensor[ num_group, self.num_dirac, dict( dtype = int ) ](),
             "sorted_pos":       Tensor[ num_group, self.num_dirac ](),
             "num_local_marker": Tensor[ num_local, dict( dtype = int ) ](),
+            "group_scan":       Tensor[ num_group, num_scan ](),
         }
 
     def update_outputs( self ):
+        # `dst_dist.cell_cum_mass` is read (not built) by the C++ below -- make sure it is materialized
+        # BEFORE this call, once, instead of being rebuilt by every forward/backward invocation of it.
+        self.dst_dist.ensure_cell_cum_mass()
+
         # `barycenters` is produced only when asked for: including it in `output_attributes` binds it
         # as an OUTPUT (the forward writes it, guarded on `is_valid()` C++-side); leaving it out keeps
         # it a NoneTensor, and the backward recomputes b_i. This is what the flag decides.
@@ -119,25 +137,31 @@ class OtPlan1d( Aggregate ):
             FfiCodeParallel( name = "update_outputs_OtPlan1d",
                 # `scratch( group_index )` yields this work-GROUP's shared rank-1 row (`scratch( k )`
                 # inside, cooperatively). `plan( batch_index )` still picks the angle. The backward
-                # RE-SORTS into its OWN fresh scratch, so it needs all three -- they are no longer
+                # RE-SORTS into its OWN fresh scratch, so it needs all of them -- they are no longer
                 # residuals (per-group, their forward content is transient). `local_index`/`local_size`/
                 # `group`/`local_scratch` are the reserved cooperative params (see FfiCodeParallel).
+                # `group_scan` backs the parallel sweep (see `_scratch`'s docstring); `cell_cum_mass`
+                # is read straight off `plan(batch_index).dst_dist`, not passed in here.
                 fwd_code = ( "plan( batch_index ).update_outputs( sorted_indices( group_index ), radix_tmp( group_index ), sorted_pos( group_index ), "
+                            "group_scan( group_index ), "
                             "local_index, local_size, group, local_scratch );" ),
                 bwd_code = ( "plan( batch_index ).update_outputs_bwd( grad_for_plan( batch_index ), sorted_indices( group_index ), radix_tmp( group_index ), sorted_pos( group_index ), "
+                            "group_scan( group_index ), "
                             "local_index, local_size, group, local_scratch );" ),
                 thread_cap = "sorted_indices.shape( 0 )",
                 group_size = group_size_expr,
                 # +1 rows: `local_size` private per-work-item histogram rows, plus one shared row for
-                # the cross-chunk bucket offsets (see `OtPlan1d.cxx::sort_diracs::radix_pass`).
+                # the cross-chunk bucket offsets (see `OtPlan1d.cxx::sort_diracs::radix_pass`). `256` =
+                # `NB_BUCKETS` there (kept in sync by hand). Unrelated to `group_scan` (ordinary global
+                # scratch, not local memory -- this stays sized for the radix sort only).
                 local_mem_elems = f"( { group_size_expr } + 1 ) * 256",
             ),
-            output_attributes = barycenters_out + [ "plan.cost", "plan.nb_diracs", "sorted_indices", "radix_tmp", "sorted_pos", "num_local_marker" ],
-            # the three scratch buffers are per-group transient: the backward re-allocates them fresh
-            # instead of reading the forward's (stale) values as residuals -- see `_call_backward`.
-            # `sorted_pos` caches the sorted 1D positions so the sweeps STREAM them (no re-projection).
-            # `num_local_marker` is transient too -- it carries no data, only a shape.
-            scratch_attributes = [ "sorted_indices", "radix_tmp", "sorted_pos", "num_local_marker" ],
+            output_attributes = barycenters_out + [ "plan.cost", "plan.nb_diracs", "sorted_indices", "radix_tmp", "sorted_pos", "num_local_marker", "group_scan" ],
+            # the scratch buffers are per-group transient: the backward re-allocates them fresh instead
+            # of reading the forward's (stale) values as residuals -- see `_call_backward`. `sorted_pos`
+            # caches the sorted 1D positions so the sweeps STREAM them (no re-projection).
+            # `num_local_marker`/`group_scan` are transient too.
+            scratch_attributes = [ "sorted_indices", "radix_tmp", "sorted_pos", "num_local_marker", "group_scan" ],
             # every output count is prescribed from `nb_diracs`, so no capacity can overflow: skip the
             # per-call run-time overflow check (a device->host sync under jit). See driver.call.
             has_dynamic_capacity = False,
