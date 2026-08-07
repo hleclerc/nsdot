@@ -106,12 +106,16 @@ class OtPlan1d( Aggregate ):
         n  = int( self.nb_diracs.value )
         nt = driver.device.nb_threads( batch_axes = self.batch_axes, nb_local_bytes_per_thread = 3 * 8 * n )
         # `NB_BUCKETS = 256` (8-bit radix digit, see `OtPlan1d.cxx::sort_diracs`) -- MUST match that
-        # constant by hand. `+1` row: `update_outputs`'s `local_mem_elems` allocates one extra shared
-        # row (the cross-chunk bucket offsets) on top of the one-per-work-item rows -- tell
-        # `group_size` about that fixed overhead so its shared-memory budget check matches what
-        # actually gets allocated. (On CUDA this budget check is now moot in practice: measured
-        # net-negative, `CudaGpu.group_size` defaults to `1` regardless -- see its docstring.)
-        gs = driver.device.group_size( nb_shared_bytes_per_group_item = 256 * 4, nb_shared_bytes_fixed = 256 * 4 )
+        # constant by hand. The histogram is now ONE ROW PER SUB-GROUP (warp), not per work-item (see
+        # `sort_diracs`'s docstring) -- `nb_shared_bytes_per_subgroup` tells `group_size` to budget
+        # `ceil( gs / subgroup_size )` rows instead of `gs` of them. `2 *`: each sub-group needs TWO
+        # rows now, not one -- a histogram/cursor row AND a match-mask row (the atomic-OR warp-match
+        # substitute the scatter phase uses to find same-digit lanes in O(1), see `sort_diracs`'s
+        # docstring). `+1` row (`nb_shared_bytes_fixed`): `update_outputs`'s `local_mem_elems`
+        # allocates one extra shared row (the cross-chunk bucket offsets) on top -- tell `group_size`
+        # about that fixed overhead so its shared-memory budget check matches what actually gets
+        # allocated.
+        gs = driver.device.group_size( nb_shared_bytes_per_subgroup = 2 * 256 * 4, nb_shared_bytes_fixed = 256 * 4 )
         num_group = Axis( ShapeVar( nt ), name = "num_group" )
         num_local = Axis( ShapeVar( gs ), name = "num_local" )
         num_scan  = Axis( ShapeVar( gs + 1 ), name = "num_local_scan" )   # `+1` = the phi_total broadcast slot
@@ -144,17 +148,23 @@ class OtPlan1d( Aggregate ):
                 # is read straight off `plan(batch_index).dst_dist`, not passed in here.
                 fwd_code = ( "plan( batch_index ).update_outputs( sorted_indices( group_index ), radix_tmp( group_index ), sorted_pos( group_index ), "
                             "group_scan( group_index ), "
-                            "local_index, local_size, group, local_scratch );" ),
+                            "local_index, local_size, group, local_scratch, sub_group );" ),
                 bwd_code = ( "plan( batch_index ).update_outputs_bwd( grad_for_plan( batch_index ), sorted_indices( group_index ), radix_tmp( group_index ), sorted_pos( group_index ), "
                             "group_scan( group_index ), "
-                            "local_index, local_size, group, local_scratch );" ),
+                            "local_index, local_size, group, local_scratch, sub_group );" ),
                 thread_cap = "sorted_indices.shape( 0 )",
                 group_size = group_size_expr,
-                # +1 rows: `local_size` private per-work-item histogram rows, plus one shared row for
-                # the cross-chunk bucket offsets (see `OtPlan1d.cxx::sort_diracs::radix_pass`). `256` =
-                # `NB_BUCKETS` there (kept in sync by hand). Unrelated to `group_scan` (ordinary global
-                # scratch, not local memory -- this stays sized for the radix sort only).
-                local_mem_elems = f"( { group_size_expr } + 1 ) * 256",
+                # rows: `2 * ceil( local_size / subgroup_size )` shared per-WARP rows -- a histogram/
+                # cursor row AND a match-mask row per sub-group cooperating on the radix histogram/
+                # scatter (see `sort_diracs`'s docstring) -- plus one shared row for the cross-chunk
+                # bucket offsets (see `OtPlan1d.cxx::sort_diracs::radix_pass`). `256` = `NB_BUCKETS`
+                # there (kept in sync by hand); `subgroup_size` kept in sync with `Device.subgroup_size`
+                # for this device (a baked-in literal -- the compiled kernel already targets one
+                # concrete device/backend). Unrelated to `group_scan` (ordinary global scratch, not
+                # local memory -- this stays sized for the radix sort only).
+                local_mem_elems = (
+                    f"( 2 * ( ( ( { group_size_expr } ) + { driver.device.subgroup_size - 1 } ) "
+                    f"/ { driver.device.subgroup_size } ) + 1 ) * 256" ),
             ),
             output_attributes = barycenters_out + [ "plan.cost", "plan.nb_diracs", "sorted_indices", "radix_tmp", "sorted_pos", "num_local_marker", "group_scan" ],
             # the scratch buffers are per-group transient: the backward re-allocates them fresh instead

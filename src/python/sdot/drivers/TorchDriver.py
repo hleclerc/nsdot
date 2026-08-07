@@ -168,6 +168,12 @@ class TorchDriver:
     def is_symbolic_zero( self, x ):
         return isinstance( x, torch.Tensor ) and x.is_meta
 
+    # see `JaxDriver.is_traced`: Torch's autograd does not retrace a Python body the way
+    # `lax.scan`'s differentiation rule does, so a `ComputedAttribute` cache never goes stale
+    # under Torch -- always `False`, keeping today's eager-cache behavior unchanged.
+    def is_traced( self, x ):
+        return False
+
     # reductions -- the backend-agnostic verbs `Tensor` reduces through (`axis` is
     # a dimension index or a tuple of them; `None` reduces everything to a scalar).
     # Torch spells the axis `dim` and rejects `dim=None`, so full reductions drop it.

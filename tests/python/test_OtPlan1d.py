@@ -166,3 +166,23 @@ if test( "grad_weights" ):
     weights = driver.array( [ 1.0, 1.0, 2.0 ] )
 
     check_grad( lambda w: OtPlan1d( SumOfDiracs1d( positions = [ 0.2, 0.5, 0.9 ], weights = w ), Image( values = [ 1, 3, 1 ] ) ).cost, weights )
+
+if test( "joint_position_and_weight_value_grad" ):
+    # Différencie positions ET poids ET valeurs de l'image EN MÊME TEMPS (barycentres NON stockés,
+    # le défaut) -- le seul cas où `update_outputs_bwd`'s position-grad block (recompute-b_i path)
+    # ET son weights/values-grad block s'exécutent tous les deux dans le MÊME appel, exerçant donc
+    # le tri hissé (hoisted `sort_diracs`) partagé entre les deux.
+    positions = driver.array( [ 0.2, 0.5, 0.9 ] )
+    weights   = driver.array( [ 1.0, 1.0, 2.0 ] )
+    values    = driver.array( [ 1.0, 3.0, 1.0 ] )
+
+    check_grad( lambda p, w, v: OtPlan1d( SumOfDiracs1d( positions = p, weights = w ), Image( values = v ) ).cost,
+                positions, weights, values )
+
+    orig_group_size = Cpu.group_size
+    Cpu.group_size = lambda self, **_: 4
+    try:
+        check_grad( lambda p, w, v: OtPlan1d( SumOfDiracs1d( positions = p, weights = w ), Image( values = v ) ).cost,
+                    positions, weights, values )
+    finally:
+        Cpu.group_size = orig_group_size

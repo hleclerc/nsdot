@@ -151,14 +151,31 @@ class CudaGpu( Device ):
         # already uses `mem_fraction`, Cuda's own analogue of `scratch_ram_fraction`.
         return n
 
-    def group_size( self, nb_shared_bytes_per_group_item=0, nb_shared_bytes_fixed=0, max_group_size=128, **_ ):
+    @property
+    def subgroup_size( self ):
+        """Warp size: 32 on every NVIDIA architecture to date (Turing through Blackwell) -- a stable
+        hardware constant, not worth a device-attribute round trip. Used by `group_size` (a warp-row
+        histogram costs `ceil( group_size / 32 )` shared rows, not `group_size` of them, see
+        `nb_shared_bytes_per_subgroup` below) and by `OtPlan1d.py`'s `local_mem_elems` sizing, kept
+        in sync with `OtPlan1d.cxx::sort_diracs`'s sub-group-cooperative histogram."""
+        return 32
+
+    def group_size( self, nb_shared_bytes_per_group_item=0, nb_shared_bytes_per_subgroup=0,
+                     nb_shared_bytes_fixed=0, max_group_size=128, **_ ):
         """How many work-items cooperate per work-group -- a per-BLOCK shared-memory/occupancy
         question, separate from `nb_threads`/`_hw_thread_cap`'s whole-device/global-memory one
         (don't unify them). Start at `max_group_size` and halve until the group's total shared-
-        memory usage (`candidate * nb_shared_bytes_per_group_item + nb_shared_bytes_fixed`, the
-        latter for any extra rows a caller allocates on top of one-per-item, e.g. a shared
-        cross-group row) fits under the PER-BLOCK budget, also capped at the hardware's max
-        threads/SM; floored at 1.
+        memory usage fits under the PER-BLOCK budget (also capped at the hardware's max threads/SM;
+        floored at 1):
+
+            candidate * nb_shared_bytes_per_group_item          -- one row PER WORK-ITEM (old scheme)
+          + ceil( candidate / subgroup_size ) * nb_shared_bytes_per_subgroup  -- one row PER WARP
+          + nb_shared_bytes_fixed                                -- any extra fixed row(s) on top
+
+        `nb_shared_bytes_per_group_item` and `nb_shared_bytes_per_subgroup` are independent knobs a
+        caller mixes as needed (`OtPlan1d`'s radix histogram uses ONLY the per-subgroup term now --
+        see below -- but a future cooperative algorithm that genuinely needs one row per work-item
+        can still ask for that).
 
         `max_group_size` was briefly forced to `1` (no cooperation) after measuring that
         cooperating on the SORT ALONE was a net negative for `OtPlan1d`: the forward was flat across
@@ -168,13 +185,16 @@ class CudaGpu( Device ):
         started per chunk via `Image::udp_at`, see [[group-cooperative-sort]]), a fresh sweep on the
         same hardware (600 angles, n=1e4, RTX 2080 Ti) showed the backward improving MONOTONICALLY
         with `group_size` (140.9ms at 1 -> 44.6ms at 32, the largest value the 256-bucket radix sort's
-        shared-memory footprint allows) -- so `max_group_size` reverts to `128` (the original default,
-        which this budget check clamps down to 32 in practice for `OtPlan1d`'s footprint). The forward
-        stayed flat even with the sweep parallelized too, for a reason not yet root-caused (suspected:
-        a separate, non-cooperative kernel elsewhere in the per-call graph, e.g. `Image`'s own mass-
-        normalization call, dominating forward's wall time) -- flagged, not blocking, since reverting
-        this default doesn't regress the forward either way (still flat) and clearly helps the
-        backward. Re-measure before changing this again.
+        shared-memory footprint allowed WITH THE OLD one-row-per-work-item histogram) -- so
+        `max_group_size` reverts to `128` (the original default). With the one-row-per-WARP histogram
+        (see `OtPlan1d.cxx::sort_diracs`), the SAME 256-bucket footprint now costs `ceil(n/32)` rows
+        instead of `n` rows, so this budget check no longer clamps `group_size` down to 32 -- `ncu`
+        measured only 1 resident warp/SM at the old clamp (3.13% occupancy, 83.5% of stall cycles
+        waiting on an L1TEX scoreboard with nothing else to hide behind), so the expectation is that
+        letting `group_size` grow further keeps helping via better latency hiding. The forward stayed
+        flat even with the sweep parallelized, for a reason not yet root-caused (suspected: a
+        separate, non-cooperative kernel elsewhere in the per-call graph) -- flagged, not blocking.
+        Re-measure (`ncu`/the execution-speed benchmark) before changing this again.
 
         Deliberately `shm_per_block` (`MAX_SHARED_MEMORY_PER_BLOCK`, the no-opt-in static default,
         49152B on Turing), NOT `shm_per_sm` (`..._PER_MULTIPROCESSOR`, 65536B on Turing): AdaptiveCpp's
@@ -188,9 +208,15 @@ class CudaGpu( Device ):
             raise RuntimeError( "CUDA device attributes unavailable (libcuda not found)" )
         _, max_thr_per_sm, _, _, _, _, _, shm_per_block = attrs
 
+        def shared_bytes( c ):
+            b = c * nb_shared_bytes_per_group_item + nb_shared_bytes_fixed
+            if nb_shared_bytes_per_subgroup > 0:
+                b += -( -c // self.subgroup_size ) * nb_shared_bytes_per_subgroup  # ceil div
+            return b
+
         n = min( max_group_size, max_thr_per_sm )
-        if nb_shared_bytes_per_group_item > 0:
-            while n > 1 and n * nb_shared_bytes_per_group_item + nb_shared_bytes_fixed > shm_per_block:
+        if nb_shared_bytes_per_group_item > 0 or nb_shared_bytes_per_subgroup > 0:
+            while n > 1 and shared_bytes( n ) > shm_per_block:
                 n //= 2
         return max( 1, n )
 

@@ -54,6 +54,9 @@ class Tensor( Attribute ):
 
         self._shape = None
         self._raw = None
+        # set by `Aggregate` for a `ComputedAttribute`-declared field (see `Tensor.is_undefined`);
+        # every other tensor (a plain input/output) leaves this `False`.
+        self._computed_cache = False
         # the PHYSICAL arrangement of `_raw` relative to the logical axes: `None` means the plain
         # contiguous layout (buffer in logical order, no reorder, padding only from a ragged `_shape`),
         # which is every tensor today. A construction site (a kernel output, `fill`, ...) may set an
@@ -119,7 +122,18 @@ class Tensor( Attribute ):
 
     @property
     def is_undefined( self ) -> bool:
-        return self._raw is None
+        if self._raw is None:
+            return True
+        # a `ComputedAttribute` cache (e.g. `Image.cell_cum_mass`) is normally trusted once
+        # populated -- invalidated only when a dependency is reassigned (`FieldDescriptor.__set__`).
+        # That is not enough under `lax.scan`: differentiating through a scan retraces its body in
+        # a SEPARATE trace to linearize/transpose it, and a cached JAX tracer from the ORIGINAL
+        # trace is dead by then -- using it raises (or worse, silently corrupts) rather than just
+        # being stale data. Recomputing costs nothing extra within a trace regardless (XLA's CSE
+        # collapses the duplicate computation at compile time), so never trust a cached tracer.
+        if self._computed_cache and driver.is_traced( self._raw ):
+            return True
+        return False
 
     @property
     def is_defined( self ) -> bool:

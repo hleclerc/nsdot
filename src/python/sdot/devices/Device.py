@@ -201,6 +201,16 @@ class Device:
         raise NotImplementedError
 
     @property
+    def subgroup_size( self ) -> int:
+        """Warp/wavefront width: how many work-items of a work-group execute in lockstep and can
+        cheaply share a value via `sycl::group_broadcast`/`sycl::sub_group` collectives, one level
+        BELOW `group_size` (a work-group is `group_size / subgroup_size` sub-groups). Default `1`
+        (no sub-group cooperation, matching `group_size`'s own default degeneration) -- a body using
+        `sub_group` (see `FfiCode`'s docstring) must degenerate correctly at `subgroup_size == 1`
+        exactly like it must at `group_size == 1`, see `OtPlan1d.cxx::sort_diracs`."""
+        return 1
+
+    @property
     def is_apple_gpu( self ):
         return False
 

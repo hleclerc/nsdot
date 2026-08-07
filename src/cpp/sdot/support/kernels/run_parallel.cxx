@@ -84,13 +84,18 @@ namespace detail::RunParallel {
                     const int local_index = int( nd_item.get_local_linear_id() );
                     const int local_size  = int( nd_item.get_local_range( 0 ) );
                     auto group = nd_item.get_group();
+                    // sub-group handle: only reachable off `nd_item`, never off `group` (not a
+                    // standard SYCL `group` method) -- hence extracted here and threaded through
+                    // positionally like `group`, for a body that wants WARP-granularity cooperation
+                    // (a shared row per sub-group instead of per work-item, see `OtPlan1d::sort_diracs`).
+                    auto sub_group = nd_item.get_sub_group();
                     // `group_id` est le même pour tous les work-items du groupe (uniforme) -> valide
                     // vis-à-vis des `group_barrier`/`local_scratch` que le corps peut appeler dedans.
                     // STABLE sur toute la boucle striée (comme `thread_index` dans `_do_submit`) : le
                     // corps s'en sert pour indexer SA propre ligne de scratch per-groupe
                     // (`scratch( group_index )`), la même à chaque angle traité par ce groupe.
                     for ( int index = group_id; index < nb_items; index += nb_groups )
-                        func( item_list[ index ], group_id, local_index, local_size, group, local_scratch, reducers..., args... );
+                        func( item_list[ index ], group_id, local_index, local_size, group, local_scratch, sub_group, reducers..., args... );
                 } );
             } );
         } );

@@ -12,7 +12,7 @@
 namespace sdot {
 
 UTP void DTP::sort_diracs( auto &&sorted_indices, auto &&radix_tmp, auto &&sorted_pos,
-                            int local_index, int local_size, auto &&group, auto &&local_scratch ) const {
+                            int local_index, int local_size, auto &&group, auto &&local_scratch, auto &&sub_group ) const {
     // Sort the diracs by position INTO `sorted_indices` (a per-GROUP scratch row, shared by every
     // work-item of the group). We do NOT argsort (`std::sort` on indices with a comparator that reads
     // `positions( a )`/`positions( b )`): that is O(n log n) RANDOM gathers into `positions` and, at
@@ -64,54 +64,137 @@ UTP void DTP::sort_diracs( auto &&sorted_indices, auto &&radix_tmp, auto &&sorte
     constexpr int NB_PASSES  = 32 / NB_BITS;
     static_assert( NB_PASSES % 2 == 0 );
 
-    // Chunked-histogram-scatter, the standard allocation-free parallel counting-sort scatter -- NO
-    // ATOMICS anywhere: `local_scratch` holds `local_size` rows of `NB_BUCKETS` int32 counts, ROW
-    // `local_index` is this work-item's PRIVATE chunk histogram (only it ever reads/writes it), plus
-    // one extra row (index `local_size`) for the cross-chunk bucket offsets (`bucket_start`, computed
-    // once by the leader). `local_rank` is a per-work-item STACK array (no dynamic allocation). The
-    // final result is bit-identical regardless of `local_size` (the packed key already embeds the
-    // index as an explicit tie-break) -- only intermediate per-pass orderings of radix-tied elements
-    // can differ across chunk counts, which doesn't affect the result.
-    auto radix_pass = [&]( auto &&src, auto &&dst, int shift ) {
-        const SI hist_row    = SI( local_index ) * NB_BUCKETS;
-        const SI bucket_start_row = SI( local_size ) * NB_BUCKETS;
+    // Sub-group (warp) cooperative histogram: ONE shared row of `NB_BUCKETS` counts per SUB-GROUP,
+    // not per work-item -- shrinks the histogram's shared-memory footprint from
+    // `local_size * NB_BUCKETS` to `num_sg * NB_BUCKETS`, letting `group_size` grow far past the ~32
+    // the old one-row-per-thread scheme allowed under the fixed 49152B/block budget (`ncu` measured
+    // only 1 resident warp/SM at that clamp -- see `CudaGpu.group_size`'s docstring). `sg_id`/`num_sg`
+    // re-chunk `[0,nb)` into `num_sg` CONTIGUOUS, INDEX-ORDERED ranges (one per sub-group), exactly
+    // like `lo`/`hi` above did per work-item -- this determinism (chunk = a fixed function of index,
+    // not of execution timing) is what keeps the LSD radix sort's pass-to-pass stability correct even
+    // though the histogram COUNTING and the SCATTER below are built from parallel, warp-cooperative
+    // pieces instead of one sequential walk. Degenerates EXACTLY to the original per-work-item scheme
+    // when `sgs == 1` (always true on CPU, where `group_size` -- hence `local_size` -- is itself
+    // always 1, see `Cpu.group_size`): `num_sg == local_size`, one lane per "sub-group", every wave
+    // below is a single element with `intra_rank == 0`, i.e. the same sequential increment idiom.
+    const int sg_lid = int( sub_group.get_local_linear_id() );
+    const int sgs    = int( sub_group.get_local_linear_range() );
+    const int sg_id  = int( sub_group.get_group_linear_id() );
+    const int num_sg = ( local_size + sgs - 1 ) / sgs;
+    const SI  lo_s    = ( nb * SI( sg_id ) ) / num_sg;
+    const SI  hi_s    = ( nb * SI( sg_id + 1 ) ) / num_sg;
 
-        for ( SI b = local_index; b < SI( local_size ) * NB_BUCKETS; b += local_size )
+    // `local_scratch` layout: `num_sg` histogram/cursor rows, one fixed cross-chunk `bucket_start`
+    // row, then `num_sg` MATCH-MASK rows (see the scatter phase below) -- `(2*num_sg+1)*NB_BUCKETS`
+    // elements total, all zeroed together every pass (kept in sync BY HAND with `OtPlan1d.py`'s
+    // `local_mem_elems`/`_scratch`'s `group_size` shared-memory budget).
+    auto radix_pass = [&]( auto &&src, auto &&dst, int shift ) {
+        const SI hist_row        = SI( sg_id ) * NB_BUCKETS;
+        const SI bucket_start_row = SI( num_sg ) * NB_BUCKETS;
+        const SI match_row       = SI( num_sg + 1 ) * NB_BUCKETS + SI( sg_id ) * NB_BUCKETS;
+
+        for ( SI b = local_index; b < SI( 2 * num_sg + 1 ) * NB_BUCKETS; b += local_size )
             local_scratch[ b ] = 0;
         sycl::group_barrier( group );
 
-        for ( SI i = lo; i < hi; ++i ) {
+        // histogram BUILD: every lane of this sub-group strides over ITS sub-group's chunk, each
+        // element bumping its digit's shared counter via a LOCAL atomic -- safe/order-independent
+        // (only the FINAL total per bucket matters here, unlike the scatter below, which DOES need
+        // index-order-stable ranks).
+        for ( SI i = lo_s + sg_lid; i < hi_s; i += sgs ) {
             const SI v = src( i );
-            local_scratch[ hist_row + SI( ( v >> shift ) & ( NB_BUCKETS - 1 ) ) ]++;
+            atomic_add_local( local_scratch[ hist_row + SI( ( v >> shift ) & ( NB_BUCKETS - 1 ) ) ], std::int32_t( 1 ) );
         }
         sycl::group_barrier( group );
 
-        // leader-serial two-level exclusive scan, O(local_size*NB_BUCKETS): within-bucket, across
-        // chunks (rewrites each row's count to its CHUNK-LOCAL offset in place), then across buckets
-        // (the running total lands in `bucket_start_row`). Cheap first-correctness-pass; the first
-        // thing to optimize further once GPU numbers exist for THIS bucket count, per the design plan.
+        // two-level exclusive scan, split so its O(NB_BUCKETS) part runs IN PARALLEL across the group
+        // instead of leader-serial. Each work-item now owns a DISJOINT slice of buckets `b` and, for
+        // that slice, scans across the `num_sg` sub-group rows itself -- no data dependency between
+        // buckets, so this parallelizes trivially. Only the (much smaller, O(NB_BUCKETS)) across-bucket
+        // prefix stays leader-serial. Identical in STRUCTURE to a plain per-chunk scan, just over
+        // `num_sg` rows instead of `local_size` of them.
+        for ( int b = local_index; b < NB_BUCKETS; b += local_size ) {
+            SI run = 0;
+            for ( int u = 0; u < num_sg; ++u ) {
+                const SI c = local_scratch[ SI( u ) * NB_BUCKETS + b ];
+                local_scratch[ SI( u ) * NB_BUCKETS + b ] = std::int32_t( run );
+                run += c;
+            }
+            local_scratch[ bucket_start_row + b ] = std::int32_t( run ); // bucket TOTAL, for now
+        }
+        sycl::group_barrier( group );
+
         if ( local_index == 0 ) {
             SI off = 0;
             for ( int b = 0; b < NB_BUCKETS; ++b ) {
-                SI run = 0;
-                for ( int u = 0; u < local_size; ++u ) {
-                    const SI c = local_scratch[ SI( u ) * NB_BUCKETS + b ];
-                    local_scratch[ SI( u ) * NB_BUCKETS + b ] = std::int32_t( run );
-                    run += c;
-                }
+                const SI c = local_scratch[ bucket_start_row + b ];
                 local_scratch[ bucket_start_row + b ] = std::int32_t( off );
-                off += run;
+                off += c;
             }
         }
         sycl::group_barrier( group );
 
-        SI local_rank[ NB_BUCKETS ];
-        for ( int b = 0; b < NB_BUCKETS; ++b )
-            local_rank[ b ] = local_scratch[ hist_row + b ];
-        for ( SI i = lo; i < hi; ++i ) {
-            const SI v = src( i );
-            const int b = int( ( v >> shift ) & ( NB_BUCKETS - 1 ) );
-            dst( local_scratch[ bucket_start_row + b ] + local_rank[ b ]++ ) = v;
+        // SCATTER, wave by wave (one `sgs`-sized wave per iteration, in increasing index order --
+        // deterministic, the same property that makes the outer chunking stable). Finding each lane's
+        // STABLE rank among same-digit lanes of THIS wave in O(1) (not O(sgs)) needs a CUDA warp-match
+        // intrinsic in the textbook version (`__match_any_sync`) -- unavailable portably in SYCL, so
+        // this replicates it via the ATOMIC-OR technique CUB itself falls back to when match-any isn't
+        // used (`cub::BlockRadixRankMatch`'s `WARP_MATCH_ATOMIC_OR` path, see
+        // cub/block/block_radix_rank.cuh): `match_row[b]` is a per-bucket bitmask, one bit per lane --
+        // every lane ORs its own bit into ITS bucket's cell (safe/commutative, no ordering needed),
+        // then, after a barrier makes every OR visible, each lane reads back its OWN bucket's mask to
+        // learn EXACTLY which lanes share its digit, in one shot. `popcount(mask & lanes-at-or-before-
+        // me)` is this lane's 1-indexed rank within that set; the HIGHEST-numbered matching lane is
+        // elected "leader" (it alone sees the group's full popcount) and is the one that atomically
+        // bumps the shared per-digit cursor -- ONE atomic per DISTINCT digit in the wave, not one per
+        // lane. The reservation base itself needs no shuffle: `hist_row[b]` is already shared local
+        // memory, so EVERY matching lane just reads it directly (redundant across ties, but cheap and
+        // avoids relying on `sycl::select_from_group`'s availability). `dest = bucket_start_row[b]`
+        // (this bucket's GROUP-global base, fixed since the scan above) `+ base` (the shared
+        // reservation, read before the leader's bump) `+ popcount - 1` (this lane's 0-indexed rank
+        // within the reservation) -- the same quantity a sequential `local_scratch[hist_row+b]++`
+        // idiom computes one element at a time, resolved for a whole wave in O(1) collectives instead.
+        for ( SI base_i = lo_s; base_i < hi_s; base_i += sgs ) {
+            // `b < 0` doubles as the "inactive lane" flag (a real digit is always 0..NB_BUCKETS-1) --
+            // one fewer live register than a separate `bool active` carried the whole wave through.
+            const SI  i = base_i + sg_lid;
+            SI  v = 0;
+            int b = -1;
+            if ( i < hi_s ) {
+                v = src( i );
+                b = int( ( v >> shift ) & ( NB_BUCKETS - 1 ) );
+                atomic_or_local( local_scratch[ match_row + b ], std::int32_t( std::uint32_t( 1 ) << sg_lid ) );
+            }
+            sycl::group_barrier( sub_group ); // every lane's OR visible before any lane reads its mask
+
+            // `leader` only matters to decide THIS lane's own yes/no -- collapse it to `is_leader`
+            // immediately instead of carrying the full lane index across the barrier below.
+            int  popc = 0;
+            SI   base = 0;
+            bool is_leader = false;
+            if ( b >= 0 ) {
+                const std::uint32_t bin_mask = std::uint32_t( local_scratch[ match_row + b ] );
+                const std::uint32_t lanemask_le =
+                    ( sg_lid == 31 ) ? 0xFFFFFFFFu : ( ( std::uint32_t( 1 ) << ( sg_lid + 1 ) ) - 1u );
+                popc = std::popcount( bin_mask & lanemask_le );
+                is_leader = ( sg_lid == 31 - std::countl_zero( bin_mask ) );
+                base = local_scratch[ hist_row + b ]; // reservation base -- READ before anyone bumps it
+            }
+            // every active lane's READ of `base` above must complete before the leader's WRITE below --
+            // NOT guaranteed by SIMT reconvergence alone on independent-thread-scheduling hardware
+            // (Volta+, includes this Turing target) without an explicit barrier between the two.
+            sycl::group_barrier( sub_group );
+
+            if ( is_leader ) {
+                atomic_add_local( local_scratch[ hist_row + b ], std::int32_t( popc ) ); // popc == the group's TOTAL size for the leader
+                local_scratch[ match_row + b ] = 0; // reset for the next wave/pass
+            }
+
+            // `dst` only needs `base`/`popc`, both already captured in registers above -- no ordering
+            // dependency on the leader's bump, so this can run without waiting for it.
+            if ( b >= 0 )
+                dst( local_scratch[ bucket_start_row + b ] + base + popc - 1 ) = v;
+            sycl::group_barrier( sub_group ); // cursor bump + mask reset visible before the next wave reads them
         }
         sycl::group_barrier( group );
     };
@@ -163,14 +246,14 @@ UTP typename DTP::TF DTP::chunked_weight_prefix( auto &&sorted_indices, auto &&g
 
 UTP void DTP::update_outputs( auto &&sorted_indices, auto &&radix_tmp, auto &&sorted_pos,
                                auto &&group_scan,
-                               int local_index, int local_size, auto &&group, auto &&local_scratch ) {
+                               int local_index, int local_size, auto &&group, auto &&local_scratch, auto &&sub_group ) {
     // Forward = COST, plus the barycenters ONLY when `barycenters` is a bound output (the caller set
     // `with_barycenters`). When it is not, it is a NoneTensor (no `operator=`) so the guarded write
     // and the `moment` it needs both vanish at compile time -- the forward then does cost only, and
     // the backward recomputes any b_i it needs (see `update_outputs_bwd`). `barycenters` is a per-
     // (angle x dirac) buffer ([nb_angles, n] = 80GB at scale), hence off by default.
     const SI nb = src_dist.weights.size();
-    sort_diracs( sorted_indices, radix_tmp, sorted_pos, local_index, local_size, group, local_scratch );
+    sort_diracs( sorted_indices, radix_tmp, sorted_pos, local_index, local_size, group, local_scratch, sub_group );
 
     const SI lo = ( nb * SI( local_index ) ) / local_size;
     const SI hi = ( nb * SI( local_index + 1 ) ) / local_size;
@@ -218,13 +301,14 @@ UTP void DTP::update_outputs( auto &&sorted_indices, auto &&radix_tmp, auto &&so
 
 UTP void DTP::update_outputs_bwd( auto &&grad_plan, auto &&sorted_indices, auto &&radix_tmp, auto &&sorted_pos,
                                    auto &&group_scan,
-                                   int local_index, int local_size, auto &&group, auto &&local_scratch ) const {
+                                   int local_index, int local_size, auto &&group, auto &&local_scratch, auto &&sub_group ) const {
     //   cost = Sum_k Integral_{t_k}^{t_{k+1}} y(x) (x - p_{s(k)})^2 dx,
     // with diracs sorted by position (order s = `sorted_indices`), and t_k = M^{-1}(W_k) the target
     // quantile at the cumulative source mass W_k = Sum_{j<k} w_{s(j)}. The scratch is PER-GROUP and
-    // transient (not a forward residual), so the order is RE-DERIVED here via `sort_diracs` -- but
-    // only in the weights/values block that actually walks it; the positions gradient is
-    // order-independent (closed form per dirac) and needs no sort.
+    // transient (not a forward residual), so the order is RE-DERIVED here via `sort_diracs` -- ONCE,
+    // hoisted below and shared by whichever of the position-grad (barycenters not stored) and
+    // weights/values-grad blocks actually run, since both need the exact same sorted order and
+    // sorting twice would be a pure waste.
     //
     // Each gradient below is guarded at compile time on `is_valid()`: an unperturbed input reaches
     // us as a `NoneTensor` (no `operator=`), so its block must vanish -- see [[differentiation]].
@@ -234,6 +318,17 @@ UTP void DTP::update_outputs_bwd( auto &&grad_plan, auto &&sorted_indices, auto 
     const SI nb = src_dist.weights.size();
     const SI lo = ( nb * SI( local_index ) ) / local_size;
     const SI hi = ( nb * SI( local_index + 1 ) ) / local_size;
+
+    // The sort depends only on POSITION, never on which gradient is being computed -- so when BOTH
+    // the position-grad block (barycenters not stored) AND the weights/values-grad block need it,
+    // sort ONCE here and let both read the same `sorted_indices`/`sorted_pos`, instead of paying a
+    // full redundant radix sort per block.
+    constexpr bool need_position_resort  = CT_VALUE( src_dist.position_grad_wanted( grad_plan.src_dist ) )
+                                         && ! CT_VALUE( barycenters.is_valid() );
+    constexpr bool need_weight_value_grad = CT_VALUE( grad_plan.src_dist.weights.is_valid() )
+                                          || CT_VALUE( grad_plan.dst_dist.values.is_valid() );
+    if constexpr ( need_position_resort || need_weight_value_grad )
+        sort_diracs( sorted_indices, radix_tmp, sorted_pos, local_index, local_size, group, local_scratch, sub_group );
 
     // --- d cost / d positions -------------------------------------------------------------------
     //   d cost / d p_i = Integral_{S_i} 2 (p_i - x) y dx = 2 w_i ( p_i - b_i ),  b_i the barycenter of
@@ -251,11 +346,10 @@ UTP void DTP::update_outputs_bwd( auto &&grad_plan, auto &&sorted_indices, auto 
                 src_dist.add_position_grad( grad_plan.src_dist, i, g * 2 * w * ( p - b ) );
             }
         } else {
-            // b_i NOT stored: RECOMPUTE it by the same re-sort the forward did (trades the
-            // [nb_angles, n] residual for compute). PARALLEL sweep: each work-item jumps straight to
-            // its own chunk's start (`udp_at`, no leader) and walks only `[lo,hi)` -- per-dirac scatter,
-            // disjoint indices, no reduction needed.
-            sort_diracs( sorted_indices, radix_tmp, sorted_pos, local_index, local_size, group, local_scratch );
+            // b_i NOT stored: RECOMPUTE it from the sort hoisted above (trades the [nb_angles, n]
+            // residual for compute). PARALLEL sweep: each work-item jumps straight to its own chunk's
+            // start (`udp_at`, no leader) and walks only `[lo,hi)` -- per-dirac scatter, disjoint
+            // indices, no reduction needed.
             const TF w_lo = chunked_weight_prefix( sorted_indices, group_scan, lo, hi, local_index, local_size, group );
             dst_dist.with_defaults( [&]( auto &&img ) {
                 auto udp = img.udp_at( img.cell_cum_mass, w_lo );
@@ -269,10 +363,6 @@ UTP void DTP::update_outputs_bwd( auto &&grad_plan, auto &&sorted_indices, auto 
                     src_dist.add_position_grad( grad_plan.src_dist, num_dirac, g * 2 * mass * ( dirac_pos - b ) );
                 }
             } );
-            // the scratch rows are about to be overwritten by the weights/values block's OWN
-            // `sort_diracs`/`chunked_weight_prefix` calls below (if it runs) -- every work-item must
-            // wait for every other to finish reading them first.
-            sycl::group_barrier( group );
         }
     }
 
@@ -295,9 +385,8 @@ UTP void DTP::update_outputs_bwd( auto &&grad_plan, auto &&sorted_indices, auto 
     // scan producing both `bucket_start` and per-row chunk-local offsets together. Phase 2 re-derives
     // its own start state (cheap, O(log nb_cells) -- simpler than threading `Udp` state across the
     // barrier) and re-walks its own chunk once more, this time actually writing `grad_w`/`grad_y`.
-    if constexpr ( CT_VALUE( grad_plan.src_dist.weights.is_valid() ) ||
-                   CT_VALUE( grad_plan.dst_dist.values.is_valid() ) ) {
-        sort_diracs( sorted_indices, radix_tmp, sorted_pos, local_index, local_size, group, local_scratch );
+    if constexpr ( need_weight_value_grad ) {
+        // sorted above (hoisted, shared with the position-grad block when both run).
         const TF w_lo = chunked_weight_prefix( sorted_indices, group_scan, lo, hi, local_index, local_size, group );
 
         dst_dist.with_defaults( [&]( auto &&img ) {

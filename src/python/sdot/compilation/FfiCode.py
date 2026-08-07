@@ -110,11 +110,16 @@ class FfiCodeParallel( FfiCode ):
     `scratch( group_index )`), `local_index` (the work-item's rank WITHIN its work-group,
     0..local_size-1), `local_size` (their count), `group` (the raw `sycl::group<1>` -- for
     `group_barrier( group )`, passed through undressed on purpose: this is the second SYCL
-    parallelism level, exposed directly rather than wrapped) and `local_scratch` (a raw `int32`
+    parallelism level, exposed directly rather than wrapped), `local_scratch` (a raw `int32`
     `local_accessor` view, sized by `local_mem_elems`, SHARED by every work-item of the group --
     race-free access is the body's own responsibility, via `local_index`/`group_barrier`, exactly
-    like real SYCL local memory). `batch_index` keeps its meaning: which item (e.g. angle) this
-    GROUP was assigned, one work-group per item now instead of one work-item -- since a group's
+    like real SYCL local memory) and `sub_group` (the raw `sycl::sub_group` for THIS work-item, a
+    THIRD, warp-granularity level of cooperation -- e.g. `sycl::group_broadcast( sub_group, ... )`
+    to share a value among a warp's lanes only, cheaper than a full `local_scratch` round-trip when
+    the sharing is warp-local. Reachable only off the original `nd_item`, not off `group`, hence
+    passed as its own reserved name instead of derived by the body). `batch_index` keeps its
+    meaning: which item (e.g. angle) this GROUP was assigned, one work-group per item now instead
+    of one work-item -- since a group's
     `group_index` (hence its scratch row) is REUSED across every item it strides over, a body MUST
     end with a `group_barrier` after its last read of that scratch, so a work-item that finishes
     early does not race ahead into the next item and overwrite the row while a slower sibling
@@ -134,7 +139,7 @@ class FfiCodeParallel( FfiCode ):
         # serves every machine.
         if self.group_size is not None:
             params = ", ".join( [ "auto batch_index", "auto group_index", "auto local_index", "auto local_size",
-                                  "auto group", "auto local_scratch" ] + [ f"auto { n }" for n in names ] )
+                                  "auto group", "auto local_scratch", "auto sub_group" ] + [ f"auto { n }" for n in names ] )
             return ( "run_parallel(\n"
                      "    queue,\n"
                      "    global_batch_indices,\n"

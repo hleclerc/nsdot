@@ -14,9 +14,11 @@ struct OtPlan1d {
 
     // `local_index`/`local_size`/`group`/`local_scratch`: the work-group cooperating on ONE angle
     // (see run_parallel.h/FfiCodeParallel's `group_size` docstring) -- `group_size == 1` degenerates
-    // exactly to the single-work-item algorithm these generalize.
+    // exactly to the single-work-item algorithm these generalize. `sub_group`: the warp cooperating
+    // within that work-group, used by the radix histogram (one shared row per sub-group instead of
+    // per work-item, see `sort_diracs`'s docstring).
     void  sort_diracs( auto &&sorted_indices, auto &&radix_tmp, auto &&sorted_pos,
-                        int local_index, int local_size, auto &&group, auto &&local_scratch ) const;
+                        int local_index, int local_size, auto &&group, auto &&local_scratch, auto &&sub_group ) const;
 
     // Cooperative chunked-scan helper for the SWEEP (see `update_outputs`/`update_outputs_bwd`).
     // `group_scan` is a per-group TF-valued scratch row (>= `local_size + 1` elements): `local_scratch`
@@ -34,10 +36,10 @@ struct OtPlan1d {
 
     void  update_outputs( auto &&sorted_indices, auto &&radix_tmp, auto &&sorted_pos,
                            auto &&group_scan,
-                           int local_index, int local_size, auto &&group, auto &&local_scratch );
+                           int local_index, int local_size, auto &&group, auto &&local_scratch, auto &&sub_group );
     void  update_outputs_bwd( auto &&grad_plan, auto &&sorted_indices, auto &&radix_tmp, auto &&sorted_pos,
                                auto &&group_scan,
-                               int local_index, int local_size, auto &&group, auto &&local_scratch ) const;
+                               int local_index, int local_size, auto &&group, auto &&local_scratch, auto &&sub_group ) const;
 };
 
 }

@@ -350,47 +350,49 @@ def _call_with_vjp( code, ca, device, prefix ):
     """The forward call, wrapped in a `jax.custom_vjp` so `jax.grad`/`jax.vjp` reach the backward
     kernel. Returns the same `( outputs, results )` as `_run`, so the write-back is common.
 
-    Every FLOAT input is a differentiable primal; an INTEGER one is non-differentiable and
-    non-perturbable (a mesh of indices, a count), so it is captured as a constant of the trace and
-    never differentiated. `symbolic_zeros = True` gives us the two facts the backward needs to
-    stay cheap: which inputs Jax actually wants a gradient for (`perturbed`), and which output
-    cotangents are structurally zero (a `SymbolicZero`)."""
+    ALL inputs -- float and integer alike -- cross as real elements of `op`'s argument tuple,
+    threaded through Jax's own tracing machinery, rather than split into "differentiable primals
+    passed as arguments" + "everything else closed over as Python constants" (the previous
+    design). The closure form is only safe if `op_fwd`/`op_bwd` are invoked in the very trace that
+    built the closed-over values -- true under a bare `jit`/`grad`/`vmap`, but NOT when the call
+    sits inside a `lax.scan` body that is later differentiated: scan's differentiation rule
+    re-invokes `op_fwd`/`op_bwd` in a separate, nested trace to linearize/transpose the body, and
+    by then any closed-over tracer belongs to an already-exited trace -> `UnexpectedTracerError`.
+    Threading everything through the real argument list sidesteps this: Jax re-binds every
+    argument fresh for whatever trace context replays `op_fwd`/`op_bwd`.
+
+    `symbolic_zeros = True` gives us the two facts the backward needs to stay cheap: which inputs
+    Jax actually wants a gradient for (`perturbed`), and which output cotangents are structurally
+    zero (a `SymbolicZero`). An integer input is forced non-perturbed regardless of what Jax
+    reports (a mesh of indices, a count is never differentiated -- its tangent space is trivial)."""
     inputs = [ t for t in ca.tensors if t.io_category.is_input ]
     outputs = [ t for t in ca.tensors if t.io_category.is_output ]
 
-    diff_idx = [ i for i, t in enumerate( inputs ) if t.dtype.floating_point ]
-    in_arrays = [ jax.device_put( t.jax_input_array(), device.driver_version ) for t in inputs ]
+    in_arrays = tuple( jax.device_put( t.jax_input_array(), device.driver_version ) for t in inputs )
 
     fwd_op = _make_op( code, ca, device, prefix )
 
-    def _full( diff_values ):
-        # the differentiable primals sit back among the captured (integer) inputs, in FFI order.
-        full = list( in_arrays )
-        for k, i in enumerate( diff_idx ):
-            full[ i ] = diff_values[ k ]
-        return full
-
     @jax.custom_vjp
-    def op( diff_values ):
-        return tuple( fwd_op( *_full( diff_values ) ) )
+    def op( values ):
+        return tuple( fwd_op( *values ) )
 
-    def op_fwd( diff_values ):
+    def op_fwd( values ):
         # symbolic_zeros wraps each primal in `CustomVJPPrimal( value, perturbed )`.
-        perturbed = tuple( getattr( v, "perturbed", True ) for v in diff_values )
-        values = tuple( getattr( v, "value", v ) for v in diff_values )
-        full_in = _full( values )
+        perturbed = tuple( getattr( v, "perturbed", True ) and t.dtype.floating_point
+                           for v, t in zip( values, inputs ) )
+        full_in = tuple( getattr( v, "value", v ) for v in values )
         outs = tuple( fwd_op( *full_in ) )
         return outs, ( full_in, outs, perturbed )
 
     def op_bwd( residuals, cotangents ):
         full_in, out_values, perturbed = residuals
-        grads = _call_backward( code, ca, device, prefix, inputs, outputs, diff_idx,
+        grads = _call_backward( code, ca, device, prefix, inputs, outputs,
                                 full_in, out_values, perturbed, cotangents )
         return ( grads, )
 
     op.defvjp( op_fwd, op_bwd, symbolic_zeros = True )
 
-    results = op( tuple( in_arrays[ i ] for i in diff_idx ) )
+    results = op( in_arrays )
     return outputs, list( results )
 
 
@@ -408,7 +410,28 @@ def _grad_tensor( inst, array ):
     return res
 
 
-def _call_backward( code, ca, device, prefix, inputs, outputs, diff_idx,
+def _grad_shapevar( inst, raw ):
+    """A `ShapeVar`-shaped object carrying a FIXED count `raw` -- the residual for a `ShapeVar`
+    member entering the backward, mirroring `_grad_tensor` for a `Tensor` member.
+
+    Needed because `ShapeVar._count` is, by its own contract, "a count produced by a kernel: a
+    driver tensor, POSSIBLY TRACED" (`tensor/ShapeVar.py`). Reusing the live, shared `inst` object
+    directly (as the backward used to, for every ShapeVar/Axis/CtShapeVar member alike) reads
+    whatever `_count` holds AT THE MOMENT `op_bwd` executes -- safe only when that is the very
+    trace that resolved it. Under `lax.scan`'s differentiation, `op_bwd` is replayed in a later,
+    separate trace, so a resolved-but-still-tracer count from the original trace is dead by then.
+    `raw` here is instead the count as it flowed through `driver.call`'s own residual channel
+    (`full_in`/`out_values`), which Jax DOES keep valid across that replay."""
+    from ..tensor.ShapeVar import ShapeVar
+    res = ShapeVar.__new__( ShapeVar )
+    res.usages = []
+    res.dep_axes = inst.dep_axes
+    res.prescribed_value = None
+    res._count = raw
+    return res
+
+
+def _call_backward( code, ca, device, prefix, inputs, outputs,
                     full_in, out_values, perturbed, cotangents ):
     """The backward pass, expressed as an ORDINARY kernel call whose body is the code's backward.
 
@@ -429,7 +452,9 @@ def _call_backward( code, ca, device, prefix, inputs, outputs, diff_idx,
     (`Axis`, `ShapeVar`, `CtShapeVar`) are SHARED from the primal, so a gradient buffer resolves
     its capacity from the forward tensor it mirrors.
 
-    Returns the tuple of cotangents, one per differentiable primal, in `diff_idx` order.
+    Returns the tuple of cotangents, one per input, in `inputs` order -- `None` (Jax's own
+    symbolic-zero marker for a `custom_vjp` bwd output) wherever no gradient is wanted, which
+    covers both non-float inputs and non-perturbed float ones uniformly.
     """
     from ..tensor.Tensor import Tensor
     from .CallArgsAnalysis import CallArgsAnalysis
@@ -446,7 +471,7 @@ def _call_backward( code, ca, device, prefix, inputs, outputs, diff_idx,
             io_of[ id( t.inst ) ], residual_of[ id( t.inst ) ] = "output", out_values[ j ]
     cotangent_of = { id( t.inst ): cotangents[ j ]
                      for j, t in enumerate( outputs ) if hasattr( t, "inst" ) }
-    perturbed_of = { id( inputs[ i ].inst ): perturbed[ k ] for k, i in enumerate( diff_idx ) }
+    perturbed_of = { id( t.inst ): perturbed[ k ] for k, t in enumerate( inputs ) if hasattr( t, "inst" ) }
 
     output_paths = []
     grad_obj_of = {}   # id( primal input leaf ) -> its gradient tensor (a backward output)
@@ -474,9 +499,20 @@ def _call_backward( code, ca, device, prefix, inputs, outputs, diff_idx,
             return residual, grad
 
         if not isinstance( inst, Tensor ):
-            return inst, inst   # Axis / ShapeVar / CtShapeVar: shared, so shapes resolve -- this
-                                 # holds whether `inst` is a nested aggregate member OR a bare
-                                 # top-level kwarg (e.g. `nb_map_items` of `Cell.measure`)
+            from ..tensor.ShapeVar import ShapeVar
+            if isinstance( inst, ShapeVar ):
+                # a data-dependent ShapeVar (its count came from a kernel, via `driver.call`'s own
+                # input/output tracking) reuses the properly-threaded residual value; a purely
+                # static one (never bound as an FFI buffer -- `residual_of` has nothing for it)
+                # falls through to the plain shared-object case below, same as Axis/CtShapeVar.
+                raw = residual_of.get( id( inst ) )
+                if raw is not None:
+                    shared = _grad_shapevar( inst, raw )
+                    return shared, shared
+            return inst, inst   # Axis / CtShapeVar (or a static ShapeVar): shared, so shapes
+                                 # resolve -- this holds whether `inst` is a nested aggregate
+                                 # member OR a bare top-level kwarg (e.g. `Cell.measure`'s
+                                 # `nb_map_items`)
 
         # a tensor leaf: the residual is bound to whatever forward value it held.
         arr = residual_of.get( id( inst ) )
@@ -522,11 +558,13 @@ def _call_backward( code, ca, device, prefix, inputs, outputs, diff_idx,
     result_of = { id( o.inst ): r for o, r in zip( bwd_outputs, bwd_results ) if hasattr( o, "inst" ) }
 
     grads = []
-    for i in diff_idx:
-        gobj = grad_obj_of.get( id( inputs[ i ].inst ) )
+    for t in inputs:
+        gobj = grad_obj_of.get( id( t.inst ) ) if hasattr( t, "inst" ) else None
         if gobj is not None and id( gobj ) in result_of:
             grads.append( result_of[ id( gobj ) ] )
         else:
-            # a non-perturbed primal: Jax will not use this, but the tuple must be complete.
-            grads.append( jnp.zeros_like( full_in[ i ] ) )
+            # non-float, or a non-perturbed float primal: Jax's own symbolic-zero handling for a
+            # `custom_vjp` bwd converts a bare `None` leaf into the right zero cotangent -- no
+            # `float0`/dtype ceremony needed, and it is well-defined for an integer primal too.
+            grads.append( None )
     return tuple( grads )

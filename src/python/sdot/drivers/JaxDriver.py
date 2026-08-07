@@ -211,6 +211,14 @@ class JaxDriver:
         from jax.custom_derivatives import SymbolicZero
         return isinstance( x, SymbolicZero )
 
+    # a value bound to a trace that may no longer be the active one -- e.g. a `ComputedAttribute`
+    # cache (`Tensor._computed_cache`, see `Tensor.is_undefined`) populated under one `lax.scan`
+    # retrace and read back under a later one (scan's differentiation rule retraces its body to
+    # linearize/transpose it). A concrete array is never a `Tracer`, so this is a no-op outside
+    # any trace -- only guards the case that actually goes stale.
+    def is_traced( self, x ):
+        return isinstance( x, jax_core.Tracer )
+
     # detaches `x` from the gradient tape: a value computed FROM a perturbed input but that itself
     # carries no meaningful gradient (e.g. `Image.cell_cum_mass`, a routing helper -- see
     # `distributions/Image.py::_update_cell_cum_mass`). Applied where such a value is COMPUTED, not
