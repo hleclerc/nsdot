@@ -72,3 +72,17 @@ class ProjectedSumOfDiracs( Distribution ):
             self.current_mass = self.weights.sum()
         else:
             self.current_mass = self.nb_diracs.value
+
+    def raw_1d_diracs( self ):
+        # see `Distribution.raw_1d_diracs`. `points` [n,proj_dim] is shared; `normal` is
+        # `[proj_dim]` (unbatched) or `[*batch,proj_dim]` (one per angle) -- the projection
+        # (`einsum`, a plain dot over the last axis, no axis-order assumption beyond that) is
+        # computed HERE, not deferred, so the caller never needs to know this is a projected
+        # source rather than a plain one -- it always gets back a ready-to-use position array.
+        if not self.weights.is_defined:
+            return None
+        import jax.numpy as jnp
+        points = self.points.tensor
+        normal = self.normal.tensor
+        positions = jnp.einsum( "n p, ... p -> ... n", points, normal )
+        return positions, self.weights.tensor

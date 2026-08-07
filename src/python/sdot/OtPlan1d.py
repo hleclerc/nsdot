@@ -131,6 +131,14 @@ class OtPlan1d( Aggregate ):
         }
 
     def update_outputs( self ):
+        # give the target distribution first refusal: e.g. `Image.try_update_otplan1d` solves
+        # the whole thing in closed-form pure JAX (no driver.call/C++ kernel at all) when the
+        # combination qualifies (JAX backend, 1D, <=1 batch axis, no barycenters, a dirac
+        # source that can supply plain positions/weights) -- see [[pure-jax-otplan1d]]. `False`
+        # means "unsupported combination", not "error" -- fall through to the general path.
+        if self.dst_dist.try_update_otplan1d( self ):
+            return
+
         # `dst_dist.cell_cum_mass` is read (not built) by the C++ below -- make sure it is materialized
         # BEFORE this call, once, instead of being rebuilt by every forward/backward invocation of it.
         self.dst_dist.ensure_cell_cum_mass()

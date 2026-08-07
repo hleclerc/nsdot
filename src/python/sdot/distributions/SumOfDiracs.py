@@ -64,3 +64,10 @@ class SumOfDiracs( Distribution ):
             self.current_mass = self.weights.sum()
         else:
             self.current_mass = self.nb_diracs.value
+
+    def raw_1d_diracs( self ):
+        # see `Distribution.raw_1d_diracs`. Only meaningful for the 1D case `OtPlan1d`
+        # consumes; `positions` carries a trailing size-1 `dim` axis to drop.
+        if int( self.nb_dims.value ) != 1 or not self.weights.is_defined:
+            return None
+        return self.positions.tensor[ ..., 0 ], self.weights.tensor

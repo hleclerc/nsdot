@@ -31,3 +31,22 @@ class Distribution( Aggregate ):
     def _update_current_mass( self ):
         """  """
         raise NotImplementedError
+
+    def raw_1d_diracs( self ):
+        """For a 1D dirac-source distribution (`_is_dirac_source`): its positions/weights as
+        plain, differentiable backend arrays -- `( positions, weights )`, each either
+        `[ nb_diracs ]` (shared across the batch) or `[ *batch, nb_diracs ]` (varies per batch
+        element). Lets a target distribution's `try_update_otplan1d` bypass `driver.call`
+        entirely (ordinary autodiff differentiates straight through). `None` when this
+        distribution cannot supply this cheaply (default: unsupported) -- the caller then
+        falls back to the general driver.call/C++ path."""
+        return None
+
+    def try_update_otplan1d( self, plan ):
+        """Attempt to solve `plan` (an `OtPlan1d` with `self` as one of its two
+        distributions) without going through `driver.call` -- e.g. a closed-form, pure-JAX
+        computation. On success: update `plan`'s output fields (at least `plan.cost`) and
+        return True. On failure (unsupported combination): change nothing and return False,
+        so the caller uses the general driver.call/C++ path instead. Default: always decline
+        (default: unsupported)."""
+        return False

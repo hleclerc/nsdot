@@ -152,3 +152,65 @@ class Image( Distribution ):
             cell_cum_mass = cell_cum_mass,
         )
         self.cell_cum_mass.set_raw( cell_cum_mass.raw )
+
+    def try_update_otplan1d( self, plan ):
+        """Closed-form, pure-JAX fast path for `OtPlan1d.update_outputs` when `self` is its
+        1D piecewise-constant target: bypasses `driver.call`/the C++ kernel entirely (ordinary
+        JAX autodiff differentiates straight through `_pure_jax_cost1d.cost_1d_ot`), evaluated
+        ~1.2x-6x faster than the C++ kernel from n=1e6 through 1e8 diracs (see
+        [[pure-jax-otplan1d]]). Declines (returns False, caller falls back to driver.call)
+        when: the backend is not JAX (this path uses `jax.lax.map`/`jnp.argsort` directly, not
+        the backend-agnostic `Tensor` algebra), `self` is not 1D, more than one batch axis is
+        in play (matches today's ONE `num_angle` axis in production; untested beyond that),
+        `plan` wants `barycenters` (not implemented here), or `plan.src_dist` cannot supply
+        plain positions/weights (`raw_1d_diracs`, e.g. an unsupported dirac-source type).
+
+        Batched over angles with `jax.lax.map` (sequential), NOT `jax.vmap`: `vmap` batches
+        `jnp.argsort`/the fancy-index gathers by materializing a `[ nb_angles * n, ... ]`
+        transpose/fusion -- fine at moderate scale, but a genuine OOM at n=1e8 x 5 angles
+        (needing >13GiB). `lax.map` processes one angle at a time (no such batched-sort
+        buffer) and, measured, is never slower -- often faster -- than `vmap` at every scale
+        tried (1e6-1e8), so there is no size threshold to pick between them.
+        """
+        if plan._with_barycenters:
+            return False
+        if int( self.nb_dims.value ) != 1:
+            return False
+        if len( self.batch_axes ) > 1:
+            return False
+        if driver.framework.module_name != "jax":
+            return False
+
+        diracs = plan.src_dist.raw_1d_diracs()
+        if diracs is None:
+            return False
+        positions, weights = diracs
+
+        import jax
+        from ._pure_jax_cost1d import cost_1d_ot
+
+        values = self.values.tensor
+        s_min = self.origin.tensor[ 0 ] if self.origin.is_defined else 0.0
+        dw = self.frame.tensor[ 0, 0 ] if self.frame.is_defined else 1.0
+
+        if self.batch_axes:
+            # only the genuinely PER-ANGLE arrays are mapped (`lax.map` requires every leaf of
+            # its pytree argument to share the same leading/mapped axis) -- shared (unbatched)
+            # `positions`/`weights` are closed over instead, read as-is in every iteration.
+            mapped = { "values": values }
+            if positions.ndim > 1:
+                mapped[ "positions" ] = positions
+            if weights.ndim > 1:
+                mapped[ "weights" ] = weights
+
+            def body( leaves ):
+                p = leaves[ "positions" ] if "positions" in leaves else positions
+                w = leaves[ "weights" ] if "weights" in leaves else weights
+                return cost_1d_ot( p, w, leaves[ "values" ], s_min, dw )
+
+            cost = jax.lax.map( body, mapped )
+        else:
+            cost = cost_1d_ot( positions, weights, values, s_min, dw )
+
+        plan.cost = cost
+        return True
