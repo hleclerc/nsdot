@@ -38,7 +38,7 @@ class OtPlan1d( Aggregate ):
     barycenters      : Tensor[ "num_dirac", "dim" ]
     cost             : Tensor
 
-    def __init__( self, src_dist, dst_dist, with_barycenters = False ):
+    def __init__( self, src_dist, dst_dist, with_barycenters = False, auto_update = True ):
         # `with_barycenters`: produce and STORE the OT barycenters as an output (readable via
         # `plan.barycenters`). Off by default -- it is an [nb_angles, n] buffer, and the backward can
         # recompute the b_i it needs. Turn it on when you actually want the barycenters, or to trade
@@ -68,8 +68,11 @@ class OtPlan1d( Aggregate ):
             batch_axes = src_dist.batch_axes,
         )
 
-        # computations
-        self.update_outputs()
+        # computations. `auto_update = False`: skip -- for callers that will instead drive
+        # `update_outputs_presorted` themselves (e.g. a `jnp.argsort`-fed, sort-free evaluation path,
+        # see [[jax-sort-lax-scan]]); every existing caller keeps the default (unaffected).
+        if auto_update:
+            self.update_outputs()
 
     def _scratch( self ):
         """The PER-GROUP sort + sweep scratch tensors + the group axis + the group-SIZE marker tensor,
@@ -152,6 +155,22 @@ class OtPlan1d( Aggregate ):
                 bwd_code = ( "plan( batch_index ).update_outputs_bwd( grad_for_plan( batch_index ), sorted_indices( group_index ), radix_tmp( group_index ), sorted_pos( group_index ), "
                             "group_scan( group_index ), "
                             "local_index, local_size, group, local_scratch, sub_group );" ),
+                # `grad_for_plan.src_dist`'s points gradient (a `ProjectedSumOfDiracs`) is SHARED and
+                # ATOMICALLY ACCUMULATED across every angle (see `ProjectedSumOfDiracs::add_position_grad`)
+                # -- unlike a per-angle output, Jax/XLA does not guarantee a fresh FFI result buffer
+                # starts zeroed, so without this pre-pass the atomic adds land on whatever device memory
+                # happened to be there (confirmed: reusing the same call site's output buffer picks up
+                # unrelated leftover content). Run ONCE, BEFORE the scaffolded `run_parallel` above -- a
+                # per-angle body cannot express a once-only pre-pass (see `FfiCode._setup_code`). Routed
+                # through `Tensor::fill_with( queue, ... )` (-> `run_parallel`) inside
+                # `zero_position_grad` itself, so this goes through the same, already-proven
+                # device-kernel launch path as every other kernel -- no hand-rolled `sycl::queue::submit`
+                # here. `zero_position_grad` is a template method (`auto&&` params, like
+                # `add_position_grad`), so its OWN `if constexpr` on `position_grad_wanted` genuinely
+                # discards the `NoneTensor` branch, exactly like `update_outputs_bwd` gets for
+                # `add_position_grad` -- no external gate needed. A no-op for a plain `SumOfDiracs` src
+                # (`SumOfDiracs::zero_position_grad`), so this call is unconditional here.
+                bwd_setup_code = "plan.src_dist.zero_position_grad( queue, grad_for_plan.src_dist );",
                 thread_cap = "sorted_indices.shape( 0 )",
                 group_size = group_size_expr,
                 # rows: `2 * ceil( local_size / subgroup_size )` shared per-WARP rows -- a histogram/
@@ -177,4 +196,56 @@ class OtPlan1d( Aggregate ):
             has_dynamic_capacity = False,
             plan = self,
             **self._scratch(),
+        )
+
+    def update_outputs_presorted( self, sorted_indices, sorted_pos ):
+        """Sort-free variant of `update_outputs`: `sorted_indices`/`sorted_pos` are ALREADY the sorted
+        order for this instance's diracs (e.g. from `jnp.argsort`, computed upstream -- one angle at a
+        time under an outer `lax.scan`) -- the C++ side skips `sort_diracs` entirely and only runs the
+        sweep (`OtPlan1d.cxx::update_outputs_presorted`/`update_outputs_bwd_presorted`). Evaluates
+        whether letting XLA's own (whole-device) sort replace the per-angle single-work-group radix
+        sort -- the scaling bottleneck at large n, see `sort_diracs`'s docstring -- is worthwhile; see
+        [[jax-sort-lax-scan]]. `self` must be a SINGLE (unbatched) instance: one angle per call, so the
+        caller supplies the outer angle loop (a `lax.scan`, not this method).
+
+        `sorted_indices`: int array, `sorted_pos`: float array, both shape `[nb_diracs]` (this angle's
+        diracs only, already in sorted order -- typically `jnp.argsort(positions)` and
+        `positions[jnp.argsort(positions)]` upstream).
+        """
+        self.dst_dist.ensure_cell_cum_mass()
+        group_size_expr = "num_local_marker.shape( 0 )"
+        gs = driver.device.group_size( nb_shared_bytes_per_subgroup = 0, nb_shared_bytes_fixed = 0 )
+        # ONE group only: this call handles a SINGLE angle (the caller's `lax.scan` supplies the outer
+        # angle loop), so there is no "concurrent angles" axis to size `num_group` on (contrast
+        # `_scratch`, sized on `nt` concurrent angles for the internally-sorting, all-angles-at-once path).
+        num_group = Axis( ShapeVar( 1 ), name = "num_group" )
+        num_local = Axis( ShapeVar( gs ), name = "num_local" )
+        num_scan  = Axis( ShapeVar( gs + 1 ), name = "num_local_scan" )
+        driver.call(
+            FfiCodeParallel( name = "update_outputs_presorted_OtPlan1d",
+                fwd_code = ( "plan( batch_index ).update_outputs_presorted( sorted_indices( group_index ), sorted_pos( group_index ), "
+                            "group_scan( group_index ), "
+                            "local_index, local_size, group );" ),
+                bwd_code = ( "plan( batch_index ).update_outputs_bwd_presorted( grad_for_plan( batch_index ), sorted_indices( group_index ), sorted_pos( group_index ), "
+                            "group_scan( group_index ), "
+                            "local_index, local_size, group );" ),
+                bwd_setup_code = "plan.src_dist.zero_position_grad( queue, grad_for_plan.src_dist );",
+                thread_cap = "sorted_indices.shape( 0 )",
+                group_size = group_size_expr,
+                # no `sort_diracs` here (order already given) -> no radix-bucket local scratch needed.
+                local_mem_elems = "0",
+            ),
+            output_attributes = [ "plan.cost", "plan.nb_diracs", "num_local_marker", "group_scan" ],
+            scratch_attributes = [ "num_local_marker", "group_scan" ],
+            has_dynamic_capacity = False,
+            plan = self,
+            # `Tensor.wrap` only takes axis NAME strings (it mints fresh, detached axes) -- use the SAME
+            # names as `num_group`/`self.num_dirac` above so `CallArgsAnalysis` unifies them by name
+            # with this call's other tensors instead of minting disconnected ShapeVars.
+            sorted_indices = Tensor.wrap( sorted_indices if sorted_indices.ndim == 2 else sorted_indices[ None ],
+                                           [ num_group.name, self.num_dirac.name ], dtype = int ),
+            sorted_pos = Tensor.wrap( sorted_pos if sorted_pos.ndim == 2 else sorted_pos[ None ],
+                                       [ num_group.name, self.num_dirac.name ] ),
+            num_local_marker = Tensor[ num_local, dict( dtype = int ) ](),
+            group_scan = Tensor[ num_group, num_scan ](),
         )

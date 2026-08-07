@@ -32,6 +32,11 @@ struct SumOfDiracs {
         if constexpr ( CT_VALUE( grad_src.positions.is_valid() ) )
             grad_src.positions( ::num_dirac = i, dim = 0 ) = grad_s;
     }
+
+    /// No-op: `add_position_grad` here is a plain per-angle `=` (no cross-angle accumulation), so
+    /// there is nothing to clear first (mirrors `ProjectedSumOfDiracs::zero_position_grad`, called
+    /// unconditionally by `OtPlan1d.py`'s `bwd_setup_code` regardless of which source is used).
+    void zero_position_grad( auto &&, auto && ) const {}
 };
 
 }

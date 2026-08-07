@@ -30,8 +30,17 @@ class FfiCode( AbstractFfiCode ):
     """
 
     def __init__( self, fwd_code, bwd_code = "", name = "", batch_axes = (), includes = (),
-                  thread_cap = None, group_size = None, local_mem_elems = None ) -> None:
+                  thread_cap = None, group_size = None, local_mem_elems = None,
+                  fwd_setup_code = "", bwd_setup_code = "" ) -> None:
         self._code = dict( fwd = fwd_code, bwd = bwd_code )
+        # a plain C++ STATEMENT emitted verbatim BEFORE the scaffolded call below (outside the
+        # per-item lambda, in the handler's own scope -- where a call's aggregate args are already
+        # declared, see `_render_call`'s `decls`). For a one-time, pre-launch step a per-item body
+        # cannot express: e.g. zeroing a buffer several items will ATOMICALLY accumulate into next
+        # (see `OtPlan1d`'s backward, `grad_for_plan.src_dist` -- a shared points-gradient buffer,
+        # accumulated across every angle, that Jax does not guarantee starts zeroed). Empty by
+        # default (a no-op statement position, nothing to run).
+        self._setup_code = dict( fwd = fwd_setup_code, bwd = bwd_setup_code )
         self.batch_axes = tuple( batch_axes )
         self.includes = tuple( includes )
         self.name = name
@@ -72,7 +81,8 @@ class FfiCode( AbstractFfiCode ):
         the backward exactly as it does the forward (see `_call_backward`)."""
         return type( self )( self._code[ "bwd" ], name = ( self.name or "sdot" ) + "_bwd",
                              includes = self.includes, thread_cap = self.thread_cap,
-                             group_size = self.group_size, local_mem_elems = self.local_mem_elems )
+                             group_size = self.group_size, local_mem_elems = self.local_mem_elems,
+                             fwd_setup_code = self._setup_code[ "bwd" ] )
 
     def with_batch_axis( self ):
         """The same code, mapped over one more axis: what a `vmap` runs. The name is derived from
@@ -82,7 +92,9 @@ class FfiCode( AbstractFfiCode ):
         return name, type( self )( self._code[ "fwd" ], self._code[ "bwd" ], self.name,
                                    self.batch_axes + ( name, ), self.includes,
                                    thread_cap = self.thread_cap, group_size = self.group_size,
-                                   local_mem_elems = self.local_mem_elems )
+                                   local_mem_elems = self.local_mem_elems,
+                                   fwd_setup_code = self._setup_code[ "fwd" ],
+                                   bwd_setup_code = self._setup_code[ "bwd" ] )
 
 
 class FfiCodeParallel( FfiCode ):
@@ -131,6 +143,12 @@ class FfiCodeParallel( FfiCode ):
         names = list( call_args_analysis.args )
         mapped = ", ".join( call_args_analysis.args[ n ].cpp_run_parallel_pair() for n in names )
 
+        # emitted BEFORE the scaffolded call, in the handler's own scope (see `FfiCode.__init__`'s
+        # docstring on `_setup_code`) -- a one-time, pre-launch statement, not part of the per-item
+        # lambda below.
+        setup = self._setup_code[ code_type ]
+        setup = ( setup + "\n" ) if setup else ""
+
         # Cooperative (nd_range): a work-GROUP per item, `group_size` work-items inside it sharing
         # `local_scratch`. `with_group_kernel` wraps the lambda with the `max_nb_threads` (cap on
         # concurrent GROUPS -- same RAM-budget meaning `thread_cap` always had),`group_size` and
@@ -140,7 +158,8 @@ class FfiCodeParallel( FfiCode ):
         if self.group_size is not None:
             params = ", ".join( [ "auto batch_index", "auto group_index", "auto local_index", "auto local_size",
                                   "auto group", "auto local_scratch", "auto sub_group" ] + [ f"auto { n }" for n in names ] )
-            return ( "run_parallel(\n"
+            return ( f"{ setup }"
+                     "run_parallel(\n"
                      "    queue,\n"
                      "    global_batch_indices,\n"
                      f"    with_group_kernel( { self.thread_cap }, { self.group_size }, { self.local_mem_elems }, []( { params } ) {{\n"
@@ -155,7 +174,8 @@ class FfiCodeParallel( FfiCode ):
         # No cap: the plain lambda, one work-item per item (`run_parallel` then launches `nb_items`
         # threads). This is the default and what every non-scratch kernel uses.
         if self.thread_cap is None:
-            return ( "run_parallel(\n"
+            return ( f"{ setup }"
+                     "run_parallel(\n"
                      "    queue,\n"
                      "    global_batch_indices,\n"
                      f"    []( { params } ) {{\n"
@@ -171,7 +191,8 @@ class FfiCodeParallel( FfiCode ):
         # compiled kernel serves every machine -- nothing about the thread count enters the source. The
         # wrapper lives at namespace scope because a local struct cannot carry the templated hook the
         # kernel needs (see run_parallel.h).
-        return ( "run_parallel(\n"
+        return ( f"{ setup }"
+                 "run_parallel(\n"
                  "    queue,\n"
                  "    global_batch_indices,\n"
                  f"    with_max_threads( { self.thread_cap }, []( { params } ) {{\n"

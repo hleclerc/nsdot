@@ -38,6 +38,19 @@ struct ProjectedSumOfDiracs {
                 atomic_add( grad_src.points( ::num_dirac = i, proj_dim = d ).ref(),
                             TF( grad_s * TF( normal( proj_dim = d ) ) ) );
     }
+
+    /// Clear the whole `grad_points` buffer -- called ONCE, as a pre-pass BEFORE `add_position_grad`'s
+    /// atomic adds (see `OtPlan1d.py`'s `bwd_setup_code`). Needed because the points gradient
+    /// ACCUMULATES ACROSS EVERY ANGLE sharing this buffer (unlike a per-angle value): a fresh Jax/XLA
+    /// FFI output buffer is NOT guaranteed to start zeroed, so without this the atomic adds land on
+    /// whatever device memory happened to be there before. Routed through `Tensor::fill_with( queue,
+    /// ... )` (-> `run_parallel`) rather than a hand-rolled kernel submission, so it goes through the
+    /// same, already-proven device-kernel launch path as every other kernel here. Compile-time
+    /// no-op when the points gradient is not wanted.
+    void zero_position_grad( auto &&queue, auto &&grad_src ) const {
+        if constexpr ( CT_VALUE( grad_src.points.is_valid() ) )
+            grad_src.points.fill_with( queue, TF( 0 ) );
+    }
 };
 
 }

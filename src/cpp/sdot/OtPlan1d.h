@@ -34,12 +34,26 @@ struct OtPlan1d {
     TF    chunked_weight_prefix( auto &&sorted_indices, auto &&group_scan, SI lo, SI hi,
                                   int local_index, int local_size, auto &&group ) const;
 
+    // Sort-independent halves of the forward/backward -- the sweep only, given a (however obtained)
+    // sorted order. Shared by the internally-sorting entry points below and by the `_presorted` ones,
+    // which take that order as already provided (e.g. from `jnp.argsort`, see
+    // `OtPlan1d.py::update_outputs_presorted`; [[jax-sort-lax-scan]]).
+    void  sweep_outputs( auto &&sorted_indices, auto &&sorted_pos, auto &&group_scan,
+                          int local_index, int local_size, auto &&group );
+    void  sweep_outputs_bwd( auto &&grad_plan, auto &&sorted_indices, auto &&sorted_pos, auto &&group_scan,
+                              int local_index, int local_size, auto &&group ) const;
+
     void  update_outputs( auto &&sorted_indices, auto &&radix_tmp, auto &&sorted_pos,
                            auto &&group_scan,
                            int local_index, int local_size, auto &&group, auto &&local_scratch, auto &&sub_group );
     void  update_outputs_bwd( auto &&grad_plan, auto &&sorted_indices, auto &&radix_tmp, auto &&sorted_pos,
                                auto &&group_scan,
                                int local_index, int local_size, auto &&group, auto &&local_scratch, auto &&sub_group ) const;
+
+    void  update_outputs_presorted( auto &&sorted_indices, auto &&sorted_pos, auto &&group_scan,
+                                     int local_index, int local_size, auto &&group );
+    void  update_outputs_bwd_presorted( auto &&grad_plan, auto &&sorted_indices, auto &&sorted_pos, auto &&group_scan,
+                                         int local_index, int local_size, auto &&group ) const;
 };
 
 }

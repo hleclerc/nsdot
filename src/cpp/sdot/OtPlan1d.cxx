@@ -244,16 +244,19 @@ UTP typename DTP::TF DTP::chunked_weight_prefix( auto &&sorted_indices, auto &&g
     return group_scan( local_index ); // W_lo_t
 }
 
-UTP void DTP::update_outputs( auto &&sorted_indices, auto &&radix_tmp, auto &&sorted_pos,
-                               auto &&group_scan,
-                               int local_index, int local_size, auto &&group, auto &&local_scratch, auto &&sub_group ) {
+// Sort-INDEPENDENT half of the forward: everything that only needs a (however obtained) sorted
+// order, shared by `update_outputs` (sorts internally, via `sort_diracs`) and
+// `update_outputs_presorted` (order already provided -- e.g. computed by `jnp.argsort` upstream of
+// this kernel, see `OtPlan1d.py`'s `update_outputs_presorted`; see [[jax-sort-lax-scan]]). Kept as
+// its own method (not inlined into both callers) so the two entry points cannot drift apart.
+UTP void DTP::sweep_outputs( auto &&sorted_indices, auto &&sorted_pos, auto &&group_scan,
+                              int local_index, int local_size, auto &&group ) {
     // Forward = COST, plus the barycenters ONLY when `barycenters` is a bound output (the caller set
     // `with_barycenters`). When it is not, it is a NoneTensor (no `operator=`) so the guarded write
     // and the `moment` it needs both vanish at compile time -- the forward then does cost only, and
     // the backward recomputes any b_i it needs (see `update_outputs_bwd`). `barycenters` is a per-
     // (angle x dirac) buffer ([nb_angles, n] = 80GB at scale), hence off by default.
     const SI nb = src_dist.weights.size();
-    sort_diracs( sorted_indices, radix_tmp, sorted_pos, local_index, local_size, group, local_scratch, sub_group );
 
     const SI lo = ( nb * SI( local_index ) ) / local_size;
     const SI hi = ( nb * SI( local_index + 1 ) ) / local_size;
@@ -299,36 +302,41 @@ UTP void DTP::update_outputs( auto &&sorted_indices, auto &&radix_tmp, auto &&so
     sycl::group_barrier( group );
 }
 
-UTP void DTP::update_outputs_bwd( auto &&grad_plan, auto &&sorted_indices, auto &&radix_tmp, auto &&sorted_pos,
-                                   auto &&group_scan,
-                                   int local_index, int local_size, auto &&group, auto &&local_scratch, auto &&sub_group ) const {
-    //   cost = Sum_k Integral_{t_k}^{t_{k+1}} y(x) (x - p_{s(k)})^2 dx,
-    // with diracs sorted by position (order s = `sorted_indices`), and t_k = M^{-1}(W_k) the target
-    // quantile at the cumulative source mass W_k = Sum_{j<k} w_{s(j)}. The scratch is PER-GROUP and
-    // transient (not a forward residual), so the order is RE-DERIVED here via `sort_diracs` -- ONCE,
-    // hoisted below and shared by whichever of the position-grad (barycenters not stored) and
-    // weights/values-grad blocks actually run, since both need the exact same sorted order and
-    // sorting twice would be a pure waste.
-    //
-    // Each gradient below is guarded at compile time on `is_valid()`: an unperturbed input reaches
-    // us as a `NoneTensor` (no `operator=`), so its block must vanish -- see [[differentiation]].
-    // Everything runs inside a SYCL kernel, so NO std::vector / dynamic allocation: the per-dirac
-    // suffix sum is carried by two scalars instead of an array.
+UTP void DTP::update_outputs( auto &&sorted_indices, auto &&radix_tmp, auto &&sorted_pos,
+                               auto &&group_scan,
+                               int local_index, int local_size, auto &&group, auto &&local_scratch, auto &&sub_group ) {
+    sort_diracs( sorted_indices, radix_tmp, sorted_pos, local_index, local_size, group, local_scratch, sub_group );
+    sweep_outputs( sorted_indices, sorted_pos, group_scan, local_index, local_size, group );
+}
+
+// Entry point for a PRE-sorted order (`sorted_indices`/`sorted_pos` already filled by the caller --
+// no `sort_diracs`/`radix_tmp`/`local_scratch`/`sub_group`, none of which the sweep itself needs).
+// See [[jax-sort-lax-scan]].
+UTP void DTP::update_outputs_presorted( auto &&sorted_indices, auto &&sorted_pos, auto &&group_scan,
+                                         int local_index, int local_size, auto &&group ) {
+    sweep_outputs( sorted_indices, sorted_pos, group_scan, local_index, local_size, group );
+}
+
+// Sort-INDEPENDENT half of the backward, mirroring `sweep_outputs` -- shared by `update_outputs_bwd`
+// (sorts internally, conditionally, via `sort_diracs`) and `update_outputs_bwd_presorted` (order
+// already provided). See [[jax-sort-lax-scan]].
+//
+//   cost = Sum_k Integral_{t_k}^{t_{k+1}} y(x) (x - p_{s(k)})^2 dx,
+// with diracs sorted by position (order s = `sorted_indices`), and t_k = M^{-1}(W_k) the target
+// quantile at the cumulative source mass W_k = Sum_{j<k} w_{s(j)}.
+//
+// Each gradient below is guarded at compile time on `is_valid()`: an unperturbed input reaches
+// us as a `NoneTensor` (no `operator=`), so its block must vanish -- see [[differentiation]].
+// Everything runs inside a SYCL kernel, so NO std::vector / dynamic allocation: the per-dirac
+// suffix sum is carried by two scalars instead of an array.
+UTP void DTP::sweep_outputs_bwd( auto &&grad_plan, auto &&sorted_indices, auto &&sorted_pos, auto &&group_scan,
+                                  int local_index, int local_size, auto &&group ) const {
     const TF g = grad_plan.cost; // scalar cotangent seeding `cost`
     const SI nb = src_dist.weights.size();
     const SI lo = ( nb * SI( local_index ) ) / local_size;
     const SI hi = ( nb * SI( local_index + 1 ) ) / local_size;
-
-    // The sort depends only on POSITION, never on which gradient is being computed -- so when BOTH
-    // the position-grad block (barycenters not stored) AND the weights/values-grad block need it,
-    // sort ONCE here and let both read the same `sorted_indices`/`sorted_pos`, instead of paying a
-    // full redundant radix sort per block.
-    constexpr bool need_position_resort  = CT_VALUE( src_dist.position_grad_wanted( grad_plan.src_dist ) )
-                                         && ! CT_VALUE( barycenters.is_valid() );
     constexpr bool need_weight_value_grad = CT_VALUE( grad_plan.src_dist.weights.is_valid() )
                                           || CT_VALUE( grad_plan.dst_dist.values.is_valid() );
-    if constexpr ( need_position_resort || need_weight_value_grad )
-        sort_diracs( sorted_indices, radix_tmp, sorted_pos, local_index, local_size, group, local_scratch, sub_group );
 
     // --- d cost / d positions -------------------------------------------------------------------
     //   d cost / d p_i = Integral_{S_i} 2 (p_i - x) y dx = 2 w_i ( p_i - b_i ),  b_i the barycenter of
@@ -479,6 +487,30 @@ UTP void DTP::update_outputs_bwd( auto &&grad_plan, auto &&sorted_indices, auto 
     // scratch rows reused by the next angle this group strides onto -- every work-item must wait for
     // every other to finish reading them before any of them starts overwriting it.
     sycl::group_barrier( group );
+}
+
+UTP void DTP::update_outputs_bwd( auto &&grad_plan, auto &&sorted_indices, auto &&radix_tmp, auto &&sorted_pos,
+                                   auto &&group_scan,
+                                   int local_index, int local_size, auto &&group, auto &&local_scratch, auto &&sub_group ) const {
+    // The scratch is PER-GROUP and transient (not a forward residual), so the order is RE-DERIVED
+    // here via `sort_diracs`. The sort depends only on POSITION, never on which gradient is being
+    // computed -- so when BOTH the position-grad block (barycenters not stored) AND the
+    // weights/values-grad block need it, sort ONCE here and let both read the same
+    // `sorted_indices`/`sorted_pos` (via `sweep_outputs_bwd`), instead of paying a full redundant
+    // radix sort per block.
+    constexpr bool need_position_resort  = CT_VALUE( src_dist.position_grad_wanted( grad_plan.src_dist ) )
+                                         && ! CT_VALUE( barycenters.is_valid() );
+    constexpr bool need_weight_value_grad = CT_VALUE( grad_plan.src_dist.weights.is_valid() )
+                                          || CT_VALUE( grad_plan.dst_dist.values.is_valid() );
+    if constexpr ( need_position_resort || need_weight_value_grad )
+        sort_diracs( sorted_indices, radix_tmp, sorted_pos, local_index, local_size, group, local_scratch, sub_group );
+    sweep_outputs_bwd( grad_plan, sorted_indices, sorted_pos, group_scan, local_index, local_size, group );
+}
+
+// Entry point for a PRE-sorted order -- see `update_outputs_presorted`'s docstring, [[jax-sort-lax-scan]].
+UTP void DTP::update_outputs_bwd_presorted( auto &&grad_plan, auto &&sorted_indices, auto &&sorted_pos, auto &&group_scan,
+                                             int local_index, int local_size, auto &&group ) const {
+    sweep_outputs_bwd( grad_plan, sorted_indices, sorted_pos, group_scan, local_index, local_size, group );
 }
 
 }
