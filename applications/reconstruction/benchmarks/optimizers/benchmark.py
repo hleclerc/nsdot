@@ -6,9 +6,10 @@ from pathlib import Path
 
 from sdot import Tensor
 
-from ..Sinogram import Sinogram
-from ..reconstruction import random_positions, loss, reconstruct
-from ..optimizers import GradientDescent, GradientDescentLineSearch, LBFGS, Adam
+# trois points : ce module est sous `benchmarks/optimizers/`, l'app est deux niveaux au-dessus
+from ...Reconstruction import Reconstruction
+from ...Sinogram import Sinogram
+from ...optimizers import GradientDescent, GradientDescentLineSearch, LBFGS, Adam
 
 
 def benchmark_optimizers(
@@ -33,9 +34,9 @@ def benchmark_optimizers(
     sino = Sinogram(nb_angles=nb_angles, nb_bins=nb_bins, extent=extent)
     sino.add_disk(center=[0.3, -0.2], radius=1.0)
 
-    # Initial positions
-    positions_init = random_positions(nb_diracs, extent=extent, seed=seed)
-    initial_loss = float(loss(sino, positions_init).tensor)
+    # Initial positions -- partagées par tous les optimiseurs (chacun repart du MÊME nuage)
+    positions_init = Reconstruction(sino, extent=extent).random_points(nb_diracs, seed=seed).points
+    initial_loss = Reconstruction(sino, positions_init).loss()
 
     results = {}
 
@@ -52,10 +53,11 @@ def benchmark_optimizers(
 
         losses = []
         start_time = time.time()
+        rec = Reconstruction(sino, positions_init, extent=extent)
 
         def make_callback(name):
             def callback(step, pos):
-                l = float(loss(sino, pos).tensor)
+                l = rec.loss(points=pos)
                 losses.append(l)
                 if verbose and (step + 1) % max(1, (step + 100) // 20) == 0:
                     elapsed = time.time() - start_time
@@ -64,13 +66,13 @@ def benchmark_optimizers(
 
         t0 = time.time()
         try:
-            positions_opt = reconstruct(sino, positions_init, optimizer=optimizer, callback=make_callback(name))
+            rec.diracs(optimizer=optimizer, callback=make_callback(name))
             t_total = time.time() - t0
-            final_loss = float(loss(sino, positions_opt).tensor)
+            final_loss = rec.loss()
 
             results[name] = {
                 'optimizer': optimizer,
-                'positions': positions_opt,
+                'positions': rec.points,
                 'losses': losses,
                 'final_loss': final_loss,
                 'time': t_total,

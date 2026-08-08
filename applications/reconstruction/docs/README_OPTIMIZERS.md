@@ -18,26 +18,27 @@ This module provides a complete suite of optimization algorithms for acceleratin
 - Time vs iteration efficiency plots
 - Performance comparison tables
 
-✅ **Backward Compatible**
-- Old API still works: `reconstruct(sino, pos, lr=0.2, nb_steps=100)`
-- New API: `reconstruct(sino, pos, optimizer=LBFGS())`
+✅ **One entry point**
+- Everything goes through `Reconstruction`: `rec.diracs(optimizer=LBFGS())`
+- Steps are chainable and share the current point cloud: `rec.diracs().disks()`
 
 ## Quick Start
 
 ### Basic Usage
 
 ```python
-from reconstruction import reconstruct, random_positions
+from Reconstruction import Reconstruction
 from Sinogram import Sinogram
 from optimizers import LBFGS
 
 # Create problem
 sino = Sinogram(nb_angles=100, nb_bins=100)
 sino.add_disk(center=[0.3, -0.2], radius=1.0)
-positions = random_positions(10000, extent=6.0)
 
-# Reconstruct (uses L-BFGS by default for best results)
-result = reconstruct(sino, positions, optimizer=LBFGS())
+# Reconstruct (L-BFGS is the default optimizer)
+rec = Reconstruction(sino, extent=6.0).random_points(10000)
+rec.diracs(optimizer=LBFGS())
+result = rec.points
 ```
 
 ### All Optimizers
@@ -62,7 +63,7 @@ opt = Adam(lr=0.1, nb_steps=300, grad_clip=10.0)
 # 4. Quasi-Newton method (BEST)
 opt = LBFGS(max_iter=200, ftol=1e-8)
 
-result = reconstruct(sino, positions, optimizer=opt)
+rec.diracs(optimizer=opt)
 ```
 
 ## Benchmark Results
@@ -151,7 +152,9 @@ LBFGS(max_iter=200, ftol=1e-8)
 ```
 applications/reconstruction/
 ├── optimizers.py          # Core optimizer implementations
-├── reconstruction.py      # Main reconstruction code
+├── Reconstruction.py      # Point d'entrée unique (étapes chaînables)
+├── models.py              # DiracModel / DiskModel (le coût comparé au sinogramme)
+├── disks.py               # DiskProjector (projection différentiable des disques)
 ├── Sinogram.py            # Sinogram model
 ├── convergence.py         # Convergence comparison util
 ├── tests/                 # Harness tests (test_reconstruction.py, test_sinogram.py)
@@ -225,7 +228,7 @@ class MyOptimizer(Optimizer):
 
 # Use it
 opt = MyOptimizer(my_param=0.2)
-result = reconstruct(sino, positions, optimizer=opt)
+rec.diracs(optimizer=opt)
 ```
 
 ### Monitoring Convergence
@@ -236,15 +239,13 @@ times = []
 start = time.time()
 
 def my_callback(step, pos):
-    l = float(loss(sino, pos).tensor)
+    l = rec.loss(points=pos)
     losses.append(l)
     times.append(time.time() - start)
     if (step + 1) % 10 == 0:
         print(f"Step {step}: loss={l:.6f}")
 
-result = reconstruct(sino, positions, 
-                    optimizer=LBFGS(),
-                    callback=my_callback)
+rec.diracs(optimizer=LBFGS(), callback=my_callback)
 
 # Plot your own curves
 import matplotlib.pyplot as plt
@@ -266,7 +267,8 @@ A: No. Limited-memory variant only keeps last ~10 Hessian approximations. Memory
 A: Yes. The gradients are computed via `driver.grad()` which uses your default backend (JAX on CPU or GPU). Optimizers are agnostic.
 
 **Q: Does old code still work?**  
-A: Yes. `reconstruct(sino, pos, lr=0.5, nb_steps=100)` still works (uses GradientDescent internally).
+A: No — everything goes through `Reconstruction`. The equivalent is
+`rec.diracs(optimizer=GradientDescent(lr=0.5, nb_steps=100))`.
 
 **Q: Why does Adam sometimes diverge?**  
 A: High learning rates. Try `Adam(lr=0.05)` instead of 0.1. Or use gradient clipping: `Adam(lr=0.1, grad_clip=1.0)`.

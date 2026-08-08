@@ -17,10 +17,9 @@ import matplotlib.pyplot as plt
 from matplotlib.collections import PatchCollection
 from matplotlib.patches import Circle
 
+from ..Reconstruction import Reconstruction
 from ..Sinogram import Sinogram
-from ..reconstruction import random_positions, loss, reconstruct, reconstruct_multiscale
-from ..optimizers import LBFGS
-from ..viz.points_html import export_positions_html
+from ..optimizers import LBFGS, GradientDescentLineSearch
 
 
 def _hex_sites( lobes, max_radius, spacing_factor = 2.15, jitter_factor = 0.02, seed = 0 ):
@@ -60,7 +59,7 @@ def _hex_sites( lobes, max_radius, spacing_factor = 2.15, jitter_factor = 0.02, 
 
 
 def make_lung_phantom(
-    nb_angles: int = 180,
+    nb_angles: int = 600,
     nb_bins: int = 2000,
     extent: float = 44.0,
     nb_alveoli: int | None = None,
@@ -95,7 +94,7 @@ def make_lung_phantom(
         alveolus_radius = 0.075 * scale
 
     lobes = [
-        ( np.array( [ 0.0, 0.0 ] ) * scale, 0.1 * extent * scale ),
+        ( np.array( [ 0.0, 0.0 ] ) * scale, 0.5 * extent * scale ),
     ]
 
     sino = Sinogram( nb_angles = nb_angles, nb_bins = nb_bins, extent = extent )
@@ -180,18 +179,19 @@ def run( nb_alveoli = 1_000, alveolus_radius = 0.75, nb_diracs = 10_000, max_ite
     plot_sinogram( sino, ax = axes[ 1 ] )
 
     print( f"reconstruction ({ nb_diracs } diracs, LBFGS max_iter={ max_iter })..." )
-    positions_init = random_positions( nb_diracs, extent = sino.extent, seed = 1 )
+    rec = Reconstruction( sino, max_iter = max_iter, ftol = 1e-10, verbose = True )
+    rec.random_points( nb_diracs, seed = 1 )
     t0 = time.time()
     losses = []
     def callback( step, pos ):
         if step % 10 == 0 or step == -1:
-            l = float( loss( sino, pos ).tensor )
+            l = rec.loss( points = pos )
             losses.append( ( step, l ) )
             print( f"  step { step }: loss = { l:.6f} ({ time.time() - t0:.1f}s)" )
-    positions_opt = reconstruct( sino, positions_init, optimizer = LBFGS( max_iter = max_iter, ftol = 1e-10 ), callback = callback )
+    rec.diracs( callback = callback )
     print( f"reconstruction terminée en { time.time() - t0:.1f}s" )
 
-    pos = np.asarray( positions_opt.tensor )
+    pos = rec.positions
     if len( pos ) > plot_max_points:
         # sous-échantillonnage pour l'affichage seulement -- la reconstruction elle-même a
         # utilisé les `nb_diracs` points en entier, ceci n'affecte que le rendu matplotlib
@@ -209,11 +209,11 @@ def run( nb_alveoli = 1_000, alveolus_radius = 0.75, nb_diracs = 10_000, max_ite
     print( f"figure sauvée: { out }" )
 
 
-def run_truncated( nb_alveoli = 1000, scale = 2.0, nb_diracs_final = 1_000_000,
+def run_truncated( nb_alveoli = 1000, scale = 1.0, nb_diracs_final = 4992,
                     out_phantom = "tmp/lung_truncated_phantom.png",
                     out_reconstruction = "tmp/lung_truncated_reconstruction.html",
-                    point_radius = 0.05 ):
-    """Objet DEUX FOIS plus grand que le détecteur (`scale=2`, `extent` inchangé) : l'ombre de
+                    point_radius = 0.05, animate = True, polish_steps = 0, polish_lr = 20.0 ):
+    """Objet plus grand que le détecteur (`scale=2`, `extent` inchangé) : l'ombre de
     l'objet dépasse la fenêtre visible à certains angles, la masse mesurée par angle n'est donc
     plus constante. `Sinogram.debias_and_equalize_mass` corrige ça (décalage additif par angle,
     masses égalisées avant tout rescale -- voir sa docstring) ; on ne montre ici que la vérité
@@ -223,14 +223,34 @@ def run_truncated( nb_alveoli = 1000, scale = 2.0, nb_diracs_final = 1_000_000,
     Sortie : `out_phantom` (PNG, vérité terrain -- peu de disques, matplotlib convient très bien)
     et `out_reconstruction` (HTML autonome, nuage de points -- voir `export_positions_html`,
     bien plus lisible qu'un scatter matplotlib à `nb_diracs_final` points).
+
+    `animate` (par défaut True) : capture une frame à CHAQUE pas d'optimiseur de CHAQUE étage de
+    `Reconstruction.multiscale` (grâce à `record`) -- la page HTML obtient
+    alors une barre de temps + un bouton play/pause pour rejouer le déplacement/raffinement des
+    points jusqu'à convergence. `False` revient au comportement historique (une seule frame, la
+    reconstruction finale).
+
+    `polish_steps` : après `multiscale`, un pas supplémentaire de descente de
+    gradient AVEC line search (`GradientDescentLineSearch`) sur `nb_diracs_final` points --
+    LBFGS bloque parfois sur ce problème (pas vraiment différentiable, points selles : la
+    line search de scipy s'arrête sans avoir vraiment convergé). Le backtracking simple de
+    `GradientDescentLineSearch` n'a pas ces exigences de courbure et peut continuer à
+    grappiller de la loss là où LBFGS s'est arrêté. `0` désactive cette étape.
+
+    `polish_lr` : le gradient au point où LBFGS s'est arrêté est déjà petit (résidu d'un
+    quasi-point-critique) -- `lr=1.0` n'y produit qu'un déplacement de l'ordre de 1e-4 fois
+    l'étendue, invisible à l'affichage. Le backtracking étant sans risque (il ne fait que
+    RÉDUIRE le pas si `lr` overshoot, jamais l'inverse), on part volontairement large ; mesuré
+    empiriquement, la condition d'Armijo n'a besoin de reculer qu'à partir de `lr` de l'ordre de
+    100 sur ce problème -- 20 laisse de la marge tout en donnant un pas très supérieur à 1.0.
     """
     print( f"génération du fantôme surdimensionné (scale={ scale })..." )
-    sino, lobes, alveoli = make_lung_phantom( nb_alveoli = nb_alveoli, scale = scale, alveolus_radius = 0.7 )
+    sino, lobes, alveoli = make_lung_phantom( nb_alveoli = nb_alveoli, scale = scale, alveolus_radius = 0.7, nb_bins = 2000 )
     bound = max( r + float( np.linalg.norm( c ) ) for c, r in lobes ) * 1.05
     recon_extent = 2 * bound
 
     raw_mass = np.asarray( sino.mass() )
-    corrected = sino.debias_and_equalize_mass()
+    corrected = sino # .debias_and_equalize_mass()
     corr_mass = np.asarray( corrected.mass() )
     print( f"masse brute par angle : min={ raw_mass.min():.1f} max={ raw_mass.max():.1f} "
            f"(écart-type { raw_mass.std():.1f})" )
@@ -244,13 +264,31 @@ def run_truncated( nb_alveoli = 1000, scale = 2.0, nb_diracs_final = 1_000_000,
     print( f"figure sauvée: { out_phantom }" )
 
     print( "reconstruction (sinogramme corrigé)..." )
-    pos = reconstruct_multiscale(
-        corrected, extent = recon_extent, nb_diracs_final = nb_diracs_final,
-        nb_diracs_init = 1000, factor = 4,
-        optimizer_factory = lambda n: LBFGS( max_iter = 40, ftol = 1e-10 ),
+    t0 = time.time()
+    # une seule `Reconstruction` pour TOUTE la chaîne (multiscale puis polish) : elle garde le
+    # nuage courant, la trajectoire (`record`) et l'historique d'un étage à l'autre.
+    rec = Reconstruction( corrected, extent = recon_extent, record = animate, verbose = True )
+    rec.multiscale(
+        nb_points_final = nb_diracs_final, nb_points_init = nb_diracs_final // 4**2, factor = 4,
+        optimizer_factory = lambda n: LBFGS( max_iter = 40, ftol = 1e-9 ),
+        noise_frac = 1e-2
     )
-    export_positions_html( pos, extent = recon_extent, out_path = out_reconstruction,
-                            point_radius = point_radius, title = "reconstruction poumon" )
+
+    if polish_steps > 0:
+        print( f"polish (descente de gradient + line search, { polish_steps } pas)..." )
+        def polish_callback( step, positions ):
+            if step % 5 == 0 or step == -1:
+                l = rec.loss( points = positions )
+                print( f"  step { step }: loss = { l:.6f} ({ time.time() - t0:.1f}s)" )
+        rec.diracs( optimizer = GradientDescentLineSearch( lr = polish_lr, nb_steps = polish_steps ),
+                    callback = polish_callback, label = "polish" )
+
+    rec.disks( 0.07 )
+
+    print( f"reconstruction terminée en { time.time() - t0:.1f}s" )
+
+    rec.export_html( out_reconstruction, point_radius = point_radius,
+                     title = "reconstruction poumon" )
 
 
 if __name__ == "__main__":

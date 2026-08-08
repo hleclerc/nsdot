@@ -6,8 +6,8 @@ from pathlib import Path
 
 from sdot import Tensor
 
+from .Reconstruction import Reconstruction
 from .Sinogram import Sinogram
-from .reconstruction import random_positions, loss, reconstruct
 from .optimizers import GradientDescent, LBFGS
 
 
@@ -18,34 +18,32 @@ def test_convergence(sinogram: Sinogram, nb_diracs: int = 50, seed: int = 0):
         dict with convergence metrics for each optimizer
     """
     print(f"Testing convergence with {nb_diracs} diracs...")
-    positions_init = random_positions(nb_diracs, extent=1.0, seed=seed)
-    initial_loss = float(loss(sinogram, positions_init).tensor)
+    # un même nuage de départ, puis une `Reconstruction` par optimiseur (elles sont indépendantes :
+    # chacune porte son propre nuage courant)
+    positions_init = Reconstruction(sinogram, extent=1.0).random_points(nb_diracs, seed=seed).points
+    initial_loss = Reconstruction(sinogram, positions_init).loss()
 
     results = {}
 
     # Test Gradient Descent
     print("\n=== Gradient Descent (lr=0.2, 500 steps) ===")
     gd_losses = []
-    gd_times = []
+
+    rec_gd = Reconstruction(sinogram, positions_init)
 
     def gd_callback(step, pos):
-        l = float(loss(sinogram, pos).tensor)
+        l = rec_gd.loss(points=pos)
         gd_losses.append(l)
         if (step + 1) % 50 == 0:
             print(f"  Step {step + 1}: loss = {l:.6f}")
 
     t0 = time.time()
-    positions_gd = reconstruct(
-        sinogram,
-        positions_init,
-        optimizer=GradientDescent(lr=0.2, nb_steps=500),
-        callback=gd_callback
-    )
+    rec_gd.diracs(optimizer=GradientDescent(lr=0.2, nb_steps=500), callback=gd_callback)
     gd_time = time.time() - t0
-    final_loss_gd = float(loss(sinogram, positions_gd).tensor)
+    final_loss_gd = rec_gd.loss()
 
     results['gradient_descent'] = {
-        'positions': positions_gd,
+        'positions': rec_gd.points,
         'losses': gd_losses,
         'final_loss': final_loss_gd,
         'time': gd_time,
@@ -59,24 +57,21 @@ def test_convergence(sinogram: Sinogram, nb_diracs: int = 50, seed: int = 0):
     print("\n=== L-BFGS (max_iter=200) ===")
     lbfgs_losses = []
 
+    rec_lbfgs = Reconstruction(sinogram, positions_init)
+
     def lbfgs_callback(step, pos):
-        l = float(loss(sinogram, pos).tensor)
+        l = rec_lbfgs.loss(points=pos)
         lbfgs_losses.append(l)
         if (step + 1) % 10 == 0:
             print(f"  Iteration {step + 1}: loss = {l:.6f}")
 
     t0 = time.time()
-    positions_lbfgs = reconstruct(
-        sinogram,
-        positions_init,
-        optimizer=LBFGS(max_iter=200, ftol=1e-8),
-        callback=lbfgs_callback
-    )
+    rec_lbfgs.diracs(optimizer=LBFGS(max_iter=200, ftol=1e-8), callback=lbfgs_callback)
     lbfgs_time = time.time() - t0
-    final_loss_lbfgs = float(loss(sinogram, positions_lbfgs).tensor)
+    final_loss_lbfgs = rec_lbfgs.loss()
 
     results['lbfgs'] = {
-        'positions': positions_lbfgs,
+        'positions': rec_lbfgs.points,
         'losses': lbfgs_losses,
         'final_loss': final_loss_lbfgs,
         'time': lbfgs_time,

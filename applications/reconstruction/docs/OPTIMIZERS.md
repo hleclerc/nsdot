@@ -11,7 +11,7 @@ Descente de gradient simple avec pas fixe.
 from optimizers import GradientDescent
 
 optimizer = GradientDescent(lr=0.2, nb_steps=500)
-positions_opt = reconstruct(sinogram, positions_init, optimizer=optimizer)
+rec.diracs(optimizer=optimizer)          # ou rec.disks(...) pour le modèle disques
 ```
 
 **Pros**: Simple, fiable, bon baseline  
@@ -25,7 +25,7 @@ Gradient descent avec recherche de pas par backtracking (Armijo).
 from optimizers import GradientDescentLineSearch
 
 optimizer = GradientDescentLineSearch(lr=1.0, nb_steps=300, c1=1e-4, rho=0.5)
-positions_opt = reconstruct(sinogram, positions_init, optimizer=optimizer)
+rec.diracs(optimizer=optimizer)          # ou rec.disks(...) pour le modèle disques
 ```
 
 **Pros**: Converge plus vite que GD, pas d'hyperparamètres critiques  
@@ -39,7 +39,7 @@ Optimiseur adaptatif moderne avec moments exponentiels.
 from optimizers import Adam
 
 optimizer = Adam(lr=5e-3, nb_steps=300, beta1=0.9, beta2=0.999)
-positions_opt = reconstruct(sinogram, positions_init, optimizer=optimizer)
+rec.diracs(optimizer=optimizer)          # ou rec.disks(...) pour le modèle disques
 ```
 
 **Pros**: Converge bien sur différentes topologies, robuste  
@@ -53,7 +53,7 @@ Limited-memory BFGS via scipy. Utilise des approximations de Hessien.
 from optimizers import LBFGS
 
 optimizer = LBFGS(max_iter=200, ftol=1e-8)
-positions_opt = reconstruct(sinogram, positions_init, optimizer=optimizer)
+rec.diracs(optimizer=optimizer)          # ou rec.disks(...) pour le modèle disques
 ```
 
 **Pros**: Converge très rapidement (~5-10x plus d'itérations), excellente qualité  
@@ -80,39 +80,38 @@ L-BFGS              | 34    | ~0.8s | 0.0027    | 6.2x ⭐
 ### Utilisation simple
 
 ```python
-from reconstruction import reconstruct, random_positions
+from Reconstruction import Reconstruction
 from Sinogram import Sinogram
 from optimizers import LBFGS
 
-positions_init = random_positions(50, extent=1.0)
 sinogram = Sinogram(...)
 
-# Utiliser LBFGS (recommandé)
-positions_opt = reconstruct(sinogram, positions_init, optimizer=LBFGS())
+rec = Reconstruction(sinogram, extent=1.0)
+rec.random_points(50)
+rec.diracs(optimizer=LBFGS())            # étape 1 : modèle diracs
+print(rec.loss(), rec.summary())
+```
+
+Sans `optimizer`, chaque étape utilise le L-BFGS par défaut de l'objet, réglé à la construction
+(`Reconstruction(..., max_iter=..., ftol=...)`) ou à l'appel (`rec.diracs(max_iter=300)`).
+
+### Enchaîner les algorithmes
+
+Chaque étape part du nuage laissé par la précédente, et renvoie `self` :
+
+```python
+rec = Reconstruction(sinogram, radius=0.15, record=True)
+rec.random_points(60).diracs(max_iter=100).disks(max_iter=300)
+rec.export_html("out.html")              # rayons fixes exportés après une étape disques
 ```
 
 ### Avec monitoring
 
 ```python
 def my_callback(step, positions):
-    l = loss(sinogram, positions)
-    print(f"Step {step}: loss = {l:.8f}")
+    print(f"Step {step}: loss = {rec.loss(points=positions):.8f}")
 
-positions_opt = reconstruct(
-    sinogram,
-    positions_init,
-    optimizer=LBFGS(max_iter=200),
-    callback=my_callback
-)
-```
-
-### Rétro-compatibilité
-
-L'ancienne API avec `lr` et `nb_steps` fonctionne toujours:
-
-```python
-# Ancien code (utilise GradientDescent en interne)
-positions_opt = reconstruct(sinogram, positions_init, lr=0.2, nb_steps=100)
+rec.diracs(optimizer=LBFGS(max_iter=200), callback=my_callback)
 ```
 
 ## Ajouter un nouvel optimiseur

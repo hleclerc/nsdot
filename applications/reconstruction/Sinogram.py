@@ -43,6 +43,12 @@ class Sinogram( Aggregate ):
         # de données n'est pas différentiée et se calcule le plus simplement en numpy)
         self.extent = float( extent )
         self.detector_center = float( detector_center )
+        # le compte de cases, côté HÔTE. Doublon apparent de la ShapeVar `nb_bins`, mais
+        # `nb_bins.value` est un `Tensor` (résolu depuis les tailles observées) : sous un `jit`, le
+        # lire depuis `bin_edges`/`bin_centers` produit un tracer, et `np.arange` ne peut plus rien
+        # en faire. La géométrie détecteur est de la donnée HÔTE (comme `dw`/`s_min`/`angles`
+        # ci-dessous) et doit le rester -- elle est constante pendant toute une optimisation.
+        self.nb_bins_host = int( nb_bins )
         self.dw = self.extent / nb_bins
         self.s_min = self.detector_center - self.extent / 2
 
@@ -65,12 +71,12 @@ class Sinogram( Aggregate ):
     @property
     def bin_edges( self ) -> np.ndarray:
         """Bords des cases détecteur, [ nb_bins + 1 ]."""
-        return self.s_min + self.dw * np.arange( self.nb_bins.value + 1 )
+        return self.s_min + self.dw * np.arange( self.nb_bins_host + 1 )
 
     @property
     def bin_centers( self ) -> np.ndarray:
         """Centres des cases détecteur, [ nb_bins ]."""
-        return self.s_min + self.dw * ( np.arange( self.nb_bins.value ) + 0.5 )
+        return self.s_min + self.dw * ( np.arange( self.nb_bins_host ) + 0.5 )
 
     def project_points( self, points ) -> Tensor:
         """Coordonnées détecteur des `points` (shape [ n, 2 ]) pour chaque angle.

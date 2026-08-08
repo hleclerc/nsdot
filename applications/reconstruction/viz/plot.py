@@ -8,7 +8,7 @@ import time
 from sdot import Tensor
 
 from ..optimizers import GradientDescent, GradientDescentLineSearch, LBFGS, Adam
-from ..reconstruction import random_positions, loss, reconstruct
+from ..Reconstruction import Reconstruction
 from ..Sinogram import Sinogram
 
 
@@ -26,8 +26,8 @@ def plot(
     sino.add_disk( center = [ 0.3, -0.2 ], radius = 1.0 )
 
     # Initial positions
-    positions_init = random_positions( nb_diracs, extent = extent, seed = seed )
-    initial_loss = float( loss( sino, positions_init ).tensor )
+    rec = Reconstruction( sino, extent = extent ).random_points( nb_diracs, seed = seed )
+    initial_loss = rec.loss()
 
     results = {}
 
@@ -37,14 +37,14 @@ def plot(
     losses_lbfgs = []
     start_time_lbfgs = time.time()
     def callback_lbfgs(step, pos):
-        l = float( loss( sino, pos ).tensor )
+        l = rec.loss( points = pos )
         losses_lbfgs.append( l )
         if verbose and (step + 1) % max(1, (step + 100) // 20) == 0:
             elapsed = time.time() - start_time_lbfgs
             print(f"  Step {step + 1:3d}: loss = {l:.8f} ({elapsed:.1f}s)")
 
-    positions_opt = reconstruct( sino, positions_init, optimizer = LBFGS( max_iter = 200, ftol = 1e-10 ), callback = callback_lbfgs )
-    loss_after_lbfgs = float( loss( sino, positions_opt ).tensor )
+    rec.diracs( optimizer = LBFGS( max_iter = 200, ftol = 1e-10 ), callback = callback_lbfgs )
+    loss_after_lbfgs = rec.loss()
     print(f"  Loss after LBFGS: {loss_after_lbfgs:.8f}")
 
     # print(f"\nPhase 2: Adam (warm-start from LBFGS)")
@@ -59,10 +59,10 @@ def plot(
     #         elapsed = time.time() - start_time_adam
     #         print(f"  Step {step + 1:3d}: loss = {l:.8f} ({elapsed:.1f}s)")
 
-    # positions_opt = reconstruct( sino, positions_opt, optimizer = Adam( lr = 0.1, nb_steps = 300, grad_clip = 10.0 ), callback = callback_adam )
-    # final_loss = float(loss(sino, positions_opt).tensor)
+    # rec.diracs( optimizer = Adam( lr = 0.1, nb_steps = 300, grad_clip = 10.0 ), callback = callback_adam )
+    # final_loss = rec.loss()
     #
-    plt.plot( positions_opt.tensor[ :, 0 ], positions_opt.tensor[ :, 1 ], '.' )
+    plt.plot( rec.positions[ :, 0 ], rec.positions[ :, 1 ], '.' )
     plt.show()
 
 plot()

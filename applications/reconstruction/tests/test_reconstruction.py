@@ -1,7 +1,14 @@
+"""Reconstruction CT par DIRACS (`models.DiracModel`) : l'inconnue est un nuage de points dont
+les projections doivent reproduire le sinogramme mesuré.
+
+Tout passe par la classe `Reconstruction`, qui porte le sinogramme, le nuage courant et les
+paramètres par défaut, et enchaîne les étapes (voir `test_chain_diracs_then_disks` pour la
+composition diracs -> disques, et `test_disks.py` pour le modèle disques seul).
+"""
 import numpy as np
 
 from reconstruction.Sinogram import Sinogram
-from reconstruction.reconstruction import loss, reconstruct, random_positions
+from reconstruction.Reconstruction import Reconstruction
 from reconstruction.optimizers import GradientDescent, LBFGS
 from sdot.testing import test
 
@@ -25,7 +32,7 @@ if test( "in_disk_gives_small_loss" ):
             pts.append( xy + np.array( [ 0.3, -0.2 ] ) )
     pts = np.array( pts )
 
-    l = float( loss( sino, pts ) )
+    l = Reconstruction( sino, pts ).loss()
     assert np.isfinite( l )
     assert l < 0.05, f"perte trop grande pour des diracs dans le disque : { l }"
 
@@ -37,46 +44,30 @@ if test( "reconstruct_converges" ):
     sino = _disk_sinogram( nb_angles = 8, center = center, radius = radius )
 
     nb_steps = 100
-    p0 = random_positions( 100, extent = 5.0, seed = 3 )
-    l0 = float( loss( sino, p0 ) )
+    rec = Reconstruction( sino, extent = 5.0 ).random_points( 100, seed = 3 )
+    l0 = rec.loss()
 
-    # on capture ~10 instantaneous positions le long de la descente, pour l'animation
-    frames = [ np.asarray( p0 ) ]
+    # on capture ~10 instantanés le long de la descente, pour l'animation
+    frames = [ rec.positions ]
     every = max( 1, nb_steps // 10 )
     def snap( step, pts ):
         if step % every == every - 1 or step == nb_steps - 1:
             frames.append( np.asarray( pts ) )
 
-    p = reconstruct( sino, p0, lr = 0.5, nb_steps = nb_steps, callback = snap )
-    l1 = float( loss( sino, p ) )
+    rec.diracs( optimizer = GradientDescent( lr = 0.5, nb_steps = nb_steps ), callback = snap )
+    l1 = rec.loss()
 
     assert l1 < l0 / 10, f"la perte n'a pas suffisamment chuté : { l0 } -> { l1 }"
 
-    pn = np.asarray( p )
+    pn = rec.positions
     assert np.allclose( pn.mean( axis = 0 ), center, atol = 0.1 )
     dist = np.linalg.norm( pn - center, axis = 1 )
     assert ( dist <= radius + 0.1 ).mean() > 0.9, "la plupart des diracs devraient être dans le disque"
 
-    # -- animation de la convergence (disque cible en repère) --------------
-    # from matplotlib import pyplot
-    # from matplotlib.animation import FuncAnimation
-
-    # fig, ax = pyplot.subplots()
-    # theta = np.linspace( 0, 2 * np.pi, 200 )
-    # ax.plot( center[ 0 ] + radius * np.cos( theta ), center[ 1 ] + radius * np.sin( theta ), "-", color = "0.7" )
-    # ax.set_aspect( "equal" )
-    # ax.set_xlim( center[ 0 ] - 2.5, center[ 0 ] + 2.5 )
-    # ax.set_ylim( center[ 1 ] - 2.5, center[ 1 ] + 2.5 )
-    # scat = ax.plot( frames[ 0 ][ :, 0 ], frames[ 0 ][ :, 1 ], ".", color = "C0" )[ 0 ]
-
-    # def update( i ):
-    #     f = frames[ i ]
-    #     scat.set_data( f[ :, 0 ], f[ :, 1 ] )
-    #     ax.set_title( f"image { i + 1 } / { len( frames ) }" )
-    #     return scat,
-
-    # anim = FuncAnimation( fig, update, frames = len( frames ), interval = 400, blit = False )
-    # pyplot.show()
+    # l'historique garde une ligne par étape jouée, avec les pertes de bout en bout
+    ( h, ) = rec.history
+    assert h[ "model" ] == "diracs" and h[ "nb_points" ] == 100
+    assert abs( h[ "loss_before" ] - l0 ) < 1e-12 and abs( h[ "loss_after" ] - l1 ) < 1e-12
 
 
 if test( "lbfgs_vs_gradient_descent" ):
@@ -85,24 +76,19 @@ if test( "lbfgs_vs_gradient_descent" ):
     center, radius = np.array( [ 0.3, -0.2 ] ), 1.0
     sino = _disk_sinogram( nb_angles = 12, center = center, radius = radius )
 
-    nb_diracs = 80
-    p0 = random_positions( nb_diracs, extent = 5.0, seed = 42 )
-    l0 = float( loss( sino, p0 ) )
+    start = Reconstruction( sino, extent = 5.0 ).random_points( 80, seed = 42 ).points
+    l0 = Reconstruction( sino, start ).loss()
 
-    # Gradient Descent : 200 itérations
-    gd_losses = []
-    def gd_callback( step, pts ):
-        gd_losses.append( float( loss( sino, pts ) ) )
-
-    p_gd = reconstruct( sino, p0, optimizer=GradientDescent( lr=0.2, nb_steps=200 ), callback=gd_callback )
+    # même point de départ, deux optimiseurs : deux `Reconstruction` indépendantes
+    gd_losses, lbfgs_losses = [], []
+    rec_gd = Reconstruction( sino, start )
+    rec_gd.diracs( optimizer = GradientDescent( lr = 0.2, nb_steps = 200 ),
+                   callback = lambda step, pts: gd_losses.append( rec_gd.loss( points = pts ) ) )
     l_gd = gd_losses[ -1 ]
 
-    # LBFGS : jusqu'à 200 itérations
-    lbfgs_losses = []
-    def lbfgs_callback( step, pts ):
-        lbfgs_losses.append( float( loss( sino, pts ) ) )
-
-    p_lbfgs = reconstruct( sino, p0, optimizer=LBFGS( max_iter=200, ftol=1e-8 ), callback=lbfgs_callback )
+    rec_lbfgs = Reconstruction( sino, start )
+    rec_lbfgs.diracs( optimizer = LBFGS( max_iter = 200, ftol = 1e-8 ),
+                      callback = lambda step, pts: lbfgs_losses.append( rec_lbfgs.loss( points = pts ) ) )
     l_lbfgs = lbfgs_losses[ -1 ]
 
     print( f"\n  GD:    {len(gd_losses):3d} steps, loss {l0:.6f} -> {l_gd:.6f} (ratio {l_gd/l0:.4f})" )
@@ -119,15 +105,14 @@ if test( "lbfgs_vs_gradient_descent" ):
 
 
 if test( "lbfgs_quality" ):
-    # LBFGS seul : vérifier qu'il atteint une bonne qualité de reconstruction.
+    # LBFGS seul : vérifier qu'il atteint une bonne qualité de reconstruction. `max_iter`/`ftol`
+    # passés à la construction définissent le L-BFGS par défaut de toutes les étapes.
     center, radius = np.array( [ 0.5, 0.1 ] ), 0.8
     sino = _disk_sinogram( nb_angles = 16, center = center, radius = radius )
 
-    p0 = random_positions( 100, extent = 4.0, seed = 123 )
-    l0 = float( loss( sino, p0 ) )
-
-    p = reconstruct( sino, p0, optimizer=LBFGS( max_iter=150, ftol=1e-9 ) )
-    l = float( loss( sino, p ) )
+    rec = Reconstruction( sino, extent = 4.0, max_iter = 150, ftol = 1e-9 ).random_points( 100, seed = 123 )
+    l0 = rec.loss()
+    l = rec.diracs().loss()
 
     print( f"\n  LBFGS quality: loss {l0:.6f} -> {l:.6f} (ratio {l/l0:.4f})" )
 
@@ -135,7 +120,64 @@ if test( "lbfgs_quality" ):
     assert l < l0 / 20, f"LBFGS should reduce loss significantly: {l0} -> {l}"
 
     # Vérifier que les diracs sont bien positionnés
-    pn = np.asarray( p )
-    assert np.allclose( pn.mean( axis=0 ), center, atol=0.15 ), "diracs should cluster around center"
-    dist = np.linalg.norm( pn - center, axis=1 )
+    pn = rec.positions
+    assert np.allclose( pn.mean( axis = 0 ), center, atol = 0.15 ), "diracs should cluster around center"
+    dist = np.linalg.norm( pn - center, axis = 1 )
     assert ( dist <= radius + 0.15 ).mean() > 0.85, "most diracs should be in the disk"
+
+
+if test( "multiscale_refines" ):
+    # grossier -> fin : chaque étage part de la structure trouvée par le précédent (`split`), et
+    # l'historique doit montrer un nombre de points croissant, jusqu'à la cible.
+    sino = _disk_sinogram( nb_angles = 12, center = ( 0.3, -0.2 ), radius = 1.0 )
+
+    rec = Reconstruction( sino, extent = 5.0, max_iter = 40, ftol = 1e-10 )
+    rec.multiscale( nb_points_final = 300, nb_points_init = 50, factor = 4 )
+
+    assert rec.nb_points == 300, rec.nb_points
+    counts = [ h[ "nb_points" ] for h in rec.history ]
+    assert counts == [ 50, 200, 300 ], counts
+    assert rec.history[ -1 ][ "loss_after" ] < rec.history[ 0 ][ "loss_before" ] / 10
+
+    pn = rec.positions
+    dist = np.linalg.norm( pn - np.array( [ 0.3, -0.2 ] ), axis = 1 )
+    assert ( dist <= 1.15 ).mean() > 0.9, "la plupart des diracs devraient être dans le disque"
+
+
+if test( "chain_diracs_then_disks" ):
+    # LE cas d'usage du chaînage : une reconstruction en diracs (perte non lisse) sert de point de
+    # départ à une reconstruction en DISQUES (perte lisse), sur le MÊME nuage de points -- chaque
+    # dirac convergé devient un centre de disque.
+    radius = 0.4
+    truth = np.array( [ [ 0.8, 0.3 ], [ -0.9, 0.6 ], [ 0.1, -1.1 ], [ -0.5, -0.7 ], [ 1.3, -0.4 ] ] )
+    sino = Sinogram( nb_angles = 24, nb_bins = 128, extent = 6.0 )
+    for c in truth:
+        sino.add_disk( center = list( c ), radius = radius )
+
+    rec = Reconstruction( sino, radius = radius, nb_pixels = 256, extent = 3.0, record = True )
+    rec.random_points( len( truth ), seed = 7 )
+
+    # étape 1 : diracs. Les points migrent vers la masse, sans notion de rayon.
+    rec.diracs( max_iter = 100, ftol = 1e-12 )
+    assert rec.radii is None, "le modèle diracs n'a pas de rayon propre"
+    l_diracs = rec.loss( rec.disk_model() )         # même nuage, mesuré avec la perte disques
+
+    # étape 2 : disques, en repartant EXACTEMENT du nuage précédent.
+    rec.disks( max_iter = 300, ftol = 1e-14 )
+    l_disks = rec.history[ -1 ][ "loss_after" ]
+    floor = rec.floor( rec.disk_model() )
+
+    print( f"\n  perte disques { l_diracs:.8f} -> { l_disks:.8f} (plancher { floor:.8f})" )
+    assert l_disks < l_diracs, f"l'étape disques doit améliorer la perte disques : { l_diracs } -> { l_disks }"
+    assert l_disks < 1.05 * floor, f"perte finale { l_disks } au-dessus du plancher { floor }"
+
+    # les centres retrouvés, à l'appariement près
+    found = rec.positions
+    err = [ float( np.min( np.linalg.norm( found - c, axis = 1 ) ) ) for c in truth ]
+    assert max( err ) < 0.02, f"centres mal retrouvés, erreurs { err }"
+
+    # la trajectoire est CONTINUE d'une étape à l'autre : une seule frame de jonction, et le rayon
+    # exporté est celui de la dernière étape jouée.
+    assert rec.radii == radius
+    assert len( rec.frames ) == sum( h[ "nb_steps" ] for h in rec.history ) + 1
+    assert [ h[ "model" ] for h in rec.history ] == [ "diracs", "disques" ]

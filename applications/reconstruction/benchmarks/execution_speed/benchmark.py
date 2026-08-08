@@ -14,10 +14,11 @@ Usage direct : `python -m applications.reconstruction.benchmarks.execution_speed
 import argparse
 import time
 
-from sdot import Tensor, driver
+from sdot import driver
 
+from ...Reconstruction import Reconstruction
 from ...Sinogram import Sinogram
-from ...reconstruction import loss, random_positions
+from ...models import DiracModel
 
 
 def _sync( x ):
@@ -57,17 +58,22 @@ def benchmark_execution_speed(
 ):
     """Construit un problème de reconstruction représentatif et chronomètre `loss` et son gradient.
 
-    `loss( sinogram, positions )` est un unique `OtPlan1d` BATCHÉ sur les angles (voir
-    `reconstruction.py`) -- ce chrono mesure donc le débit du kernel batché réel, pas une boucle
-    Python par angle. Renvoie un dict de timings, imprimé par `__main__` sous forme de rapport.
+    `DiracModel.cost` est un unique `OtPlan1d` BATCHÉ sur les angles (voir `models.py`) -- ce chrono
+    mesure donc le débit du kernel batché réel, pas une boucle Python par angle. On appelle le
+    MODÈLE directement (et non une étape de `Reconstruction`) : ici on ne veut chronométrer que le
+    coût et son gradient, sans optimiseur autour. Renvoie un dict de timings, imprimé par
+    `__main__` sous forme de rapport.
     """
     sino = Sinogram( nb_angles = nb_angles, nb_bins = nb_bins, extent = extent )
     sino.add_disk( center = [ 0.3, -0.2 ], radius = 1.0 )
 
-    positions = random_positions( nb_diracs, extent = extent, seed = seed ).raw
+    positions = Reconstruction( sino, extent = extent ).random_points( nb_diracs, seed = seed ).points.raw
+
+    model = DiracModel( sino )
+    model_bary = DiracModel( sino, with_barycenters = True )
 
     def scalar_loss( p ):
-        return loss( sino, Tensor.wrap( p, [ "num_dirac", "dim" ] ) ).tensor
+        return model.cost( model.wrap( p ) ).tensor
 
     # `positions` est le SEUL argument tracé : ce gradient ne porte déjà que sur les positions
     # des diracs, jamais sur le sinogramme (fixe, capturé par la closure). Avec `with_barycenters
@@ -75,7 +81,7 @@ def benchmark_execution_speed(
     # balayer chaque angle (voir `OtPlan1d.__init__`'s docstring / [[projected-source-fusion]]) --
     # comparé ci-dessous au cas par défaut (`with_barycenters = False`) pour mesurer le gain.
     def scalar_loss_bary( p ):
-        return loss( sino, Tensor.wrap( p, [ "num_dirac", "dim" ] ), with_barycenters = True ).tensor
+        return model_bary.cost( model_bary.wrap( p ) ).tensor
 
     loss_j = driver.jit( scalar_loss )
     grad_j = driver.jit( driver.grad( scalar_loss ) )

@@ -531,6 +531,23 @@ class Tensor( Attribute ):
     def __neg__( self ): return self._wrap_axes( -self.tensor, self._dim_axes() )
     def __abs__( self ): return self._wrap_axes( abs( self.tensor ), self._dim_axes() )
 
+    # ---- elementwise maps: shape (hence every axis OBJECT) is preserved, like `__neg__` ----
+    def _map( self, op ):
+        return self._wrap_axes( op( self.tensor ), self._dim_axes() )
+
+    def sqrt  ( self ): return self._map( driver.sqrt )
+    def arcsin( self ): return self._map( driver.arcsin )
+
+    def clip( self, lo = None, hi = None ):
+        """Values clamped to `[ lo, hi ]` (either bound may be `None` = unbounded)."""
+        return self._map( lambda a: driver.clip( a, lo, hi ) )
+
+    def stop_gradient( self ):
+        """Detached from the gradient tape (`driver.stop_gradient`) -- same values, no derivative
+        flows back through them. Used where a quantity is needed for its VALUE only, its derivative
+        being supplied by another (better conditioned) route."""
+        return self._map( driver.stop_gradient )
+
     def __eq__( self, o ): return self._binary( o, lambda a, b: a == b )
     def __ne__( self, o ): return self._binary( o, lambda a, b: a != b )
     def __lt__( self, o ): return self._binary( o, lambda a, b: a <  b )

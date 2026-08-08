@@ -174,6 +174,26 @@ class TorchDriver:
     def is_traced( self, x ):
         return False
 
+    # see `JaxDriver.checkpoint`: `func` re-evaluated in the backward instead of taping its
+    # intermediates. Torch spells it as a CALL wrapper rather than a decorator, so we adapt it to
+    # the same "function -> function" verb. `use_reentrant = False` is the non-deprecated
+    # implementation (the only one that supports closed-over tensors and nested autograd).
+    def checkpoint( self, func ):
+        import torch.utils.checkpoint as torch_checkpoint
+        return lambda *args: torch_checkpoint.checkpoint( func, *args, use_reentrant = False )
+
+    # see `JaxDriver.fold`. Torch's autograd is eager: a Python loop over the leading axis IS the
+    # sequential execution Jax needs a `lax.scan` to express, and it already keeps a single
+    # iteration's buffers live (the rest being handed to `checkpoint`).
+    def fold( self, body, init, xs ):
+        leaves = xs if isinstance( xs, dict ) else { None: xs }
+        n = len( next( iter( leaves.values() ) ) )
+        carry = init
+        for i in range( n ):
+            x = { k: v[ i ] for k, v in leaves.items() } if isinstance( xs, dict ) else xs[ i ]
+            carry = body( carry, x )
+        return carry
+
     # reductions -- the backend-agnostic verbs `Tensor` reduces through (`axis` is
     # a dimension index or a tuple of them; `None` reduces everything to a scalar).
     # Torch spells the axis `dim` and rejects `dim=None`, so full reductions drop it.
@@ -201,6 +221,16 @@ class TorchDriver:
     def where( self, cond, a, b ):
         cond = torch.as_tensor( cond, device = getattr( b, "device", None ) )
         return torch.where( cond, torch.as_tensor( a, dtype = getattr( b, "dtype", None ), device = getattr( b, "device", None ) ), b )
+
+    # elementwise math -- the backend-agnostic verbs `Tensor` maps through (shape preserved).
+    def sqrt( self, a ):
+        return torch.sqrt( a )
+
+    def arcsin( self, a ):
+        return torch.asin( a )
+
+    def clip( self, a, lo = None, hi = None ):
+        return torch.clamp( a, min = lo, max = hi )
 
     def linalg_solve( self, A, b ):
         return torch.linalg.solve( A, b )

@@ -193,6 +193,35 @@ class JaxDriver:
         scalar loss."""
         return jax.vjp( func, *primals )
 
+    def checkpoint( self, func ):
+        """`func` with its intermediates RECOMPUTED during the backward instead of retained.
+
+        Trades one extra forward evaluation of `func` for dropping its residuals from the tape.
+        Decisive when a loss is a SUM of many such pieces: without it the tape holds every piece's
+        intermediates at once, so peak memory grows with the number of pieces even though the
+        forward only ever holds one at a time (`OtPlan1d._update_outputs_via_angle_loop` and
+        `Image.try_update_otplan1d` do this per angle; `DiskProjector` per chunk of disks).
+
+        Pairs with `fold` (or a `lax.map`): a checkpoint alone bounds NOTHING if the pieces are
+        UNROLLED side by side, since nothing then forces the compiler to run them one at a time
+        (measured on `DiskProjector`: unrolled, checkpointed or not, the peak stayed one chunk's
+        buffers TIMES the number of chunks). The loop is what serializes the execution; the
+        checkpoint is what keeps the loop's per-iteration residuals down to its inputs."""
+        return jax.checkpoint( func )
+
+    def fold( self, body, init, xs ):
+        """`body( carry, x )` applied SEQUENTIALLY over the leading axis of `xs` (an array, or a
+        pytree of arrays sharing that axis), returning the final carry -- differentiable, and a
+        single LOOP in the compiled graph instead of one unrolled copy of `body` per element.
+
+        That is the whole point: an unrolled Python loop lets the compiler schedule every iteration
+        concurrently (and grows the trace, hence the compile time, linearly with the iteration
+        count), whereas this lowers to one `lax.scan`, where only ONE iteration's buffers are live.
+        Checkpoint the expensive part of `body` (see `checkpoint`) to bound what the loop stores per
+        iteration -- but leave the CARRY UPDATE outside that checkpoint, or the carry itself becomes
+        a residual and gets stored once per iteration."""
+        return jax.lax.scan( lambda carry, x: ( body( carry, x ), None ), init, xs )[ 0 ]
+
     def random( self, shape, dtype = None ):
         seed = getattr( self, "_rng_seed", 0 )
         self._rng_seed = seed + 1
@@ -251,6 +280,16 @@ class JaxDriver:
 
     def where( self, cond, a, b ):
         return jnp.where( cond, a, b )
+
+    # elementwise math -- the backend-agnostic verbs `Tensor` maps through (shape preserved).
+    def sqrt( self, a ):
+        return jnp.sqrt( a )
+
+    def arcsin( self, a ):
+        return jnp.arcsin( a )
+
+    def clip( self, a, lo = None, hi = None ):
+        return jnp.clip( a, lo, hi )
 
 
     def call( self, code : FfiCode | str, output_attributes = (), output_exceptions = (), input_exceptions = (), output_capacities = {}, batch_alignment = None, has_dynamic_capacity = True, scratch_attributes = (), **kwargs ):

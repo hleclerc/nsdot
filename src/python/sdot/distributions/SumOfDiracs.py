@@ -61,7 +61,12 @@ class SumOfDiracs( Distribution ):
 
     def _update_current_mass( self ):
         if self.weights.is_defined:
-            self.current_mass = self.weights.sum()
+            # reduce over the DIRAC axis ONLY, so any batch axis survives: with genuinely per-batch
+            # weights (e.g. one dirac per sinogram bin, weighted by THAT angle's pixel value) the
+            # mass differs from one batch element to the next, and `current_mass` is batched to
+            # match. A plain `sum()` would collapse it to a scalar that no longer fits the declared
+            # (batched) shape -- `normalized_version`'s divide then reads it as ragged and fails.
+            self.current_mass = self.weights.sum( axis = self.num_dirac )
         else:
             self.current_mass = self.nb_diracs.value
 
