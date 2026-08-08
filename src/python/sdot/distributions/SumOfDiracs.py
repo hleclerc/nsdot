@@ -67,7 +67,15 @@ class SumOfDiracs( Distribution ):
 
     def raw_1d_diracs( self ):
         # see `Distribution.raw_1d_diracs`. Only meaningful for the 1D case `OtPlan1d`
-        # consumes; `positions` carries a trailing size-1 `dim` axis to drop.
+        # consumes; `positions` carries a trailing size-1 `dim` axis to drop. `positions`
+        # itself may be batched (varies per angle) -- unlike `ProjectedSumOfDiracs`'s
+        # projection, reading a batched SLICE of it costs nothing extra to defer, so it goes
+        # through `batched_extra`/`project_fn` uniformly rather than a special "already batched
+        # positions" case.
         if int( self.nb_dims.value ) != 1 or not self.weights.is_defined:
             return None
-        return self.positions.tensor[ ..., 0 ], self.weights.tensor
+        positions = self.positions.tensor[ ..., 0 ]
+        weights = self.weights.tensor
+        if positions.ndim > 1:
+            return weights, { "positions": positions }, lambda extra: extra[ "positions" ]
+        return weights, {}, lambda extra: positions

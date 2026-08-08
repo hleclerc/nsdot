@@ -139,6 +139,12 @@ class OtPlan1d( Aggregate ):
         if self.dst_dist.try_update_otplan1d( self ):
             return
 
+        # second refusal, this time from the BATCH shape itself: when there is one, loop over
+        # it with `jax.lax.map` (one `driver.call` per angle) instead of one call handling every
+        # angle's memory at once -- see `_update_outputs_via_angle_loop`'s docstring for why.
+        if self.batch_axes and self._update_outputs_via_angle_loop():
+            return
+
         # `dst_dist.cell_cum_mass` is read (not built) by the C++ below -- make sure it is materialized
         # BEFORE this call, once, instead of being rebuilt by every forward/backward invocation of it.
         self.dst_dist.ensure_cell_cum_mass()
@@ -205,6 +211,57 @@ class OtPlan1d( Aggregate ):
             plan = self,
             **self._scratch(),
         )
+
+    def _update_outputs_via_angle_loop( self ):
+        """Loop over the (single) batch axis with `jax.lax.map` + `jax.checkpoint`, building a
+        FRESH, unbatched `OtPlan1d` (one `driver.call` -- sort AND sweep, unaffected by this)
+        per angle, instead of one call whose internal scratch/output memory scales with how many
+        CONCURRENT angles it processes at once (`_scratch`'s `nt`, or an `[ nb_angles, n, dim ]`
+        `barycenters` output). Mirrors `Image.try_update_otplan1d`'s own `lax.map`, extended to
+        the driver.call/C++ path: 'we will always have a large n', so bounding peak memory to
+        ONE angle -- regardless of the total angle count -- matters more than batching several
+        angles' GPU work concurrently (confirmed: `with_barycenters=True` OOMs today's single
+        batched call at n=1e8 x 20 angles; looping fixes it, see [[pure-jax-otplan1d]]). Declines
+        (returns False, caller keeps the single batched call) when: not JAX, more than one batch
+        axis, or either distribution cannot slice itself (`batch_slice`).
+        """
+        if len( self.batch_axes ) != 1 or driver.framework.module_name != "jax":
+            return False
+        # probed with a concrete Python int (outside any trace, so this is free): confirms both
+        # sides know how to slice themselves before committing to the loop.
+        if self.src_dist.batch_slice( 0 ) is None or self.dst_dist.batch_slice( 0 ) is None:
+            return False
+
+        import jax
+        import jax.numpy as jnp
+
+        with_barycenters = self._with_barycenters
+
+        @jax.checkpoint
+        def body( index ):
+            src_i = self.src_dist.batch_slice( index )
+            dst_i = self.dst_dist.batch_slice( index )
+            plan_i = OtPlan1d( src_i, dst_i, with_barycenters = with_barycenters )
+            # `.raw`, not `.tensor`: `plan.nb_diracs` is itself a kernel OUTPUT (re-confirmed
+            # device-side, see `update_outputs`'s `output_attributes`), so under this trace it is
+            # no longer the static host int `.tensor` needs to slice `barycenters` down to its
+            # logical shape (`.tensor`'s own docstring: "a kernel-written count is a device value
+            # under a trace, where Python cannot slice by it"). `.raw` reads the buffer as
+            # allocated instead -- exactly the logical shape here anyway, since every count in
+            # this call is prescribed from `nb_diracs` with no capacity slack.
+            if with_barycenters:
+                return plan_i.cost.raw, plan_i.barycenters.raw
+            return plan_i.cost.raw
+
+        n_batch = self.batch_axes[ 0 ].max
+        result = jax.lax.map( body, jnp.arange( n_batch ) )
+        if with_barycenters:
+            cost, barycenters = result
+            self.barycenters = barycenters
+        else:
+            cost = result
+        self.cost = cost
+        return True
 
     def update_outputs_presorted( self, sorted_indices, sorted_pos ):
         """Sort-free variant of `update_outputs`: `sorted_indices`/`sorted_pos` are ALREADY the sorted

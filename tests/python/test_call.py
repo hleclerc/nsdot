@@ -151,7 +151,12 @@ if test( "partial_init" ):
             global_batch_indices,
             []( auto batch_index, auto cell ) {
                 cell.nb_vertices( batch_index ).set( 1 );
+                // a fresh output buffer is NOT guaranteed zero-initialized (see
+                // `ProjectedSumOfDiracs::zero_position_grad`'s docstring for the general fact) --
+                // write every element the assertion below reads, rather than relying on a
+                // leftover-memory default.
                 cell.vertex_positions( batch_index, num_vertex = 0, dim = 0 ) = 1;
+                cell.vertex_positions( batch_index, num_vertex = 0, dim = 1 ) = 0;
 
                 static_assert( DECAYED_TYPE_OF( cell.vertex_positions.is_valid() )::value == 1 );
                 static_assert( DECAYED_TYPE_OF( cell.vertex_indices  .is_valid() )::value == 0 );
@@ -260,6 +265,9 @@ if test( "two_instances" ):
                 f.vertex_positions( num_vertex = 0, dim = 1 ) = 2;
 
                 volu.nb_vertices( batch_index ).set( 1 );
+                // see `partial_init`'s comment above: write every dim, not just the nonzero one.
+                volu.vertex_positions( batch_index, num_vertex = 0, dim = 0 ) = 0;
+                volu.vertex_positions( batch_index, num_vertex = 0, dim = 1 ) = 0;
                 volu.vertex_positions( batch_index, num_vertex = 0, dim = 2 ) = 3;
             },
             flat_io, flat, volu_io, volu

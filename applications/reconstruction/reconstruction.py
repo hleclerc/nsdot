@@ -3,7 +3,7 @@ import numpy as np
 from sdot import ProjectedSumOfDiracs, OtPlan1d, Tensor, driver
 
 from .Sinogram import Sinogram
-from .optimizers import GradientDescent
+from .optimizers import GradientDescent, LBFGS
 
 
 def loss( sinogram: Sinogram, positions, with_barycenters: bool = False ):
@@ -40,6 +40,66 @@ def random_positions( nb_diracs: int, extent: float, seed: int = 0 ) -> Tensor:
     """`nb_diracs` positions 2D tirées uniformément dans [ −extent/2, extent/2 ]²."""
     rng = np.random.default_rng( seed )
     return Tensor( ( rng.random( ( nb_diracs, 2 ) ) - 0.5 ) * extent )
+
+
+def split_positions( positions, factor: int, noise_scale: float, seed: int = 0 ) -> Tensor:
+    """Remplace chaque point par `factor` enfants, superposés au parent puis dispersés d'un
+    bruit uniforme d'amplitude `noise_scale` (par axe). Utilisé par `reconstruct_multiscale`
+    pour RAFFINER une solution convergée à basse résolution, plutôt que repartir d'un tirage
+    uniforme à la résolution cible."""
+    p = positions.raw if isinstance( positions, Tensor ) else np.asarray( positions )
+    rng = np.random.default_rng( seed )
+    tiled = np.repeat( p, factor, axis = 0 )                                  # [ n*factor, dim ]
+    noise = ( rng.random( tiled.shape ) - 0.5 ) * 2 * noise_scale
+    return Tensor.wrap( tiled + noise, [ "num_dirac", "dim" ] )
+
+
+def reconstruct_multiscale(
+    sinogram: Sinogram, extent: float, nb_diracs_final: int, nb_diracs_init: int = 1000,
+    factor: int = 4, optimizer_factory = None, noise_frac: float = 0.5, seed: int = 0,
+    stage_callback = None,
+):
+    """Reconstruction grossier -> fin : converge `reconstruct` à `nb_diracs_init` points (tirage
+    uniforme), puis répète { `split_positions` (chaque point -> `factor` enfants bruités),
+    reconverger } jusqu'à atteindre `nb_diracs_final`.
+
+    Motivation : à `nb_diracs_final` directement (ex. 1e7), un tirage initial UNIFORME sur toute
+    l'étendue doit être globalement réarrangé d'un coup par l'optimiseur (la masse cible est
+    concentrée sur une toute petite fraction du support) -- observé à provoquer un échec de la
+    line search de L-BFGS-B (arrêt après 1-2 itérations, loin de la convergence). En procédant
+    par étapes, chaque niveau part déjà de la bonne structure GLOBALE (héritée du niveau
+    précédent) et n'a plus qu'à raffiner LOCALEMENT -- un problème beaucoup mieux conditionné.
+
+    `noise_frac` : amplitude du bruit de split, en fraction de l'espacement typique au niveau
+    COURANT (`extent / sqrt( n )`) -- les enfants doivent explorer le voisinage immédiat du
+    parent, pas plus (sinon on retombe sur un réarrangement global à chaque étape).
+
+    `stage_callback( stage, n, positions )`, si fourni, est appelé après convergence de chaque
+    étage (avant le split suivant) -- utile pour tracer/illustrer la progression.
+    """
+    if optimizer_factory is None:
+        optimizer_factory = lambda n: LBFGS( max_iter = 60, ftol = 1e-10 )
+
+    n = nb_diracs_init
+    positions = random_positions( n, extent = extent, seed = seed )
+    stage = 0
+    while True:
+        positions = reconstruct( sinogram, positions, optimizer = optimizer_factory( n ) )
+        if stage_callback is not None:
+            stage_callback( stage, n, positions )
+        if n >= nb_diracs_final:
+            return positions
+
+        noise_scale = noise_frac * extent / np.sqrt( n )
+        next_n = min( n * factor, nb_diracs_final )
+        positions = split_positions( positions, factor, noise_scale, seed = seed + stage + 1 )
+        if len( positions.raw ) > next_n:
+            # dernier étage : `factor` déborde la cible -- sous-échantillonne au lieu de résoudre
+            # un facteur non entier.
+            idx = np.random.default_rng( seed + stage + 1 ).choice( len( positions.raw ), next_n, replace = False )
+            positions = Tensor.wrap( positions.raw[ idx ], [ "num_dirac", "dim" ] )
+        n = next_n
+        stage += 1
 
 
 def reconstruct( sinogram: Sinogram, positions, optimizer = None, lr: float = None, nb_steps: int = None, callback = None ):

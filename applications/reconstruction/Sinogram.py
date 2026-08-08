@@ -150,3 +150,38 @@ class Sinogram( Aggregate ):
         """Masse totale (∫ profil ds) à l'angle k, ou par angle (rang 1) si k est None."""
         m = self.values.sum( axis = "num_bin" ) * self.dw
         return m if k is None else m[ k ]
+
+    def debias_and_equalize_mass( self ) -> "Sinogram":
+        """Corrige un sinogramme dont l'objet DÉPASSE le détecteur (rayon > extent/2) : la
+        fenêtre visible ne redescend alors plus jusqu'à 0 (on ne voit qu'un morceau central de
+        l'objet), et la masse mesurée VARIE selon l'angle (la largeur d'ombre tronquée dépend de
+        l'orientation). `OtPlan1d` rétablit déjà l'égalité de masse src/dst via
+        `normalized_version` (un RESCALE multiplicatif par angle) -- correct pour une vraie
+        distribution de densité, mais ici ça revient à gonfler artificiellement la partie visible
+        d'un angle très tronqué, déformant la forme reconstruite. Un décalage ADDITIF est plus
+        fidèle : on modélise la partie invisible comme un fond localement homogène par angle
+        (raisonnable si l'objet est beaucoup plus grand que la fenêtre), qu'on retire avant toute
+        reconstruction.
+
+        Cherche une constante `c_k` par angle telle que :
+          - la masse résultante `mass_k - c_k * extent` soit la MÊME pour tous les angles (M),
+          - le minimum GLOBAL (tous angles, tous bins confondus) du sinogramme corrigé soit
+            exactement 0 -- pas nécessairement le minimum de CHAQUE angle individuellement :
+            l'angle le plus tronqué (celui qui autoriserait la plus petite masse en retirant tout
+            son propre fond) fixe M, les autres angles retirent une constante plus petite que leur
+            propre minimum pour rejoindre cette même masse M.
+
+        Dérivation (voir docstring de la classe pour les notations `mass_k`/`m_k` = min du profil
+        brut de l'angle k) : en écrivant `min_k( m_k − c_k ) = 0` et `c_k = ( mass_k − M ) /
+        extent`, on obtient `M = max_k( mass_k − m_k·extent )`.
+        """
+        vals = np.asarray( self.values )
+        m = vals.min( axis = 1 )                                  # [ nb_angles ]
+        mass = vals.sum( axis = 1 ) * self.dw                     # [ nb_angles ]
+        M = float( np.max( mass - m * self.extent ) )
+        c = ( mass - M ) / self.extent                            # [ nb_angles ], <= m partout
+
+        out = Sinogram( nb_angles = self.nb_angles.value, nb_bins = self.nb_bins.value,
+                         extent = self.extent, detector_center = self.detector_center )
+        out.values = vals - c[ :, None ]
+        return out

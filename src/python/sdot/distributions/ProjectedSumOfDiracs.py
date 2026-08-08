@@ -75,14 +75,31 @@ class ProjectedSumOfDiracs( Distribution ):
 
     def raw_1d_diracs( self ):
         # see `Distribution.raw_1d_diracs`. `points` [n,proj_dim] is shared; `normal` is
-        # `[proj_dim]` (unbatched) or `[*batch,proj_dim]` (one per angle) -- the projection
-        # (`einsum`, a plain dot over the last axis, no axis-order assumption beyond that) is
-        # computed HERE, not deferred, so the caller never needs to know this is a projected
-        # source rather than a plain one -- it always gets back a ready-to-use position array.
+        # `[proj_dim]` (unbatched) or `[*batch,proj_dim]` (one per angle) -- when batched, the
+        # projection (`points·normal`) is DEFERRED (`project_fn`, `normal` routed through
+        # `batched_extra`) so the caller computes it ONE ANGLE AT A TIME: materializing the
+        # full `[*batch,n]` projection upfront (a plain eager `einsum` over every angle at
+        # once) is exactly the memory blow-up `Image.try_update_otplan1d`'s `lax.map` exists to
+        # avoid -- confirmed as the actual cause of an OOM at n=1e8 x 5 angles that an EARLIER,
+        # eager version of this method hit (the lazy `lax.map` alone did not save it, because
+        # the projection was already materialized in full before `lax.map` ever ran).
         if not self.weights.is_defined:
             return None
         import jax.numpy as jnp
         points = self.points.tensor
         normal = self.normal.tensor
-        positions = jnp.einsum( "n p, ... p -> ... n", points, normal )
-        return positions, self.weights.tensor
+        weights = self.weights.tensor
+        if normal.ndim > 1:
+            return weights, { "normal": normal }, lambda extra: jnp.einsum( "n p, p -> n", points, extra[ "normal" ] )
+        return weights, {}, lambda extra: jnp.einsum( "n p, p -> n", points, normal )
+
+    def batch_slice( self, index ):
+        # see `Distribution.batch_slice`. `points`/`weights` are shared (unaffected by which
+        # angle); only `normal` varies, so only it is actually indexed.
+        if not self.batch_axes or not self.normal.is_defined:
+            return None
+        return ProjectedSumOfDiracs(
+            points = self.points,
+            normal = Tensor.wrap( self.normal.tensor[ index ], [ self.proj_dim.name ] ),
+            weights = self.weights if self.weights.is_defined else None,
+        )
