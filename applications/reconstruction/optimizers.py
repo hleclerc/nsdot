@@ -46,11 +46,29 @@ class GradientDescent(Optimizer):
 
 
 class LBFGS(Optimizer):
-    """L-BFGS optimization via scipy."""
+    """L-BFGS optimization via scipy.
 
-    def __init__(self, max_iter: int = 100, ftol: float = 1e-8):
+    `min_iter` : nombre de pas IMPOSÉ avant que scipy ait le droit de conclure à convergence.
+    Sans ça, L-BFGS-B peut s'arrêter dès le pas 0/1 dès que `ftol`/`gtol` (défaut scipy) sont
+    satisfaits -- observé sur le modèle DISQUES, où la perte est quasi stationnaire le long de
+    directions pourtant loin d'être optimales (un disque peut glisser sans changer le résidu
+    tant qu'il ne chevauche personne). Mis en oeuvre en DEUX appels `scipy.optimize.minimize` :
+    un premier à `maxiter=min_iter` avec `ftol=gtol=0` (aucun arrêt anticipé possible), puis un
+    second qui reprend le `ftol` demandé pour les pas restants.
+
+    `disp_tol` : pendant ce second appel, arrêt anticipé (levée de `StopIteration` depuis le
+    callback -- supporté nativement par `scipy.optimize.minimize` depuis la 1.11) dès que le
+    déplacement max d'un point entre deux pas passe sous ce seuil (mêmes unités que les points).
+    Combine bien avec `min_iter` : "au moins `min_iter` pas, puis tant que ça bouge encore".
+    `None` (défaut) désactive ce critère -- seul `ftol` scipy arrête alors la phase 2.
+    """
+
+    def __init__(self, max_iter: int = 100, ftol: float = 1e-8,
+                 min_iter: int = 0, disp_tol: float | None = None):
         self.max_iter = max_iter
         self.ftol = ftol
+        self.min_iter = min_iter
+        self.disp_tol = disp_tol
 
     def minimize(self, scalar_loss, x0, callback=None):
         from sdot import driver
@@ -64,7 +82,8 @@ class LBFGS(Optimizer):
         loss_j = driver.jit(lambda xf: scalar_loss(xf.reshape(shape_orig)))
         grad_j = driver.jit(lambda xf: driver.grad(scalar_loss)(xf.reshape(shape_orig)).reshape(-1))
 
-        step_counter = [0]  # mutable counter for callback
+        step_counter = [0]  # mutable counter for callback, shared across the two minimize() calls
+        prev_x = [x0_flat.copy()]
 
         def loss_flat(x_flat):
             return loss_j(x_flat)
@@ -72,21 +91,40 @@ class LBFGS(Optimizer):
         def grad_flat(x_flat):
             return grad_j(x_flat)
 
-        def scipy_callback(x_flat):
-            if callback is not None:
-                callback(step_counter[0], x_flat.reshape(shape_orig))
-            step_counter[0] += 1
+        def make_callback(check_disp: bool):
+            def scipy_callback(x_flat):
+                step = step_counter[0]
+                if callback is not None:
+                    callback(step, x_flat.reshape(shape_orig))
+                stop = False
+                if check_disp and self.disp_tol is not None:
+                    disp = float(np.max(np.abs(x_flat - prev_x[0])))
+                    stop = disp < self.disp_tol
+                prev_x[0] = x_flat.copy()
+                step_counter[0] += 1
+                if stop:
+                    raise StopIteration
+            return scipy_callback
 
-        result = minimize(
-            loss_flat,
-            x0_flat,
-            jac=grad_flat,
-            method='L-BFGS-B',
-            callback=scipy_callback,
-            options={'maxiter': self.max_iter, 'ftol': self.ftol}
-        )
+        x_flat = x0_flat
+        if self.min_iter > 0:
+            result = minimize(
+                loss_flat, x_flat, jac=grad_flat, method='L-BFGS-B',
+                callback=make_callback(check_disp=False),
+                options={'maxiter': self.min_iter, 'ftol': 0.0, 'gtol': 0.0},
+            )
+            x_flat = result.x
 
-        return result.x.reshape(shape_orig)
+        remaining = max(0, self.max_iter - step_counter[0])
+        if remaining > 0:
+            result = minimize(
+                loss_flat, x_flat, jac=grad_flat, method='L-BFGS-B',
+                callback=make_callback(check_disp=True),
+                options={'maxiter': remaining, 'ftol': self.ftol},
+            )
+            x_flat = result.x
+
+        return x_flat.reshape(shape_orig)
 
 
 class GradientDescentLineSearch(Optimizer):

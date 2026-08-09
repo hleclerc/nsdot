@@ -209,10 +209,11 @@ def run( nb_alveoli = 1_000, alveolus_radius = 0.75, nb_diracs = 10_000, max_ite
     print( f"figure sauvée: { out }" )
 
 
-def run_truncated( nb_alveoli = 1000, scale = 1.0, nb_diracs_final = 4992,
+def run_truncated( nb_alveoli = 1000, scale = 1.0, nb_diracs_final = 4992*4,
                     out_phantom = "tmp/lung_truncated_phantom.png",
                     out_reconstruction = "tmp/lung_truncated_reconstruction.html",
-                    point_radius = 0.05, animate = True, polish_steps = 0, polish_lr = 20.0 ):
+                    point_radius = 0.05, animate = True, polish_steps = 0, polish_lr = 20.0,
+                    disks_min_iter = 10, disks_disp_tol_frac = 1e-3, disks_split_before = 1 ):
     """Objet plus grand que le détecteur (`scale=2`, `extent` inchangé) : l'ombre de
     l'objet dépasse la fenêtre visible à certains angles, la masse mesurée par angle n'est donc
     plus constante. `Sinogram.debias_and_equalize_mass` corrige ça (décalage additif par angle,
@@ -243,6 +244,22 @@ def run_truncated( nb_alveoli = 1000, scale = 1.0, nb_diracs_final = 4992,
     RÉDUIRE le pas si `lr` overshoot, jamais l'inverse), on part volontairement large ; mesuré
     empiriquement, la condition d'Armijo n'a besoin de reculer qu'à partir de `lr` de l'ordre de
     100 sur ce problème -- 20 laisse de la marge tout en donnant un pas très supérieur à 1.0.
+
+    `disks_min_iter`/`disks_disp_tol_frac` : chaque étage `disks()` (voir `Reconstruction.disks`)
+    hérite d'un nuage venant de `diracs()` -- essentiellement un dirac par case du sinogramme
+    (`models.sinogram_diracs`). Sur ce point de départ, la perte disques a souvent des directions
+    PLATES (un disque peut glisser sans changer le résidu tant qu'il ne chevauche personne) : sans
+    garde-fou, L-BFGS-B peut y conclure à convergence après 0-1 pas, alors que les CENTRES restent
+    loin d'une disposition régulière. `disks_min_iter` force ce nombre de pas minimum ;
+    `disks_disp_tol_frac` (fraction du rayon courant de l'étage) arrête ENSUITE dès que les points
+    cessent de bouger significativement -- `None` désactive ce second critère (seul `ftol`
+    scipy natif arrête alors la phase suivant `disks_min_iter`).
+
+    `disks_split_before` : si > 1, SUBDIVISE le nuage (voir `Reconstruction.split`) juste avant
+    chaque étage disques -- plus de centres pour un même rayon donnent plus de degrés de liberté
+    de réarrangement local, utile si le nuage hérité des diracs est trop clairsemé pour le rayon
+    demandé et se retrouve VERROUILLÉ (chevauchements imposés par le voisinage). `1` (défaut) ne
+    change rien -- à activer/tuner à la main si `disks_min_iter` seul ne suffit pas.
     """
     print( f"génération du fantôme surdimensionné (scale={ scale })..." )
     sino, lobes, alveoli = make_lung_phantom( nb_alveoli = nb_alveoli, scale = scale, alveolus_radius = 0.7, nb_bins = 2000 )
@@ -268,22 +285,33 @@ def run_truncated( nb_alveoli = 1000, scale = 1.0, nb_diracs_final = 4992,
     # une seule `Reconstruction` pour TOUTE la chaîne (multiscale puis polish) : elle garde le
     # nuage courant, la trajectoire (`record`) et l'historique d'un étage à l'autre.
     rec = Reconstruction( corrected, extent = recon_extent, record = animate, verbose = True )
-    rec.multiscale(
-        nb_points_final = nb_diracs_final, nb_points_init = nb_diracs_final // 4**2, factor = 4,
-        optimizer_factory = lambda n: LBFGS( max_iter = 40, ftol = 1e-9 ),
-        noise_frac = 1e-2
-    )
 
-    if polish_steps > 0:
-        print( f"polish (descente de gradient + line search, { polish_steps } pas)..." )
-        def polish_callback( step, positions ):
-            if step % 5 == 0 or step == -1:
-                l = rec.loss( points = positions )
-                print( f"  step { step }: loss = { l:.6f} ({ time.time() - t0:.1f}s)" )
-        rec.diracs( optimizer = GradientDescentLineSearch( lr = polish_lr, nb_steps = polish_steps ),
-                    callback = polish_callback, label = "polish" )
+    rec.random_points( nb_diracs_final // 4**2 )
+    for i in range( 3 ):
+        if i:
+            rec.split( factor = 4, noise_frac = 1e-2 )
+        rec.diracs()
+        r = 0.08 * 2 ** ( 2 - i )
+        rec.disks( r, min_iter = disks_min_iter,
+                  disp_tol = None if disks_disp_tol_frac is None else disks_disp_tol_frac * r,
+                  split_before = disks_split_before,
+                  backend="sycl" )
+        # rec.multiscale(
+        #     nb_points_final = nb_diracs_final, nb_points_init = nb_diracs_final // 4**2, factor = 4,
+        #     optimizer_factory = lambda n: LBFGS( max_iter = 40, ftol = 1e-9 ),
+        #     noise_frac = 1e-2
+        # )
 
-    rec.disks( 0.07 )
+        # if polish_steps > 0:
+        #     print( f"polish (descente de gradient + line search, { polish_steps } pas)..." )
+        #     def polish_callback( step, positions ):
+        #         if step % 5 == 0 or step == -1:
+        #             l = rec.loss( points = positions )
+        #             print( f"  step { step }: loss = { l:.6f} ({ time.time() - t0:.1f}s)" )
+        #     rec.diracs( optimizer = GradientDescentLineSearch( lr = polish_lr, nb_steps = polish_steps ),
+        #                 callback = polish_callback, label = "polish" )
+
+        # rec.disks( 0.18/3, max_iter = 200, ftol = 1e-13 )
 
     print( f"reconstruction terminée en { time.time() - t0:.1f}s" )
 

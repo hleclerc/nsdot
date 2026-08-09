@@ -34,7 +34,9 @@ from .viz.points_html import export_positions_html
 class Reconstruction:
     """Reconstruction CT d'un nuage de points à partir d'un sinogramme, par étapes chaînables.
 
-    `sinogram` : la donnée MESURÉE, fixée pour toute la durée de vie de l'objet.
+    `sinogram` : la donnée à laquelle les points sont confrontés. Constante en pratique, mais
+    remplaçable (`set_sinogram`) -- c'est ce dont a besoin l'alternance halo/intérieur de
+    `halo.alternate`, qui resoumet à chaque passe un sinogramme corrigé.
     `points` : nuage initial `[ n, 2 ]` (Tensor ou tableau) -- optionnel, `random_points` peut le
     tirer plus tard.
 
@@ -55,6 +57,7 @@ class Reconstruction:
                   radius: float | None = None, nb_pixels: int | None = None,
                   max_chunk_elems: int = 1 << 24, with_barycenters: bool = False,
                   optimizer = None, max_iter: int = 200, ftol: float = 1e-12,
+                  min_iter: int = 0, disp_tol: float | None = None,
                   extent: float | None = None, seed: int = 0,
                   record: bool = False, record_every: int = 1, verbose: bool = False ) -> None:
         self.sinogram = sinogram
@@ -67,6 +70,10 @@ class Reconstruction:
         self.optimizer = optimizer
         self.max_iter = max_iter
         self.ftol = ftol
+        #: voir `LBFGS.min_iter`/`disp_tol` -- défauts appliqués à CHAQUE étage (`diracs`/`disks`/
+        #: `multiscale`) qui ne fournit pas son propre `optimizer`, surchargeables à l'appel.
+        self.min_iter = min_iter
+        self.disp_tol = disp_tol
 
         self.extent = float( extent if extent is not None else sinogram.extent )
         self.seed = int( seed )
@@ -108,6 +115,17 @@ class Reconstruction:
         if raw.ndim != 2 or raw.shape[ 1 ] != 2:
             raise ValueError( f"points doit être de shape [ n, 2 ], reçu { tuple( raw.shape ) }" )
         self.points = Tensor.wrap( raw, [ "num_point", "dim" ] )
+        return self
+
+    def set_sinogram( self, sinogram: Sinogram ) -> "Reconstruction":
+        """Remplace la donnée à laquelle les points sont confrontés, en GARDANT le nuage courant.
+
+        Les modèles sont reconstruits à chaque étape depuis `self.sinogram` (`dirac_model` /
+        `disk_model`), rien n'en est mis en cache ici : l'échange est donc immédiat. Sert à
+        l'alternance halo/intérieur (`halo.alternate`), où chaque passe repart du nuage précédent
+        -- réchauffé, donc -- sur un sinogramme mieux corrigé.
+        """
+        self.sinogram = sinogram
         return self
 
     def _next_seed( self, seed: int | None ) -> int:
@@ -171,13 +189,22 @@ class Reconstruction:
         si un rayon a été fixé à la construction, DIRACS sinon."""
         return self.dirac_model() if self.radius is None else self.disk_model()
 
-    def default_optimizer( self, max_iter: int | None = None, ftol: float | None = None ):
+    def default_optimizer( self, max_iter: int | None = None, ftol: float | None = None,
+                           min_iter: int | None = None, disp_tol: float | None = ... ):
         """L'optimiseur explicitement fourni à la construction, ou à défaut un L-BFGS calibré par
-        `max_iter`/`ftol` (le plus efficace mesuré sur ce problème, cf. `benchmarks/optimizers`)."""
-        if self.optimizer is not None and max_iter is None and ftol is None:
+        `max_iter`/`ftol`/`min_iter`/`disp_tol` (voir `LBFGS`, le plus efficace mesuré sur ce
+        problème par ailleurs, cf. `benchmarks/optimizers`).
+
+        `disp_tol` distingue `None` (voulu, désactive le critère) de "non fourni" (`...`, hérite
+        du défaut de la `Reconstruction`) -- les trois autres paramètres n'ont pas ce besoin,
+        `None` y signifiant déjà "hérite du défaut"."""
+        if ( self.optimizer is not None and max_iter is None and ftol is None
+             and min_iter is None and disp_tol is ... ):
             return self.optimizer
         return LBFGS( max_iter = self.max_iter if max_iter is None else max_iter,
-                      ftol = self.ftol if ftol is None else ftol )
+                      ftol = self.ftol if ftol is None else ftol,
+                      min_iter = self.min_iter if min_iter is None else min_iter,
+                      disp_tol = self.disp_tol if disp_tol is ... else disp_tol )
 
     # -- évaluation --------------------------------------------------------
 
@@ -196,17 +223,20 @@ class Reconstruction:
     # -- algorithmes -------------------------------------------------------
 
     def run( self, model: Model, optimizer = None, max_iter: int | None = None,
-             ftol: float | None = None, callback = None, label: str | None = None ) -> "Reconstruction":
+             ftol: float | None = None, min_iter: int | None = None, disp_tol: float | None = ...,
+             callback = None, label: str | None = None ) -> "Reconstruction":
         """UNE étape d'optimisation : descend `model.cost` depuis le nuage courant, qu'elle
         remplace par le résultat.
 
         `callback( step, points )` est appelé à chaque pas, `step = -1` désignant l'état initial.
         L'enregistrement des frames (si `record`) et la ligne d'`history` sont gérés ici, donc
         communs à toutes les étapes -- `diracs`/`disks`/`multiscale` ne font que choisir le modèle.
+
+        `min_iter`/`disp_tol` : voir `LBFGS` -- ignorés si `optimizer` est fourni explicitement.
         """
         if self.points is None:
             raise ValueError( "aucun point de départ -- appeler `random_points` ou `set_points` d'abord" )
-        optimizer = optimizer if optimizer is not None else self.default_optimizer( max_iter, ftol )
+        optimizer = optimizer if optimizer is not None else self.default_optimizer( max_iter, ftol, min_iter, disp_tol )
 
         p = self.points.raw
         loss_before = float( model.cost( model.wrap( p ) ) )
@@ -252,12 +282,25 @@ class Reconstruction:
         return self.run( self.dirac_model( with_barycenters ), **kwargs )
 
     def disks( self, radius: float | None = None, nb_pixels: int | None = None,
-               max_chunk_elems: int | None = None, **kwargs ) -> "Reconstruction":
-        """Une étape avec le modèle DISQUES (voir `models.DiskModel`). `kwargs` -> `run`.
+               max_chunk_elems: int | None = None, split_before: int = 1,
+               split_noise_frac: float = 0.05, **kwargs ) -> "Reconstruction":
+        """Une étape avec le modèle DISQUES (voir `models.DiskModel`). `kwargs` -> `run` (dont
+        `min_iter`/`disp_tol`, voir `LBFGS` -- utiles ici : la perte disques a des directions
+        PLATES -- ex. un disque peut glisser sans changer le résidu tant qu'il ne chevauche
+        personne -- où L-BFGS-B peut conclure à convergence après 0-1 pas).
 
         Typiquement enchaînée APRÈS `diracs`/`multiscale` : les points convergés y deviennent les
         centres des disques, sans autre transformation.
+
+        `split_before` : si > 1, SUBDIVISE le nuage courant (voir `split`) juste avant l'étage
+        disques -- plus de centres à rayon fixe donnent plus de degrés de liberté pour se
+        réarranger localement. Utile si le nuage hérité (typiquement un dirac par case du
+        sinogramme, voir `models.sinogram_diracs`) est trop clairsemé pour le rayon demandé et se
+        retrouve VERROUILLÉ (chevauchements imposés par le voisinage, aucun déplacement local ne
+        peut baisser la perte). `1` (défaut) ne change rien -- comportement historique.
         """
+        if split_before > 1:
+            self.split( factor = split_before, noise_frac = split_noise_frac )
         return self.run( self.disk_model( radius, nb_pixels, max_chunk_elems ), **kwargs )
 
     def multiscale( self, nb_points_final: int, nb_points_init: int = 1000, factor: int = 4,
