@@ -45,6 +45,57 @@ class GradientDescent(Optimizer):
         return x
 
 
+def _two_phase_lbfgsb(fun, jac, x0_flat, shape_orig, *, max_iter: int, ftol: float,
+                       min_iter: int, disp_tol: float | None, callback):
+    """Coeur commun à `LBFGS` et `FusedLBFGS` : L-BFGS-B scipy en deux appels -- un premier à
+    `maxiter=min_iter` avec `ftol=gtol=0` (aucun arrêt anticipé possible, voir `LBFGS.min_iter`),
+    puis un second qui reprend `ftol` pour les pas restants, avec arrêt anticipé sur `disp_tol`
+    (déplacement max d'un point) via `StopIteration` depuis le callback.
+
+    `fun`/`jac` sont transmis TELS QUELS à `scipy.optimize.minimize` -- `jac` un callable
+    (gradient séparé, `LBFGS`) ou `True` (`fun` renvoie `(valeur, gradient)`, `FusedLBFGS`) :
+    seule cette paire diffère entre les deux optimiseurs, le reste (double appel, callbacks,
+    critères d'arrêt) est repris ici pour ne pas diverger entre les deux implémentations.
+    """
+    step_counter = [0]  # mutable counter for callback, shared across the two minimize() calls
+    prev_x = [x0_flat.copy()]
+
+    def make_callback(check_disp: bool):
+        def scipy_callback(x_flat):
+            step = step_counter[0]
+            if callback is not None:
+                callback(step, x_flat.reshape(shape_orig))
+            stop = False
+            if check_disp and disp_tol is not None:
+                disp = float(np.max(np.abs(x_flat - prev_x[0])))
+                stop = disp < disp_tol
+            prev_x[0] = x_flat.copy()
+            step_counter[0] += 1
+            if stop:
+                raise StopIteration
+        return scipy_callback
+
+    x_flat = x0_flat
+    if min_iter > 0:
+        result = minimize(
+            fun, x_flat, jac=jac, method='L-BFGS-B',
+            callback=make_callback(check_disp=False),
+            options={'maxiter': min_iter, 'ftol': 0.0, 'gtol': 0.0},
+        )
+        x_flat = result.x
+
+    remaining = max(0, max_iter - step_counter[0])
+    if remaining > 0:
+        result = minimize(
+            fun, x_flat, jac=jac, method='L-BFGS-B',
+            callback=make_callback(check_disp=True),
+            options={'maxiter': remaining, 'ftol': ftol},
+        )
+        x_flat = result.x
+
+    return x_flat
+
+
 class LBFGS(Optimizer):
     """L-BFGS optimization via scipy.
 
@@ -52,9 +103,9 @@ class LBFGS(Optimizer):
     Sans ça, L-BFGS-B peut s'arrêter dès le pas 0/1 dès que `ftol`/`gtol` (défaut scipy) sont
     satisfaits -- observé sur le modèle DISQUES, où la perte est quasi stationnaire le long de
     directions pourtant loin d'être optimales (un disque peut glisser sans changer le résidu
-    tant qu'il ne chevauche personne). Mis en oeuvre en DEUX appels `scipy.optimize.minimize` :
-    un premier à `maxiter=min_iter` avec `ftol=gtol=0` (aucun arrêt anticipé possible), puis un
-    second qui reprend le `ftol` demandé pour les pas restants.
+    tant qu'il ne chevauche personne). Mis en oeuvre en DEUX appels `scipy.optimize.minimize`
+    (voir `_two_phase_lbfgsb`) : un premier à `maxiter=min_iter` avec `ftol=gtol=0` (aucun arrêt
+    anticipé possible), puis un second qui reprend le `ftol` demandé pour les pas restants.
 
     `disp_tol` : pendant ce second appel, arrêt anticipé (levée de `StopIteration` depuis le
     callback -- supporté nativement par `scipy.optimize.minimize` depuis la 1.11) dès que le
@@ -82,48 +133,51 @@ class LBFGS(Optimizer):
         loss_j = driver.jit(lambda xf: scalar_loss(xf.reshape(shape_orig)))
         grad_j = driver.jit(lambda xf: driver.grad(scalar_loss)(xf.reshape(shape_orig)).reshape(-1))
 
-        step_counter = [0]  # mutable counter for callback, shared across the two minimize() calls
-        prev_x = [x0_flat.copy()]
+        x_flat = _two_phase_lbfgsb(
+            loss_j, grad_j, x0_flat, shape_orig,
+            max_iter=self.max_iter, ftol=self.ftol, min_iter=self.min_iter, disp_tol=self.disp_tol,
+            callback=callback,
+        )
+        return x_flat.reshape(shape_orig)
 
-        def loss_flat(x_flat):
-            return loss_j(x_flat)
 
-        def grad_flat(x_flat):
-            return grad_j(x_flat)
+class FusedLBFGS(Optimizer):
+    """L-BFGS via scipy, comme `LBFGS`, mais pour un coût dont le gradient vient d'une évaluation
+    FUSIONNÉE externe (`value_and_grad(points) -> (cost: float, grad: ndarray)`, ex.
+    `dirac_sycl.diracs_cost_grad`) plutôt que de l'autodiff Jax -- tracer coût et gradient
+    séparément (ce que `LBFGS` fait via `driver.jit`/`driver.grad`) jetterait cette fusion (le
+    kernel SYCL calcule les deux en un seul passage, voir `dirac_sycl.py`).
 
-        def make_callback(check_disp: bool):
-            def scipy_callback(x_flat):
-                step = step_counter[0]
-                if callback is not None:
-                    callback(step, x_flat.reshape(shape_orig))
-                stop = False
-                if check_disp and self.disp_tol is not None:
-                    disp = float(np.max(np.abs(x_flat - prev_x[0])))
-                    stop = disp < self.disp_tol
-                prev_x[0] = x_flat.copy()
-                step_counter[0] += 1
-                if stop:
-                    raise StopIteration
-            return scipy_callback
+    Même politique `min_iter`/`disp_tol` que `LBFGS` (voir sa docstring, machinerie commune dans
+    `_two_phase_lbfgsb`) -- seule diffère la façon dont scipy obtient `(valeur, gradient)` :
+    `jac=True`, `value_and_grad` répondant déjà au contrat scipy pour cette option.
 
-        x_flat = x0_flat
-        if self.min_iter > 0:
-            result = minimize(
-                loss_flat, x_flat, jac=grad_flat, method='L-BFGS-B',
-                callback=make_callback(check_disp=False),
-                options={'maxiter': self.min_iter, 'ftol': 0.0, 'gtol': 0.0},
-            )
-            x_flat = result.x
+    `minimize`'s `scalar_loss` n'est PAS ici une fonction scalaire jax-traçable comme pour les
+    autres optimiseurs, mais directement `value_and_grad` -- voir `Reconstruction.run`, qui choisit
+    l'un ou l'autre appel selon le type de l'optimiseur.
+    """
 
-        remaining = max(0, self.max_iter - step_counter[0])
-        if remaining > 0:
-            result = minimize(
-                loss_flat, x_flat, jac=grad_flat, method='L-BFGS-B',
-                callback=make_callback(check_disp=True),
-                options={'maxiter': remaining, 'ftol': self.ftol},
-            )
-            x_flat = result.x
+    def __init__(self, max_iter: int = 100, ftol: float = 1e-8,
+                 min_iter: int = 0, disp_tol: float | None = None):
+        self.max_iter = max_iter
+        self.ftol = ftol
+        self.min_iter = min_iter
+        self.disp_tol = disp_tol
 
+    def minimize(self, value_and_grad, x0, callback=None):
+        x0 = x0.copy() if isinstance(x0, np.ndarray) else np.array(x0)
+        shape_orig = x0.shape
+        x0_flat = x0.reshape(-1)
+
+        def fun(x_flat):
+            cost, grad = value_and_grad(x_flat.reshape(shape_orig))
+            return float(cost), np.asarray(grad, dtype=np.float64).reshape(-1)
+
+        x_flat = _two_phase_lbfgsb(
+            fun, True, x0_flat, shape_orig,
+            max_iter=self.max_iter, ftol=self.ftol, min_iter=self.min_iter, disp_tol=self.disp_tol,
+            callback=callback,
+        )
         return x_flat.reshape(shape_orig)
 
 

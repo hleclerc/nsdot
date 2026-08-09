@@ -27,7 +27,7 @@ from sdot import Tensor, driver
 
 from .Sinogram import Sinogram
 from .models import DiracModel, DiskModel, Model
-from .optimizers import LBFGS
+from .optimizers import FusedLBFGS, LBFGS
 from .viz.points_html import export_positions_html
 
 
@@ -190,21 +190,27 @@ class Reconstruction:
         return self.dirac_model() if self.radius is None else self.disk_model()
 
     def default_optimizer( self, max_iter: int | None = None, ftol: float | None = None,
-                           min_iter: int | None = None, disp_tol: float | None = ... ):
+                           min_iter: int | None = None, disp_tol: float | None = ...,
+                           fused: bool = False ):
         """L'optimiseur explicitement fourni à la construction, ou à défaut un L-BFGS calibré par
         `max_iter`/`ftol`/`min_iter`/`disp_tol` (voir `LBFGS`, le plus efficace mesuré sur ce
         problème par ailleurs, cf. `benchmarks/optimizers`).
 
         `disp_tol` distingue `None` (voulu, désactive le critère) de "non fourni" (`...`, hérite
         du défaut de la `Reconstruction`) -- les trois autres paramètres n'ont pas ce besoin,
-        `None` y signifiant déjà "hérite du défaut"."""
-        if ( self.optimizer is not None and max_iter is None and ftol is None
+        `None` y signifiant déjà "hérite du défaut".
+
+        `fused` : construit un `FusedLBFGS` (voir `Reconstruction.diracs( backend = "sycl" )`) au
+        lieu d'un `LBFGS` -- ignore alors `self.optimizer` (un optimiseur générique fourni à la
+        construction ne sait pas consommer un `value_and_grad` fusionné)."""
+        if ( not fused and self.optimizer is not None and max_iter is None and ftol is None
              and min_iter is None and disp_tol is ... ):
             return self.optimizer
-        return LBFGS( max_iter = self.max_iter if max_iter is None else max_iter,
-                      ftol = self.ftol if ftol is None else ftol,
-                      min_iter = self.min_iter if min_iter is None else min_iter,
-                      disp_tol = self.disp_tol if disp_tol is ... else disp_tol )
+        cls = FusedLBFGS if fused else LBFGS
+        return cls( max_iter = self.max_iter if max_iter is None else max_iter,
+                   ftol = self.ftol if ftol is None else ftol,
+                   min_iter = self.min_iter if min_iter is None else min_iter,
+                   disp_tol = self.disp_tol if disp_tol is ... else disp_tol )
 
     # -- évaluation --------------------------------------------------------
 
@@ -260,7 +266,17 @@ class Reconstruction:
                 callback( step, model.wrap( x ) )
 
         t0 = time.time()
-        p_opt = optimizer.minimize( scalar_loss, p, callback = step_callback )
+        # `FusedLBFGS` consomme `model.value_and_grad` (coût+gradient fusionnés, ex. le kernel
+        # SYCL de `DiracModel`) au lieu d'une fonction scalaire jax-traçable -- voir
+        # `optimizers.FusedLBFGS` et `Reconstruction.diracs( backend = "sycl" )`.
+        if isinstance( optimizer, FusedLBFGS ):
+            fused = getattr( model, "value_and_grad", None )
+            if fused is None:
+                raise ValueError( f"{ model !r } ne supporte pas l'évaluation fusionnée "
+                                  "(FusedLBFGS) -- il lui manque `value_and_grad`" )
+            p_opt = optimizer.minimize( fused, p, callback = step_callback )
+        else:
+            p_opt = optimizer.minimize( scalar_loss, p, callback = step_callback )
         dt = time.time() - t0
 
         self.set_points( model.wrap( p_opt ) )
@@ -277,9 +293,25 @@ class Reconstruction:
             print( self._summary_line( self.history[ -1 ] ) )
         return self
 
-    def diracs( self, with_barycenters: bool | None = None, **kwargs ) -> "Reconstruction":
-        """Une étape avec le modèle DIRACS (voir `models.DiracModel`). `kwargs` -> `run`."""
-        return self.run( self.dirac_model( with_barycenters ), **kwargs )
+    def diracs( self, with_barycenters: bool | None = None, backend: str = "jax",
+               **kwargs ) -> "Reconstruction":
+        """Une étape avec le modèle DIRACS (voir `models.DiracModel`). `kwargs` -> `run`.
+
+        `backend` : `"jax"` (défaut) descend `model.cost` via `jax.grad`, généraliste (compatible
+        avec n'importe quel `optimizer`). `"sycl"` utilise à la place le kernel SYCL fusionné
+        `dirac_sycl.diracs_cost_grad` (`DiracModel.value_and_grad`, coût ET gradient EN UN SEUL
+        passage, formule fermée -- ~10-30x plus rapide mesuré sur le poumon, voir
+        `benchmarks/execution_speed/benchmark_fused.py`) : force l'optimiseur par défaut à
+        `FusedLBFGS` (voir `default_optimizer`), sauf si `optimizer` est fourni explicitement.
+        """
+        model = self.dirac_model( with_barycenters )
+        if backend == "sycl":
+            kwargs.setdefault( "optimizer", self.default_optimizer(
+                kwargs.get( "max_iter" ), kwargs.get( "ftol" ),
+                kwargs.get( "min_iter" ), kwargs.get( "disp_tol", ... ), fused = True ) )
+        elif backend != "jax":
+            raise ValueError( f"backend inconnu : { backend !r } (attendu 'jax' ou 'sycl')" )
+        return self.run( model, **kwargs )
 
     def disks( self, radius: float | None = None, nb_pixels: int | None = None,
                max_chunk_elems: int | None = None, split_before: int = 1,

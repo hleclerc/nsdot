@@ -188,7 +188,10 @@ def run( nb_alveoli = 1_000, alveolus_radius = 0.75, nb_diracs = 10_000, max_ite
             l = rec.loss( points = pos )
             losses.append( ( step, l ) )
             print( f"  step { step }: loss = { l:.6f} ({ time.time() - t0:.1f}s)" )
-    rec.diracs( callback = callback )
+    # backend="sycl" : kernel SYCL fusionné (`dirac_sycl.diracs_cost_grad`), ~10-30x plus rapide
+    # que le chemin pur Jax par défaut à cette échelle (voir
+    # `benchmarks/execution_speed/benchmark_fused.py`).
+    rec.diracs( callback = callback, backend = "sycl" )
     print( f"reconstruction terminée en { time.time() - t0:.1f}s" )
 
     pos = rec.positions
@@ -290,12 +293,13 @@ def run_truncated( nb_alveoli = 1000, scale = 1.0, nb_diracs_final = 4992*4,
     for i in range( 3 ):
         if i:
             rec.split( factor = 4, noise_frac = 1e-2 )
-        rec.diracs()
-        r = 0.08 * 2 ** ( 2 - i )
-        rec.disks( r, min_iter = disks_min_iter,
-                  disp_tol = None if disks_disp_tol_frac is None else disks_disp_tol_frac * r,
-                  split_before = disks_split_before,
-                  backend="sycl" )
+        # backend="sycl" : kernel SYCL fusionné, ~10-30x plus rapide que le chemin pur Jax à cette
+        # échelle (600 angles, milliers de diracs -- voir `benchmarks/execution_speed/benchmark_fused.py`).
+        rec.diracs( backend = "sycl" )
+        # r = 0.08 * 2 ** ( 2 - i )
+        # rec.disks( r, min_iter = disks_min_iter,
+        #           disp_tol = None if disks_disp_tol_frac is None else disks_disp_tol_frac * r,
+        #           split_before = disks_split_before )
         # rec.multiscale(
         #     nb_points_final = nb_diracs_final, nb_points_init = nb_diracs_final // 4**2, factor = 4,
         #     optimizer_factory = lambda n: LBFGS( max_iter = 40, ftol = 1e-9 ),
