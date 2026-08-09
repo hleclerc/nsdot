@@ -30,8 +30,8 @@ _HTML = """<!DOCTYPE html>
 <meta charset="utf-8">
 <title>__TITLE__</title>
 <style>
-  html, body { margin: 0; padding: 0; overflow: hidden; background: #ffffff; }
-  canvas { display: block; }
+  html, body { margin: 0; padding: 0; overflow: hidden; background: #ffffff; color: #111; }
+  canvas { display: block; background: #ffffff; }
   #controls {
     position: fixed; top: 10px; left: 10px; z-index: 1;
     background: rgba(255,255,255,0.88); padding: 8px 12px; border-radius: 6px;
@@ -41,6 +41,7 @@ _HTML = """<!DOCTYPE html>
   #controls *, #controls { box-sizing: border-box; }
   #controls label { display: block; }
   #controls input[type=range] { vertical-align: middle; width: 200px; }
+  #controls .hint { color: #666; margin-top: 4px; }
   #timeControls { display: none; margin-top: 8px; padding-top: 8px; border-top: 1px solid #ddd; }
   #timeControls .row { display: flex; align-items: center; gap: 6px; }
   #timeControls input[type=range] { flex: 1 1 auto; width: auto; min-width: 0; }
@@ -60,9 +61,19 @@ _HTML = """<!DOCTYPE html>
   #help td { padding: 1px 0; }
   #help td:first-child { padding-right: 10px; color: #333; white-space: nowrap; }
   #help td:last-child { color: #666; }
+  body.dark { background: #1a1a1a; color: #ddd; }
+  body.dark canvas { background: #1a1a1a; }
+  body.dark #controls { background: rgba(30,30,30,0.92); color: #ddd; }
+  body.dark #controls .hint { color: #aaa; }
+  body.dark #controls input[type=range] { accent-color: #8ab4f8; }
+  body.dark #timeControls { border-top-color: #555; }
+  body.dark #play { background: #8ab4f8; color: #172033; }
+  body.dark #help { background: rgba(30,30,30,0.95); color: #ccc; }
+  body.dark #help td:first-child { color: #ddd; }
+  body.dark #help td:last-child { color: #aaa; }
 </style>
 </head>
-<body>
+<body data-theme="light">
 <div id="controls">
   <label><span id="rname">rayon</span> : <span id="rval">__RADIUS__</span>
     <input id="r" type="range" min="0" max="1" step="0.001" value="__RT0__">
@@ -75,7 +86,7 @@ _HTML = """<!DOCTYPE html>
       <span id="tval">1 / 1</span>
     </div>
   </div>
-  <div style="color:#666; margin-top:4px;">appuyer sur <b>?</b> pour l'aide</div>
+  <div class="hint">appuyer sur <b>?</b> pour l’aide · <b>d</b> : <span id="modeLabel">clair</span></div>
 </div>
 <div id="help">
   <b>Raccourcis clavier</b>
@@ -90,6 +101,7 @@ _HTML = """<!DOCTYPE html>
     <tr><td>glisser</td><td>pan</td></tr>
     <tr><td>molette / pincement</td><td>pan / zoom</td></tr>
     <tr><td>double-clic</td><td>réinitialiser la vue</td></tr>
+    <tr><td>d</td><td>basculer clair / sombre</td></tr>
     <tr><td>?</td><td>afficher/masquer cette aide</td></tr>
   </table>
 </div>
@@ -158,7 +170,11 @@ let frameIdx = 0;
 
 function draw() {
   const w = canvas.width, h = canvas.height;
-  ctx.clearRect(0, 0, w, h);
+  const dark = document.body.classList.contains('dark');
+  // Le fond est peint dans le bitmap du canvas (et pas seulement par CSS), ce qui garantit
+  // aussi le bon rendu lors d'une capture ou d'un export du canvas.
+  ctx.fillStyle = dark ? '#1a1a1a' : '#ffffff';
+  ctx.fillRect(0, 0, w, h);
   baseScale = Math.min(w, h) / (2 * bound);
   cx = w / 2;
   cy = h / 2;
@@ -166,7 +182,7 @@ function draw() {
   const ox = cx + panX, oy = cy + panY;
   const mult = currentRadius();
   const rUniform = Math.max(R0 * mult * scale, 0.4);   // rayon écran commun quand RADII est absent
-  ctx.fillStyle = '#000000';
+  ctx.fillStyle = dark ? '#ffffff' : '#000000';
   const path = new Path2D();
   const off = OFFSETS[frameIdx], cnt = COUNTS[frameIdx];
   for (let i = 0; i < cnt; i++) {
@@ -369,6 +385,25 @@ window.addEventListener('keydown', (e) => {
       break;
   }
 });
+
+// Mode sombre : préférence système au chargement, puis bascule au raccourci [d].
+(function() {
+  const darkML = window.matchMedia('(prefers-color-scheme: dark)');
+  let curDark = darkML.matches;
+  function setTheme(on) {
+    curDark = on;
+    document.body.classList.toggle('dark', on);
+    document.body.dataset.theme = on ? 'dark' : 'light';
+    const m = document.getElementById('modeLabel');
+    if (m) m.textContent = on ? 'sombre' : 'clair';
+    draw();
+  }
+  setTheme(curDark);
+  darkML.addEventListener('change', e => setTheme(e.matches));
+  document.addEventListener('keydown', (kd) => {
+    if (kd.key === 'D' || kd.key === 'd') { kd.preventDefault(); setTheme(!curDark); }
+  });
+})();
 
 // dernière frame par défaut (l'état final/convergé, ce qu'on veut voir en premier)
 updateLabel();

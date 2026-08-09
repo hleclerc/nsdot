@@ -97,6 +97,7 @@ class Image( Distribution ):
                            "grad_for_image( batch_index ).current_mass );",
             ),
             output_attributes = [ "image.current_mass" ],
+            has_dynamic_capacity = False,
             image = self,
         )
 
@@ -162,6 +163,7 @@ class Image( Distribution ):
                 fwd_code = "image( batch_index ).fill_cell_cum_mass( cell_cum_mass( batch_index ) );",
             ),
             output_attributes = [ "cell_cum_mass" ],
+            has_dynamic_capacity = False,
             image = detached,
             cell_cum_mass = cell_cum_mass,
         )

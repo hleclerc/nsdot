@@ -25,6 +25,7 @@ from abc import ABC, abstractmethod
 from sdot import OtPlan1d, ProjectedSumOfDiracs, SumOfDiracs1d, Tensor
 
 from .Sinogram import Sinogram
+from .dirac_sycl import diracs_cost_grad
 from .disks import DiskProjector
 
 
@@ -95,6 +96,15 @@ class DiracModel( Model ):
                                     batch_axes = [ self.sinogram.num_angle ] )
         dst = self.sinogram.batched_image()
         return OtPlan1d( src, dst, with_barycenters = self.with_barycenters ).cost.sum()  # somme sur les angles
+
+    def value_and_grad( self, points ):
+        """`(cost, grad)` fusionnés via le kernel SYCL (`dirac_sycl.diracs_cost_grad`) -- même
+        formule que `cost` + `jax.grad`, mais calculée EN UN SEUL passage (voir sa docstring), sans
+        passer par l'autodiff Jax. `points` : `[ n, proj_dim ]`, Tensor ou tableau brut -- pas
+        besoin de `wrap` (contrairement à `cost`). `with_barycenters` n'a pas de sens ici (pas de
+        bwd Jax) : ignoré. Consommé par `optimizers.FusedLBFGS` (voir
+        `Reconstruction.diracs( backend = "sycl" )`)."""
+        return diracs_cost_grad( points, self.sinogram )
 
 
 class DiskModel( Model ):

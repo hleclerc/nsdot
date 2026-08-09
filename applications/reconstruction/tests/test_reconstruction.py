@@ -181,3 +181,54 @@ if test( "chain_diracs_then_disks" ):
     assert rec.radii == radius
     assert len( rec.frames ) == sum( h[ "nb_steps" ] for h in rec.history ) + 1
     assert [ h[ "model" ] for h in rec.history ] == [ "diracs", "disques" ]
+
+
+if test( "disks_min_iter_forces_steps" ):
+    # `models.DiskModel` a des directions PLATES (un disque peut glisser sans changer le résidu
+    # tant qu'il ne chevauche personne) : reparti d'un nuage DÉJÀ convergé, L-BFGS-B (ftol scipy
+    # natif) doit s'arrêter quasi tout de suite -- `min_iter` doit forcer un nombre de pas minimum
+    # malgré ça (voir la docstring de `LBFGS`).
+    radius = 0.4
+    truth = np.array( [ [ 0.8, 0.3 ], [ -0.9, 0.6 ], [ 0.1, -1.1 ], [ -0.5, -0.7 ], [ 1.3, -0.4 ] ] )
+    sino = Sinogram( nb_angles = 16, nb_bins = 96, extent = 6.0 )
+    for c in truth:
+        sino.add_disk( center = list( c ), radius = radius )
+
+    rec = Reconstruction( sino, radius = radius, nb_pixels = 128, extent = 3.0 )
+    rec.random_points( len( truth ), seed = 11 )
+    rec.diracs( max_iter = 100, ftol = 1e-12 )
+    rec.disks( max_iter = 100, ftol = 1e-8 )                         # converge une première fois
+
+    # repartir EXACTEMENT du nuage convergé, avec/sans `min_iter`.
+    nb_steps_plain = Reconstruction(
+        sino, rec.points, radius = radius, nb_pixels = 128, extent = 3.0,
+    ).disks( max_iter = 50, ftol = 1e-8 ).history[ -1 ][ "nb_steps" ]
+
+    nb_steps_forced = Reconstruction(
+        sino, rec.points, radius = radius, nb_pixels = 128, extent = 3.0,
+    ).disks( max_iter = 50, ftol = 1e-8, min_iter = 10 ).history[ -1 ][ "nb_steps" ]
+
+    print( f"\n  sans min_iter: { nb_steps_plain } pas -- avec min_iter=10: { nb_steps_forced } pas" )
+    assert nb_steps_forced >= 10, f"min_iter=10 doit forcer au moins 10 pas : { nb_steps_forced }"
+    assert nb_steps_forced > nb_steps_plain, \
+        f"min_iter devrait forcer strictement plus de pas que le comportement scipy natif : " \
+        f"{ nb_steps_forced } vs { nb_steps_plain }"
+
+
+if test( "disks_disp_tol_stops_once_static" ):
+    # `disp_tol` reprend la main APRÈS `min_iter` : un seuil de déplacement énorme doit arrêter
+    # dès le premier pas suivant `min_iter`, quel que soit `ftol`/`max_iter`.
+    radius = 0.4
+    truth = np.array( [ [ 0.8, 0.3 ], [ -0.9, 0.6 ], [ 0.1, -1.1 ], [ -0.5, -0.7 ], [ 1.3, -0.4 ] ] )
+    sino = Sinogram( nb_angles = 16, nb_bins = 96, extent = 6.0 )
+    for c in truth:
+        sino.add_disk( center = list( c ), radius = radius )
+
+    rec = Reconstruction( sino, radius = radius, nb_pixels = 128, extent = 3.0 )
+    rec.random_points( len( truth ), seed = 11 )
+    rec.diracs( max_iter = 100, ftol = 1e-12 )
+    rec.disks( max_iter = 50, ftol = 1e-8, min_iter = 5, disp_tol = 1e10 )
+
+    nb_steps = rec.history[ -1 ][ "nb_steps" ]
+    print( f"\n  min_iter=5, disp_tol énorme : { nb_steps } pas" )
+    assert nb_steps == 6, f"doit s'arrêter au tout premier pas suivant min_iter : { nb_steps } pas"
