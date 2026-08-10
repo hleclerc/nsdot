@@ -17,9 +17,10 @@ import matplotlib.pyplot as plt
 from matplotlib.collections import PatchCollection
 from matplotlib.patches import Circle
 
+from .. import dirac_sycl
 from ..Reconstruction import Reconstruction
 from ..Sinogram import Sinogram
-from ..optimizers import LBFGS, GradientDescentLineSearch
+from ..optimizers import LBFGS, GradientDescentLineSearch, FusedLBFGS, SubspaceNewtonLBFGS
 
 
 def _hex_sites( lobes, max_radius, spacing_factor = 2.15, jitter_factor = 0.02, seed = 0 ):
@@ -212,6 +213,226 @@ def run( nb_alveoli = 1_000, alveolus_radius = 0.75, nb_diracs = 10_000, max_ite
     print( f"figure sauvée: { out }" )
 
 
+def run_subspace( nb_alveoli = 1_000, alveolus_radius = 0.75, nb_diracs = 10_000, max_iter = 60,
+                   max_dirs = 5, out = "tmp/lung_alveoli_subspace.png",
+                   out_html = "tmp/lung_alveoli_subspace_{name}.html" ):
+    """Compare `FusedLBFGS` (scipy L-BFGS-B, mémoire de courbure interne) contre
+    `SubspaceNewtonLBFGS` (Newton EXACT dans le sous-espace engendré par les derniers gradients
+    normalisés -- voir sa docstring dans `optimizers.py` et `dirac_sycl.subspace_hessian` pour la
+    dérivation) : MÊME fantôme, MÊME nuage de départ (`seed=1`), MÊME budget d'itérations pour les
+    deux -- seule la trajectoire diffère. Sert à évaluer la proposition testée dans cette
+    expérience (assister/rendre multi-dimensionnelle la line search), pas à remplacer l'optimiseur
+    par défaut de `Reconstruction.diracs`.
+
+    Sorties : `out` (PNG, courbes de loss superposées, comme avant) ET, par optimiseur, une page
+    `out_html` (`{name}` remplacé par le nom de l'optimiseur -- voir `export_positions_html`) qui
+    REJOUE la trajectoire (`record=True`) -- pour comparer À L'OEIL comment chaque solveur déplace
+    le nuage, pas seulement la valeur finale de la loss.
+    """
+    print( f"génération du fantôme ({ nb_alveoli } alvéoles)..." )
+    sino, _lobes, _alveoli = make_lung_phantom( nb_alveoli = nb_alveoli, alveolus_radius = alveolus_radius )
+
+    optimizers = {
+        "FusedLBFGS": lambda: FusedLBFGS( max_iter = max_iter, ftol = 1e-10 ),
+        "SubspaceNewtonLBFGS": lambda: SubspaceNewtonLBFGS(
+            sinogram = sino, max_dirs = max_dirs, max_iter = max_iter, ftol = 1e-10 ),
+    }
+
+    results = {}
+    for name, make_optimizer in optimizers.items():
+        print( f"reconstruction ({ nb_diracs } diracs, { name }, max_iter={ max_iter })..." )
+        rec = Reconstruction( sino, record = True, verbose = True )
+        rec.random_points( nb_diracs, seed = 1 )
+        t0 = time.time()
+        losses = []
+        def callback( step, pos, losses = losses, t0 = t0, name = name, rec = rec ):
+            l = rec.loss( points = pos )
+            losses.append( ( step, l, time.time() - t0 ) )
+            if step % 10 == 0 or step == -1:
+                print( f"  [{ name }] step { step }: loss = { l:.6f} ({ time.time() - t0:.1f}s)" )
+        rec.diracs( callback = callback, backend = "sycl", optimizer = make_optimizer() )
+        print( f"[{ name }] terminé en { time.time() - t0:.1f}s" )
+        results[ name ] = losses
+
+        html_path = out_html.format( name = name )
+        rec.export_html( html_path, title = f"{ name } ({ nb_diracs } diracs)" )
+        print( f"page sauvée: { html_path }" )
+
+    fig, ax = plt.subplots( figsize = ( 7, 5 ) )
+    for name, losses in results.items():
+        steps = [ s for s, l, t in losses ]
+        vals  = [ l for s, l, t in losses ]
+        ax.plot( steps, vals, label = name )
+    ax.set_xlabel( "itération" )
+    ax.set_ylabel( "loss" )
+    ax.set_yscale( "log" )
+    ax.legend()
+    ax.set_title( f"FusedLBFGS vs SubspaceNewtonLBFGS ({ nb_diracs } diracs)" )
+    fig.tight_layout()
+    fig.savefig( out, dpi = 150 )
+    print( f"figure sauvée: { out }" )
+    return results
+
+
+def run_subspace_alpha_profile(
+        nb_alveoli = 1_000, alveolus_radius = 0.75, nb_diracs = 10_000, max_iter = 60,
+        max_dirs = 5, capture_step = None, alpha_range = ( -2.0, 2.0 ), nb_alpha = 61,
+        out = "tmp/lung_alveoli_subspace_alpha_profile.png" ):
+    """Diagnostic pour comprendre pourquoi `SubspaceNewtonLBFGS` converge mal (voir sa docstring) :
+    pour UN pas donné (`capture_step`, par défaut le DERNIER pas joué), trace la vraie perte le
+    long de `x + alpha * step_dir` (`step_dir` = le pas Newton du sous-espace RÉSOLU à ce pas,
+    AVANT le raccourcissement éventuel par le backtracking Armijo) contre ce que prédit le modèle
+    quadratique local (`H`, `b` de `dirac_sycl.subspace_hessian`) -- si les deux courbes divergent
+    vite après `alpha=0`, le modèle "assignation figée" (voir la docstring de `subspace_hessian`)
+    n'est plus une bonne approximation dès qu'on s'éloigne du point courant, ce qui explique un pas
+    Newton (`alpha=1`) systématiquement trop long / rejeté par l'Armijo.
+
+    Capture via `SubspaceNewtonLBFGS.diag_callback`, appelé à CHAQUE pas -- `capture_step = None`
+    garde donc le DERNIER (écrasé à chaque itération), un entier cible un pas précis.
+    """
+    print( f"génération du fantôme ({ nb_alveoli } alvéoles)..." )
+    sino, _lobes, _alveoli = make_lung_phantom( nb_alveoli = nb_alveoli, alveolus_radius = alveolus_radius )
+
+    rec = Reconstruction( sino, verbose = True )
+    rec.random_points( nb_diracs, seed = 1 )
+
+    diag = {}
+    def diag_callback( step, x, cost, g, directions, m, H, b, a, step_dir, directional_deriv ):
+        if capture_step is not None and step != capture_step:
+            return
+        diag.clear()
+        diag.update(
+            step = step, x = np.array( x ), cost = float( cost ), step_dir = np.array( step_dir ),
+            linear = float( directional_deriv ), quad = float( a @ H @ a ), m = m,
+        )
+
+    optimizer = SubspaceNewtonLBFGS(
+        sinogram = sino, max_dirs = max_dirs, max_iter = max_iter, ftol = 1e-10,
+        diag_callback = diag_callback )
+    print( f"reconstruction ({ nb_diracs } diracs, SubspaceNewtonLBFGS, max_iter={ max_iter })..." )
+    rec.diracs( backend = "sycl", optimizer = optimizer )
+
+    if not diag:
+        raise RuntimeError( f"aucun pas capturé (capture_step={ capture_step } hors de portée ?)" )
+
+    x, step_dir, cost0 = diag[ "x" ], diag[ "step_dir" ], diag[ "cost" ]
+    linear, quad = diag[ "linear" ], diag[ "quad" ]
+    print( f"pas capturé : { diag[ 'step' ] } (sous-espace de dimension { diag[ 'm' ] }), "
+           f"loss={ cost0:.6f}, dérivée directionnelle={ linear:.4g}, courbure={ quad:.4g}" )
+
+    alphas = np.linspace( *alpha_range, nb_alpha )
+    real_losses = np.array(
+        [ dirac_sycl.diracs_cost_grad( x + alpha * step_dir, sino )[ 0 ] for alpha in alphas ] )
+    model_losses = cost0 + alphas * linear + 0.5 * alphas ** 2 * quad
+
+    fig, ax = plt.subplots( figsize = ( 7, 5 ) )
+    ax.plot( alphas, real_losses, "o-", markersize = 3, label = "loss réelle" )
+    ax.plot( alphas, model_losses, "--", label = "modèle quadratique (Newton)" )
+    ax.axvline( 0.0, color = "gray", linewidth = 0.8 )
+    ax.axvline( 1.0, color = "gray", linewidth = 0.8, linestyle = ":", label = "alpha=1 (pas Newton)" )
+    ax.set_xlabel( "alpha (le long de la dernière direction Newton)" )
+    ax.set_ylabel( "loss" )
+    ax.legend()
+    ax.set_title( f"pas { diag[ 'step' ] } : loss réelle vs modèle quadratique" )
+    fig.tight_layout()
+    fig.savefig( out, dpi = 150 )
+    print( f"figure sauvée: { out }" )
+    return dict( alphas = alphas, real_losses = real_losses, model_losses = model_losses, step = diag[ "step" ] )
+
+
+def run_disks_alpha_profile(
+        nb_alveoli = 1_000, alveolus_radius = 0.75, nb_disks = 1_000, disk_radius = 0.5,
+        max_iter = 60, min_iter = 5, alpha_range = ( -2.0, 2.0 ), nb_alpha = 41, fd_h = 1e-3,
+        out = "tmp/lung_alveoli_disks_alpha_profile.png" ):
+    """Même diagnostic que `run_subspace_alpha_profile`, par acquis de conscience, mais pour le
+    modèle DISQUES (`models.DiskModel`) au lieu de DIRACS -- est-ce que le même genre d'écart
+    entre perte réelle et modèle quadratique local se produit aussi ici ?
+
+    Différence de taille avec le cas diracs : il n'existe PAS d'équivalent disques de
+    `dirac_sycl.subspace_hessian` (pas de kernel SYCL fusionné pour `DiskModel`, voir sa
+    docstring -- pas de `value_and_grad`), donc `rec.disks()` tourne avec le `LBFGS` scipy
+    standard (autodiff Jax), dont la direction de recherche interne (mémoire de courbure BFGS)
+    n'est PAS exposée par l'API Python -- impossible d'intercepter "le pas que le modèle
+    proposait avant backtracking" comme pour `SubspaceNewtonLBFGS`. Le "modèle" comparé ici est
+    donc un développement de Taylor local GÉNÉRIQUE (pas la formule fermée "assignation figée")
+    au point de départ du DERNIER pas RÉELLEMENT accepté par LBFGS (`x_prev -> x_last`, capturé
+    via `callback`) : terme linéaire = vrai gradient Jax en `x_prev`, terme quadratique = dérivée
+    seconde directionnelle par différences finies sur le gradient (pas `fd_h`, en unités alpha).
+
+    `nb_disks=1_000` (au lieu des `10_000` diracs par défaut) : le modèle disques est BEAUCOUP
+    plus cher (balayage image par tranche d'angle à chaque évaluation, pas de kernel fusionné,
+    voir `models.DiskModel`) -- 1000 suffit pour ce diagnostic et reste supportable.
+
+    `min_iter` : voir `Reconstruction.disks` -- la perte disques a des directions plates,
+    LBFGS-B peut sinon conclure à convergence après 0-1 pas et il n'y aurait alors aucun pas à
+    profiler.
+    """
+    from sdot import driver
+
+    print( f"génération du fantôme ({ nb_alveoli } alvéoles)..." )
+    sino, _lobes, _alveoli = make_lung_phantom( nb_alveoli = nb_alveoli, alveolus_radius = alveolus_radius )
+
+    rec = Reconstruction( sino, radius = disk_radius, max_iter = max_iter, ftol = 1e-10, verbose = True )
+    rec.random_points( nb_disks, seed = 1 )
+    model = rec.disk_model()
+
+    diag = {}
+    t0 = time.time()
+    def callback( step, pos ):
+        x = np.array( pos.raw )
+        if "x" in diag:
+            diag[ "x_prev" ] = diag[ "x" ]
+        diag[ "step" ], diag[ "x" ] = step, x
+        if step % 5 == 0 or step == -1:
+            print( f"  step { step }: loss = { rec.loss( points = pos ):.6f} ({ time.time() - t0:.1f}s)" )
+
+    print( f"reconstruction ({ nb_disks } disques, LBFGS, max_iter={ max_iter })..." )
+    rec.disks( radius = disk_radius, callback = callback, min_iter = min_iter )
+    print( f"reconstruction terminée en { time.time() - t0:.1f}s" )
+
+    if "x_prev" not in diag:
+        raise RuntimeError( "un seul pas capturé -- pas de direction à profiler (augmenter min_iter ?)" )
+
+    x0, x1 = diag[ "x_prev" ], diag[ "x" ]
+    step_dir = x1 - x0
+
+    def scalar_loss( q ):
+        return model.cost( model.wrap( q ) ).tensor
+    loss_j = driver.jit( scalar_loss )
+    grad_j = driver.jit( driver.grad( scalar_loss ) )
+
+    cost0 = float( loss_j( x0 ) )
+    g0 = np.asarray( grad_j( x0 ) )
+    linear = float( np.sum( g0 * step_dir ) )
+    # courbure = dérivée seconde directionnelle par différences finies CENTRÉES sur le gradient,
+    # directement en unités alpha (pas de renormalisation par la norme de step_dir nécessaire) :
+    # f'(alpha) = grad(x0 + alpha*step_dir) . step_dir, donc f''(0) ~ (f'(h) - f'(-h)) / (2h).
+    g_plus  = np.asarray( grad_j( x0 + fd_h * step_dir ) )
+    g_minus = np.asarray( grad_j( x0 - fd_h * step_dir ) )
+    quad = float( np.sum( ( g_plus - g_minus ) * step_dir ) ) / ( 2 * fd_h )
+
+    print( f"pas capturé : { diag[ 'step' ] }, loss={ cost0:.6f}, "
+           f"dérivée directionnelle={ linear:.4g}, courbure (différences finies)={ quad:.4g}" )
+
+    alphas = np.linspace( *alpha_range, nb_alpha )
+    real_losses = np.array( [ float( loss_j( x0 + alpha * step_dir ) ) for alpha in alphas ] )
+    model_losses = cost0 + alphas * linear + 0.5 * alphas ** 2 * quad
+
+    fig, ax = plt.subplots( figsize = ( 7, 5 ) )
+    ax.plot( alphas, real_losses, "o-", markersize = 3, label = "loss réelle" )
+    ax.plot( alphas, model_losses, "--", label = "modèle quadratique (Taylor local, diff. finies)" )
+    ax.axvline( 0.0, color = "gray", linewidth = 0.8 )
+    ax.axvline( 1.0, color = "gray", linewidth = 0.8, linestyle = ":", label = "alpha=1 (pas pris par LBFGS)" )
+    ax.set_xlabel( "alpha (le long du dernier pas RÉELLEMENT pris par LBFGS)" )
+    ax.set_ylabel( "loss" )
+    ax.legend()
+    ax.set_title( f"disques ({ nb_disks }) -- pas { diag[ 'step' ] } : loss réelle vs modèle quadratique" )
+    fig.tight_layout()
+    fig.savefig( out, dpi = 150 )
+    print( f"figure sauvée: { out }" )
+    return dict( alphas = alphas, real_losses = real_losses, model_losses = model_losses, step = diag[ "step" ] )
+
+
 def run_truncated( nb_alveoli = 1000, scale = 1.0, nb_diracs_final = 4992*4,
                     out_phantom = "tmp/lung_truncated_phantom.png",
                     out_reconstruction = "tmp/lung_truncated_reconstruction.html",
@@ -324,4 +545,4 @@ def run_truncated( nb_alveoli = 1000, scale = 1.0, nb_diracs_final = 4992*4,
 
 
 if __name__ == "__main__":
-    run_truncated()
+    run_subspace()

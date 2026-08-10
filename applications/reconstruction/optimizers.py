@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from collections import deque
 import numpy as np
 from scipy.optimize import minimize, line_search
 
@@ -264,5 +265,137 @@ class Adam(Optimizer):
 
             if callback is not None:
                 callback(step, x)
+
+        return x
+
+
+class SubspaceNewtonLBFGS(FusedLBFGS):
+    """Prototype : au lieu de la mémoire de courbure interne à scipy (`LBFGS`), garde une pile
+    explicite des `max_dirs - 1` derniers pas RÉELLEMENT pris (`x_k - x_{k-1}`, normalisés) plus
+    le gradient courant, comme base d'un sous-espace, et résout à CHAQUE pas un Newton EXACT dans
+    ce sous-espace (`m` <= `max_dirs` inconnues `a`, `m x m`) au lieu d'une simple direction de
+    descente + line search 1D -- `dirac_sycl.subspace_hessian` fournit `(H, b)` en un second
+    `driver.call` fusionné, formule fermée (voir sa docstring pour la dérivation).
+
+    Empile les pas RÉELLEMENT pris, PAS les gradients successifs (première version testée) : près
+    d'un optimum, des gradients successifs deviennent quasi-colinéaires (le zigzag classique de la
+    descente de gradient), donc une base de gradients bruts finit par ne plus porter d'info
+    nouvelle -- `H` devient mal conditionnée et le damping Tikhonov écrase le peu de signal utile
+    avec le bruit. Les pas RÉELLEMENT pris jouent le rôle des `s_k` de L-BFGS (une direction
+    différente à chaque itération QUAND ça converge bien) sans reconstituer tout son appareil de
+    paires `(s_k, y_k)`. Le gradient courant reste TOUJOURS dans la base (frais, jamais historique)
+    pour garantir au moins une direction de descente valide même quand l'historique est vide (1er
+    pas) ou dégénéré.
+
+    N'utilise PAS `_two_phase_lbfgsb`/scipy (pas de mémoire de courbure L-BFGS à faire tourner ici,
+    la Hessienne restreinte est recalculée à chaque pas) : boucle Python maison, avec un
+    backtracking Armijo comme garde-fou -- le pas Newton du sous-espace n'est optimal que pour le
+    modèle quadratique LOCAL (assignation figée), pas pour la vraie perte (non convexe, non lisse
+    aux changements d'assignation).
+    """
+
+    def __init__(self, sinogram, max_dirs: int = 5, max_iter: int = 60, ftol: float = 1e-10,
+                 tikhonov: float = 1e-6, c1: float = 1e-4, rho: float = 0.5, max_backtracks: int = 20,
+                 diag_callback=None):
+        self.sinogram = sinogram
+        self.max_dirs = max_dirs
+        self.max_iter = max_iter
+        self.ftol = ftol
+        self.tikhonov = tikhonov
+        self.c1 = c1
+        self.rho = rho
+        self.max_backtracks = max_backtracks
+        #: optionnel, `diag_callback(step, x, cost, g, directions, m, H, b, a, step_dir,
+        #: directional_deriv)` appelé APRÈS résolution du pas Newton du sous-espace mais AVANT le
+        #: backtracking -- pour inspecter le modèle quadratique local (ex. le comparer à la vraie
+        #: perte le long de `step_dir`, voir `experiments/lung_alveoli.run_subspace_alpha_profile`)
+        #: sans dupliquer la logique de `minimize`. `directions` n'est passé QUE sur `[:m]` (les
+        #: colonnes actives, pas le padding `MAX_DIRS`).
+        self.diag_callback = diag_callback
+
+    def minimize(self, value_and_grad, x0, callback=None):
+        from . import dirac_sycl
+
+        MAX_DIRS = dirac_sycl.MAX_DIRS
+        if self.max_dirs > MAX_DIRS:
+            raise ValueError(f"max_dirs={self.max_dirs} dépasse dirac_sycl.MAX_DIRS={MAX_DIRS}")
+
+        x = x0.copy() if isinstance(x0, np.ndarray) else np.array(x0)
+        shape = x.shape
+        # pas RÉELLEMENT pris (normalisés), les plus anciens en tête -- le gradient courant (frais,
+        # jamais historique) occupe le slot restant, voir la docstring de la classe.
+        step_history = deque(maxlen=max(self.max_dirs - 1, 0))
+
+        # pas de `callback(-1, x)` ici : `Reconstruction.run` l'a déjà appelé pour l'état initial
+        # avant `optimizer.minimize` (voir sa docstring) -- même convention que `LBFGS`/
+        # `GradientDescentLineSearch`, dont le premier callback est `step=0`.
+        cost, g = value_and_grad(x)
+
+        for step in range(self.max_iter):
+            g_norm = np.linalg.norm(g)
+            basis = ([g / g_norm] if g_norm > 0 else []) + list(step_history)
+
+            m = len(basis)
+            directions = np.zeros((MAX_DIRS,) + shape, dtype=x.dtype)
+            for i, d in enumerate(basis):
+                directions[i] = d
+
+            H5, b5 = dirac_sycl.subspace_hessian(x, directions, self.sinogram)
+            H = 0.5 * (H5[:m, :m] + H5[:m, :m].T)
+            b = b5[:m]
+
+            damping = self.tikhonov * (np.trace(H) / m if m > 0 else 1.0)
+            try:
+                a = -np.linalg.solve(H + damping * np.eye(m), b)
+            except np.linalg.LinAlgError:
+                a = -np.linalg.lstsq(H, b, rcond=None)[0]
+            step_dir = sum(a[i] * directions[i] for i in range(m))
+
+            # backtracking Armijo le long du pas Newton du sous-espace -- garde-fou : le modèle
+            # quadratique local n'est exact qu'à assignation figée, pas globalement.
+            directional_deriv = float(np.sum(g * step_dir))
+
+            if self.diag_callback is not None:
+                self.diag_callback(step, x, cost, g, directions[:m], m, H, b, a, step_dir,
+                                    directional_deriv)
+
+            t = 1.0
+            x_new, cost_new = None, None
+            for _ in range(self.max_backtracks):
+                x_try = x + t * step_dir
+                cost_try, g_try = value_and_grad(x_try)
+                if cost_try <= cost + self.c1 * t * directional_deriv:
+                    x_new, cost_new, g_new = x_try, cost_try, g_try
+                    break
+                t *= self.rho
+            else:
+                # secours : un pas de descente de gradient normalisé, garanti descendant pour t assez
+                # petit -- ne devrait quasiment jamais se déclencher (H est PSD par construction).
+                t = 1.0
+                d = g / g_norm if g_norm > 0 else g
+                for _ in range(self.max_backtracks):
+                    x_try = x - t * d
+                    cost_try, g_try = value_and_grad(x_try)
+                    if cost_try <= cost - self.c1 * t * g_norm:
+                        x_new, cost_new, g_new = x_try, cost_try, g_try
+                        break
+                    t *= self.rho
+                else:
+                    x_new, cost_new, g_new = x_try, cost_try, g_try
+
+            # empile le pas RÉELLEMENT pris (pas le pas candidat `step_dir` -- le backtracking a pu
+            # le raccourcir, voire basculer sur le secours gradient) pour la base de la prochaine
+            # itération, voir la docstring de la classe.
+            delta = x_new - x
+            delta_norm = np.linalg.norm(delta)
+            if delta_norm > 0:
+                step_history.append(delta / delta_norm)
+
+            if callback is not None:
+                callback(step, x_new)
+            if abs(cost - cost_new) < self.ftol:
+                x, cost = x_new, cost_new
+                break
+            x, cost, g = x_new, cost_new, g_new
 
         return x
