@@ -10,24 +10,6 @@ otrec/    Application de reconstruction CT (Reconstruction, Sinogram)
 
 Chaque projet a son propre `pyproject.toml`. Dépendances : `otrec` → `sdot` → `loom`.
 
-## Installation
-
-```bash
-# Créer l'environnement
-micromamba create -n vfs python=3.13
-micromamba activate vfs
-
-# Installer dans l'ordre
-pip install -e ./loom
-pip install -e ./sdot
-pip install -e ./otrec
-```
-
-Ou avec le Makefile racine (après activation) :
-```bash
-make install
-```
-
 ## Utilisation
 
 Le runner unifié `./run` couvre tout :
