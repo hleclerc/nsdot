@@ -1,8 +1,8 @@
 #pragma once
 
 #include <sdot/generated/aggregates/ProjectedSumOfDiracs.h>
-#include "support/common_macros.h"
-#include "support/atomic_add.h"
+#include <loom/support/common_macros.h>
+#include <loom/support/atomic_add.h>
 
 namespace sdot {
 

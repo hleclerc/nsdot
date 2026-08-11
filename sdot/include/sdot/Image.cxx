@@ -1,9 +1,9 @@
 #pragma once
 
-#include "support/algorithms/CartesianIndices.h" // iterate the (dynamic-rank) cell grid
-#include "support/containers/IotaTensor.h"       // IotaTensor<TF> (knots = 0,1,2) -- default `knots`
-#include "support/containers/Vector.h"           // Vector<TF,d>::zeros()          -- default `origin`
-#include "support/containers/Matrix.h"
+#include <loom/support/algorithms/CartesianIndices.h> // iterate the (dynamic-rank) cell grid
+#include <loom/support/containers/IotaTensor.h>       // IotaTensor<TF> (knots = 0,1,2) -- default `knots`
+#include <loom/support/containers/Vector.h>           // Vector<TF,d>::zeros()          -- default `origin`
+#include <loom/support/containers/Matrix.h>
 #include "CstUdPiece.h"
 #include "Image.h"
 #include <cmath>

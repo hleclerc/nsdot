@@ -13,8 +13,10 @@ lib/
 *.out
 *.sif
 tmp/
+.codewhale
+.hosts.toml
 
-applications/reconstruction/benchmarks/results/*.png
+otrec/src/otrec/benchmarks/results/*.png
 graphify-out/
 .private/
 .cache/

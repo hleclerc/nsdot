@@ -1,0 +1,29 @@
+#!/usr/bin/env python3
+"""
+Entry point for ./run — dispatches to loom.cli.
+
+Requires the environment to be activated beforehand:
+    micromamba activate vfs
+    ./run test
+
+loom.cli.envs handles wrapping for remote sub-commands (apptainer, etc.).
+"""
+
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+
+if __name__ == "__main__":
+    sys.path.insert(0, str(ROOT / "loom" / "src"))
+    try:
+        from loom.cli.main import main
+    except ImportError:
+        print(
+            "Error: loom not found.\n"
+            "Activate the environment first, e.g.:\n"
+            "  micromamba activate vfs",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    sys.exit(main())

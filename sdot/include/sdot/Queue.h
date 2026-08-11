@@ -1,7 +1,7 @@
 #pragma once
 
-#include "support/kernels/CudaQueue.h" // IWYU pragma: keep -- SDOT_QUEUE peut la désigner
-#include "support/kernels/CpuQueue.h" // IWYU pragma: keep -- idem
+#include <loom/support/kernels/CudaQueue.h> // IWYU pragma: keep -- SDOT_QUEUE peut la désigner
+#include <loom/support/kernels/CpuQueue.h> // IWYU pragma: keep -- idem
 
 namespace sdot {
 

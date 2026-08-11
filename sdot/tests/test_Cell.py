@@ -1,5 +1,6 @@
-from sdot import Cell, driver, new_batch_axis
-from sdot.testing import test, check_grad
+from loom import driver, new_batch_axis
+from sdot import Cell
+from loom.testing import test, check_grad
 
 if test( "basic" ):
     c = Cell.make_hypercube( 2, [ 0, 0 ], [ [ 2, 0 ], [ 0, 1 ] ] )

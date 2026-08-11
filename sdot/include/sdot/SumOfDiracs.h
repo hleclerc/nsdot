@@ -1,7 +1,7 @@
 #pragma once
 
 #include <sdot/generated/aggregates/SumOfDiracs.h>
-#include "support/common_macros.h"
+#include <loom/support/common_macros.h>
 
 namespace sdot {
 

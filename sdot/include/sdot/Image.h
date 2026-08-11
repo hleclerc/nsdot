@@ -3,7 +3,7 @@
 // the members + generated methods (`operator()`, `make_available`, ...) as macros this struct
 // drops in, plus the axes it names -- written to the build include tree by `CallArg_Aggregate`.
 #include <sdot/generated/aggregates/Image.h>
-#include "support/common_macros.h"
+#include <loom/support/common_macros.h>
 
 namespace sdot {
 

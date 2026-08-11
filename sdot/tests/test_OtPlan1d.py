@@ -1,8 +1,9 @@
 import numpy
 
-from sdot import Image, OtPlan1d, SumOfDiracs1d, driver
-from sdot.devices.Cpu import Cpu
-from sdot.testing import test, check_grad
+from loom import driver
+from sdot import Image, OtPlan1d, SumOfDiracs1d
+from loom.devices import Cpu
+from loom.testing import test, check_grad
 
 # driver.ftype = "FP64"
 

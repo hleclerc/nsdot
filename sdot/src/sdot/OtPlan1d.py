@@ -3,15 +3,15 @@ from typing import TYPE_CHECKING, cast, overload
 from sdot.distributions.Distribution import Distribution
 from sdot.distributions.SumOfDiracs import SumOfDiracs
 
-from .tensor.CtShapeVar import CtShapeVar
-from .tensor.ShapeVar import ShapeVar
-from .tensor.AxisList import AxisList
-from .tensor.Tensor import Tensor
-from .tensor.Axis import Axis
+from loom.tensor import CtShapeVar
+from loom.tensor import ShapeVar
+from loom.tensor import AxisList
+from loom.tensor import Tensor
+from loom.tensor import Axis
 
-from .compilation.FfiCode import FfiCodeParallel
-from .util.Aggregate import Aggregate
-from .drivers.driver import driver
+from loom.compilation.FfiCode import FfiCodeParallel
+from loom.util import Aggregate
+from loom.drivers.driver import driver
 
 
 class OtPlan1d( Aggregate ):

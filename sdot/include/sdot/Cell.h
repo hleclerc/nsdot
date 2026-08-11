@@ -3,7 +3,7 @@
 // the axes this body names, as declared symbols (autocompletion, standalone compile) instead of
 // globals the generated source happens to define around us. Written to the build include tree.
 #include <sdot/generated/aggregates/Cell.h>
-#include "support/common_macros.h"
+#include <loom/support/common_macros.h>
 #include "Cell/CellBoundary.h"
 
 namespace sdot {

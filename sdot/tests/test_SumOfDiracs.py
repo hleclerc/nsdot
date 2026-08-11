@@ -1,5 +1,5 @@
 from sdot import SumOfDiracs
-from sdot.testing import test
+from loom.testing import test
 
 if test( "basic" ):
     di = SumOfDiracs( positions = [ [ 1 ], [ 2 ], [ 3 ] ] )

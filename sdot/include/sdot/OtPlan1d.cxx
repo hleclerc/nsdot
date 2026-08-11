@@ -1,7 +1,7 @@
 #pragma once
 
 #include "OtPlan1d.h"
-#include "support/atomic_add.h"
+#include <loom/support/atomic_add.h>
 #include <SYCL/sycl.hpp>
 #include <cstdint>
 #include <bit>

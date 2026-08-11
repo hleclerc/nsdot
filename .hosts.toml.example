@@ -1,0 +1,36 @@
+# Host + environment configuration for the nsdot unified runner (`./run`).
+# Copy this to .hosts.toml and edit — not tracked by git.
+#
+# [envs] — define execution environments
+#   Each env has: type (micromamba/apptainer), driver (jax/torch),
+#   and type-specific fields (name for micromamba, image + mounts for apptainer).
+#
+# [hosts] — define remote machines
+#   Each host has: hostname, remote_dir, python, optional env overrides.
+
+# ── environments ───────────────────────────────────────────────────────────────
+
+[envs.default]
+type = "micromamba"
+name = "vfs"
+driver = "jax"
+
+# [envs.torch]
+# type = "micromamba"
+# name = "vfs-torch"
+# driver = "torch"
+
+# [envs.lmo-cuda]
+# type = "apptainer"
+# image = "containers/cuda.sif"
+# driver = "jax"
+# flags = ["--nvccli"]
+# mounts = { "loom/src" = "/opt/sdot/loom/src", "sdot/src" = "/opt/sdot/sdot/src" }
+# pythonpath = ["loom/src", "sdot/src", "otrec/src"]
+
+# ── hosts ─────────────────────────────────────────────────────────────────────
+
+[hosts.lmo]
+hostname = "lmo"
+remote_dir = "/home/leclerc/nsdot"
+python = "/data/venvs/sdot/bin/python"
