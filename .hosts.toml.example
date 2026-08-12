@@ -20,17 +20,39 @@ driver = "jax"
 # name = "vfs-torch"
 # driver = "torch"
 
-# [envs.lmo-cuda]
+# ── apptainer containers ─────────────────────────────────────────────────────
+# Each container bakes in the nsdot packages (loom → sdot → otrec) as editable
+# installs.  No PYTHONPATH or mounts are needed for running tests/experiments.
+# Mounts below are optional overlays for live development (host source shadows
+# the baked-in editable install).  Build with: ./run build-sif [--host lmo]
+#
+# [envs.cuda-jax]
 # type = "apptainer"
-# image = "containers/cuda.sif"
+# image = "containers/cuda-jax.sif"
 # driver = "jax"
 # flags = ["--nvccli"]
-# mounts = { "loom/src" = "/opt/sdot/loom/src", "sdot/src" = "/opt/sdot/sdot/src" }
-# pythonpath = ["loom/src", "sdot/src", "otrec/src"]
+# mounts = { "loom" = "/opt/sdot/loom", "sdot" = "/opt/sdot/sdot", "otrec" = "/opt/sdot/otrec" }
+#
+# [envs.cuda-torch]
+# type = "apptainer"
+# image = "containers/cuda-torch.sif"
+# driver = "torch"
+# flags = ["--nvccli"]
+# mounts = { "loom" = "/opt/sdot/loom", "sdot" = "/opt/sdot/sdot", "otrec" = "/opt/sdot/otrec" }
+#
+# [envs.cpu]
+# type = "apptainer"
+# image = "containers/cpu.sif"
+# driver = "jax"
+# mounts = { "loom" = "/opt/sdot/loom", "sdot" = "/opt/sdot/sdot", "otrec" = "/opt/sdot/otrec" }
 
 # ── hosts ─────────────────────────────────────────────────────────────────────
+# apptainer_scratch (optional): path on the remote machine used as
+# APPTAINER_TMPDIR and APPTAINER_CACHEDIR during sif builds.  Needs ~30 GB free.
+# When present, build-sif uses it automatically; --scratch-dir overrides.
 
 [hosts.lmo]
 hostname = "lmo"
 remote_dir = "/home/leclerc/nsdot"
 python = "/data/venvs/sdot/bin/python"
+apptainer_scratch = "/data/singularity_tmp"

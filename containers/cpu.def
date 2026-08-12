@@ -1,13 +1,16 @@
 # Apptainer/Singularity image for the CPU (standard) toolchain.
 #
 # Much lighter than the CUDA image: the "minimal" AdaptiveCpp profile is CPU/OpenMP only and
-# needs NO LLVM. Bakes a pre-built AdaptiveCpp (minimal) + pinned Boost into /opt/sdot-cache, and
-# installs CPU builds of JAX and PyTorch in /opt/venv.
+# needs NO LLVM. Bakes a pre-built AdaptiveCpp (minimal) + pinned Boost into /opt/sdot-cache,
+# and installs CPU builds of JAX and PyTorch in /opt/venv.
+#
+# The nsdot monorepo has three independent packages installed in dependency order:
+#   loom (core tensor lib + compilation) → sdot (optimal transport) → otrec (CT reconstruction)
 #
 # Build (from the repo root):
 #   apptainer build --fakeroot containers/cpu.sif containers/cpu.def
-# Run the C++ test suite:
-#   apptainer exec containers/cpu.sif python scripts/run_cpp_tests.py
+# Run the test suite:
+#   apptainer exec containers/cpu.sif python -m loom.cli test
 #
 # See containers/README.md for the APPTAINER_TMPDIR / APPTAINER_CACHEDIR disk-space setup.
 
@@ -15,9 +18,15 @@ Bootstrap: docker
 From: ubuntu:24.04
 
 %files
-    requirements.txt /opt/sdot/requirements.txt
-    tests /opt/sdot/tests
-    src /opt/sdot/src
+    requirements.txt       /opt/sdot/requirements.txt
+    loom/pyproject.toml    /opt/sdot/loom/pyproject.toml
+    loom/src               /opt/sdot/loom/src
+    loom/include           /opt/sdot/loom/include
+    sdot/pyproject.toml    /opt/sdot/sdot/pyproject.toml
+    sdot/src               /opt/sdot/sdot/src
+    sdot/include           /opt/sdot/sdot/include
+    otrec/pyproject.toml   /opt/sdot/otrec/pyproject.toml
+    otrec/src              /opt/sdot/otrec/src
 
 %environment
     # First candidate cache root.  Read-only at runtime; any new compilation falls through
@@ -45,22 +54,29 @@ From: ubuntu:24.04
     /opt/venv/bin/pip install --no-cache-dir jax
     /opt/venv/bin/pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 
+    # Install the three nsdot packages as editable (in dependency order).
+    /opt/venv/bin/pip install --no-cache-dir -e /opt/sdot/loom
+    /opt/venv/bin/pip install --no-cache-dir -e /opt/sdot/sdot
+    /opt/venv/bin/pip install --no-cache-dir -e /opt/sdot/otrec
+
     # Pre-build AdaptiveCpp (minimal) + pinned Boost into the in-image cache.
-    PYTHONPATH=/opt/sdot/src/python /opt/venv/bin/python -c \
-        "from sdot.compilation.adaptive_cpp import ensure_acpp; print('acpp:', ensure_acpp('minimal'))"
+    /opt/venv/bin/python -c \
+        "from loom.compilation.adaptive_cpp import ensure_acpp; print('acpp:', ensure_acpp('minimal'))"
 
     chmod -R a+rX /opt/sdot-cache
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 %test
-    SDOT_CACHE_DIR=/opt/sdot-cache PYTHONPATH=/opt/sdot/src/python /opt/venv/bin/python -c \
-        "from sdot.compilation.adaptive_cpp import is_available; assert is_available('minimal'), 'acpp missing'; print('acpp ok')"
+    SDOT_CACHE_DIR=/opt/sdot-cache /opt/venv/bin/python -c \
+        "from loom.compilation.adaptive_cpp import is_available; assert is_available('minimal'), 'acpp missing'; print('acpp ok')"
     /opt/venv/bin/python -c "import jax, torch; print('jax', jax.__version__, '| torch', torch.__version__)"
+    /opt/venv/bin/python -c "import loom, sdot, otrec; print('loom ok, sdot ok, otrec ok')"
 
 %labels
     org.sdot.role  cpu-toolchain
     org.sdot.acpp  v25.10.0
 
 %help
-    CPU build+runtime image for sdot. AdaptiveCpp (minimal) is prebuilt in /opt/sdot-cache.
-      apptainer exec containers/cpu.sif python scripts/run_cpp_tests.py
+    CPU build+runtime image for nsdot (loom + sdot + otrec).
+    AdaptiveCpp (minimal) is prebuilt in /opt/sdot-cache.
+      apptainer exec containers/cpu.sif python -m loom.cli test

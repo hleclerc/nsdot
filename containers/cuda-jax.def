@@ -16,15 +16,17 @@
 # Build from the repository root:
 #   apptainer build --fakeroot containers/cuda-jax.sif containers/cuda-jax.def
 # Run (standard --nv is supported; --nvccli is also usable where configured):
-#   apptainer exec --nv containers/cuda-jax.sif env SDOT_DEVICE=cuda python scripts/run_tests.py
+#   apptainer exec --nv containers/cuda-jax.sif env SDOT_DEVICE=cuda python -m loom.cli test
 
 Bootstrap: docker
 From: nvidia/cuda:12.8.1-devel-ubuntu24.04
 Stage: toolchain
 
 %files
-    requirements.txt /opt/sdot/requirements.txt
-    src              /opt/sdot/src
+    requirements.txt       /opt/sdot/requirements.txt
+    loom/pyproject.toml    /opt/sdot/loom/pyproject.toml
+    loom/src               /opt/sdot/loom/src
+    loom/include           /opt/sdot/loom/include
 
 %post
     set -eux
@@ -50,8 +52,8 @@ Stage: toolchain
     python3 -m venv /opt/build-venv
     /opt/build-venv/bin/pip install --no-cache-dir --upgrade pip
     /opt/build-venv/bin/pip install --no-cache-dir -r /opt/sdot/requirements.txt
-    PYTHONPATH=/opt/sdot/src/python /opt/build-venv/bin/python -c \
-        "from sdot.compilation.adaptive_cpp import ensure_acpp; print('acpp full/cuda:', ensure_acpp('full', ('cuda',)))"
+    PYTHONPATH=/opt/sdot/loom/src /opt/build-venv/bin/python -c \
+        "from loom.compilation.adaptive_cpp import ensure_acpp; print('acpp full/cuda:', ensure_acpp('full', ('cuda',)))"
     chmod -R a+rX /opt/sdot-cache
 
 
@@ -60,8 +62,15 @@ From: ubuntu:24.04
 Stage: final
 
 %files
-    requirements.txt /opt/sdot/requirements.txt
-    src              /opt/sdot/src
+    requirements.txt       /opt/sdot/requirements.txt
+    loom/pyproject.toml    /opt/sdot/loom/pyproject.toml
+    loom/src               /opt/sdot/loom/src
+    loom/include           /opt/sdot/loom/include
+    sdot/pyproject.toml    /opt/sdot/sdot/pyproject.toml
+    sdot/src               /opt/sdot/sdot/src
+    sdot/include           /opt/sdot/sdot/include
+    otrec/pyproject.toml   /opt/sdot/otrec/pyproject.toml
+    otrec/src              /opt/sdot/otrec/src
 
 %files from toolchain
     /opt/sdot-cache /opt/sdot-cache
@@ -96,6 +105,11 @@ Stage: final
     /opt/venv-jax/bin/pip install --no-cache-dir -r /opt/sdot/requirements.txt
     /opt/venv-jax/bin/pip install --no-cache-dir "jax[cuda12]"
 
+    # Install the three nsdot packages as editable (in dependency order).
+    /opt/venv-jax/bin/pip install --no-cache-dir -e /opt/sdot/loom
+    /opt/venv-jax/bin/pip install --no-cache-dir -e /opt/sdot/sdot
+    /opt/venv-jax/bin/pip install --no-cache-dir -e /opt/sdot/otrec
+
     # acpp's CUDA runtime plugin contains the absolute toolkit RUNPATH it was built with.
     # Put JAX's own libcudart at the preceding $ORIGIN/../ fallback, so neither --nv nor a host
     # CUDA toolkit can select a mismatched libcudart.
@@ -115,18 +129,19 @@ Stage: final
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 %test
-    SDOT_CACHE_DIR=/opt/sdot-cache PYTHONPATH=/opt/sdot/src/python python -c \
-        "from sdot.compilation.adaptive_cpp import is_available; assert is_available('full', ('cuda',)); print('acpp full/cuda ok')"
-    python -c "import importlib.util, jax; assert importlib.util.find_spec('torch') is None; print('jax', jax.__version__)"
-    python -c "
+    SDOT_CACHE_DIR=/opt/sdot-cache /opt/venv-jax/bin/python -c \
+        "from loom.compilation.adaptive_cpp import is_available; assert is_available('full', ('cuda',)); print('acpp full/cuda ok')"
+    /opt/venv-jax/bin/python -c "import importlib.util, jax; assert importlib.util.find_spec('torch') is None; print('jax', jax.__version__)"
+    /opt/venv-jax/bin/python -c "import loom, sdot, otrec; print('loom ok, sdot ok, otrec ok')"
+    /opt/venv-jax/bin/python -c "
 import ctypes, pathlib, nvidia
 for root in map(pathlib.Path, nvidia.__path__):
   for so in sorted(root.glob('*/lib/lib*.so.*')):
     if 'nccl' not in so.name and 'nvshmem' not in so.name:
         ctypes.CDLL(str(so))
 print('nvidia wheels self-consistent')"
-    SDOT_CACHE_DIR=/opt/sdot-cache PYTHONPATH=/opt/sdot/src/python ACPP_APPDB_DIR=/tmp/acpp-appdb \
-    SDOT_DEVICE=cpu JAX_PLATFORMS=cpu python -c \
+    SDOT_CACHE_DIR=/opt/sdot-cache ACPP_APPDB_DIR=/tmp/acpp-appdb \
+    SDOT_DEVICE=cpu JAX_PLATFORMS=cpu /opt/venv-jax/bin/python -c \
         "import numpy as np; from sdot import Cell; c = Cell.make_hypercube(2, [0, 0], [[2, 0], [0, 1]]); m = float(np.asarray(c.measure)); assert abs(m - 2.0) < 1e-9, m; print('Cell.measure ok:', m)"
 
 %labels
@@ -136,10 +151,11 @@ print('nvidia wheels self-consistent')"
     org.sdot.cuda    12.8
 
 %help
-    JAX-only CUDA runtime image for sdot. JAX's CUDA libraries come from `jax[cuda12]`; the host
-    supplies the NVIDIA driver at execution time. PyTorch belongs in cuda-torch.sif, not here.
+    JAX-only CUDA runtime image for nsdot. JAX's CUDA libraries come from `jax[cuda12]`; the
+    host supplies the NVIDIA driver at execution time. PyTorch belongs in cuda-torch.sif, not
+    here.
 
     Standard Apptainer GPU support works because this final image has no CUDA toolkit registered
     in ld.so.conf.d:
-      apptainer exec --nv containers/cuda-jax.sif env SDOT_DEVICE=cuda python scripts/run_tests.py
-      apptainer exec      containers/cuda-jax.sif env SDOT_DEVICE=cpu JAX_PLATFORMS=cpu python scripts/run_tests.py
+      apptainer exec --nv containers/cuda-jax.sif env SDOT_DEVICE=cuda python -m loom.cli test
+      apptainer exec      containers/cuda-jax.sif env SDOT_DEVICE=cpu JAX_PLATFORMS=cpu python -m loom.cli test

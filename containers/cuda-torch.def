@@ -47,15 +47,17 @@
 #   export APPTAINER_CACHEDIR=$DATA/singularity_cache
 #   apptainer build --fakeroot containers/cuda-torch.sif containers/cuda-torch.def
 # Run the test suite (GPU: --nv binds the host driver):
-#   apptainer exec --nv containers/cuda-torch.sif env SDOT_DEVICE=cuda python scripts/run_tests.py
+#   apptainer exec --nv containers/cuda-torch.sif env SDOT_DEVICE=cuda python -m loom.cli test
 
 Bootstrap: docker
 From: nvidia/cuda:12.8.1-devel-ubuntu24.04
 Stage: toolchain
 
 %files
-    requirements.txt /opt/sdot/requirements.txt
-    src              /opt/sdot/src
+    requirements.txt       /opt/sdot/requirements.txt
+    loom/pyproject.toml    /opt/sdot/loom/pyproject.toml
+    loom/src               /opt/sdot/loom/src
+    loom/include           /opt/sdot/loom/include
 
 %post
     set -eux
@@ -86,13 +88,12 @@ Stage: toolchain
     export CXX=clang++-${LLVM_VER}
 
     # Throwaway venv, only to invoke ensure_acpp(); this whole stage is discarded afterwards.
-    # `import sdot` reaches numpy at the very first submodule (tensor/ShapeVar.py), so
-    # requirements.txt is needed here even though nothing else from it is exercised.
+    # requirements.txt provides numpy (transitive dep of loom), needed to import the module.
     python3 -m venv /opt/build-venv
     /opt/build-venv/bin/pip install --no-cache-dir --upgrade pip
     /opt/build-venv/bin/pip install --no-cache-dir --break-system-packages -r /opt/sdot/requirements.txt
-    PYTHONPATH=/opt/sdot/src/python /opt/build-venv/bin/python -c \
-        "from sdot.compilation.adaptive_cpp import ensure_acpp; print('acpp full/cuda:', ensure_acpp('full', ('cuda',)))"
+    PYTHONPATH=/opt/sdot/loom/src /opt/build-venv/bin/python -c \
+        "from loom.compilation.adaptive_cpp import ensure_acpp; print('acpp full/cuda:', ensure_acpp('full', ('cuda',)))"
 
     # the cache must stay readable by the unprivileged runtime user
     chmod -R a+rX /opt/sdot-cache
@@ -103,8 +104,15 @@ From: pytorch/pytorch:2.13.0-cuda12.6-cudnn9-runtime
 Stage: final
 
 %files
-    requirements.txt /opt/sdot/requirements.txt
-    src              /opt/sdot/src
+    requirements.txt       /opt/sdot/requirements.txt
+    loom/pyproject.toml    /opt/sdot/loom/pyproject.toml
+    loom/src               /opt/sdot/loom/src
+    loom/include           /opt/sdot/loom/include
+    sdot/pyproject.toml    /opt/sdot/sdot/pyproject.toml
+    sdot/src               /opt/sdot/sdot/src
+    sdot/include           /opt/sdot/sdot/include
+    otrec/pyproject.toml   /opt/sdot/otrec/pyproject.toml
+    otrec/src              /opt/sdot/otrec/src
 
 %files from toolchain
     /opt/sdot-cache /opt/sdot-cache
@@ -114,7 +122,7 @@ Stage: final
     export DEBIAN_FRONTEND=noninteractive
     # No CUDA_HOME / LLVM_CONFIG here on purpose: this stage never (re)builds acpp, only RUNS
     # the one baked into /opt/sdot-cache — is_available()/acpp_prefix() just scan for an
-    # existing bin/acpp (src/python/sdot/compilation/adaptive_cpp.py), no toolkit needed.
+    # existing bin/acpp (loom/src/loom/compilation/adaptive_cpp.py), no toolkit needed.
     # No LD_LIBRARY_PATH override either: this image never registers a system
     # CUDA path in /etc/ld.so.conf.d/, so there is nothing for --nv/--nvccli to shadow.
 
@@ -152,6 +160,11 @@ Stage: final
 
     pip install --no-cache-dir --break-system-packages -r /opt/sdot/requirements.txt
 
+    # Install the three nsdot packages as editable (in dependency order).
+    pip install --no-cache-dir --break-system-packages -e /opt/sdot/loom
+    pip install --no-cache-dir --break-system-packages -e /opt/sdot/sdot
+    pip install --no-cache-dir --break-system-packages -e /opt/sdot/otrec
+
     # A SECOND CUDA-toolkit artifact acpp's SSCP path needs, found only at real GPU RUNTIME
     # (this one is invisible to `ldd` — it's bitcode data consumed by LLVM's NVPTX backend at
     # JIT time, not a linked shared library): "LLVMToBackend: Could not open file
@@ -165,11 +178,12 @@ Stage: final
         /usr/local/cuda/nvvm/libdevice/libdevice.10.bc
 
 %test
-    SDOT_CACHE_DIR=/opt/sdot-cache PYTHONPATH=/opt/sdot/src/python python -c \
-        "from sdot.compilation.adaptive_cpp import is_available; \
+    SDOT_CACHE_DIR=/opt/sdot-cache python -c \
+        "from loom.compilation.adaptive_cpp import is_available; \
          assert is_available('full', ('cuda',)), 'acpp full/cuda missing'; \
          print('acpp full/cuda ok')"
     python -c "import torch; print('torch', torch.__version__, torch.version.cuda)"
+    python -c "import loom, sdot, otrec; print('loom ok, sdot ok, otrec ok')"
 
     # Raw SYCL smoke test, compiled straight through acpp — deliberately NOT going through
     # sdot's Cell/driver/FFI stack: that stack picks a framework driver (jax or torch) and, in
@@ -191,8 +205,8 @@ Stage: final
     # runtime container (a normal `apptainer exec`, no fakeroot involved) — so it is not worth
     # chasing here. The compile step alone already proves clang++/LLVM/acpp work end-to-end;
     # actual EXECUTION is verified for real, on the GPU, by run_cuda_torch_sif (.private/Makefile).
-    ACPP=$(SDOT_CACHE_DIR=/opt/sdot-cache PYTHONPATH=/opt/sdot/src/python python -c \
-        "from sdot.compilation.adaptive_cpp import acpp_path; print( acpp_path( 'full', ( 'cuda', ) ) )")
+    ACPP=$(SDOT_CACHE_DIR=/opt/sdot-cache python -c \
+        "from loom.compilation.adaptive_cpp import acpp_path; print( acpp_path( 'full', ( 'cuda', ) ) )")
     cat > /tmp/smoke.cpp <<'EOF'
 #include <sycl/sycl.hpp>
 #include <cstdio>
@@ -221,7 +235,7 @@ EOF
     org.sdot.cuda    12.6
 
 %help
-    Torch-only CUDA runtime image for sdot, built FROM the official pytorch/pytorch image
+    Torch-only CUDA runtime image for nsdot, built FROM the official pytorch/pytorch image
     (torch/CUDA/cuDNN pinned together upstream — no wheel-vs-toolkit version drift to manage,
     unlike an image based directly on a CUDA devel base). AdaptiveCpp ("full" profile, cuda backend) is built in a
     throwaway toolchain stage (nvidia/cuda:12.8.1-devel) and only /opt/sdot-cache crosses
@@ -230,8 +244,7 @@ EOF
     Use --nv to expose the host NVIDIA driver. This image carries no system CUDA toolkit
     registered in /etc/ld.so.conf.d, so legacy --nv has no toolkit path to shadow. --nvccli is
     also usable where the site configures it:
-      apptainer exec --nv containers/cuda-torch.sif env SDOT_DEVICE=cuda python scripts/run_tests.py
-      apptainer exec          containers/cuda-torch.sif env SDOT_DEVICE=cpu  python scripts/run_tests.py
+      apptainer exec --nv containers/cuda-torch.sif env SDOT_DEVICE=cuda python -m loom.cli test
+      apptainer exec          containers/cuda-torch.sif env SDOT_DEVICE=cpu  python -m loom.cli test
 
     `python` is the image's system python; torch is already installed by the base image.
-    The suite needs the repo on PYTHONPATH (see .private/Makefile).
