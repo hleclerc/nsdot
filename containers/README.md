@@ -30,50 +30,43 @@ shadowing the framework's pinned wheels.
 
 ### Via `./run` (recommended)
 
-Configure apptainer environments in `.hosts.toml` (copy from `.hosts.toml.example`):
+Declare environments in `.envs.py` (copy from `.envs.py.example`) with an `Apptainer`
+layer:
 
-```toml
-[envs.cuda-jax]
-type = "apptainer"
-image = "containers/cuda-jax.sif"
-driver = "jax"
+```python
+from loom.cli.layers import env, Driver, Apptainer, Remote
 
-[envs.cuda-torch]
-type = "apptainer"
-image = "containers/cuda-torch.sif"
-driver = "torch"
-
-[envs.cpu]
-type = "apptainer"
-image = "containers/cpu.sif"
-driver = "jax"
+env("cuda-jax", [Apptainer(image="containers/cuda-jax.sif")] + [Driver("jax")])
+env("cuda-torch", [Apptainer(image="containers/cuda-torch.sif")] + [Driver("torch")])
+env("cpu", [Apptainer(image="containers/cpu.sif")] + [Driver("jax")])
 ```
 
 Then build:
 
 ```bash
-./run build-sif --env cuda-jax               # build a specific image
-./run build-sif                               # build all apptainer envs
+./run build-sif --env cuda-jax               # build a specific image, locally
+./run build-sif                               # build every env with an Apptainer layer
 ./run build-sif --fakeroot --force            # force rebuild with fakeroot
-./run build-sif --env cuda-jax --host lmo     # build remotely on lmo
+./run build-sif --env lmo-cuda-jax            # build remotely (env whose seq starts with Remote)
 ./run build-sif --scratch-dir /data/tmp       # set scratch dir for large builds
 ```
 
 The `.def` file is derived automatically from the `image` path (`containers/cuda-jax.sif` →
-`containers/cuda-jax.def`). Use `--host` to build on a remote machine defined in `.hosts.toml`
-(this first rsyncs the repo, then runs `apptainer build` on the host).
+`containers/cuda-jax.def`). To build on a remote machine, add a `Remote` layer in front —
+that's what makes `build-sif` rsync the repo there first, then run `apptainer build` on
+the host:
 
-Each remote host can declare an `apptainer_scratch` field pointing to a filesystem with
-enough free space (~30 GB).  `build-sif` uses it automatically for `APPTAINER_TMPDIR` and
-`APPTAINER_CACHEDIR`; `--scratch-dir` overrides it per invocation.
+```python
+LMO = [Remote(host="lmo", remote_dir="/home/leclerc/nsdot",
+              python="/data/venvs/sdot/bin/python",
+              apptainer_scratch="/data/singularity_tmp")]
 
-```toml
-[hosts.lmo]
-hostname = "lmo"
-remote_dir = "/home/leclerc/nsdot"
-python = "/data/venvs/sdot/bin/python"
-apptainer_scratch = "/data/singularity_tmp"
+env("lmo-cuda-jax", LMO + [Apptainer(image="containers/cuda-jax.sif")] + [Driver("jax")])
 ```
+
+`Remote.apptainer_scratch` points to a filesystem with enough free space (~30 GB);
+`build-sif` uses it automatically for `APPTAINER_TMPDIR` and `APPTAINER_CACHEDIR`,
+and `--scratch-dir` overrides it per invocation.
 
 ### From the command line
 

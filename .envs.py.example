@@ -1,0 +1,74 @@
+# Host + environment configuration for the nsdot unified runner (`./run`).
+# Copy this to .envs.py and edit — not tracked by git.
+#
+# Declare environments by calling `env(name, seq)` — a plain function call,
+# not a dict literal, so nothing needs quoting except the name, and you can
+# loop to declare several at once. `seq` is a list of layers describing how
+# to reach the actual subprocess; build reusable pieces as plain Python lists
+# and combine them with `+`:
+#
+#   JAX = [Driver("jax")]
+#   VFS = [Micromamba("vfs")]
+#   env("default", VFS + JAX)
+#
+# There's no separate "host" or "driver" concept: a remote machine is just an
+# env whose `seq` starts with `Remote(...)` (must be first when present), and
+# the driver is a `Driver(...)` layer like any other — mutualize both the
+# same way, with a variable:
+#
+#   def lmo(*seq): return [Remote(host="lmo", remote_dir=..., python=...), *seq]
+#   env("lmo", lmo() + JAX)
+#   env("lmo-cuda-jax", lmo(CUDA_JAX_SIF))
+#
+# There's always a "current python" (local default, or a host's via
+# Remote.python) that Micromamba/Venv/Apptainer override when stacked in —
+# local or remote, same rules either way. See loom/src/loom/cli/layers.py.
+
+from loom.cli.layers import Apptainer, Driver, Micromamba, Remote, env
+
+# drivers
+
+JAX = [Driver("jax")]
+# TORCH = [Driver("torch")]
+
+# `pip`, if set, is what `./run install` installs for this driver instead of
+# whatever plain jax/torch comes in transitively (e.g. through otrec ->
+# optax -> jax) -- the CUDA/ROCm extra is env/hardware-specific, so it can't
+# live in a shared pyproject.toml.
+# JAX_CUDA = [Driver("jax", pip="jax[cuda13]")]
+
+# execution contexts
+
+VFS = [Micromamba("vfs")]
+# VFS_TORCH = [Micromamba("vfs-torch")]
+
+# Apptainer containers bake in the nsdot packages (loom -> sdot -> otrec) as
+# editable installs. No PYTHONPATH or mounts are needed for running
+# tests/experiments. `mounts` below is an optional overlay for live
+# development (host source shadows the baked-in editable install).
+# Build with: ./run build-sif [--env lmo-cuda-jax]
+
+MOUNTS = { "loom": "/opt/sdot/loom", "sdot": "/opt/sdot/sdot", "otrec": "/opt/sdot/otrec" }
+
+# CUDA_JAX_SIF = [Apptainer(image="containers/cuda-jax.sif", flags=["--nvccli"], mounts=MOUNTS)] + JAX
+# CUDA_TORCH_SIF = [Apptainer(image="containers/cuda-torch.sif", flags=["--nvccli"], mounts=MOUNTS)] + TORCH
+# CPU_SIF = [Apptainer(image="containers/cpu.sif", mounts=MOUNTS)] + JAX
+
+# hosts
+#
+# apptainer_scratch (optional): path on the remote machine used as
+# APPTAINER_TMPDIR/APPTAINER_CACHEDIR during sif builds. Needs ~30 GB free.
+# When present, build-sif uses it automatically; --scratch-dir overrides.
+
+# LMO = [Remote(
+#     host="lmo",
+#     remote_dir="/home/leclerc/nsdot",
+#     python="/data/venvs/sdot/bin/python",
+#     apptainer_scratch="/data/singularity_tmp",
+# )]
+
+# local envs
+env("default", VFS + JAX)
+
+# remote envs
+# env("lmo-cuda-jax", LMO + CUDA_JAX_SIF)

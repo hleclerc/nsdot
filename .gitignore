@@ -14,7 +14,8 @@ lib/
 *.sif
 tmp/
 .codewhale
-.hosts.toml
+.envs.py
+.qwen/
 
 otrec/src/otrec/benchmarks/results/*.png
 graphify-out/
