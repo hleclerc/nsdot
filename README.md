@@ -10,26 +10,29 @@ otrec/    Application de reconstruction CT (Reconstruction, Sinogram)
 
 Chaque projet a son propre `pyproject.toml`. Dépendances : `otrec` → `sdot` → `loom`.
 
+`unidim/` est un prototype à part (pas de `pyproject.toml`, pas installé) : reconstruction CT
+par transport optimal 1D, voir [Prototype `unidim`](#prototype-unidim) plus bas.
+
 ## Quick start
 
 ```bash
-# Installer (une fois)
-make install
+# Installer (une fois sur l'env par défaut)
+./run install
 
 # Lancer les tests
 ./run test                          # Tous les tests (C++ + Python)
-./run test Cell                     # Tout test_Cell.py
-./run test Cell::batch              # Juste le test "batch" de test_Cell.py
-./run test "Cell::grad_*"           # Glob sur le nom
+./run test test_Cell                # Tout test_Cell.py
+./run test test_Cell::batch         # Juste le test "batch" de test_Cell.py
+./run test "test_Cell::grad_*"      # Glob sur le nom
 ./run test --project=sdot           # Un seul projet
 ./run test --fp=FP32                # Précision FP32
 
 # Benchmark -- même mécanisme que test(), dans les mêmes fichiers
-./run bench "OtPlan1d::*" --nb-diracs=5000
+./run bench "test_OtPlan1d::*" --nb-diracs=5000
 
 # Expérience -- un fichier = une expérience, params typés
-./run experiment lung               # Nom du fichier exp_*.py
-./run experiment lung --nb-diracs=5000  # Override de paramètre
+./run experiment exp_lung               # Nom de fichier complet
+./run experiment exp_lung --nb-diracs=5000  # Override de paramètre
 ```
 
 ## Commandes
@@ -38,7 +41,7 @@ make install
 |---|---|
 | `./run test [pattern]` | Tests C++ (via acpp) + Python (tous les projets) |
 | `./run bench [pattern]` | Benchmarks Python (même mécanisme que `test`) |
-| `./run experiment <nom>` | Expérience auto-découverte depuis `exp_*.py` |
+| `./run experiment <fichier>` | Expérience, nom de fichier complet (ex. `exp_lung`) |
 | `./run install` | `pip install -e` des 3 projets dans l'ordre |
 | `./run toolchain` | Diagnostic (acpp, LLVM, CUDA) |
 | `./run build-sif` | Build des images Apptainer (.sif depuis .def) |
@@ -55,21 +58,23 @@ Le `pattern` positionnel est une liste de specs séparées par `,`, chacune de
 la forme `fichier[::nom]` :
 
 ```
-./run test                    tout (tous les tests, tous les projets)
-./run test Cell                tout test_Cell.py (préfixe test_/bench_ optionnel)
-./run test Cell::batch         le test "batch" de test_Cell.py
-./run test "Cell::grad_*"      glob sur le nom (fnmatch ; sans `*` = match exact)
-./run test "Cell::a,OtPlan1d::b"   plusieurs specs
+./run test                          tout (tous les tests, tous les projets)
+./run test test_Cell                 tout test_Cell.py (nom de fichier complet, préfixe inclus)
+./run test test_Cell::batch          le test "batch" de test_Cell.py
+./run test "test_Cell::grad_*"       glob sur le nom (fnmatch ; sans `*` = match exact)
+./run test "test_Cell::a,test_OtPlan1d::b"   plusieurs specs
 ```
 
 La recherche du fichier se fait sur tout le dépôt (récursif, aucune
 distinction de projet ni de répertoire), filtrée aux fichiers qui référencent
 `loom.testing` — sans ça, un fichier source qui porte le nom de son test
 (`Cell.py` vs `test_Cell.py`, le cas courant) créerait une fausse ambiguïté.
-Sans `*` dans la partie fichier, le nom doit désigner un fichier unique —
-sinon erreur (utiliser un glob pour en sélectionner plusieurs). `--project`
-restreint au premier segment du chemin (ex. `loom`, `sdot`, `otrec`), mais
-n'importe quel répertoire de premier niveau marche.
+La partie fichier matche le stem COMPLET (préfixe `test_`/`bench_` inclus —
+`Cell` ne matche plus rien, il faut `test_Cell`). Sans `*` dans la partie
+fichier, le nom doit désigner un fichier unique — sinon erreur (utiliser un
+glob pour en sélectionner plusieurs). `--project` restreint au premier
+segment du chemin (ex. `loom`, `sdot`, `otrec`), mais n'importe quel
+répertoire de premier niveau marche.
 
 `bench` (et `test`, à l'occasion) peut déclarer des `Param` typés, listés via
 `--help` et résumés avant chaque exécution :
@@ -157,9 +162,9 @@ outside-in, qui décrivent comment atteindre le sous-processus final :
 from loom.cli.layers import env, Driver, Micromamba, Apptainer, Remote
 
 JAX = [Driver("jax")]
-VFS = [Micromamba("vfs")]
+MM = [Micromamba("mon_env_mm")]
 
-env("default", VFS + JAX)
+env("default", MM + JAX)
 ```
 
 `Driver(name, pip=...)` : `pip`, si présent, est la spec exacte que `./run install`
@@ -187,7 +192,17 @@ Le flux distant (géré par `Remote`) : `rsync` du repo → `ssh` → exécution
 `rsync` ciblé de retour des chemins passés à `pull=[...]` par l'appelant
 (déterministe — `tmp/test`/`tmp/bench` pour `./run test`/`bench`, `tmp` en
 entier pour `./run experiment`, qui écrit sous des chemins choisis par
-l'auteur plutôt qu'un schéma fixe).
+l'auteur plutôt qu'un schéma fixe). Ce flux s'annonce en gris avant de
+s'exécuter :
+
+```
+  → machine=lmo (/home/leclerc/nsdot)  driver=jax
+  rsync push → lmo:/home/leclerc/nsdot
+  ...
+  rsync pull ← lmo:/home/leclerc/nsdot [tmp/bench/...]
+```
+
+(en local, seule la ligne `machine=... driver=...` s'affiche — pas de rsync).
 
 Mutualise les briques communes avec du Python normal (variables, fonctions, `+` de
 listes) plutôt qu'avec un mécanisme dédié — voir `.envs.py.example`.
@@ -224,10 +239,10 @@ Environnements (.envs.py):
 
 ## Expériences
 
-Auto-découvertes par convention de nommage — un fichier `exp_*.py` sous
-`{projet}/src/{projet}/experiments/` = une expérience (voir la section
-précédente pour `test`/`bench`, qui vivent sous `{projet}/tests/` et n'ont pas
-de contrainte de nommage).
+Même découverte que `test`/`bench` (tout le dépôt, filtrée au contenu du
+fichier — ici `from loom.cli import`, plutôt que `loom.testing` — aucun
+répertoire réservé) : nom de fichier complet obligatoire, préfixe inclus
+(`exp_lung`, pas `lung`) — même convention que `test_Cell.py`/`bench_cost.py`.
 
 Une expérience utilise le harnais déclaratif :
 
@@ -238,6 +253,41 @@ if p := experiment("lung BFGS", nb_diracs=Param(10_000, help="Nombre de Diracs")
     # p.nb_diracs vaut 10000 (ou la valeur passée en CLI)
     ...
 ```
+
+```bash
+./run experiment exp_lung
+./run experiment exp_lung --nb-diracs=5000
+./run experiment exp_lung --help          # liste les params déclarés
+```
+
+## Prototype `unidim`
+
+Prototype de reconstruction CT (pas un des 3 projets pip-installables ci-dessus —
+vit à la racine, sans `pyproject.toml`, mais utilise le même mécanisme `bench` de
+`loom.testing`) : distance de Wasserstein 1D en forme fermée (pas de plan de
+transport explicite) entre un nuage de points 2D projeté et un sinogramme, optimisée
+par L-BFGS.
+
+Deux implémentations parallèles, mêmes maths, backends différents :
+
+| Fichier | Backend | Gradient |
+|---|---|---|
+| `reconstruction_jax.py` | JAX/optax (LBFGS + line search zoom) | autodiff |
+| `reconstruction_cuda.py` | noyau CUDA fusionné (projection + tri CUB + cost/grad en un seul kernel), compilé via `torch.utils.cpp_extension.load_inline` | écrit à la main |
+
+Les deux découpent les angles en *chunks* dimensionnés sur la mémoire GPU
+RÉELLEMENT libre (`gpu_mem.py`), pour ne jamais matérialiser un tenseur
+`[nb_angles, n]` complet (`nb_diracs` visé jusqu'à ~1e11) :
+
+```bash
+./run bench reconstruction_jax --nb-diracs 5000
+./run bench --env lmo-cuda-jax reconstruction_jax
+./run bench --env lmo-cuda-torch reconstruction_cuda
+```
+
+Au premier appel (par taille de problème), chaque backend affiche un message
+`[warmup]` — compilation JIT XLA côté JAX, compilation nvcc de l'extension côté
+CUDA — avant la boucle réellement chronométrée (`p.results["ms_per_grad_by_n"]`).
 
 ## Conteneurs Apptainer
 

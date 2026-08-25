@@ -421,7 +421,7 @@ def multiscale_optimize(sino, nb_points_final, nb_points_init=200, factor=4,
         points = _split(points, n, jitter=sino.geometry.dw)
 
 
-if p := bench( "multiscale_cuda", nb_diracs = Param( 1_000_000, help = "nb diracs" ) ):
+if p := bench( "multiscale_cuda", nb_diracs = Param( 100_000, help = "nb diracs" ) ):
     from .geometry import CtGeometry
     from .sinogram import Sinogram
     from .tracker import Tracker
