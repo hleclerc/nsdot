@@ -277,6 +277,9 @@ _ext = None
 def _load_extension():
     global _ext
     if _ext is None:
+        print("  [warmup] compiling CUDA extension with nvcc (first use, ~30-50s)...",
+              end="", flush=True)
+        t0 = time.time()
         _ext = torch.utils.cpp_extension.load_inline(
             name="unidim_ot_cuda",
             cpp_sources=_CPP_DECL,
@@ -284,6 +287,7 @@ def _load_extension():
             functions=["ot_cost_grad_cuda"],
             with_cuda=True,
         )
+        print(f" done ({time.time() - t0:.1f}s)")
     return _ext
 
 

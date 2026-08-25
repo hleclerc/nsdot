@@ -115,6 +115,20 @@ def optimize(points, sino, max_iter=15, tracker=None, grad_timer=None, max_lines
     `state[2].info.num_linesearch_steps` (plus the one eval `value_and_grad`
     itself always does) says exactly how many evaluations that call made --
     the elapsed time is divided by that count.
+
+    `step` is a FRESH closure every `optimize()` call (a new stage's
+    shapes/solver state), so its first calls compile AND run -- and it
+    takes the first FOUR calls, not just the first one: `state`'s
+    weak-typed fields (e.g. `num_linesearch_steps`, a weak int32 zero at
+    init) settle into their concrete, non-weak dtype pattern only after a
+    few real updates, and each distinct abstract signature along the way
+    gets its own compile (verified: 1 warmup call left 2 of the real
+    iterations slow, 4 left all of them fast). Compile time is dominated by
+    graph structure, barely by n, so left in it swamps the timing and makes
+    it look almost independent of n -- warming up on a THROWAWAY copy of
+    the initial state, before starting to record from the real one, avoids
+    that without spending any of `max_iter`'s real optimization budget on
+    unrecorded steps.
     """
     fun = lambda p: loss(p, sino)
     value_and_grad = optax.value_and_grad_from_state(fun)
@@ -129,6 +143,15 @@ def optimize(points, sino, max_iter=15, tracker=None, grad_timer=None, max_lines
         updates, state = solver.update(grad, state, p, value=value, grad=grad, value_fn=fun)
         p = optax.apply_updates(p, updates)
         return p, state, value
+
+    if grad_timer is not None:
+        print(f"  [warmup] compiling/stabilizing JIT (n={points.shape[0]})...", end="", flush=True)
+        t_warmup = time.time()
+        wp, ws = points, state
+        for _ in range(4):
+            wp, ws, wv = step(wp, ws)
+        wv.block_until_ready()
+        print(f" done ({time.time() - t_warmup:.2f}s)")
 
     for i in range(max_iter):
         if tracker is not None:
