@@ -6,11 +6,15 @@ import jax.random as jr
 import optax
 from loom.testing import Param, bench
 
+from .gpu_mem import jax_mem_budget_bytes
 from .tracker import GradTimer
 
 # Needed for the float64 promotion in `_w2_1d` below -- disabled by default,
 # JAX otherwise SILENTLY truncates any float64 array back to float32.
 jax.config.update("jax_enable_x64", True)
+
+# See `loss`'s docstring for how this was measured.
+_BYTES_PER_CHUNK_ELEMENT = 256
 
 
 def _w2_1d(proj, bin_mass, bin_edges):
@@ -25,16 +29,6 @@ def _w2_1d(proj, bin_mass, bin_edges):
     plain autodiff through `jnp.sort` already gives the correct
     envelope-theorem gradient wrt `proj` — no hand-derived backward pass.
 
-    `s`/`q`/`bary` are float64 despite `proj` being float32: at convergence
-    `s` and `bary` agree to several digits, so `s - bary` (inside the
-    `w*sum(s**2) - 2*w*sum(s*bary)` expansion below) is a near-cancellation
-    of two O(1) quantities -- in float32 its rounding error stops shrinking
-    once the true residual drops near float32's ~7-digit floor. Verified:
-    an exact-duplicate point split, which must leave the true loss EXACTLY
-    unchanged (see `_split`'s docstring), moved the float32 loss by up to
-    ~250%; the same computation promoted to float64 left it bit-exact.
-    `proj` itself (and its `jnp.sort`, the expensive O(n log n) part) stays
-    float32 -- only the cheap per-quantile scalar math promotes.
     """
     n = proj.shape[0]
     w = 1.0 / n
@@ -58,38 +52,43 @@ def _w2_1d(proj, bin_mass, bin_edges):
     return w * jnp.sum(s ** 2) - 2 * w * jnp.sum(s * bary) + target_second_moment
 
 
-def loss(points, sino):
-    """Sum over angles of the 1D Wasserstein distance between `points`
-    projected on that angle and the sinogram's line for that angle.
-
-    Angles are folded with `lax.map` (not `vmap`) so only ONE angle's
-    [n]-sized projection is ever materialized at a time — with nb_angles in
-    the hundreds and nb_diracs up to ~1e11, a stacked [nb_angles, n] tensor
-    is not an option.
-
-    `bin_edges`/`bin_mass` are float64 (see `_w2_1d`'s docstring); `normals`
-    stays float32 so `points @ normal` (and so the sort inside `_w2_1d`)
-    doesn't get promoted along with them -- JAX would upcast `proj` to
-    float64 too if `normal` were float64, doubling the cost of the one part
-    of this computation that's actually expensive. The float64 SUM (over up
-    to nb_angles terms) is only cast back to float32 at the very end: optax
-    caches this value internally and requires it to stay the same dtype as
-    `points` across calls (a `lax.cond` branch dtype mismatch otherwise) --
-    a plain downcast is safe here since by this point the delicate
-    cancellation is already done and the result is a well-conditioned small
-    number, which float32 represents just fine.
-    """
+def _sino_arrays(sino):
+    """`(normals, bin_edges, bin_mass)` for `sino`, dtypes as `loss` needs
+    them. Split out of `loss` so `optimize` can compute this ONCE and pass
+    the results into `step` as actual `jax.jit` ARGUMENTS rather than
+    closed-over free variables -- see `loss`'s docstring for why that
+    distinction matters here."""
     g = sino.geometry
     normals = jnp.asarray(g.normals, dtype=jnp.float32)
     bin_edges = jnp.asarray(g.bin_edges, dtype=jnp.float64)
     bin_mass = jnp.asarray(sino.values, dtype=jnp.float64)
     bin_mass = bin_mass / bin_mass.sum(axis=1, keepdims=True)
+    return normals, bin_edges, bin_mass
+
+
+def loss(points, normals, bin_edges, bin_mass, mem_budget_bytes=-1):
+    """Sum over angles of the 1D Wasserstein distance between `points`
+    projected on that angle and the sinogram's line for that angle. Takes
+    raw arrays (see `_sino_arrays`) rather than `sino` itself -- see below.
+
+    """
+    # `-1` (not `None`) as the sentinel: `mem_budget_bytes` flows through
+    # `jax.jit` alongside `points`/`normals`/... in `optimize.step`, and a
+    # `None` default would make jit treat "was it passed" as part of the
+    # traced signature -- a plain Python int stays a compile-time constant
+    # either way (it's never turned into a jnp array).
+    if mem_budget_bytes == -1:
+        mem_budget_bytes = jax_mem_budget_bytes()
+    n, A = points.shape[0], normals.shape[0]
+    chunk_size = 1 if mem_budget_bytes is None else max(
+        1, min(A, mem_budget_bytes // (_BYTES_PER_CHUNK_ELEMENT * max(n, 1))))
 
     def angle_cost(normal_and_mass):
         normal, mass = normal_and_mass
         return _w2_1d(points @ normal, mass, bin_edges)
 
-    costs = jax.lax.map(angle_cost, (normals, bin_mass))
+    costs = jax.lax.map(jax.checkpoint(angle_cost), (normals, bin_mass),
+                        batch_size=int(chunk_size) if chunk_size > 1 else None)
     return costs.sum().astype(jnp.float32)
 
 
@@ -101,64 +100,50 @@ def optimize(points, sino, max_iter=15, tracker=None, grad_timer=None, max_lines
     reported via `tracker`) instead of vanishing inside one big opaque
     compiled program for the whole `max_iter` budget.
 
-    `max_linesearch_steps` caps optax's zoom linesearch (default 20) at a
-    lower value: each `loss` evaluation here does 600 SEQUENTIAL `jnp.sort`
-    calls (one per angle, ~15ms each on CPU with no cross-angle batching
-    speedup -- verified: batching them together via `lax.map`'s `batch_size`
-    was actually slower here), so every extra linesearch trial is ~9s. A
-    smaller cap trades a bit of per-step step-size accuracy for far fewer
-    `loss` evaluations.
-
-    `grad_timer`, if given, is fed one entry per ACTUAL `loss`/grad
-    evaluation, not per outer step: `step` is a single jitted call, so the
-    only thing timeable from Python is the whole call, but optax's own
-    `state[2].info.num_linesearch_steps` (plus the one eval `value_and_grad`
-    itself always does) says exactly how many evaluations that call made --
-    the elapsed time is divided by that count.
-
-    `step` is a FRESH closure every `optimize()` call (a new stage's
-    shapes/solver state), so its first calls compile AND run -- and it
-    takes the first FOUR calls, not just the first one: `state`'s
-    weak-typed fields (e.g. `num_linesearch_steps`, a weak int32 zero at
-    init) settle into their concrete, non-weak dtype pattern only after a
-    few real updates, and each distinct abstract signature along the way
-    gets its own compile (verified: 1 warmup call left 2 of the real
-    iterations slow, 4 left all of them fast). Compile time is dominated by
-    graph structure, barely by n, so left in it swamps the timing and makes
-    it look almost independent of n -- warming up on a THROWAWAY copy of
-    the initial state, before starting to record from the real one, avoids
-    that without spending any of `max_iter`'s real optimization budget on
-    unrecorded steps.
     """
-    fun = lambda p: loss(p, sino)
-    value_and_grad = optax.value_and_grad_from_state(fun)
+    normals, bin_edges, bin_mass = _sino_arrays(sino)
     linesearch = optax.scale_by_zoom_linesearch(
         max_linesearch_steps=max_linesearch_steps, initial_guess_strategy="one")
     solver = optax.lbfgs(linesearch=linesearch)
     state = solver.init(points)
 
-    @jax.jit
-    def step(p, state):
-        value, grad = value_and_grad(p, state=state)
-        updates, state = solver.update(grad, state, p, value=value, grad=grad, value_fn=fun)
-        p = optax.apply_updates(p, updates)
-        return p, state, value
+    def make_step(mem_budget_bytes):
+        @jax.jit
+        def step(p, state, normals, bin_edges, bin_mass):
+            fun = lambda pp: loss(pp, normals, bin_edges, bin_mass, mem_budget_bytes=mem_budget_bytes)
+            value_and_grad = optax.value_and_grad_from_state(fun)
+            value, grad = value_and_grad(p, state=state)
+            updates, state = solver.update(grad, state, p, value=value, grad=grad, value_fn=fun)
+            p = optax.apply_updates(p, updates)
+            return p, state, value
+        return step
 
-    if grad_timer is not None:
-        print(f"  [warmup] compiling/stabilizing JIT (n={points.shape[0]})...", end="", flush=True)
-        t_warmup = time.time()
-        wp, ws = points, state
-        for _ in range(4):
-            wp, ws, wv = step(wp, ws)
-        wv.block_until_ready()
-        print(f" done ({time.time() - t_warmup:.2f}s)")
+    mem_budget_bytes = jax_mem_budget_bytes()
+    step = make_step(mem_budget_bytes)
+
+    print(f"  [warmup] compiling/stabilizing JIT (n={points.shape[0]})...", end="", flush=True)
+    t_warmup = time.time()
+    while True:
+        try:
+            wp, ws = points, state
+            for _ in range(4):
+                wp, ws, wv = step(wp, ws, normals, bin_edges, bin_mass)
+            wv.block_until_ready()
+            break
+        except jax.errors.JaxRuntimeError as e:
+            if mem_budget_bytes is None or "RESOURCE_EXHAUSTED" not in str(e):
+                raise
+            mem_budget_bytes = mem_budget_bytes // 2 if mem_budget_bytes >= 2 else None
+            print(f" OOM, shrinking angle-chunk budget...", end="", flush=True)
+            step = make_step(mem_budget_bytes)
+    print(f" done ({time.time() - t_warmup:.2f}s)")
 
     for i in range(max_iter):
         if tracker is not None:
             tracker.start()
         if grad_timer is not None:
             t0 = time.time()
-        points, state, value = step(points, state)
+        points, state, value = step(points, state, normals, bin_edges, bin_mass)
         if grad_timer is not None:
             value.block_until_ready()
             elapsed_ms = (time.time() - t0) * 1000
@@ -208,7 +193,7 @@ def multiscale_optimize(sino, nb_points_final, nb_points_init=200, factor=4,
         points = _split(points, n, sub, jitter=sino.geometry.dw / 1e6)
 
 
-if p := bench( "multiscale", nb_diracs = Param( 100_000, help = "nb diracs" ) ):
+if p := bench( "multiscale", nb_diracs = Param( 1_000_000, help = "nb diracs" ) ):
     from .geometry import CtGeometry
     from .sinogram import Sinogram
     from .tracker import Tracker

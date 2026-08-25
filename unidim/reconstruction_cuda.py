@@ -41,6 +41,7 @@ import torch
 import torch.utils.cpp_extension
 from loom.testing import Param, bench
 
+from .gpu_mem import torch_cuda_mem_budget_bytes
 from .tracker import GradTimer
 
 _CPP_DECL = r"""
@@ -291,12 +292,18 @@ def _load_extension():
     return _ext
 
 
-def _cost_grad(points, sino, grad_timer=None, mem_budget_bytes=512 * 1024 * 1024):
+def _cost_grad(points, sino, grad_timer=None, mem_budget_bytes=None):
     """(cost, grad [n, 2]) for `points` ([n, 2], CUDA float32) against
     `sino` -- projection, sort and the cost/grad reduction are ALL inside
     the fused kernel now (see module docstring); only the small [A, m]
     per-angle target-CDF prefix sums are plain `torch.cumsum` calls, since
     they're O(nb_angles * nb_bins), not O(nb_angles * nb_diracs).
+
+    `mem_budget_bytes`, if not given, is read from the ACTUAL free CUDA
+    memory right now (see `gpu_mem.torch_cuda_mem_budget_bytes`) instead of
+    a fixed guess -- `chunk_size` (see the kernel's module docstring) then
+    shrinks/grows with both n AND whatever else happens to be resident on
+    the device at call time.
 
     These prefix sums (and the kernel's own `bary` computation) are float64:
     `cum`/`prefix_M`/`prefix_M2` are CUMULATIVE sums over nb_bins terms, and
@@ -309,6 +316,8 @@ def _cost_grad(points, sino, grad_timer=None, mem_budget_bytes=512 * 1024 * 1024
     values, not sums-of-thousands, so they carry no such accumulated error.
     """
     ext = _load_extension()
+    if mem_budget_bytes is None:
+        mem_budget_bytes = torch_cuda_mem_budget_bytes()
     g = sino.geometry
     device, dtype = points.device, points.dtype
 
@@ -412,7 +421,7 @@ def multiscale_optimize(sino, nb_points_final, nb_points_init=200, factor=4,
         points = _split(points, n, jitter=sino.geometry.dw)
 
 
-if p := bench( "multiscale_cuda", nb_diracs = Param( 100_000, help = "nb diracs" ) ):
+if p := bench( "multiscale_cuda", nb_diracs = Param( 1_000_000, help = "nb diracs" ) ):
     from .geometry import CtGeometry
     from .sinogram import Sinogram
     from .tracker import Tracker
