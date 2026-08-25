@@ -18,12 +18,26 @@ if __name__ == "__main__":
     sys.path.insert(0, str(ROOT / "loom" / "src"))
     try:
         from loom.cli.main import main
-    except ImportError:
-        print(
-            "Error: loom not found.\n"
-            "Activate the environment first, e.g.:\n"
-            "  micromamba activate vfs",
-            file=sys.stderr,
-        )
+    except ModuleNotFoundError as e:
+        missing = e.name or ""
+        if missing == "loom" or missing.startswith("loom."):
+            print(
+                "Error: loom not found.\n"
+                "Activate the environment first, e.g.:\n"
+                "  micromamba activate vfs",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"Error: loom was found, but importing it failed on a missing "
+                f"dependency: '{missing}'.\n"
+                f"  {e}\n"
+                "The active environment is missing one of loom's dependencies "
+                "-- check `./run install` / the environment setup.",
+                file=sys.stderr,
+            )
+        sys.exit(1)
+    except ImportError as e:
+        print(f"Error importing loom.cli.main: {e}", file=sys.stderr)
         sys.exit(1)
     sys.exit(main())

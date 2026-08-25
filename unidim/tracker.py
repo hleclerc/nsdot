@@ -36,3 +36,21 @@ class Tracker:
     def export_html(self, out_path, extent, **kwargs):
         from .viz import export_points_html
         export_points_html(self.frames, extent, out_path, **kwargs)
+
+
+class GradTimer:
+    """Wall-clock timing of individual gradient-computation calls (i.e. one
+    call to `reconstruction_jax._w2_1d`/`loss` or `reconstruction_cuda
+    ._cost_grad`), not per LBFGS step: one `optimize()` step's line search
+    can call the closure -- and so the gradient computation -- several
+    times, which per-step timing would conflate."""
+
+    def __init__(self):
+        self.times_ms = []
+
+    def record(self, elapsed_ms):
+        self.times_ms.append(elapsed_ms)
+
+    @property
+    def mean_ms(self):
+        return sum(self.times_ms) / len(self.times_ms) if self.times_ms else float("nan")
