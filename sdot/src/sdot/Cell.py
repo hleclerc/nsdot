@@ -3,6 +3,8 @@ from typing import TYPE_CHECKING, cast, overload
 from loom.tensor import CtShapeVar
 from loom.tensor import ShapeVar
 from loom.tensor import Tensor
+from loom.tensor import RealTensor
+from loom.tensor import IntTensor
 from loom.tensor import Axis
 
 from loom.compilation.FfiCode import FfiCodeParallel
@@ -27,16 +29,15 @@ class Cell( Aggregate ):
     ein              : Axis[ "nb_dims + 1" ]
     dim              : Axis[ "nb_dims" ]
 
-    is_fully_bounded : Tensor
+    is_fully_bounded : RealTensor
+    vertex_positions : RealTensor[ "num_vertex", "dim" ]
+    vertex_indices   : IntTensor[ "num_vertex", "dim" ]
 
-    vertex_positions : Tensor[ "num_vertex", "dim" ]
-    vertex_indices   : Tensor[ "num_vertex", "dim", dict( dtype = int ) ]
+    edge_indices     : IntTensor[ "num_edge", "ein" ]
 
-    edge_indices     : Tensor[ "num_edge", "ein", dict( dtype = int ) ]
-
-    cut_directions   : Tensor[ "num_cut", "dim" ]
-    cut_offsets      : Tensor[ "num_cut" ]
-    cut_ids          : Tensor[ "num_cut", dict( dtype = int ) ]
+    cut_directions   : RealTensor[ "num_cut", "dim" ]
+    cut_offsets      : RealTensor[ "num_cut" ]
+    cut_ids          : IntTensor[ "num_cut" ]
 
 
     def __init__( self, nb_dims, init_as_unbounded = True, batch_axes = None ):
@@ -79,8 +80,8 @@ class Cell( Aggregate ):
         if batch_axes is not None:
             self.apply_batch_axes( batch_axes )
 
-        origin = Tensor[ self.dim ]( origin )
-        axes = Tensor[ self.num_axis, self.dim ]( axes )
+        origin = RealTensor[ self.dim ]( origin )
+        axes = RealTensor[ self.num_axis, self.dim ]( axes )
 
         driver.call(
             FfiCodeParallel( name = "init_as_hypercube",
@@ -116,10 +117,10 @@ class Cell( Aggregate ):
         )
 
         # `res` and `item_map` are outputs the method builds itself (not aggregate members), so they
-        # must gain the batch axes explicitly -- `Tensor[ *batch_axes, ... ]`, empty for a plain
+        # must gain the batch axes explicitly -- `RealTensor[ *batch_axes, ... ]`, empty for a plain
         # `Cell`. The body then indexes `res` by `batch_index` just like `cell`: a no-op when
         # unbatched (empty multi-index), one write per item when batched.
-        res = Tensor[ tuple( self.batch_axes ) ]()
+        res = RealTensor[ tuple( self.batch_axes ) ]()
 
         driver.call(
             FfiCodeParallel( name = "measure",
@@ -138,7 +139,7 @@ class Cell( Aggregate ):
             ],
             nb_map_items = nb_map_items,
             nb_thread_rows = nb_threads,   # capacity of the `num_thread` scratch axis (see `nb_threads` reserved param)
-            item_map = Tensor[ tuple( self.batch_axes ) + ( num_map_item, num_thread ) ](),
+            item_map = RealTensor[ tuple( self.batch_axes ) + ( num_map_item, num_thread ) ](),
             cell = self,
             res = res
         )

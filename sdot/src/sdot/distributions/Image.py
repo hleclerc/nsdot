@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING, cast, overload
 from loom.tensor import CtShapeVar
 from loom.tensor import ShapeVar
 from loom.tensor import AxisList
-from loom.tensor import Tensor
+from loom.tensor import RealTensor
 from loom.tensor import Axis
 
 from loom.util import ComputedAttribute
@@ -30,13 +30,13 @@ class Image( Distribution ):
     dim              : Axis[ "nb_dims" ]
     dir              : Axis[ "nb_dims" ]
 
-    values           : Tensor[ "img_pos..." ]
+    values           : RealTensor[ "img_pos..." ]
 
-    origin           : Tensor[ "dim" ]
-    frame            : Tensor[ "dir", "dim" ]
-    knots            : Tensor[ "dim", "num_knot" ]
+    origin           : RealTensor[ "dim" ]
+    frame            : RealTensor[ "dir", "dim" ]
+    knots            : RealTensor[ "dim", "num_knot" ]
 
-    current_mass     : ComputedAttribute[ Tensor, ( "values", "frame", "knots" ) ]
+    current_mass     : ComputedAttribute[ RealTensor, ( "values", "frame", "knots" ) ]
 
     # `nb_cells_cum`/`num_cell_cum`: an INDEPENDENT ShapeVar + Axis pair (not derived from the
     # per-dim `shape`, unlike `num_knot`) -- `cell_cum_mass` is a FLAT array over ALL cells
@@ -55,7 +55,7 @@ class Image( Distribution ):
     # there step by step. Depends only on `values`/`frame`/`knots`, so it is CACHED like `current_mass`
     # (`ensure_cell_cum_mass` below) instead of being rebuilt on every `OtPlan1d` forward/backward
     # call -- previously it was, twice per call, see [[otplan1d-kernel-profile]].
-    cell_cum_mass    : ComputedAttribute[ Tensor[ "num_cell_cum" ], ( "values", "frame", "knots" ) ]
+    cell_cum_mass    : ComputedAttribute[ RealTensor[ "num_cell_cum" ], ( "values", "frame", "knots" ) ]
 
     def __init__( self, values, **kwargs ) -> None:
         self.__base_init__( values = values, target_mass = 1.0, **kwargs )
@@ -89,7 +89,7 @@ class Image( Distribution ):
         return self
 
     def _update_current_mass( self ):
-        # res = Tensor[ tuple( self.batch_axes ) ]()
+        # res = RealTensor[ tuple( self.batch_axes ) ]()
         driver.call(
             FfiCodeParallel( name = "mass",
                 fwd_code = "image.current_mass( batch_index ) = image( batch_index ).measure();",
@@ -152,11 +152,11 @@ class Image( Distribution ):
         self.nb_cells_cum = self.nb_pieces + 1
 
         # a plain OUTPUT tensor (like `Cell.measure`'s `res`), built from its OWN local axis (a
-        # free-standing `Tensor[...]` cannot resolve a string axis name outside an aggregate's
+        # free-standing `RealTensor[...]` cannot resolve a string axis name outside an aggregate's
         # scope) -- not a nested `image.cell_cum_mass` write, so `detached` never needs to carry the
         # result back out itself.
         cum_axis = Axis( ShapeVar( self.nb_pieces + 1 ), name = "num_cell_cum" )
-        cell_cum_mass = Tensor[ *self.batch_axes, cum_axis ]()
+        cell_cum_mass = RealTensor[ *self.batch_axes, cum_axis ]()
 
         driver.call(
             FfiCodeParallel( name = "cell_cum_mass",

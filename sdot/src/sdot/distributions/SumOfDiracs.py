@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING, cast, overload
 from loom.tensor import CtShapeVar
 from loom.tensor import ShapeVar
 from loom.tensor import AxisList
-from loom.tensor import Tensor
+from loom.tensor import RealTensor
 from loom.tensor import Axis
 from loom.util import ComputedAttribute
 
@@ -25,11 +25,11 @@ class SumOfDiracs( Distribution ):
     num_dirac        : Axis[ "nb_diracs" ]
     dim              : Axis[ "nb_dims" ]
 
-    positions        : Tensor[ "num_dirac", "dim" ]
-    weights          : Tensor[ "num_dirac" ]
+    positions        : RealTensor[ "num_dirac", "dim" ]
+    weights          : RealTensor[ "num_dirac" ]
 
     # Mass is computed from weights; when weights change, mass is invalidated
-    current_mass     : ComputedAttribute[ Tensor, ( "weights" ) ]
+    current_mass     : ComputedAttribute[ RealTensor, ( "weights" ) ]
 
     def __init__( self, positions, weights = None, target_mass = 1.0, **kwargs ):
         self.__base_init__( positions = positions, weights = weights, target_mass = target_mass, **kwargs )
@@ -43,7 +43,7 @@ class SumOfDiracs( Distribution ):
             if self.weights.is_defined:
                 weights = self.target_mass / mass * self.weights
             else:
-                weights = Tensor[ *self.batch_axes, self.num_dirac ].full( self.target_mass / self.nb_diracs.value )
+                weights = RealTensor[ *self.batch_axes, self.num_dirac ].full( self.target_mass / self.nb_diracs.value )
 
 
             return SumOfDiracs(

@@ -7,6 +7,8 @@ from loom.tensor import CtShapeVar
 from loom.tensor import ShapeVar
 from loom.tensor import AxisList
 from loom.tensor import Tensor
+from loom.tensor import RealTensor
+from loom.tensor import IntTensor
 from loom.tensor import Axis
 
 from loom.compilation.FfiCode import FfiCodeParallel
@@ -35,9 +37,8 @@ class OtPlan1d( Aggregate ):
     # per-(angle x dirac) buffer ([nb_angles, n] = 80GB at scale). When NOT stored it stays a
     # NoneTensor, and the backward RECOMPUTES the b_i it needs (re-sort + re-sweep) rather than
     # reading it -- so `loss`/`grad` never materialize it. See [[projected-source-fusion]].
-    barycenters      : Tensor[ "num_dirac", "dim" ]
-    cost             : Tensor
-
+    barycenters      : RealTensor[ "num_dirac", "dim" ]
+    cost             : RealTensor
     def __init__( self, src_dist, dst_dist, with_barycenters = False, auto_update = True ):
         # `with_barycenters`: produce and STORE the OT barycenters as an output (readable via
         # `plan.barycenters`). Off by default -- it is an [nb_angles, n] buffer, and the backward can
@@ -123,11 +124,11 @@ class OtPlan1d( Aggregate ):
         num_local = Axis( ShapeVar( gs ), name = "num_local" )
         num_scan  = Axis( ShapeVar( gs + 1 ), name = "num_local_scan" )   # `+1` = the phi_total broadcast slot
         return {
-            "sorted_indices":   Tensor[ num_group, self.num_dirac, dict( dtype = int ) ](),
-            "radix_tmp":        Tensor[ num_group, self.num_dirac, dict( dtype = int ) ](),
-            "sorted_pos":       Tensor[ num_group, self.num_dirac ](),
-            "num_local_marker": Tensor[ num_local, dict( dtype = int ) ](),
-            "group_scan":       Tensor[ num_group, num_scan ](),
+            "sorted_indices":   IntTensor[ num_group, self.num_dirac ](),
+            "radix_tmp":        IntTensor[ num_group, self.num_dirac ](),
+            "sorted_pos":       RealTensor[ num_group, self.num_dirac ](),
+            "num_local_marker": IntTensor[ num_local ](),
+            "group_scan":       RealTensor[ num_group, num_scan ](),
         }
 
     def update_outputs( self ):
@@ -311,6 +312,6 @@ class OtPlan1d( Aggregate ):
                                            [ num_group.name, self.num_dirac.name ], dtype = int ),
             sorted_pos = Tensor.wrap( sorted_pos if sorted_pos.ndim == 2 else sorted_pos[ None ],
                                        [ num_group.name, self.num_dirac.name ] ),
-            num_local_marker = Tensor[ num_local, dict( dtype = int ) ](),
-            group_scan = Tensor[ num_group, num_scan ](),
+            num_local_marker = IntTensor[ num_local ](),
+            group_scan = RealTensor[ num_group, num_scan ](),
         )

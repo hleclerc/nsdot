@@ -1,5 +1,5 @@
 from loom.util import Aggregate
-from loom.tensor import Tensor
+from loom.tensor import RealTensor
 
 
 class Distribution( Aggregate ):
@@ -10,9 +10,7 @@ class Distribution( Aggregate ):
     """
 
     # current_mass   : Tensor...
-    target_mass      : Tensor
-
-
+    target_mass      : RealTensor
     @property
     def mass( self ):
         """Total mass/measure of this distribution. Implemented by subclasses."""

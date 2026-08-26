@@ -1,6 +1,7 @@
 from loom.tensor import CtShapeVar
 from loom.tensor import ShapeVar
 from loom.tensor import Tensor
+from loom.tensor import RealTensor
 from loom.tensor import Axis
 from loom.util import ComputedAttribute
 
@@ -29,12 +30,12 @@ class ProjectedSumOfDiracs( Distribution ):
     num_dirac        : Axis[ "nb_diracs" ]
     proj_dim         : Axis[ "proj_dims" ]
 
-    points           : Tensor[ "num_dirac", "proj_dim" ]
-    normal           : Tensor[ "proj_dim" ]
-    weights          : Tensor[ "num_dirac" ]
+    points           : RealTensor[ "num_dirac", "proj_dim" ]
+    normal           : RealTensor[ "proj_dim" ]
+    weights          : RealTensor[ "num_dirac" ]
 
     # mass is computed from weights; invalidated when weights change (as in SumOfDiracs)
-    current_mass     : ComputedAttribute[ Tensor, ( "weights" ) ]
+    current_mass     : ComputedAttribute[ RealTensor, ( "weights" ) ]
 
     def __init__( self, points, normal, weights = None, target_mass = 1.0, proj_dims = 2, **kwargs ):
         self.__base_init__( points = points, normal = normal, weights = weights,
@@ -51,7 +52,7 @@ class ProjectedSumOfDiracs( Distribution ):
                 # are the SAME particles at every angle, only the projection direction differs, so their
                 # masses do not depend on the angle. Batching this to [nb_angles, n] would be an 80GB
                 # buffer at scale for no reason. See [[projected-source-fusion]].
-                weights = Tensor[ self.num_dirac ].full( self.target_mass / self.nb_diracs.value )
+                weights = RealTensor[ self.num_dirac ].full( self.target_mass / self.nb_diracs.value )
 
             return ProjectedSumOfDiracs(
                 nb_diracs = self.nb_diracs.value,
