@@ -5,9 +5,8 @@ import jax.numpy as jnp
 import jax.random as jr
 import optax
 from loom.testing import Param, bench
-
-from .gpu_mem import jax_mem_budget_bytes
-from .tracker import GradTimer
+from gpu_mem import jax_mem_budget_bytes
+from tracker import GradTimer
 
 # Needed for the float64 promotion in `_w2_1d` below -- disabled by default,
 # JAX otherwise SILENTLY truncates any float64 array back to float32.
@@ -17,7 +16,9 @@ jax.config.update("jax_enable_x64", True)
 _BYTES_PER_CHUNK_ELEMENT = 256
 
 
-def _w2_1d(proj, bin_mass, bin_edges):
+def _w2_1d(proj,
+           bin_mass,
+           bin_edges):
     """Squared 1D Wasserstein distance between the empirical measure of
     `proj` (n equal-mass diracs) and the piecewise-constant measure
     `bin_mass` over `bin_edges` (both total mass 1).
@@ -212,20 +213,34 @@ def multiscale_optimize(sino,
         points = _split(points, n, sub, jitter=sino.geometry.dw / 1e6)
 
 
-if p := bench( "multiscale", nb_diracs = Param( 100_000, help = "nb diracs" ) ):
-    from .geometry import CtGeometry
-    from .sinogram import Sinogram
-    from .tracker import Tracker
+if __name__=='__main__':
+
+    nb_diracs = 1_000
+    p = bench( "multiscale", nb_diracs = Param( 1_000, help = "nb diracs" ) )
+    from geometry import CtGeometry
+    from sinogram import Sinogram
+    from tracker import Tracker
 
     sino = Sinogram( CtGeometry( nb_angles = 600, nb_bins = 4096, extent = 2.0 ) )
     sino.add_disk( center = [ 0, 0 ], radius = 0.9, density = + 1.0 )
     sino.add_disk( center = [ 0, 0 ], radius = 0.7, density = - 1.0 )
 
+    from unidim.plots import plot_sinogram, plot_final_points
+
+    plot_sinogram(sino,'input_sinogram.png')
+
+
     tracker = Tracker( record_frames = True )
     timings = {}
+
     points = multiscale_optimize( sino,
-                                  nb_points_final = p.nb_diracs,
+                                  nb_points_final = nb_diracs,
                                   tracker = tracker,
                                   timings = timings )
-    p.results[ "ms_per_grad_by_n" ] = timings
-    tracker.export_html( p.out_dir / "unidim_reconstruction.html", sino.geometry.extent )
+
+    # p.results[ "ms_per_grad_by_n" ] = timings
+    tracker.export_html("unidim_reconstruction.html", sino.geometry.extent )
+    plot_final_points(points, 'final_points.png')
+
+    # import subprocess
+    # subprocess.Popen(["firefox", "unidim_reconstruction.html"])

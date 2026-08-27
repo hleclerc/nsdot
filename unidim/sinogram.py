@@ -1,7 +1,7 @@
 """Measured piecewise-constant sinogram over a `CtGeometry` — pure numpy."""
 import numpy as np
 
-from .geometry import CtGeometry
+from geometry import CtGeometry
 
 
 class Sinogram:

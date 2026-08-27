@@ -34,7 +34,7 @@ class Tracker:
             print(f"[{i:5d}] loss={loss_value:.6e}  ({time.time() - self._t0:.3e}s)")
 
     def export_html(self, out_path, extent, **kwargs):
-        from .viz import export_points_html
+        from viz import export_points_html
         export_points_html(self.frames, extent, out_path, **kwargs)
 
 
