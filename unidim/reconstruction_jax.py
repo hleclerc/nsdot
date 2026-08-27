@@ -80,8 +80,11 @@ def loss(points, normals, bin_edges, bin_mass, mem_budget_bytes=-1):
     if mem_budget_bytes == -1:
         mem_budget_bytes = jax_mem_budget_bytes()
     n, A = points.shape[0], normals.shape[0]
-    chunk_size = 1 if mem_budget_bytes is None else max(
-        1, min(A, mem_budget_bytes // (_BYTES_PER_CHUNK_ELEMENT * max(n, 1))))
+    chunk_size = 1 if mem_budget_bytes is None else max(1,
+                                                        min(A,
+                                                            mem_budget_bytes // (_BYTES_PER_CHUNK_ELEMENT * max(n, 1))
+                                                            )
+                                                        )
 
     def angle_cost(normal_and_mass):
         normal, mass = normal_and_mass
@@ -92,7 +95,12 @@ def loss(points, normals, bin_edges, bin_mass, mem_budget_bytes=-1):
     return costs.sum().astype(jnp.float32)
 
 
-def optimize(points, sino, max_iter=15, tracker=None, grad_timer=None, max_linesearch_steps=8):
+def optimize(points,
+             sino,
+             max_iter=15,
+             tracker=None,
+             grad_timer=None,
+             max_linesearch_steps=8):
     """L-BFGS (optax) on `loss`. Returns the optimized points.
 
     Runs a plain Python loop (not `lax.scan`) with a single jitted step: the
@@ -103,7 +111,8 @@ def optimize(points, sino, max_iter=15, tracker=None, grad_timer=None, max_lines
     """
     normals, bin_edges, bin_mass = _sino_arrays(sino)
     linesearch = optax.scale_by_zoom_linesearch(
-        max_linesearch_steps=max_linesearch_steps, initial_guess_strategy="one")
+        max_linesearch_steps=max_linesearch_steps,
+        initial_guess_strategy="one")
     solver = optax.lbfgs(linesearch=linesearch)
     state = solver.init(points)
 
@@ -162,8 +171,14 @@ def _split(points, n, key, jitter):
     return tiled + jitter * jr.normal(key, (n, 2), dtype=points.dtype)
 
 
-def multiscale_optimize(sino, nb_points_final, nb_points_init=200, factor=4,
-                        seed=0, tracker=None, timings=None, **kwargs):
+def multiscale_optimize(sino,
+                        nb_points_final,
+                        nb_points_init=200,
+                        factor=4,
+                        seed=0,
+                        tracker=None,
+                        timings=None,
+                        **kwargs):
     """Coarse-to-fine `optimize`: converge on `nb_points_init` random diracs,
     then repeatedly split each point into `factor` jittered children and
     re-converge, until reaching `nb_points_final`. Each early stage is much
@@ -175,10 +190,14 @@ def multiscale_optimize(sino, nb_points_final, nb_points_init=200, factor=4,
     """
     extent = sino.geometry.extent
     key, sub = jr.split(jr.PRNGKey(seed))
-    points = jr.uniform(sub, (nb_points_init, 2), minval=-extent / 2, maxval=extent / 2,
+    points = jr.uniform(sub,
+                        (nb_points_init, 2),
+                        minval=-extent / 2,
+                        maxval=extent / 2,
                         dtype=jnp.float32)
 
     n = nb_points_init
+
     while True:
         grad_timer = GradTimer() if timings is not None else None
         points = optimize(points, sino, tracker=tracker, grad_timer=grad_timer, **kwargs)
@@ -204,6 +223,9 @@ if p := bench( "multiscale", nb_diracs = Param( 100_000, help = "nb diracs" ) ):
 
     tracker = Tracker( record_frames = True )
     timings = {}
-    points = multiscale_optimize( sino, nb_points_final = p.nb_diracs, tracker = tracker, timings = timings )
+    points = multiscale_optimize( sino,
+                                  nb_points_final = p.nb_diracs,
+                                  tracker = tracker,
+                                  timings = timings )
     p.results[ "ms_per_grad_by_n" ] = timings
     tracker.export_html( p.out_dir / "unidim_reconstruction.html", sino.geometry.extent )
