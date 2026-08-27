@@ -33,6 +33,12 @@ install: ## Install editable des 3 packages dans l'ordre
 	$(RUN) $(PY) -m pip install -e ./sdot
 	$(RUN) $(PY) -m pip install -e ./otrec
 
+# Le cache de compilation des kernels ne hashe que le .cpp GÉNÉRÉ : les en-têtes écrits à la main
+# (sdot/include, loom/include) n'entrent pas dans la clé. Une modif de kernel réutiliserait donc
+# silencieusement l'ancien .dylib -- inacceptable pour des tests, qui forcent la reconstruction.
+# (`./run test` fait de même, cf. `loom/cli/main.py::_run_entries`.)
+test test-loom test-sdot test-otrec: export SDOT_FORCE_BUILD = 1
+
 test: test-loom test-sdot test-otrec ## Tous les tests
 
 test-loom: ## Tests loom (core)
