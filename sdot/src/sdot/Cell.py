@@ -1,5 +1,7 @@
 from typing import TYPE_CHECKING, cast, overload
 
+import numpy as np
+
 from loom.tensor import CtShapeVar
 from loom.tensor import ShapeVar
 from loom.tensor import Tensor
@@ -146,6 +148,70 @@ class Cell( Aggregate ):
 
         return res
 
+
+    def add_to_viz( self, viz, color = None, opacity = 1.0, faces = True, edges = True,
+                    points = False ):
+        """Se dessine dans un `Visualizer` (voir `sdot.viz.Visualizer`).
+
+        C'est la cellule qui choisit ses primitives, pas le visualiseur : selon la dimension et
+        selon qu'elle est bornée, elle n'a pas la même chose à montrer.
+
+        - 2D : `vertex_positions` est déjà le polygone en ordre CYCLIQUE (`vertex_ordering_2D`
+          côté C++), d'où une face et le tour d'arêtes, sans topologie à reconstruire.
+        - 3D : les faces se relisent sur `edge_indices` -- une arête y porte, après ses deux
+          sommets, les coupes qui la contiennent ; les arêtes qui partagent une coupe forment le
+          cycle de la face correspondante.
+        - au-delà, ou non bornée : on envoie la H-représentation (`cut_directions`/`cut_offsets`),
+          la seule description qui reste exploitable. La page en montre une COUPE 3D (couper des
+          demi-espaces redonne des demi-espaces) et, en dimension > 3, on ajoute le fil de fer
+          PROJETÉ, qui lui ne dépend d'aucun réglage de coupe.
+
+        Une cellule batchée pousse un item par élément du batch.
+        """
+        nb_dims = int( self.nb_dims.value )
+        vps     = np.asarray( self.vertex_positions ).reshape( -1, int( self.nb_vertices.value ), nb_dims )
+        cds     = np.asarray( self.cut_directions   ).reshape( -1, int( self.nb_cuts.value ), nb_dims )
+        cos     = np.asarray( self.cut_offsets      ).reshape( -1, int( self.nb_cuts.value ) )
+        bounded = np.asarray( self.is_fully_bounded ).reshape( -1 )
+        eis     = ( np.asarray( self.edge_indices ).reshape( -1, int( self.nb_edges.value ), nb_dims + 1 )
+                    if nb_dims > 2 else None )
+
+        for b in range( len( vps ) ):
+            col = color if color is not None else viz.take_color()   # UNE couleur par cellule
+            edge_col = viz.darker( col )    # arêtes = la teinte de la face, assombrie
+            # un SEUL tableau, passé tel quel à chaque `add_*` : le visualiseur reconnaît le
+            # vivier de sommets à l'identité de l'objet reçu, et ne le stocke donc qu'une fois
+            # pour les faces, les arêtes et les sommets de la cellule.
+            vp = vps[ b ]
+
+            if nb_dims > 3 or not bool( bounded[ b ] ):
+                # les sommets ne décrivent pas forcément la cellule (non bornée), mais ils disent
+                # toujours où elle est : de quoi cadrer la vue et rogner ce qui part à l'infini.
+                viz.note_bounds( vp )
+                # `faces = False` -> opacité nulle plutôt que pas de faces du tout : elles
+                # restent envoyées, donc écrites dans le z-buffer, donc les arêtes cachées le
+                # restent (c'est la passe de profondeur pure qui s'en charge côté page).
+                viz.add_polytope( cds[ b ], cos[ b ], nb_dims = nb_dims, color = col,
+                                  opacity = opacity if faces else 0 )
+                if nb_dims > 3 and edges and eis is not None:
+                    viz.add_edges( vp, eis[ b ][ :, :2 ], color = edge_col, opacity = 0.55 )
+                if points:
+                    viz.add_points( vp, color = edge_col )
+                continue
+
+            if nb_dims <= 2:
+                polys, edge_idx, closed = [ list( range( len( vp ) ) ) ], None, True
+            else:
+                polys, edge_idx, closed = _faces_from_edges( eis[ b ], int( self.nb_cuts.value ) ), \
+                                          eis[ b ][ :, :2 ], False
+            if faces:
+                viz.add_faces( vp, polys, color = col, opacity = opacity )
+            if edges:
+                viz.add_edges( vp, edge_idx, color = edge_col, closed = closed )
+            if points:
+                viz.add_points( vp, color = edge_col )
+        return viz
+
     def _nb_map_items( self ):
         nb_cuts, nb_dims = int( self.nb_cuts.value ), int( self.nb_dims.value )
         res = 0
@@ -189,3 +255,35 @@ class Cell( Aggregate ):
     #         output_attributes = [ "cell" ],
     #         cell = self,
     #     )
+
+
+def _faces_from_edges( edge_indices, nb_cuts ):
+    """Les faces d'une cellule 3D, une par coupe, en ordre cyclique.
+
+    Une ligne de `edge_indices` est `[ v0, v1, coupes... ]` : en 3D une arête porte exactement
+    deux coupes, donc les arêtes citant une même coupe `c` sont exactement les côtés de la face
+    portée par `c` -- il ne reste qu'à les chaîner de proche en proche pour retrouver le cycle
+    (ce que `add_faces` attend pour trianguler en éventail).
+    """
+    res = []
+    for c in range( nb_cuts ):
+        adj = {}
+        for row in edge_indices:
+            if not any( int( v ) == c for v in row[ 2 : ] ):
+                continue
+            a, b = int( row[ 0 ] ), int( row[ 1 ] )
+            adj.setdefault( a, [] ).append( b )
+            adj.setdefault( b, [] ).append( a )
+        if len( adj ) < 3:
+            continue
+        start = next( iter( adj ) )
+        cycle, prev, cur = [ start ], None, start
+        while len( cycle ) <= len( adj ):
+            nxt = [ v for v in adj[ cur ] if v != prev ]
+            if not nxt or nxt[ 0 ] == start:
+                break
+            cycle.append( nxt[ 0 ] )
+            prev, cur = cur, nxt[ 0 ]
+        if len( cycle ) >= 3:
+            res.append( cycle )
+    return res
