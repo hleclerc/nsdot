@@ -334,6 +334,28 @@ c.nb_dims.value        # 2
 Axis extents can be affine expressions of counts (`Axis[ "nb_dims + 1" ]`), and one count can drive
 several axes — which is exactly when the `ShapeVar` / `Axis` split earns its keep.
 
+### Sharing a dimension between aggregates
+
+Two `Cell`s mint their own `num_vertex`, so by default they do **not** line up — which is right:
+two unrelated meshes both have vertices, and vertex 3 of one is not vertex 3 of the other. When they
+really are the same dimension, say so by passing its identity:
+
+```python
+from loom.tensor import AxisId
+
+vertex = AxisId( "num_vertex" )
+
+a = Cell( num_vertex = vertex )
+b = Cell( num_vertex = vertex )
+
+a.positions * b.positions      # elementwise — the same dimension
+```
+
+Each instance still keeps a **count of its own**: an `AxisId` says *which* dimension, and carries no
+size to impose. That is the difference with passing an `Axis`, which is a window and so shares the
+extent with it. Two instances of different sizes therefore align and then disagree on the shape —
+an error, rather than a silent broadcast.
+
 String axis names are resolved *by the aggregate*, so they only work inside one. Standalone, pass
 the `Axis` object itself, or use `Tensor.wrap( raw, [ "i", "j" ] )` to attach names to an existing
 backend array.
