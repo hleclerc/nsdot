@@ -22,6 +22,9 @@ class ShapeVar( Attribute ):
     they then reference the same object, so the value is solved from the union of
     their tensors.
 
+    `value` reads the count back on the HOST (a `ShapeArray`), because sizing is what a count
+    is for; `as_tensor()` is the way to ask for it as a device value instead.
+
     The value a `ShapeVar` holds is a COUNT: how many items are used. A kernel
     reads it and/or writes it, so after a call it lives in a DEVICE buffer -- under
     `jit`, Python does not know it, and it can therefore never size anything.
@@ -48,10 +51,11 @@ class ShapeVar( Attribute ):
         from .AbstractAxis import AbstractAxis
 
         # (weakref(tensor), logical, capacity): two resolvers per using tensor. `logical(t)` inverts
-        # our affine on the tensor's LOGICAL sizes (`t._shape`, the unpadded truth); `capacity(t)` on
-        # its ALLOCATED buffer (`t._raw.shape`, padded). Either returns None when it cannot yet. Weak
+        # our affine on the tensor's LOGICAL sizes (`t.reference_shape`, the unpadded truth); `capacity(t)`
+        # on its ALLOCATED buffer (padded). Either returns None when it cannot yet. Weak
         # refs so a shared ShapeVar does not keep dropped instances' tensors alive.
         self.usages = []
+        self._compact_usages_at = 8   # see `add_usage`
         self.dep_axes = [ resolve_attribute( d, scope, AbstractAxis ) for d in template_args ]
 
         self.prescribed_value = None
@@ -61,6 +65,13 @@ class ShapeVar( Attribute ):
             self.set( value )
 
     def add_usage( self, tensor, logical, capacity ):
+        # DERIVED tensors register too (see `Tensor._wrap_axes`), and a loop makes a great many of
+        # them -- so dead entries are dropped as they accumulate instead of piling up for every
+        # `_pull` to walk. Amortized: compact only once the list has doubled since the last time.
+        if len( self.usages ) >= self._compact_usages_at:
+            self.usages = [ u for u in self.usages if u[ 0 ]() is not None ]
+            self._compact_usages_at = max( 8, 2 * len( self.usages ) )
+        # appended LAST, so a declared witness is still the first `_pull` consults.
         self.usages.append( ( weakref.ref( tensor ), logical, capacity ) )
 
     def set_count( self, value ):
@@ -81,8 +92,8 @@ class ShapeVar( Attribute ):
 
     def _pull( self, kind ):
         """Solve our count from the tensors that use us: the FIRST usage able to invert one of its
-        sizes, `None` if none can. `kind` picks which sizes -- the `"logical"` ones (`t._shape`, the
-        count) or the `"capacity"` ones (`t._raw.shape`, the allocation a chained call must reuse).
+        sizes, `None` if none can. `kind` picks which sizes -- the `"logical"` ones (`t.reference_shape`,
+        the count) or the `"capacity"` ones (the allocation a chained call must reuse).
         First-that-answers, so a witness carrying the RIGHT rank (a ragged tensor holding per-segment
         counts) is reached the same way as a scalar one -- both invert this ShapeVar's own affine."""
         for tensor_ref, logical, capacity in self.usages:
@@ -101,8 +112,9 @@ class ShapeVar( Attribute ):
         being the freshest truth (and it is then a DEVICE value, never size a buffer with it); then
         a user prescription; then what the LOGICAL sizes of a using tensor solve to (`_pull`).
 
-        Users read `value` (a `Tensor`); `raw` is the escape hatch to the backend array (what the
-        shape math and the FFI read, without wrapping) -- `sv.value.raw` gives the same thing."""
+        Users read `value` (a host `ShapeArray`); `raw` is the escape hatch to the backend array
+        (what the shape math and the FFI read, without wrapping) -- and it is where a count that
+        only lives on the device is still reachable, `as_tensor()` being its tidy form."""
         if self._count is not None:
             return self._count
 
@@ -113,19 +125,38 @@ class ShapeVar( Attribute ):
 
     @property
     def value( self ):
-        """The count as a `Tensor` -- rank 0 for a plain scalar count, rank > 0 for a ragged one
-        (its `dep_axes` name the dimensions). `None` while unresolved. Being a `Tensor`, it converts
-        to `int` when rank 0, reduces (`.max`), iterates, and hands its backend array back as `.raw`,
-        like any other (see `Tensor`)."""
+        """The count on the HOST, as a `ShapeArray` -- rank 0 for a plain scalar count, rank > 0
+        for a ragged one (its `dep_axes` name the dimensions). `None` while unresolved.
+
+        Host, not device, and that is the point: a count is what SIZES things (an allocation, a
+        `range`, an XLA shape), and only a value Python actually holds can do that. Reading one
+        that lives on the device is refused HERE, with a message saying so, rather than handed
+        back as a tracer that fails much later in whatever tried to size something with it.
+
+        When the device value IS what you want -- to compute with it in a kernel or in backend
+        algebra -- ask for it: `as_tensor()`."""
         raw = self.raw
         if raw is None:
             return None
-        from .Tensor import Tensor
-        return Tensor.wrap( raw, names = [ ax.name for ax in self.dep_axes ], dtype = int )
+        from .ShapeArray import ShapeArray
+        return ShapeArray( raw, names = [ ax.name for ax in self.dep_axes ] )
 
     @value.setter
     def value( self, value ):
         self.set( value )
+
+    def as_tensor( self ):
+        """The count as a DEVICE value (an `IntTensor`), for the cases that genuinely compute with
+        it on the backend rather than size something with it. `None` while unresolved.
+
+        No dtype is claimed: a count buffer knows what it is, and it is NOT uniformly the driver's
+        itype -- a kernel-written one is `int32` by design (see `CallArg_ShapeVar`), a prescribed
+        one is numpy's int. `wrap` reads it off the buffer instead of labelling it."""
+        raw = self.raw
+        if raw is None:
+            return None
+        from .Tensor import Tensor
+        return Tensor.wrap( raw, names = [ ax.name for ax in self.dep_axes ] )
 
     @property
     def max( self ) -> int:

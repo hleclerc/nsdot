@@ -2,7 +2,7 @@ from typing import TYPE_CHECKING, cast, overload
 
 from loom.tensor import CtShapeVar
 from loom.tensor import ShapeVar
-from loom.tensor import Tensor
+from loom.tensor import RealTensor
 from loom.tensor import Axis
 
 # from loom.compilation.FfiCode import FfiCodeParallel
@@ -22,8 +22,8 @@ class SumOfDiracs1d( Distribution ):
 
     num_dirac        : Axis[ "nb_diracs" ]
 
-    positions        : Tensor[ "num_dirac" ]
-    weights          : Tensor[ "num_dirac" ]
+    positions        : RealTensor[ "num_dirac" ]
+    weights          : RealTensor[ "num_dirac" ]
 
 
     def __init__( self, positions, weights = None, **kwargs ):

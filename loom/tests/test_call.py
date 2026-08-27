@@ -1,4 +1,4 @@
-from loom import CtShapeVar, ShapeVar, Axis, Tensor, Aggregate, driver, FfiCode
+from loom import CtShapeVar, ShapeVar, Axis, Tensor, Aggregate, driver, FfiCode, RealTensor, IntTensor
 from loom.testing import test
 
 # An `@aggregate` instance is built BEFORE the call and passed as a plain kwarg. Inputs and
@@ -40,7 +40,7 @@ if test( "basic" ):
     # `src/cpp/sdot/Cell.h`, and the aggregate would build on THAT struct instead of a generated
     # one. A name with no `sdot/<Name>.h` gets its struct generated whole (see `_emit_full_header`).
     class Cell1( Aggregate ):
-        vertex_positions : Tensor[ "num_vertex", "dim" ]
+        vertex_positions : RealTensor[ "num_vertex", "dim" ]
 
         num_vertex       : Axis[ "nb_vertices" ]
         dim              : Axis[ "nb_dims" ]
@@ -100,7 +100,7 @@ if test( "basic" ):
     # read-only input of this second call.
     #
     # `res` is a bare tensor: no members, so no policy either -- a plain tag says it all.
-    res = Tensor[ cell.num_vertex ]()
+    res = RealTensor[ cell.num_vertex ]()
 
     driver.call(
         FfiCode( name = "test_call_basic_res", fwd_code = """
@@ -131,8 +131,8 @@ if test( "partial_init" ):
     # no data, so the kernel discriminates at COMPILE time (and a `static_assert` can forbid
     # touching it outright).
     class Cell2( Aggregate ):
-        vertex_positions : Tensor[ "num_vertex", "dim" ]
-        vertex_indices   : Tensor[ "num_vertex", "dim", dict( dtype = int ) ]
+        vertex_positions : RealTensor[ "num_vertex", "dim" ]
+        vertex_indices   : IntTensor[ "num_vertex", "dim" ]
 
         num_vertex       : Axis[ "nb_vertices" ]
         dim              : Axis[ "nb_dims" ]
@@ -184,7 +184,7 @@ if test( "input_exceptions" ):
     # for it, and the underlying data stays untouched (an asserted "this kernel has no business
     # touching it", not a mutation).
     class Cell3( Aggregate ):
-        vertex_positions : Tensor[ "num_vertex", "dim" ]
+        vertex_positions : RealTensor[ "num_vertex", "dim" ]
 
         num_vertex       : Axis[ "nb_vertices" ]
         dim              : Axis[ "nb_dims" ]
@@ -237,7 +237,7 @@ if test( "two_instances" ):
     # the same aggregate, twice in one call, with different compile-time shape vars: `Cell` is
     # generated as a C++ template, instantiated once per argument.
     class Cell3( Aggregate ):
-        vertex_positions : Tensor[ "num_vertex", "dim" ]
+        vertex_positions : RealTensor[ "num_vertex", "dim" ]
 
         num_vertex       : Axis[ "nb_vertices" ]
         dim              : Axis[ "nb_dims" ]
@@ -294,7 +294,7 @@ if test( "nested" ):
     # an aggregate field whose type is itself an aggregate: `Cell` is generated as its own C++
     # template, and `Pair` holds two instantiations of it (and forwards their parameters).
     class Cell4( Aggregate ):
-        vertex_positions : Tensor[ "num_vertex", "dim" ]
+        vertex_positions : RealTensor[ "num_vertex", "dim" ]
 
         num_vertex       : Axis[ "nb_vertices" ]
         dim              : Axis[ "nb_dims" ]
@@ -353,7 +353,7 @@ if test( "vmap" ):
     # the driver in use provides (Jax today, Torch later), and the test only ever sees driver
     # arrays.
     class Cell5( Aggregate ):
-        vertex_positions : Tensor[ "num_vertex", "dim" ]
+        vertex_positions : RealTensor[ "num_vertex", "dim" ]
 
         num_vertex       : Axis[ "nb_vertices" ]
         dim              : Axis[ "nb_dims" ]
@@ -381,7 +381,7 @@ if test( "vmap" ):
         cell = Cell5( nb_dims = 2 )
 
         # a bare tensor input, borrowing `cell`'s `dim` axis: one scale per dimension.
-        scale = Tensor[ cell.dim ]()
+        scale = RealTensor[ cell.dim ]()
         scale.set( raw_scale )
 
         driver.call(
@@ -413,7 +413,7 @@ if test( "capacity_overflow" ):
     # allocated. Python then reserves more and runs again, until it fits. Nothing of a failed run
     # survives: an output is a fresh buffer every time.
     class Cell6( Aggregate ):
-        vertex_positions : Tensor[ "num_vertex", "dim" ]
+        vertex_positions : RealTensor[ "num_vertex", "dim" ]
 
         num_vertex       : Axis[ "nb_vertices" ]
         dim              : Axis[ "nb_dims" ]
@@ -504,9 +504,9 @@ if test( "der" ):
     )
 
     def fwd_of( x ):
-        inp = Tensor()
+        inp = RealTensor()
         inp.set( x )
-        out = Tensor()
+        out = RealTensor()
         driver.call( code, output_attributes = [ "out" ], out = out, inp = inp )
         return out.raw
 
@@ -545,10 +545,10 @@ if test( "der_symbolic_zero" ):
     )
 
     def only_a( x ):
-        inp = Tensor()
+        inp = RealTensor()
         inp.set( x )
-        out_a = Tensor()
-        out_b = Tensor()
+        out_a = RealTensor()
+        out_b = RealTensor()
         driver.call( code, output_attributes = [ "out_a", "out_b" ],
                      out_a = out_a, out_b = out_b, inp = inp )
         return out_a.raw   # `out_b` is never used: its cotangent is a symbolic zero
@@ -595,11 +595,11 @@ if test( "der_non_perturbed" ):
     )
 
     def loss( x ):
-        inp = Tensor()
+        inp = RealTensor()
         inp.set( x )
-        bias = Tensor()
+        bias = RealTensor()
         bias.set( driver.array( 100.0 ) )   # a constant: not a function of `x`, so non-perturbed
-        out = Tensor()
+        out = RealTensor()
         driver.call( code, output_attributes = [ "out" ], out = out, inp = inp, bias = bias )
         return out.raw
 
@@ -643,9 +643,9 @@ if test( "der_shape_var" ):
     )
 
     def loss( x ):
-        vec = Tensor[ ax ]()
+        vec = RealTensor[ ax ]()
         vec.set( x )            # length-2 vector -> `n` is solved to 2 from the data
-        out = Tensor[ ax ]()
+        out = RealTensor[ ax ]()
         driver.call( code, output_attributes = [ "out" ], out = out, vec = vec )
         return out.raw.sum()    # loss = 2*vec[0] + 3*vec[1]
 
@@ -662,7 +662,7 @@ if test( "der_aggregate" ):
     # `cell.data`, allocated at its capacity (the shared `nn` resolves it). The residual `cell`
     # re-enters under its forward name; non-tensor members (`n`, `nn`) are shared.
     class Vec( Aggregate ):
-        data : Tensor[ "n" ]
+        data : RealTensor[ "n" ]
         n    : Axis[ "nn" ]
         nn   : CtShapeVar
 
@@ -694,7 +694,7 @@ if test( "der_aggregate" ):
     def loss( x ):
         cell = Vec( nn = 2 )
         cell.data = x           # a float INPUT member
-        out = Tensor()          # a bare scalar output
+        out = RealTensor()          # a bare scalar output
         driver.call( code, output_attributes = [ "out" ], out = out, cell = cell )
         return out.raw          # loss = 2*data[0] + 3*data[1]
 
@@ -717,8 +717,8 @@ if test( "batch_alignment_forced" ):
     from loom.tensor import new_batch_axis
 
     class Cell7( Aggregate ):
-        scale            : Tensor[ "dim" ]
-        vertex_positions : Tensor[ "num_vertex", "dim" ]
+        scale            : RealTensor[ "dim" ]
+        vertex_positions : RealTensor[ "num_vertex", "dim" ]
 
         num_vertex       : Axis[ "nb_vertices" ]
         dim              : Axis[ "nb_dims" ]
@@ -775,6 +775,7 @@ if test( "physical_axis_reorder" ):
     import numpy
     from loom.tensor import PhysicalLayout
     from loom.tensor import ReferenceShape
+    from loom.tensor import Storage
     from loom import Axis, ShapeVar, Tensor
 
     code = FfiCode( name = "test_call_phys_reorder", fwd_code = """
@@ -796,14 +797,104 @@ if test( "physical_axis_reorder" ):
     L = PhysicalLayout.of( [ 2, 2 ], [ False, False ], phys_num = [ 1, 0 ] )
     assert L.buffer_shape == [ 2, 2 ] and L.strides == [ 1, 2 ] and not L.is_identity
 
-    m = Tensor[ row, col ]()
-    m._raw   = driver.array( [ [ 1, 3 ], [ 2, 4 ] ] )   # the physical (column-major) buffer
-    m._shape = ReferenceShape.from_dense_shape( [ 2, 2 ] )
-    m._layout = L
+    m = RealTensor[ row, col ]()
+    m.storage = Storage.of( driver.array( [ [ 1, 3 ], [ 2, 4 ] ] ),   # the physical (col-major) buffer
+                            ReferenceShape.from_dense_shape( [ 2, 2 ] ), L )
     assert numpy.asarray( m.tensor ).tolist() == [ [ 1, 2 ], [ 3, 4 ] ]   # reads back logical
 
-    out = Tensor[ row, col ]()
+    out = RealTensor[ row, col ]()
     driver.call( code, m = m, out = out, output_attributes = [ "out" ] )
 
     # the kernel read the permuted input by name and copied it: the logical value is preserved.
     assert numpy.asarray( out.tensor ).tolist() == [ [ 1, 2 ], [ 3, 4 ] ]
+
+
+if test( "fill_crosses_as_a_storageless_FillTensor" ):
+    # A FILL is a value whose every element reads the same scalar. It crosses the FFI as ONE rank-0
+    # buffer -- not as an [n] array -- and its logical extents are not baked into the source either:
+    # the C++ view reads them off a SIBLING argument that carries the same axis. So one compiled
+    # kernel serves any fill value and any size.
+    from loom.tensor import Fill
+    import numpy
+
+    n   = ShapeVar()
+    num = Axis( n, name = "num" )
+
+    x = RealTensor[ num ]( [ 10.0, 20.0, 30.0, 40.0 ] )
+    f = RealTensor[ num ].filled_with( 2.5 )
+    assert isinstance( f.storage, Fill ) and f.is_fill
+    assert f.raw.shape == ()            # ONE scalar backs it...
+    assert f.capacity == ( 4, )         # ...over four logical elements
+
+    out = RealTensor[ num ]()
+
+    driver.call(
+        FfiCode( name = "test_call_fill", fwd_code = """
+        run_parallel(
+            queue,
+            global_batch_indices,
+            []( auto batch_index, auto x, auto f, auto out ) {
+                // the same scalar whatever the index -- indexing a fill ignores the index
+                out( batch_index, num = 0 ) = x( batch_index, num = 0 ) * f( batch_index, num = 0 );
+                out( batch_index, num = 1 ) = x( batch_index, num = 1 ) * f( batch_index, num = 3 );
+                // its logical extent, filled in from the sibling buffer that carries `num`
+                out( batch_index, num = 2 ) = f.size();
+                // and it is a distinct TYPE, not a TensorView the kernel has to test
+                static_assert( ! std::is_same_v< decltype( f ), decltype( x ) > );
+                out( batch_index, num = 3 ) = 0;
+            },
+            InpList(), x, InpList(), f, OutList(), out
+        );
+        """ ),
+        x = x, f = f, out = out,
+        output_attributes = [ "out" ],
+    )
+
+    assert numpy.asarray( out.tensor ).tolist() == [ 25.0, 50.0, 4.0, 0.0 ]
+
+
+if test( "a_plain_count_crosses_by_value_not_through_a_buffer" ):
+    # A count is ONE integer. When the host knows it and the kernel only READS it, sending it
+    # through a device buffer costs an allocation, a transfer and a dereference per read, and buys
+    # nothing -- the value is uniform over the whole call. So it travels as an FFI attribute and
+    # lands in the kernel as a `ScalarValue<SI>`, in registers.
+    #
+    # A buffer is kept exactly where it is unavoidable: a count the KERNEL writes (that is where
+    # the result goes), a RAGGED one (a count per segment), or one the host does not know.
+    import numpy
+
+    class Counter( Aggregate ):
+        out       : RealTensor[ "num" ]
+
+        num       : Axis[ "nb_out" ]
+
+        nb_out    : ShapeVar     # written by the kernel -> a buffer: it is the result
+        nb_wanted : ShapeVar     # prescribed, only read   -> crosses by value
+
+    code = FfiCode( name = "test_call_scalar_count", fwd_code = """
+    run_parallel(
+        queue,
+        global_batch_indices,
+        []( auto batch_index, auto cnt ) {
+            auto c = cnt( batch_index );
+
+            static_assert( std::is_same_v< std::decay_t< decltype( c.nb_wanted.view ) >, ScalarValue<SI> >,
+                           "a host-known, read-only count must cross by value" );
+            static_assert( ! std::is_same_v< std::decay_t< decltype( c.nb_out.view ) >, ScalarValue<SI> >,
+                           "a count the kernel writes needs a real buffer" );
+
+            c.nb_out.set( c.nb_wanted );
+            for ( SI n = 0; n < SI( c.nb_out ); ++n )
+                c.out( num = n ) = 10 * n;
+        },
+        cnt_io, cnt
+    );
+    """ )
+
+    cnt = Counter( nb_wanted = 3 )
+    driver.call( code, cnt = cnt,
+                 output_attributes = [ "cnt.nb_out", "cnt.out" ],
+                 output_capacities = { "cnt.nb_out": 8 } )
+
+    assert cnt.nb_out.value == 3
+    assert numpy.asarray( cnt.out.tensor ).tolist() == [ 0.0, 10.0, 20.0 ]

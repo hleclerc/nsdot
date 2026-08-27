@@ -154,6 +154,7 @@ _CALL_TEMPLATE = """\
 #include <loom/support/containers/NoneTensor.h>
 #include <loom/support/containers/ZeroTensor.h>
 #include <loom/support/containers/FillTensor.h>
+#include <loom/support/containers/ScalarValue.h>
 #include <cstdint>
 #include <iostream>
 
@@ -378,7 +379,7 @@ def _call_with_vjp( code, ca, device, prefix ):
 
     def op_fwd( values ):
         # symbolic_zeros wraps each primal in `CustomVJPPrimal( value, perturbed )`.
-        perturbed = tuple( getattr( v, "perturbed", True ) and t.dtype.floating_point
+        perturbed = tuple( getattr( v, "perturbed", True ) and t.is_differentiable
                            for v, t in zip( values, inputs ) )
         full_in = tuple( getattr( v, "value", v ) for v in values )
         outs = tuple( fwd_op( *full_in ) )
@@ -399,14 +400,16 @@ def _call_with_vjp( code, ca, device, prefix ):
 def _grad_tensor( inst, array ):
     """A bare tensor holding `array`, shaped like `inst` -- a residual (a forward input/output) or
     a cotangent, entering the backward kernel as an input bound at the size its data has."""
+    from ..tensor.storage import Fill
     from ..tensor.Tensor import Tensor
     res = Tensor.like( inst )
-    res.set_raw( array )
-    # a FILL re-enters the backward as a fill too (its residual is the same scalar): keep it symbolic
-    # so it lowers to a `FillTensor` again, not a scalar-buffer TensorView with a [n] logical shape.
-    if getattr( inst, "is_fill", False ):
-        res._fill  = True
-        res._shape = inst._shape
+    if inst.is_fill:
+        # a FILL re-enters the backward as a fill too (its residual is the same scalar): keep it
+        # symbolic so it lowers to a `FillTensor` again, not a scalar-buffer TensorView with a [n]
+        # logical shape. Being a fill is STATED, never inferred -- one scalar looks like any other.
+        res.storage = Fill( res._as_declared( array ), inst.reference_shape )
+    else:
+        res.set_raw( array )
     return res
 
 
@@ -519,12 +522,12 @@ def _call_backward( code, ca, device, prefix, inputs, outputs,
         residual = _grad_tensor( inst, arr ) if arr is not None else Tensor.like( inst )
 
         io = io_of.get( id( inst ) )
-        if io == "output" and inst.dtype.floating_point:
+        if io == "output" and inst.is_differentiable:
             # the cotangent enters as a backward INPUT -- a real buffer (a `TensorView`) or the
             # framework's symbolic zero (a `ZeroTensor`): both just get stored, `_grad_tensor` /
             # `is_symbolic_zero` tell them apart, no special case here.
             grad = _grad_tensor( inst, cotangent_of.get( id( inst ) ) )
-        elif io == "input" and inst.dtype.floating_point and perturbed_of.get( id( inst ), False ):
+        elif io == "input" and inst.is_differentiable and perturbed_of.get( id( inst ), False ):
             grad = Tensor.like( inst )
             output_paths.append( path )
             grad_obj_of[ id( inst ) ] = grad

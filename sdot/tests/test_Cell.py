@@ -1,10 +1,10 @@
+from loom.testing import check_grad, test
+
 from loom import driver, new_batch_axis
-from sdot import Cell
-from loom.testing import test, check_grad
+from sdot import Cell, Visualizer
 
 if test( "basic" ):
     c = Cell.make_hypercube( 2, [ 0, 0 ], [ [ 2, 0 ], [ 0, 1 ] ] )
-    # info( c.vertex_positions )
     assert c.measure == 2
 
 if test( "batch" ):
@@ -47,3 +47,13 @@ if test( "grad_measure" ):
     # côté `init_as_hypercube_bwd` (l'autre entrée n'est pas perturbée).
     check_grad( lambda o: Cell.make_hypercube( 2, o, axes   ).measure, origin )
     check_grad( lambda a: Cell.make_hypercube( 2, origin, a ).measure, axes   )
+
+if p := test( "cut" ):
+    c = Cell.make_hypercube( 2, [ 0, 0 ], [ [ 1, 0 ], [ 0, 1 ] ] )
+    # c.cut( [ 1, 0 ], 0.1 )
+
+    v = Visualizer()
+    c.add_to_viz( v )
+    v.write_html( p.out_dir / "cut.html" )
+
+    # assert c.measure == 0.1
