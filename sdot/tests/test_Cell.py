@@ -946,6 +946,50 @@ if test( "viz_of_a_batch_uses_each_item_own_counts" ):
     cs.add_to_viz( v )
     assert [ len( f ) for f in v.polygons ] == list( nvs )
 
+if test( "viz_colors_are_the_seed_and_nothing_else" ):
+    # une couleur dit QUEL germe. Elle se prend donc au rang de l'item, pas au nombre de choses
+    # déjà dessinées -- et la preuve est une cellule VIDE : le germe du milieu, dominé par un poids
+    # bas, n'a plus rien à montrer, et les deux autres doivent garder EXACTEMENT la couleur qu'ils
+    # avaient sans lui. Avec un compteur d'appels, le troisième héritait de celle du deuxième.
+    from sdot import PowerDiagram
+    from sdot.viz.Visualizer import scale_color
+
+    pos = numpy.array( [ [ 0.2, 0.5 ], [ 0.5, 0.5 ], [ 0.8, 0.5 ] ] )
+    box = ( [ 0, 0 ], [ 1, 1 ] )
+
+    def face_colors( viz ):
+        return [ tuple( viz.colors[ c ][ :3 ] ) for c in viz.polygon_colors ]
+
+    full = Visualizer()
+    PowerDiagram( pos, box = box ).add_to_viz( full )
+    assert len( full.polygons ) == 3
+    assert numpy.allclose( face_colors( full ), [ scale_color( i ) for i in range( 3 ) ] )
+
+    holed = Visualizer()
+    PowerDiagram( pos, weights = numpy.array( [ 0.0, -1.0, 0.0 ] ), box = box ).add_to_viz( holed )
+    assert len( holed.polygons ) == 2                      # celle du milieu a disparu
+    assert numpy.allclose( face_colors( holed ), [ scale_color( 0 ), scale_color( 2 ) ] )
+
+if test( "viz_colors_do_not_drift_from_one_frame_to_the_next" ):
+    # le même diagramme, redessiné image après image : chaque germe doit y reprendre SA couleur.
+    # C'est ce que la remise à zéro par image achète -- sans elle, l'image `k` commençait là où la
+    # précédente s'était arrêtée et toute l'animation clignotait.
+    from sdot import Voronoi
+    pos = numpy.array( [ [ 0.2, 0.2 ], [ 0.75, 0.3 ], [ 0.45, 0.8 ], [ 0.9, 0.85 ] ] )
+    n, nb_frames = len( pos ), 3
+
+    v = Visualizer( frame_axis = "pas" )
+    for k in range( nb_frames ):
+        if k:
+            v.new_frame( k )
+        Voronoi( pos + 0.02 * k, box = ( [ 0, 0 ], [ 1, 1 ] ) ).add_to_viz( v )
+
+    cols = [ tuple( v.colors[ c ][ :3 ] ) for c in v.polygon_colors ]
+    assert len( cols ) == n * nb_frames
+    for k in range( 1, nb_frames ):
+        assert cols[ k * n : ( k + 1 ) * n ] == cols[ : n ], k
+    assert len( set( cols[ : n ] ) ) == n                  # et les quatre sont bien distinctes
+
 
 # -- ce qu'on REGARDE ----------------------------------------------------------------------------
 # Des `experiment` et non des `test` : une image ne s'asserte pas. Ce qu'on vérifie ici est que les

@@ -1,5 +1,8 @@
+from .AaBsp import AaBsp as AaBsp
 from .Cell import Cell as Cell
 from .OtPlan1d import OtPlan1d as OtPlan1d
+from .PowerDiagram import PowerDiagram as PowerDiagram
+from .SpatialAccelerator import SpatialAccelerator as SpatialAccelerator
 from .Voronoi import Voronoi as Voronoi
 
 from .distributions.SumOfDiracs1d import SumOfDiracs1d as SumOfDiracs1d

@@ -8,11 +8,26 @@ from loom.util import Aggregate
 from .Cell import BOUNDARY, Cell
 
 
-class Voronoi( Aggregate ):
-    """Diagramme de Voronoï euclidien, RECONSTRUIT à chaque demande.
+class PowerDiagram( Aggregate ):
+    """Diagramme de puissance (Laguerre), RECONSTRUIT à chaque demande.
 
-    L'objet ne porte pas de diagramme : il porte ses GERMES (`positions`) et le domaine convexe
-    qui les borne (`bnd_directions . x <= bnd_offsets`). Une cellule n'existe qu'entre l'instant
+    La cellule du germe `i` est là où sa DISTANCE DE PUISSANCE gagne :
+
+        |x - d_i|² - w_i  <=  |x - d_j|² - w_j   pour tout autre j
+
+    Développée, l'inégalité perd son `|x|²` des deux côtés et devient un demi-espace -- c'est
+    toute la raison d'être de cette convention : un diagramme de puissance coûte exactement ce que
+    coûte un Voronoï, un plan par rival et le même clip. Le plan est la médiatrice euclidienne
+    DÉCALÉE le long de sa normale par l'écart des poids (voir `PowerDiagram.cxx::make_cell`).
+
+    Seules les DIFFÉRENCES de poids atteignent les plans : ajouter la même constante à tous les
+    poids ne change rien au diagramme, donc « tous égaux » et « pas de poids du tout » sont le même
+    objet. C'est pourquoi `weights` est FACULTATIF -- absent, il ne coûte pas un tampon de zéros à
+    lire mais un `NoneTensor` dont le compilateur supprime le terme, et le cas euclidien s'appelle
+    `Voronoi` (voir `Voronoi.py`).
+
+    L'objet ne porte pas de diagramme : il porte ses GERMES (`positions`, `weights`) et le domaine
+    convexe qui les borne (`bnd_directions . x <= bnd_offsets`). Une cellule n'existe qu'entre l'instant
     où le kernel la construit et l'instant où il en lit la réponse -- `measures` écrit un volume
     directement dans sa case, puis passe au germe suivant en réutilisant les mêmes tampons.
 
@@ -26,13 +41,23 @@ class Voronoi( Aggregate ):
     (`driver.device.nb_threads`), et c'est LUI qui borne le parallélisme -- chaque work-item
     balaie ensuite sa part des germes, à pas fixe.
 
-    Le voisinage n'est pas encore accéléré : chaque cellule est coupée par les `n - 1` bissectrices,
-    donc le coût est en `n²`. C'est la structure de recherche (grille / BSP + rayon de sécurité)
-    qui manque, pas le reste : elle ne changera que l'énumération des candidats de
-    `Voronoi.cxx::make_cell`.
+    Le voisinage est ACCÉLÉRABLE. Par défaut chaque cellule est coupée par les `n - 1`
+    bissectrices, donc le coût est en `n²` ; passer un `accelerator` (voir `AaBsp`) remplace cette
+    énumération par une descente d'arbre qui ne va voir que les régions capables d'entamer la
+    cellule -- et RIEN D'AUTRE ne change, ni la géométrie, ni les mesures, ni les dérivées. C'est
+    la propriété qu'il faut retenir : un accélérateur ne peut que taire des coupes qui n'auraient
+    rien enlevé, donc les cellules obtenues sont les MÊMES, aux erreurs d'arrondi près (voir
+    `SpatialAccelerator.py` pour le contrat, et `cell_may_be_cut` pour le test qui le garantit).
     """
 
     positions      : RealTensor[ "num_point", "dim" ]
+
+    # FACULTATIF, exactement comme le domaine ci-dessous : absent (`Unbound`, `NoneTensor` côté
+    # C++), le terme de poids disparaît du plan À LA COMPILATION et le diagramme est l'euclidien.
+    # Ce n'est pas une optimisation gratuite mais la bonne façon de dire ce qu'on veut dire : un
+    # poids constant ne se voit nulle part dans le diagramme, donc « pas de poids » est un ÉTAT,
+    # pas un tableau de zéros.
+    weights        : RealTensor[ "num_point" ]
 
     # le domaine : une liste de demi-espaces, donc n'importe quel convexe polyédrique. Absent
     # (`Unbound`, `NoneTensor` côté C++), les cellules qui partent à l'infini le restent -- et se
@@ -48,8 +73,9 @@ class Voronoi( Aggregate ):
     nb_boundaries  : ShapeVar
     nb_dims        : CtShapeVar
 
-    def __init__( self, positions, boundaries = None, box = None, max_nb_cuts = None, **kwargs ):
-        """`positions` : `[ n, d ]`. Le domaine, au choix :
+    def __init__( self, positions, weights = None, boundaries = None, box = None, max_nb_cuts = None,
+                  accelerator = None, **kwargs ):
+        """`positions` : `[ n, d ]`. `weights` : `[ n ]`, ou rien (le cas euclidien). Le domaine, au choix :
 
         - `box = ( mi, ma )` -- le pavé `mi <= x <= ma`, développé ici en `2d` demi-espaces ;
         - `boundaries = ( directions, offsets )` -- les demi-espaces `direction . x <= offset` ;
@@ -57,6 +83,9 @@ class Voronoi( Aggregate ):
 
         `max_nb_cuts` dimensionne les tampons d'une cellule (voir `_capacities`). Ce n'est qu'une
         supposition : trop petite, le kernel l'enregistre et la plateforme relance avec le double.
+
+        `accelerator` : de quoi n'essayer que les germes qui peuvent servir (`AaBsp.of( pd )`).
+        Facultatif, et sans effet sur le RÉSULTAT -- seulement sur ce qu'il coûte.
         """
         if box is not None:
             if boundaries is not None:
@@ -69,9 +98,49 @@ class Voronoi( Aggregate ):
         if boundaries is not None:
             kwargs[ "bnd_directions" ], kwargs[ "bnd_offsets" ] = boundaries
 
+        # même règle pour les poids : `None` n'est pas « des zéros », c'est « pas de poids ». On ne
+        # nomme donc pas le membre plutôt que de lui passer une valeur.
+        if weights is not None:
+            kwargs[ "weights" ] = weights
+
         self.__base_init__( positions = positions, **kwargs )
 
         self._max_nb_cuts = max_nb_cuts
+
+        # PAS un champ de l'agrégat : l'accélérateur est un argument d'APPEL, pas un morceau du
+        # diagramme. Le mettre en membre obligerait « pas d'accélérateur » à être un agrégat vide,
+        # que le C++ engendré ne sait pas écrire (une structure sans membre n'a pas de paramètre
+        # de template) -- alors que côté kernel l'absence a déjà un nom, `EverySeed`, qui est un
+        # accélérateur comme un autre et se fabrique sur place (`PowerDiagram::every_seed`).
+        self.accelerator = accelerator
+
+
+    def _acc_for( self, batch_axis ):
+        """Comment cet appel nomme son accélérateur : `( expression C++, expression du scratch,
+        kwargs de l'appel, noms à déclarer en scratch )`.
+
+        Sans accélérateur, l'expression est `power_diagram.every_seed()` -- une valeur que le C++
+        fabrique lui-même à partir d'un compte qu'il a déjà -- et le scratch est un `0` littéral,
+        que `EverySeed` ignore. Rien n'est donc passé depuis Python dans ce cas : pas d'agrégat vide à
+        engendrer, pas de tampon à allouer, et une seule signature C++ par méthode.
+        """
+        if self.accelerator is None:
+            return "power_diagram.every_seed()", "0", {}, []
+
+        # l'accélérateur INDEXE nos germes : construit sur un autre nuage, ses indices désignent
+        # autre chose, et la réponse serait fausse sans rien qui le signale. Le compte est ce qu'on
+        # peut vérifier ici pour rien, et il attrape le mésusage courant (`AaBsp` gardé d'un pas
+        # précédent). Voir `AaBsp.of` pour la façon de ne pas se poser la question.
+        n = int( self.nb_points.value )
+        nb = self.accelerator.nb_seeds()
+        if nb is not None and nb != n:
+            raise ValueError( f"the accelerator was built on { nb } seeds, this diagram has { n }" )
+
+        ws = self.accelerator.thread_scratch( batch_axis )
+        if ws is None:
+            return "accelerator", "0", { "accelerator": self.accelerator }, []
+        return ( "accelerator", "acc_ws( batch_index )",
+                 { "accelerator": self.accelerator, "acc_ws": ws }, [ "acc_ws" ] )
 
 
     @property
@@ -81,22 +150,32 @@ class Voronoi( Aggregate ):
         Un seul appel, un seul balayage : chaque work-item construit une cellule dans ses tampons
         à lui, en écrit le volume, et recommence avec le germe suivant. Rien du diagramme n'est
         conservé entre deux germes -- c'est tout l'intérêt.
+
+        DÉRIVABLE par rapport aux germes, `positions` comme `weights` (voir
+        `PowerDiagram.cxx::measures_bwd`). Le backward refait le même balayage : les cellules
+        n'ayant pas été gardées, il les REconstruit plutôt que de les relire, ce qui lui coûte un
+        forward de plus et rien en mémoire. Le DOMAINE, lui, est traité comme une constante : une
+        coupe venue de `bnd_directions` porte `cut_id == BOUNDARY`, qui dit « pas un germe » et non
+        LEQUEL, donc sa part n'a nulle part où aller.
         """
         d = int( self.nb_dims.value )
         if d < 2:
-            raise NotImplementedError( f"Voronoi needs nb_dims >= 2 for now ( nb_dims = { d } )" )
+            raise NotImplementedError( f"PowerDiagram needs nb_dims >= 2 for now ( nb_dims = { d } )" )
 
         cap_v, cap_e, cap_c = self._capacities()
 
         # le budget qui décide du parallélisme : ce qu'UN work-item immobilise. Deux cellules
-        # (la navette), plus les scratchs du régime d > 2 -- la table de compaction de la coupe
-        # (`corr`) et les apex de la triangulation (`facet_apex`), tous deux dimensionnés sur les
-        # DEUX cellules (voir plus bas). Le device en déduit combien de work-items il peut se
-        # permettre, plafonné par le nombre de germes (inutile d'en réserver plus qu'il n'y a de
-        # travail).
+        # (la navette), les cotangentes par sommet du backward (`grad_vp`), plus les scratchs du
+        # régime d > 2 -- la table de compaction de la coupe (`corr`) et les apex de la
+        # triangulation (`facet_apex`), tous deux dimensionnés sur les DEUX cellules (voir plus
+        # bas). Le device en déduit combien de work-items il peut se permettre, plafonné par le
+        # nombre de germes (inutile d'en réserver plus qu'il n'y a de travail).
         per_thread = 2 * self._bytes_per_cell( cap_v, cap_e, cap_c )
+        per_thread += 8 * 2 * cap_v * d                 # `grad_vp`, le tampon du backward
         if d > 2:
             per_thread += 8 * ( 2 * cap_v + 2 * cap_c + 1 ) + 8 * d * 2 * cap_c
+        if self.accelerator is not None:
+            per_thread += self.accelerator.bytes_per_thread()
         nt = driver.device.nb_threads( nb_local_bytes_per_thread = per_thread,
                                        batch_axes = [ self.num_point ] )
 
@@ -104,7 +183,7 @@ class Voronoi( Aggregate ):
         # d'items, donc un work-item par emplacement de travail. `thread_index` / `nb_threads`
         # (les noms réservés du scaffold) sont alors exactement le rang de ce work-item et leur
         # nombre, et la boucle striée sur les germes se lit directement dessus.
-        num_thread = new_batch_axis( nt )
+        num_thread = new_batch_axis( nt, prefix = "thread" )
 
         ws_0 = Cell( d, init_as_unbounded = False, batch_axes = [ num_thread ] )
         ws_1 = Cell( d, init_as_unbounded = False, batch_axes = [ num_thread ] )
@@ -124,6 +203,12 @@ class Voronoi( Aggregate ):
         num_corr = Axis( verts + cuts + Affine.constant( 1 ), name = "num_corr" )
         num_level = Axis( ShapeVar( d ), name = "num_level" )
         num_cut_slot = Axis( cuts, name = "num_cut_slot" )
+        # le seul tampon que le BACKWARD ajoute : une cotangente par sommet de la cellule courante,
+        # ce que `Cell::measure_bwd` écrit et ce que la remontée vers les plans relit. Dimensionné
+        # comme les autres sur une expression affine des comptes, pour suivre un doublement de
+        # capacité. Il est déclaré dès le forward parce qu'un scratch appartient à L'APPEL, pas à
+        # l'une de ses deux directions -- le forward l'alloue et n'y touche pas.
+        num_grad_vertex = Axis( verts, name = "num_grad_vertex" )
 
         res = RealTensor[ self.num_point ]()
 
@@ -131,23 +216,38 @@ class Voronoi( Aggregate ):
         # arrivent en `NoneTensor`, ce qu'attendent les `if constexpr ( ct_dim > 2 )` du C++.
         scratch = [ "corr", "facet_apex" ] if d > 2 else []
 
+        acc_expr, acc_ws_expr, acc_kwargs, acc_scratch = self._acc_for( num_thread )
+
         driver.call(
-            FfiCodeParallel( name = "voronoi_measures",
-                fwd_code = "voronoi.measures( res, ws_0( batch_index ), ws_1( batch_index ), "
-                           "corr( batch_index ), facet_apex( batch_index ), thread_index, nb_threads );" ),
+            FfiCodeParallel( name = "power_diagram_measures",
+                fwd_code = "power_diagram.measures( res, ws_0( batch_index ), ws_1( batch_index ), "
+                           "corr( batch_index ), facet_apex( batch_index ), "
+                           f"{ acc_expr }, { acc_ws_expr }, thread_index, nb_threads );",
+                # `grad_for_power_diagram.positions` / `.weights` sont PARTAGÉS par tous les items
+                # (ils ne portent pas l'axe de batch) : chaque work-item y accumule pour ses germes,
+                # d'où les `atomic_add` côté C++ -- et la plateforme les met à zéro avant le corps,
+                # ce qu'elle fait justement pour une sortie flottante partagée d'un appel batché
+                # (`CallArg_Tensor.cpp_seed_member`), donc pas de `bwd_setup_code` ici.
+                bwd_code = "power_diagram.measures_bwd( res, grad_for_res, "
+                           "grad_for_power_diagram.positions, grad_for_power_diagram.weights, "
+                           "ws_0( batch_index ), ws_1( batch_index ), corr( batch_index ), "
+                           "facet_apex( batch_index ), grad_vp( batch_index ), "
+                           f"{ acc_expr }, { acc_ws_expr }, thread_index, nb_threads );" ),
             output_capacities = self._cell_capacities( "ws_0" ) | self._cell_capacities( "ws_1" ),
             output_exceptions = ws_0._face_lattice_exceptions( "ws_0" ) + ws_1._face_lattice_exceptions( "ws_1" ),
-            output_attributes = [ "res", "ws_0", "ws_1" ] + scratch,
+            output_attributes = [ "res", "ws_0", "ws_1", "grad_vp" ] + scratch + acc_scratch,
             # des tampons de travail, pas des résidus : leur contenu ne survit pas à l'appel (les
             # work-items se les repassent d'un germe à l'autre).
-            scratch_attributes = [ "ws_0", "ws_1" ] + scratch,
-            voronoi = self,
+            scratch_attributes = [ "ws_0", "ws_1", "grad_vp" ] + scratch + acc_scratch,
+            power_diagram = self,
             res = res,
+            **acc_kwargs,
             ws_0 = ws_0,
             ws_1 = ws_1,
             # des INDICES : `IntTensor`, sinon leurs lectures reviendraient en flottants.
             corr = IntTensor[ num_thread, num_corr ](),
             facet_apex = IntTensor[ num_thread, num_level, num_cut_slot ](),
+            grad_vp = RealTensor[ num_thread, num_grad_vertex, self.dim ](),
         )
 
         return res
@@ -170,7 +270,7 @@ class Voronoi( Aggregate ):
         """
         d = int( self.nb_dims.value )
         if d < 2:
-            raise NotImplementedError( f"Voronoi needs nb_dims >= 2 for now ( nb_dims = { d } )" )
+            raise NotImplementedError( f"PowerDiagram needs nb_dims >= 2 for now ( nb_dims = { d } )" )
 
         # l'axe des items est celui des CELLULES : un work-item par germe, `batch_index` est donc
         # le germe. Un axe de batch FRAIS et non `self.num_point` : les deux ont la même étendue,
@@ -178,7 +278,7 @@ class Voronoi( Aggregate ):
         # de l'appel, ce qui n'a rien à voir avec ce qu'on veut dire (`positions` est lu EN ENTIER
         # par chaque item, il est indexé par le germe, pas découpé par l'item).
         n = int( self.nb_points.value )
-        num_cell = new_batch_axis( n )
+        num_cell = new_batch_axis( n, prefix = "cell" )
 
         # quel germe ce work-item construit. `batch_index` n'est pas un entier côté C++ mais le
         # multi-indice qui SERT à indexer les tenseurs batchés (un `Tuple<AxisIndex<...>>`) ; le
@@ -199,21 +299,25 @@ class Voronoi( Aggregate ):
 
         scratch = [ "corr" ] if d > 2 else []
 
+        acc_expr, acc_ws_expr, acc_kwargs, acc_scratch = self._acc_for( num_cell )
+
         driver.call(
-            FfiCodeParallel( name = "voronoi_cells",
-                fwd_code = "voronoi.build_cell( SI( seeds( batch_index ) ), cells( batch_index ), "
-                           "ws_0( batch_index ), ws_1( batch_index ), corr( batch_index ) );" ),
+            FfiCodeParallel( name = "power_diagram_cells",
+                fwd_code = "power_diagram.build_cell( SI( seeds( batch_index ) ), cells( batch_index ), "
+                           "ws_0( batch_index ), ws_1( batch_index ), corr( batch_index ), "
+                           f"{ acc_expr }, { acc_ws_expr } );" ),
             output_capacities = ( self._cell_capacities( "cells" )
                                 | self._cell_capacities( "ws_0" )
                                 | self._cell_capacities( "ws_1" ) ),
             output_exceptions = ( cells._face_lattice_exceptions( "cells" )
                                 + ws_0._face_lattice_exceptions( "ws_0" )
                                 + ws_1._face_lattice_exceptions( "ws_1" ) ),
-            output_attributes = [ "cells", "ws_0", "ws_1" ] + scratch,
+            output_attributes = [ "cells", "ws_0", "ws_1" ] + scratch + acc_scratch,
             # `cells` est LA sortie ; les deux autres et `corr` ne sont que la navette du clip.
-            scratch_attributes = [ "ws_0", "ws_1" ] + scratch,
-            voronoi = self,
+            scratch_attributes = [ "ws_0", "ws_1" ] + scratch + acc_scratch,
+            power_diagram = self,
             seeds = seeds,
+            **acc_kwargs,
             cells = cells,
             ws_0 = ws_0,
             ws_1 = ws_1,
@@ -241,12 +345,19 @@ class Voronoi( Aggregate ):
             for b in range( len( bds ) ):
                 res.cut( bds[ b ], float( bos[ b ] ), BOUNDARY )
 
+        w = None
+        if self.weights.is_defined:
+            w = np.asarray( self.weights ).reshape( -1 )
+
         p0 = pos[ i ]
         for j in range( len( pos ) ):
             if j == i:
                 continue
             direction = pos[ j ] - p0
-            res.cut( direction, float( direction @ ( p0 + pos[ j ] ) / 2 ), j )
+            offset = float( direction @ ( p0 + pos[ j ] ) / 2 )
+            if w is not None:
+                offset += float( w[ i ] - w[ j ] ) / 2
+            res.cut( direction, offset, j )
         return res
 
 

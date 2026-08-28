@@ -342,6 +342,19 @@ class Cell( Aggregate ):
         Une cellule batchée pousse un item par élément du batch, chacun dessiné sur SON PROPRE
         compte -- un diagramme de Voronoï, le cas courant d'un batch, n'a pas deux cellules de la
         même taille.
+
+        = La couleur ne dépend que de l'ITEM
+
+        Chaque item prend sa couleur à son RANG DANS LE BATCH (`viz.color_at`), sur un bloc
+        d'indices réservé d'avance. C'est l'indice du germe pour une cellule qui vient d'un
+        diagramme -- `PowerDiagram.cells` construit un item par germe, dans l'ordre -- donc la
+        couleur d'une cellule dit QUEL germe, et rien d'autre. Deux conséquences, qui sont tout
+        l'intérêt : un germe garde sa couleur d'une image à l'autre (une animation ne clignote
+        pas), et une cellule VIDE, qu'on saute, ne décale plus la couleur de toutes les suivantes
+        -- ce que des poids rendent courant, un germe dominé n'ayant plus de cellule du tout.
+
+        Le bloc est réservé AVANT de savoir ce qui est vide, et pour `nb_items` entiers : ce que
+        consomme un diagramme ne dépend donc que de son nombre de germes.
         """
         nb_dims = int( self.nb_dims.value )
 
@@ -349,6 +362,9 @@ class Cell( Aggregate ):
         # longueur nulle, contrairement aux tableaux de géométrie.
         bounded  = np.asarray( self.is_fully_bounded ).reshape( -1 )
         nb_items = len( bounded )
+
+        # le bloc d'indices de couleur, pris ICI : un par item, vide ou non (voir la docstring).
+        first_color = viz.reserve_colors( nb_items )
 
         nvs = _counts_per_item( self.nb_vertices, nb_items )
         ncs = _counts_per_item( self.nb_cuts, nb_items )
@@ -390,7 +406,8 @@ class Cell( Aggregate ):
             if nv == 0:
                 continue
 
-            col = color if color is not None else viz.take_color()   # UNE couleur par cellule
+            # UNE couleur par cellule, et c'est SON RANG qui la donne -- pas le nombre d'appels
+            col = color if color is not None else viz.color_at( first_color + b )
             edge_col = viz.darker( col )    # arêtes = la teinte de la face, assombrie
 
             infinite = cis[ b ][ : nc ] == INFINITE

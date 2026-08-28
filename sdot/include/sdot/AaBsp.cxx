@@ -1,0 +1,76 @@
+#pragma once
+
+#include <loom/support/common_macros.h>
+#include <loom/support/containers/Vector.h>
+#include "AaBsp.h"
+
+#define UTP SDOT_TEMPLATE_DECL_FOR_AaBsp
+#define DTP AaBsp<SDOT_TEMPLATE_ARGS_FOR_AaBsp>
+
+namespace sdot {
+
+UTP auto DTP::nearness( const auto &from, SI n ) const {
+    TF res = 0;
+    for ( PI d = 0; d < ct_dim; ++d ) {
+        const TF lo = TF( node_lo( n, d ) );
+        const TF hi = TF( node_hi( n, d ) );
+        const TF p  = from[ d ];
+        const TF e  = p < lo ? lo - p : ( p > hi ? p - hi : TF( 0 ) );
+        res += e * e;
+    }
+    return res;
+}
+
+UTP void DTP::for_each_candidate( const auto &from, SI i0, auto &&scratch, auto &&may_cut, auto &&cut_with ) const {
+    SI top = 0;
+    scratch( top++ ) = 0;                       // the root -- the nodes are numbered in preorder
+
+    while ( top > 0 ) {
+        const SI n = SI( scratch( --top ) );
+
+        const auto lo = Vector<TF,ct_dim>::with_func( [&]( PI d ) { return TF( node_lo( n, d ) ); } );
+        const auto hi = Vector<TF,ct_dim>::with_func( [&]( PI d ) { return TF( node_hi( n, d ) ); } );
+
+        // no weights at all -> no majorant to read: the two tensors are `NoneTensor`, the branch
+        // goes at COMPILE time, and the caller's test degenerates to the plain distance one.
+        auto wa = Vector<TF,ct_dim>::zeros();
+        TF wb = 0;
+        if constexpr ( CT_VALUE( node_wa.is_valid() ) ) {
+            wa = Vector<TF,ct_dim>::with_func( [&]( PI d ) { return TF( node_wa( n, d ) ); } );
+            wb = TF( node_wb( n ) );
+        }
+
+        // the whole point of the tree: a subtree that cannot reach the cell is not descended into.
+        // Tested on POP and not on push, so it is answered against the cell as it is NOW -- every
+        // cut made since this node was pushed has made the answer more likely to be "no".
+        if ( ! may_cut( lo, hi, wa, wb ) )
+            continue;
+
+        const SI l = SI( node_left( n ) );
+        if ( l < 0 ) {                          // a leaf: `node_left < 0` says so (see `AaBsp.py`)
+            const SI beg = SI( node_begin( n ) );
+            const SI end = SI( node_end( n ) );
+            for ( SI k = beg; k < end; ++k ) {
+                const SI i1 = SI( seed_indices( k ) );
+                if ( i1 != i0 && ! cut_with( i1 ) )
+                    return;
+            }
+            continue;
+        }
+
+        // the nearer child is pushed LAST, so it is popped FIRST.
+        const SI r = SI( node_right( n ) );
+        if ( nearness( from, l ) <= nearness( from, r ) ) {
+            scratch( top++ ) = r;
+            scratch( top++ ) = l;
+        } else {
+            scratch( top++ ) = l;
+            scratch( top++ ) = r;
+        }
+    }
+}
+
+#undef UTP
+#undef DTP
+
+}

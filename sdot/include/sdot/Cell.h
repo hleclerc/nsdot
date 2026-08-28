@@ -52,7 +52,7 @@ struct Cell {
     // Returns whether the result FITTED in `res`: on a capacity overflow it has recorded what it
     // would have taken (the host reserves more and runs again, see `driver.call`) and written
     // nothing, so `res` still holds whatever was there before. A caller that goes on cutting the
-    // SAME pair of buffers over and over -- `Voronoi`, whose cells ping-pong between two
+    // SAME pair of buffers over and over -- `PowerDiagram`, whose cells ping-pong between two
     // work-item-local cells -- must stop there rather than clip stale geometry; the one call per
     // cut of `Cell.py` simply ignores it, the host re-run being the whole answer.
     //
@@ -125,7 +125,7 @@ struct Cell {
     // capacity (the host reserves more and runs again, see `driver.call`).
     //
     // What it is for: a caller that builds cells in a small pair of work buffers but wants to KEEP
-    // them -- `Voronoi::build_cell`, whose display path materializes every cell at once. Nothing in
+    // them -- `PowerDiagram::build_cell`, whose display path materializes every cell at once. Nothing in
     // the ordinary cut/measure path needs it, a cell being consumed where it is built.
     bool copy_into              ( auto &&res ) const;
 

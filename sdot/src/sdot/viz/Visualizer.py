@@ -87,6 +87,7 @@ détails (et les trois choix qu'elle tranche) sont dans `vtk_writer`. Elle a bes
 d'un polytope, que `polytope` énumère en Python -- en dimension quelconque.
 """
 import base64
+import colorsys
 import json
 import re
 from pathlib import Path
@@ -96,10 +97,26 @@ import numpy as np
 
 #: couleurs par défaut, attribuées dans l'ordre des ajouts (mi-tons : lisibles sur fond clair
 #: COMME sur fond sombre, la page bascule de l'un à l'autre à la volée)
-PALETTE = [
-    "#4c8bf5", "#f5883c", "#3fb35c", "#e0524a", "#9b6ad4",
-    "#8d6350", "#e07ec0", "#7f8489", "#c1c33a", "#35bacd",
-]
+# L'ÉCHELLE DE COULEURS : une roue des teintes, PARCOURUE AU NOMBRE D'OR.
+#
+# Continue et cyclique, donc sans nombre de couleurs à annoncer -- ce qui compte n'est pas
+# combien il y en a mais le PAS entre deux indices. Avancer d'un cran ne doit pas bouger la teinte
+# d'un cheveu (deux cellules voisines seraient jumelles) : le pas est donc un tour d'or, la façon
+# connue de tenir n'importe quel nombre d'indices bien séparés -- les 10 premiers comme les 100,
+# sans savoir à l'avance lequel des deux on aura.
+GOLDEN_STRIDE = 0.6180339887498949      # φ - 1
+
+
+def scale_color( index ):
+    """La couleur numéro `index` de l'échelle. Une FONCTION de l'indice, et rien d'autre."""
+    index = int( index )
+    # deux cycles courts sur la saturation et la valeur, en plus de la teinte : le pas d'or garde
+    # les indices VOISINS loin les uns des autres, mais deux indices distants finissent par se
+    # rapprocher en teinte (13 crans, 21 crans...) et ce sont eux que ces cycles séparent.
+    h = ( index * GOLDEN_STRIDE ) % 1.0
+    s = 0.55 + 0.13 * ( index % 3 )
+    v = 0.95 - 0.13 * ( index % 2 )
+    return colorsys.hsv_to_rgb( h, s, v )
 
 
 def _np( x, dtype = np.float32 ):
@@ -170,7 +187,9 @@ class Visualizer:
         self._pnt_v,  self._pnt_c,  self._pnt_r    = [], [], []
         self._hpolys                               = []           # polytopes en H-représentation
 
-        self._nb_adds  = 0                # pour la palette automatique
+        # le prochain indice libre de l'échelle. Remis à zéro à chaque IMAGE (voir `new_frame`) :
+        # une couleur doit dire QUOI, pas COMBIEN a été dessiné avant.
+        self._next_color = 0
 
         # Une IMAGE ne retient que l'endroit où elle commence dans les listes ci-dessus : tout ce
         # qu'on ajoute va dans la DERNIÈRE, donc chaque image y occupe une plage contiguë. Rien
@@ -181,20 +200,43 @@ class Visualizer:
 
     # ---- couleurs -----------------------------------------------------------------------------
 
+    def color_at( self, index ):
+        """La couleur numéro `index` de l'échelle -- voir `scale_color`.
+
+        C'est l'entrée à préférer dès qu'un objet a un NUMÉRO à lui : la cellule du dirac `i` se
+        colore `color_at( i )`, et sa couleur ne dépend alors que de `i` -- ni de l'ordre des
+        appels, ni de ce qui a été dessiné avant, ni de l'image. Un dirac garde sa couleur d'un
+        pas de descente au suivant, et un voisin qui perd sa cellule ne décale plus personne.
+        """
+        return scale_color( index )
+
     def next_color( self ):
-        """La prochaine couleur de la palette (celle qu'un `add_*` sans `color` prendrait)."""
-        return PALETTE[ self._nb_adds % len( PALETTE ) ]
+        """La prochaine couleur libre (celle qu'un `add_*` sans `color` prendrait), sans avancer."""
+        return self.color_at( self._next_color )
+
+    def reserve_colors( self, nb = 1 ):
+        """Réserve `nb` indices CONSÉCUTIFS sur l'échelle et rend le premier.
+
+        Un bloc plutôt qu'un par un : ce qui doit numéroter les couleurs d'un objet composite est
+        le rang de ses parties DANS l'objet (l'item `b` d'une cellule batchée prend `base + b`),
+        pas le nombre de parties effectivement dessinées -- sinon une cellule vide, qu'on saute,
+        décalerait toutes les suivantes.
+
+        La numérotation repart de zéro à chaque image (`new_frame`), de sorte que le même objet
+        dessiné au même rang dans chaque image y garde la même couleur.
+        """
+        res = self._next_color
+        self._next_color += int( nb )
+        return res
 
     def take_color( self ):
-        """Réserve la prochaine couleur de la palette et avance.
+        """Réserve UN indice et rend sa couleur -- pour un objet qui n'a pas de numéro à lui.
 
         À prendre quand un même objet donne PLUSIEURS primitives (une cellule : ses faces, ses
         arêtes, ses sommets) et qu'on les veut de la même couleur : sans ça, chaque `add_*` sans
         `color` en consommerait une nouvelle et la cellule serait bariolée.
         """
-        color = self.next_color()
-        self._nb_adds += 1
-        return color
+        return self.color_at( self.reserve_colors() )
 
     @staticmethod
     def darker( color, factor = 0.72 ):
@@ -272,7 +314,12 @@ class Visualizer:
 
         `value` est l'abscisse sur l'axe (`frame_axis`) : un instant, ou la valeur du paramètre.
         Par défaut, le rang de l'image.
+
+        La numérotation des couleurs repart de zéro ici. C'est ce qui fait qu'une animation ne
+        clignote pas : ce qu'on redessine au même rang dans chaque image y reprend sa couleur, au
+        lieu d'en prendre une nouvelle parce que l'image précédente en a consommé.
         """
+        self._next_color = 0
         self._frames.append( self._frame_mark(
             len( self._frames ) if value is None else value ) )
         return self
