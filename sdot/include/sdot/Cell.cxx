@@ -293,7 +293,7 @@ UTP auto DTP::growth_for_cut( auto &&direction, auto off ) const {
     return g;
 }
 
-UTP void DTP::cut( auto &&res, auto &&direction, auto &&offset, SI cut_id ) const {
+UTP bool DTP::cut( auto &&res, auto &&direction, auto &&offset, SI cut_id ) const {
     static_assert( ct_dim == 2, "`cut` is 2D-only for now (see Cell.py::cut)" );
 
     // Sutherland-Hodgman on a CONVEX polygon held in cyclic order, run on both representations at
@@ -323,7 +323,7 @@ UTP void DTP::cut( auto &&res, auto &&direction, auto &&offset, SI cut_id ) cons
     bool ok = res.nb_vertices.set( nb + 1 );
     ok &= res.nb_cuts.set( nb + 1 );
     if ( ! ok )
-        return;
+        return false;
 
     // signed distance to the cutting plane. `direction` is NOT normalized and `offset` is the dot
     // product it is compared to, so this is the plain `n . v - o`.
@@ -408,9 +408,10 @@ UTP void DTP::cut( auto &&res, auto &&direction, auto &&offset, SI cut_id ) cons
     res.nb_vertices.set( k );
     res.nb_cuts.set( k );
     res.is_fully_bounded = ! still_infinite;
+    return true;
 }
 
-UTP void DTP::cut( auto &&res, auto &&direction, auto &&offset, SI cut_id, auto &&corr ) const {
+UTP bool DTP::cut( auto &&res, auto &&direction, auto &&offset, SI cut_id, auto &&corr ) const {
     static_assert( ct_dim > 2, "this overload is the d > 2 one (see Cell.h)" );
 
     const SI nv = nb_vertices;
@@ -464,7 +465,7 @@ UTP void DTP::cut( auto &&res, auto &&direction, auto &&offset, SI cut_id, auto 
             corr( v ) = -1;
             continue;
         }
-        if ( kv >= cap_v ) { res.nb_vertices.set( cap_v + 1 ); return; }
+        if ( kv >= cap_v ) { res.nb_vertices.set( cap_v + 1 ); return false; }
         corr( v ) = kv;
         for ( PI d = 0; d < ct_dim; ++d )
             res.vertex_positions( kv, d ) = p[ d ];
@@ -485,7 +486,7 @@ UTP void DTP::cut( auto &&res, auto &&direction, auto &&offset, SI cut_id, auto 
         res.nb_edges.set( 0 );
         res.nb_cuts.set( 0 );
         res.is_fully_bounded = 1;
-        return;
+        return true;
     }
 
     // ---- the edges, and with them the vertices the cut CREATES. The new cut takes index `nc` in
@@ -500,7 +501,7 @@ UTP void DTP::cut( auto &&res, auto &&direction, auto &&offset, SI cut_id, auto 
             continue;
 
         if ( ca >= 0 && cb >= 0 ) { // wholly inside: carried over, ends renumbered
-            if ( ke >= cap_e ) { res.nb_edges.set( cap_e + 1 ); return; }
+            if ( ke >= cap_e ) { res.nb_edges.set( cap_e + 1 ); return false; }
             res.edge_indices( ke, 0 ) = ca;
             res.edge_indices( ke, 1 ) = cb;
             for ( PI r = 0; r + 1 < ct_dim; ++r )
@@ -516,8 +517,8 @@ UTP void DTP::cut( auto &&res, auto &&direction, auto &&offset, SI cut_id, auto 
         const auto pi = grown_vertex( i, g ), po = grown_vertex( o, g );
         const TF si = sd( pi ), so = sd( po );
 
-        if ( kv >= cap_v ) { res.nb_vertices.set( cap_v + 1 ); return; }
-        if ( ke >= cap_e ) { res.nb_edges.set( cap_e + 1 ); return; }
+        if ( kv >= cap_v ) { res.nb_vertices.set( cap_v + 1 ); return false; }
+        if ( ke >= cap_e ) { res.nb_edges.set( cap_e + 1 ); return false; }
 
         // the weighted average `( so pi - si po ) / ( so - si )` rather than `pi + t ( po - pi )`:
         // the same point in exact arithmetic, but SYMMETRIC in the two ends, so an edge gives the
@@ -567,7 +568,7 @@ UTP void DTP::cut( auto &&res, auto &&direction, auto &&offset, SI cut_id, auto 
             if ( nb_common != SI( ct_dim ) - 2 )
                 continue;
 
-            if ( ke >= cap_e ) { res.nb_edges.set( cap_e + 1 ); return; }
+            if ( ke >= cap_e ) { res.nb_edges.set( cap_e + 1 ); return false; }
             res.edge_indices( ke, 0 ) = m;
             res.edge_indices( ke, 1 ) = n;
             for ( SI r = 0; r < nb_common; ++r )
@@ -590,7 +591,7 @@ UTP void DTP::cut( auto &&res, auto &&direction, auto &&offset, SI cut_id, auto 
             corr( cut_base + c ) = -1;
             continue;
         }
-        if ( kc >= cap_c ) { res.nb_cuts.set( cap_c + 1 ); return; }
+        if ( kc >= cap_c ) { res.nb_cuts.set( cap_c + 1 ); return false; }
 
         const bool is_new = ( c == new_cut );
         const SI id = ( is_new ? cut_id : SI( cut_ids( c ) ) );
@@ -620,6 +621,7 @@ UTP void DTP::cut( auto &&res, auto &&direction, auto &&offset, SI cut_id, auto 
     res.nb_edges.set( ke );
     res.nb_cuts.set( kc );
     res.is_fully_bounded = ! still_infinite;
+    return true;
 }
 
 UTP void DTP::crossing_bwd( auto &&direction, SI i, SI j, const auto &vi, const auto &vj, TF si, TF sj,
@@ -1233,6 +1235,50 @@ UTP void DTP::measure( auto &&res, auto &&facet_apex ) const {
     for ( int i = 2; i <= ct_dim; ++i )
         fact *= i;
     res = sum / fact;
+}
+
+UTP bool DTP::copy_into( auto &&res ) const {
+    const SI nv = nb_vertices;
+    const SI nc = nb_cuts;
+
+    // the counts FIRST, and all of them before a single element is written: `set` is what reports
+    // an under-provisioned `res`, and a partial copy into a too-small buffer is exactly what the
+    // capacity protocol exists to avoid (write nothing, record what it would have taken, let the
+    // host reserve more and run again).
+    bool ok = res.nb_vertices.set( nv );
+    ok &= res.nb_cuts.set( nc );
+    if constexpr ( ct_dim > 2 )
+        ok &= res.nb_edges.set( SI( nb_edges ) );
+    if ( ! ok )
+        return false;
+
+    res.is_fully_bounded = is_fully_bounded ? 1 : 0;
+
+    for ( SI i = 0; i < nv; ++i )
+        for ( PI d = 0; d < ct_dim; ++d )
+            res.vertex_positions( i, d ) = TF( vertex_positions( i, d ) );
+
+    for ( SI c = 0; c < nc; ++c ) {
+        for ( PI d = 0; d < ct_dim; ++d )
+            res.cut_directions( c, d ) = TF( cut_directions( c, d ) );
+        res.cut_offsets( c ) = TF( cut_offsets( c ) );
+        res.cut_ids( c ) = SI( cut_ids( c ) );
+    }
+
+    // the face lattice exists only in the d > 2 regime; below it the two tensors are not even
+    // allocated (`NoneTensor`, see `Cell.py::_face_lattice_exceptions`).
+    if constexpr ( ct_dim > 2 ) {
+        for ( SI i = 0; i < nv; ++i )
+            for ( PI r = 0; r < ct_dim; ++r )
+                res.vertex_indices( i, r ) = SI( vertex_indices( i, r ) );
+
+        const SI ne = nb_edges;
+        for ( SI e = 0; e < ne; ++e )
+            for ( PI r = 0; r < ct_dim + 1; ++r )
+                res.edge_indices( e, r ) = SI( edge_indices( e, r ) );
+    }
+
+    return true;
 }
 
 }

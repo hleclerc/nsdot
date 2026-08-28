@@ -49,11 +49,18 @@ struct Cell {
     // (see `Cell.py::cut`). Like `measure`, it comes in TWO versions, one per DIMENSION REGIME --
     // and for the same reason: they do not rewrite the same description of the cell.
     //
+    // Returns whether the result FITTED in `res`: on a capacity overflow it has recorded what it
+    // would have taken (the host reserves more and runs again, see `driver.call`) and written
+    // nothing, so `res` still holds whatever was there before. A caller that goes on cutting the
+    // SAME pair of buffers over and over -- `Voronoi`, whose cells ping-pong between two
+    // work-item-local cells -- must stop there rather than clip stale geometry; the one call per
+    // cut of `Cell.py` simply ignores it, the host re-run being the whole answer.
+    //
     // d == 2: `vertex_positions` alone IS the cell, and the cuts follow it through the invariant
     // the orderings of `init_as_*` establish -- CUT i CARRIES THE EDGE [ v_i, v_i+1 ], hence
     // `nb_cuts == nb_vertices`. Sutherland-Hodgman then rewrites both in ONE cyclic pass, with
     // nothing tabulated: no scratch, hence no cap on the number of threads.
-    void cut                    ( auto &&res, auto &&direction, auto &&offset, SI cut_id ) const;
+    bool cut                    ( auto &&res, auto &&direction, auto &&offset, SI cut_id ) const;
 
     // d > 2: no cyclic order to lean on. The FACE LATTICE (`vertex_indices` / `edge_indices`) is
     // what carries the cell, and the clip rewrites it: vertices are classified, the surviving ones
@@ -62,7 +69,7 @@ struct Cell {
     // any more are dropped. Compaction is what the scratch is for: `corr` holds the old -> new
     // index maps ( `[ 0, nb_vertices )` for the vertices, `[ nb_vertices, ... )` for the cuts ),
     // one row per work-item, so the call caps its thread count on the room they take.
-    void cut                    ( auto &&res, auto &&direction, auto &&offset, SI cut_id, auto &&corr ) const;
+    bool cut                    ( auto &&res, auto &&direction, auto &&offset, SI cut_id, auto &&corr ) const;
 
     // Adjoint of `cut`. The clip is a SCATTER -- an input vertex feeds several output ones, an
     // input cut every output that copies it -- so this ACCUMULATES, and what it accumulates into
@@ -111,6 +118,16 @@ struct Cell {
     void for_each_simplex       ( auto &&facet_apex, auto &&func ) const;
 
     bool has_cut                ( SI v, SI c ) const;   ///< does vertex `v` stand on cut `c` ?
+
+    // Copies this cell -- geometry, H-representation, face lattice and counts -- into `res`.
+    // Answers whether it FITTED, like `cut`: the counts go through `ShapeVarView::set`, so an
+    // under-provisioned `res` records what it would have taken and nothing is written past its
+    // capacity (the host reserves more and runs again, see `driver.call`).
+    //
+    // What it is for: a caller that builds cells in a small pair of work buffers but wants to KEEP
+    // them -- `Voronoi::build_cell`, whose display path materializes every cell at once. Nothing in
+    // the ordinary cut/measure path needs it, a cell being consumed where it is built.
+    bool copy_into              ( auto &&res ) const;
 
     void measure_bwd            ( auto &&res, auto &&facet_apex, auto &&grad_res, auto &&grad_vertex_positions ) const;
     void measure                ( auto &&res, auto &&facet_apex ) const;

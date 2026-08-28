@@ -1,6 +1,6 @@
 import numpy
 
-from loom.testing import check_grad, test
+from loom.testing import check_grad, test, experiment, Param
 
 from loom import driver, new_batch_axis
 from sdot import Cell, Visualizer
@@ -98,6 +98,9 @@ if p := test( "cut" ):
     c = Cell.make_hypercube( 2, [ 0, 0 ], [ [ 1, 0 ], [ 0, 1 ] ] )
     c.cut( [ 1, 0 ], 0.1 )
 
+    # une page écrite au passage : ce test ne juge pas l'IMAGE (voir les `experiment` en fin de
+    # fichier pour ça), il vérifie seulement que l'écriture ne casse pas -- c'est la seule
+    # couverture automatique de `write_html`, une expérience n'étant pas lancée par `./run test`.
     v = Visualizer()
     c.add_to_viz( v )
     v.write_html( p.out_dir / "cut.html" )
@@ -628,9 +631,15 @@ if test( "cut_nd_batched" ):
                              batch_axes = [ new_batch_axis( nb_items ) ] )
     c.cut( [ 1, 1, 1 ], 2.5 )
 
-    nv = int( c.nb_vertices.value )
+    # une cellule batchée porte UN COMPTE PAR ITEM (c'est un kernel qui l'écrit, et rien ne dit
+    # que deux items s'accordent -- cf. `CallArg_ShapeVar`). Ici ils s'accordent, et c'est
+    # justement ce qu'on vérifie.
+    nvs = numpy.asarray( c.nb_vertices.value )
+    assert nvs.shape == ( nb_items, ) and ( nvs == 10 ).all()
+
+    nv = 10
     vp = numpy.asarray( c.vertex_positions )
-    assert nv == 10 and vp.shape[ 0 ] == nb_items
+    assert vp.shape[ 0 ] == nb_items
     for b in range( nb_items ):
         assert numpy.allclose( vp[ b, : nv ], vp[ 0, : nv ] )
 
@@ -835,3 +844,198 @@ if test( "measure_nd_batched" ):
     m = numpy.asarray( c.measure.tensor )
     assert m.shape == ( nb_items, )
     assert numpy.allclose( m, 1 - 0.5 ** 3 / 6 )
+
+
+# -- ce que l'affichage d'une cellule NON BORNÉE laisse tomber -----------------------------------
+# Une image ne s'asserte pas, mais ces trois règles-là si : elles portent sur QUOI est envoyé au
+# visualiseur, et le visualiseur sait dire ce qu'il a reçu. Voir `Cell.add_to_viz`.
+
+if test( "viz_drops_the_infinite_planes" ):
+    # les parois du simplexe factice ne sont pas des faces de la cellule -- elles n'ont ni la bonne
+    # position (leur offset est une invention que les coupes repoussent) ni d'existence. Ce qui
+    # part est exactement l'ensemble des demi-espaces demandés, et rien d'autre.
+    asked = ( ( [ 1.0, 0.0 ], 1.0 ), ( [ 0.0, 1.0 ], 1.0 ), ( [ 0.0, -1.0 ], 0.0 ) )
+    c = Cell.make_unbounded( 2 )
+    for n, o in asked:
+        c.cut( n, o )
+    assert not bool( numpy.asarray( c.is_fully_bounded ) )        # une demi-bande : non bornée
+
+    v = Visualizer()
+    c.add_to_viz( v )
+    assert len( v.polytopes ) == 1
+    dirs, offs, _, with_edges = v.polytopes[ 0 ]
+    assert not with_edges          # en 2D/3D c'est la cellule qui trace ses arêtes, pas la coupe
+    got = sorted( tuple( numpy.round( numpy.append( d, o ), 6 ) ) for d, o in zip( dirs, offs ) )
+    exp = sorted( tuple( numpy.round( numpy.append( n, o ), 6 ) ) for n, o in asked )
+    assert got == exp, ( got, exp )
+
+if test( "viz_dashes_what_runs_off_and_hides_what_is_made_up" ):
+    # la même demi-bande `{ x <= 1, 0 <= y <= 1 }`, qui part vers les x négatifs. Trois sortes
+    # d'arêtes, et on les distingue par la GÉOMÉTRIE de ce qui arrive au visualiseur :
+    #
+    # - `x = 1, 0 <= y <= 1` : ses deux bouts sont de vrais sommets -> tracée pleine ;
+    # - `y = 0` et `y = 1` : un vrai bout, l'autre sur une paroi factice -> pointillés, donc un
+    #   paquet de petits segments (7 tirets, cf. `Visualizer.add_edges( dashed = True )`) ;
+    # - la fermeture du simplexe factice -> rien du tout.
+    c = Cell.make_unbounded( 2 )
+    for n, o in ( ( [ 1, 0 ], 1.0 ), ( [ 0, 1 ], 1.0 ), ( [ 0, -1 ], 0.0 ) ):
+        c.cut( n, o )
+
+    v = Visualizer()
+    c.add_to_viz( v )
+    segs = numpy.asarray( v.positions )[ numpy.asarray( v.edges ) ]      # [ m, 2, 2 ]
+
+    def _is( seg, a, b ):
+        return ( numpy.allclose( seg, [ a, b ], atol = 1e-6 )
+              or numpy.allclose( seg, [ b, a ], atol = 1e-6 ) )
+
+    full = [ s for s in segs if _is( s, [ 1, 0 ], [ 1, 1 ] ) ]
+    rest = [ s for s in segs if not _is( s, [ 1, 0 ], [ 1, 1 ] ) ]
+    assert len( full ) == 1, f"l'arête réelle devrait être tracée pleine, une fois ({ len( full ) })"
+
+    # tout le reste est un tiret, sur l'une des deux demi-droites -- rien de la fermeture factice
+    # (`x` très négatif fermé par un plan oblique) ne doit être passé.
+    assert len( rest ) == 2 * 7, f"{ len( rest ) } tirets, attendu 14"
+    for s in rest:
+        on_line = numpy.allclose( s[ :, 1 ], 0, atol = 1e-6 ) or numpy.allclose( s[ :, 1 ], 1, atol = 1e-6 )
+        assert on_line and ( s[ :, 0 ] <= 1 + 1e-6 ).all(), s
+
+if test( "viz_the_clipping_box_is_not_geometry" ):
+    # Un polytope OUVERT n'a rien à montrer tel quel : c'est la boîte de la scène qui lui donne
+    # des sommets (`polytope.clip_planes`, et la même chose côté page à chaque coupe). Elle est un
+    # moyen de le voir, pas une partie de lui -- elle referme donc la face par où il sort du champ,
+    # mais elle ne donne AUCUNE arête. Sans quoi la boîte se dessine elle-même, et se retrouve
+    # toute seule à l'écran dès qu'on décoche les faces.
+    from sdot.viz.polytope import polytope_mesh
+
+    lim = 2.0
+    verts, edges, faces = polytope_mesh( [ [ 1, 0, 0 ], [ 0, 1, 0 ], [ 0, 0, 1 ] ], [ 1.0, 1.0, 1.0 ],
+                                         bounds = [ [ -lim, lim ] ] * 3 )
+    assert len( faces ) > 0                          # refermé : il y a bien de quoi remplir
+
+    # les trois vraies arêtes, et rien d'autre : celles qui partent du coin ( 1, 1, 1 ) le long
+    # des trois axes ( intersections deux à deux des trois plans demandés ).
+    assert len( edges ) == 3, f"{ len( edges ) } arêtes, attendu 3"
+    for a, b in edges:
+        for k in range( 3 ):
+            for side in ( -lim, lim ):
+                assert not ( abs( verts[ a ][ k ] - side ) < 1e-9
+                         and abs( verts[ b ][ k ] - side ) < 1e-9 ), \
+                    f"arête posée sur la boîte : { verts[ a ] } -> { verts[ b ] }"
+
+if test( "viz_of_a_bounded_cell_is_untouched" ):
+    # aucune coupe factice sur une cellule bornée : rien à retirer, rien à pointiller. Le carré
+    # unité doit sortir en UNE face de 4 sommets et 4 arêtes pleines, comme avant.
+    v = Visualizer()
+    Cell.make_hypercube( 2, [ 0, 0 ], [ [ 1, 0 ], [ 0, 1 ] ] ).add_to_viz( v )
+    assert len( v.polytopes ) == 0
+    assert len( v.polygons ) == 1 and len( v.polygons[ 0 ] ) == 4
+    assert len( v.edges ) == 4
+
+if test( "viz_of_a_batch_uses_each_item_own_counts" ):
+    # deux cellules de TAILLES DIFFÉRENTES dans un même batch : les tableaux sont denses au plus
+    # grand, donc dessiner la petite sur le compte de la grande lui ferait traîner des places
+    # qu'elle n'utilise pas. C'est le cas courant d'un diagramme de Voronoï.
+    from sdot import Voronoi
+    pos = numpy.array( [ [ 0.2, 0.5 ], [ 0.55, 0.5 ], [ 0.9, 0.2 ], [ 0.9, 0.8 ] ] )
+    cs = Voronoi( pos, box = ( [ 0, 0 ], [ 1, 1 ] ) ).cells
+    nvs = numpy.asarray( cs.nb_vertices.value )
+    assert nvs.min() < nvs.max(), f"il faut des tailles différentes pour que le test dise quelque chose ({ nvs })"
+
+    v = Visualizer()
+    cs.add_to_viz( v )
+    assert [ len( f ) for f in v.polygons ] == list( nvs )
+
+
+# -- ce qu'on REGARDE ----------------------------------------------------------------------------
+# Des `experiment` et non des `test` : une image ne s'asserte pas. Ce qu'on vérifie ici est que les
+# deux SORTIES du visualiseur (la page HTML autonome et le VTK de ParaView) sortent bien pour
+# chacun des régimes de `Cell.add_to_viz` -- V-représentation en 2D, treillis de faces en 3D,
+# H-représentation au-delà et sur une cellule non bornée -- plus la série d'images.
+#
+#   ./run experiment test_Cell                    # toutes
+#   ./run experiment "test_Cell::viz 3D"          # une seule
+#   ./run experiment "test_Cell::viz cut*" --nb-cuts=4,8    # un balayage : une sortie par valeur
+#
+# Chaque entrée écrit dans son `p.out_dir` -- tmp/experiment/test_Cell__viz_3D/<env>/, sans date :
+# le chemin ne bouge pas d'un jour à l'autre, donc l'onglet ouvert dessus se recharge.
+
+def _write_both( p, viz, stem ):
+    """Les deux sorties, côte à côte -- c'est le geste que ces expériences vérifient."""
+    print( "  html :", viz.write_html( p.out_dir / f"{ stem }.html" ) )
+    print( "  vtk  :", viz.write_vtk( p.out_dir / f"{ stem }.vtu" ) )
+
+
+if p := experiment( "viz 2D" ):
+    # le régime 2D : `vertex_positions` EST le polygone, en ordre cyclique -- une face et son tour
+    # d'arêtes, sans rien à reconstruire. Deux cellules pour voir la palette automatique jouer.
+    v = Visualizer( title = "Cell 2D" )
+    for shift, normal in ( ( 0.0, [ 1, 1 ] ), ( 1.3, [ -1, 2 ] ) ):
+        c = Cell.make_hypercube( 2, [ shift, 0 ], [ [ 1, 0 ], [ 0, 1 ] ] )
+        c.cut( normal, float( numpy.dot( normal, [ shift + 0.75, 0.75 ] ) ) )
+        c.add_to_viz( v, points = True )
+    _write_both( p, v, "cell_2d" )
+
+if p := experiment( "viz 3D" ):
+    # le régime 3D : les faces se relisent sur `edge_indices` ( les arêtes qui partagent une coupe
+    # forment le cycle de sa face ). C'est LE cas où la page a quelque chose à cacher -- faces
+    # pleines, arêtes de derrière -- et celui qu'on ouvre dans ParaView pour tourner autour.
+    c = _unit_cube( 3 )
+    c.cut( [ 1, 1, 1 ], 2.5 )
+    v = Visualizer( title = "Cube 3D, un coin tranché" )
+    c.add_to_viz( v, opacity = 0.55, points = True )
+    _write_both( p, v, "cell_3d" )
+
+if p := experiment( "viz 5D" ):
+    # au-delà de la 3D il n'y a plus de treillis à envoyer : `add_to_viz` passe la H-représentation,
+    # la page en montre une COUPE 3D ( couper des demi-espaces redonne des demi-espaces ) et y
+    # ajoute le fil de fer PROJETÉ. Côté VTK, les coordonnées au-delà de la 3e partent en données de
+    # points, à ParaView de faire ses coupes lui-même.
+    c = _unit_cube( 5 )
+    c.cut( [ 1, 1, 1, 1, 1 ], 4.5 )
+    c.cut( [ 1, -0.4, 0.3, 0.2, 0.1 ], 0.75 )
+    v = Visualizer( title = "Cell 5D ( coupe )" )
+    c.add_to_viz( v )
+    _write_both( p, v, "cell_5d" )
+
+if p := experiment( "viz unbounded" ):
+    # une cellule NON BORNÉE n'a pas de sommets à montrer -- le simplexe factice de
+    # `init_as_unbounded` en a, mais ce sont ceux d'un stand-in, pas de la cellule. C'est donc la
+    # H-représentation qui part, et c'est le visualiseur qui la referme sur la boîte de la scène.
+    v = Visualizer( title = "Cellules non bornées" )
+    c = Cell.make_unbounded( 3 )
+    for n, o in ( ( [ -1, 0, 0 ], 0 ), ( [ 0, -1, 0 ], 0 ), ( [ 0, 0, -1 ], 0 ) ):
+        c.cut( n, o )
+    assert not bool( numpy.asarray( c.is_fully_bounded ) )     # l'octant positif : un cône
+    c.add_to_viz( v, opacity = 0.55 )
+    _write_both( p, v, "cell_unbounded" )
+
+if p := experiment( "viz cut by cut",
+                    dim     = Param( 3, help = "dimension de la cellule" ),
+                    nb_cuts = Param( 4, help = "nombre de coupes aléatoires" ),
+                    seed    = Param( 0, help = "graine du tirage des plans" ) ):
+    # une IMAGE par coupe : le cube unité rogné plan après plan. La page se déroule toute seule
+    # ( axe « coupe », lecture/pause ) et ParaView reçoit un `.pvd`, c'est-à-dire une série
+    # temporelle -- donc un `.vtu` par image, ce que les sorties mono-image ci-dessus ne couvrent
+    # pas. On part du cube, borné, et non de la cellule infinie : le cadrage de la scène est
+    # COMMUN à toutes les images, donc une première image grande comme le monde écraserait toutes
+    # les suivantes en un trait ( c'est `viz unbounded` qui montre ce régime-là ).
+    d   = p.dim
+    rng = numpy.random.default_rng( p.seed )
+    c   = _unit_cube( d )
+    v   = Visualizer( title = f"cube { d }D, coupe par coupe", frame_axis = "coupe" )
+    c.add_to_viz( v, opacity = 0.55 )
+    nb_drawn = 1
+    for k in range( p.nb_cuts ):
+        n = rng.normal( size = d )
+        c.cut( n.tolist(), float( n @ rng.uniform( 0.2, 0.8, size = d ) ) )   # passe par l'intérieur
+        # des plans tirés au hasard finissent par tout exclure ; la cellule vide est un état
+        # légitime, mais elle ne fait pas une image -- on s'arrête là plutôt que d'en ajouter.
+        if int( numpy.max( numpy.asarray( c.nb_vertices.value ) ) ) == 0:
+            print( f"  cellule vide à la coupe { k }" )
+            break
+        v.new_frame( k + 1 )
+        c.add_to_viz( v, opacity = 0.55 )
+        nb_drawn += 1
+    print( f"  { nb_drawn } image(s)" )
+    _write_both( p, v, f"cut_by_cut_{ d }d" )

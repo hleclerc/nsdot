@@ -156,6 +156,7 @@ class Visualizer:
         self.fps        = fps
 
         self._pools    = []               # viviers de sommets, chacun [n, d]
+        self._bb_pts   = []               # ceux qui CADRENT la scène (voir `_pool( frames = )`)
         self._keep     = []               # les tableaux D'ORIGINE : `id()` doit rester valide
         self._base     = {}               # id( tableau reçu ) -> offset de son vivier
         self._size     = {}               # offset -> nombre de sommets du vivier
@@ -212,13 +213,19 @@ class Visualizer:
 
     # ---- vivier de sommets --------------------------------------------------------------------
 
-    def _pool( self, positions ):
+    def _pool( self, positions, frames = True ):
         """Enregistre `positions` (une fois) et rend l'offset de son vivier.
 
         Le partage se lit sur l'IDENTITÉ du tableau reçu : deux ajouts qui reçoivent le même objet
         (les faces et les arêtes d'une cellule) renvoient au même vivier, et les sommets ne sont
         stockés qu'une fois. C'est aussi ici que la dimension de la scène se décide -- la taille
         des vecteurs positions, rien d'autre.
+
+        `frames = False` dessine sans CADRER : ces sommets-là n'entrent pas dans la boîte de la
+        scène (`bounds`). Pour ce qui est tracé à une distance qui ne veut rien dire -- le moignon
+        d'une arête qui part à l'infini (`Cell.add_to_viz`) -- et qui, compté, écraserait sur un
+        point ce qu'on est venu regarder. C'est le PREMIER ajout d'un vivier qui en décide, les
+        suivants retrouvant le même offset sans repasser par ici.
         """
         key = id( positions )
         if key in self._base:
@@ -233,6 +240,8 @@ class Visualizer:
         self._base[ key ] = base = self._nb_verts
         self._size[ base ] = len( pos )
         self._pools.append( pos )
+        if frames:
+            self._bb_pts.append( pos )
         self._keep.append( positions )
         self._nb_verts += len( pos )
         return base
@@ -300,12 +309,12 @@ class Visualizer:
         self._pool( positions )
         return self
 
-    def add_points( self, positions, radius = 0.0, color = None, opacity = 1.0 ):
+    def add_points( self, positions, radius = 0.0, color = None, opacity = 1.0, frames = True ):
         """`positions` : `[n, d]`. `radius` : le rayon MONDE des points (un scalaire, ou un rayon
         par point). `0` (défaut) = le point n'a pas de taille propre (un dirac) : c'est le curseur
         de la page qui fixe son rayon d'affichage -- même convention que `points_html`.
         """
-        base = self._pool( positions )
+        base = self._pool( positions, frames )
         n = self._pool_len( base )
         if n == 0:
             return self
@@ -320,12 +329,21 @@ class Visualizer:
         self._nb_points += n
         return self
 
-    def add_edges( self, positions, edges = None, color = None, opacity = 1.0, closed = False ):
+    def add_edges( self, positions, edges = None, color = None, opacity = 1.0, closed = False,
+                   dashed = False, nb_dashes = 7, frames = True ):
         """`positions` : `[n, d]`. `edges` : `[m, 2]` d'indices, ou `None` pour relier les points
         consécutifs (`closed` referme alors la boucle -- le cas d'un polygone donné en ordre
         cyclique, ce que rend une cellule 2D).
+
+        `dashed` trace des POINTILLÉS. Le tiret n'est pas un style porté jusqu'à la sortie : chaque
+        segment est simplement DÉCOUPÉ ici, en `nb_dashes` morceaux séparés par autant de trous, et
+        ce qui part ensuite est une suite d'arêtes ordinaires. Deux raisons : le rendu (WebGL écrit
+        à la main) n'a pas de motif de ligne, et le VTK non plus -- une géométrie découpée est la
+        seule chose que les DEUX sorties savent afficher pareil. Le prix est que la longueur d'un
+        tiret est en unités MONDE, pas en pixels : c'est un nombre fixe de tirets par arête, donc
+        la densité ne change pas avec le zoom.
         """
-        base = self._pool( positions )
+        base = self._pool( positions, frames )
         n = self._pool_len( base )
         if edges is None:
             if n < 2:
@@ -337,17 +355,40 @@ class Visualizer:
             idx = np.asarray( edges, dtype = np.int64 ).reshape( -1, 2 )
         if len( idx ) == 0:
             return self
+        if dashed:
+            return self._add_dashes( positions, idx, color, opacity, nb_dashes, frames )
         ci = self._color_id( color, opacity )
         self._edge_v.append( idx.astype( np.int32 ) + base )
         self._edge_c.append( np.full( len( idx ), ci, dtype = np.uint16 ) )
         self._nb_edges += len( idx )
         return self
 
-    def add_faces( self, positions, faces, color = None, opacity = 1.0 ):
+    def _add_dashes( self, positions, idx, color, opacity, nb_dashes, frames = True ):
+        """Les `idx` segments de `positions`, en pointillés : un vivier de sommets À PART, tenant
+        les bouts des tirets, et des arêtes ordinaires dessus (voir `add_edges( dashed = True )`).
+        """
+        p = _np( positions )
+        a, b = p[ idx[ :, 0 ] ], p[ idx[ :, 1 ] ]
+
+        # `2 k - 1` intervalles -> `k` tirets séparés par `k - 1` trous, et une arête qui COMMENCE
+        # et FINIT par un tiret : ses deux extrémités restent donc visibles là où elles comptent
+        # (le sommet réel d'un côté, la direction de fuite de l'autre).
+        nb_dashes = max( 1, int( nb_dashes ) )
+        k = 2 * nb_dashes - 1
+        t = np.arange( k + 1, dtype = np.float32 ) / k
+        pts = a[ :, None, : ] + ( b - a )[ :, None, : ] * t[ None, :, None ]
+
+        starts = ( np.arange( len( idx ) )[ :, None ] * ( k + 1 )
+                 + np.arange( 0, k, 2 )[ None, : ] )
+        seg = np.stack( [ starts, starts + 1 ], axis = -1 ).reshape( -1, 2 )
+        return self.add_edges( pts.reshape( -1, p.shape[ 1 ] ), seg, color = color,
+                               opacity = opacity, frames = frames )
+
+    def add_faces( self, positions, faces, color = None, opacity = 1.0, frames = True ):
         """`positions` : `[n, d]`. `faces` : une suite de POLYGONES (listes d'indices, longueurs
         libres). Ils sont gardés TELS QUELS -- c'est la sortie qui décide si elle les triangule.
         """
-        base = self._pool( positions )
+        base = self._pool( positions, frames )
         ci = self._color_id( color, opacity )
         nb = 0
         for f in faces:
@@ -361,7 +402,7 @@ class Visualizer:
         return self
 
     def add_polytope( self, cut_directions, cut_offsets, color = None, opacity = 1.0,
-                      edge_color = None, nb_dims = None ):
+                      edge_color = None, nb_dims = None, edges = True ):
         """Ajoute un polytope par sa H-représentation : `{ x : dir_i . x <= off_i }`.
 
         C'est la forme à donner quand la V-représentation ne suffit PAS : en dimension > 3 (la
@@ -369,6 +410,11 @@ class Visualizer:
         un polytope, ré-énuméré dans le navigateur à chaque déplacement de curseur), ou pour un
         polytope NON BORNÉ (aucun sommet à énumérer côté Python -- la page le coupe par une boîte
         englobante et montre ce qui reste).
+
+        `edges = False` n'en garde que les FACES. Pour l'appelant qui trace lui-même les arêtes et
+        en sait plus que l'énumération : celle d'un polytope non borné s'arrête sur la boîte de la
+        scène, elle rendrait donc pleine et jusqu'au bord une arête qui part à l'infini -- là où
+        `Cell.add_to_viz`, lui, sait qu'elle est tronquée et la met en pointillés.
         """
         dirs = _np( cut_directions )
         dirs = dirs.reshape( -1, dirs.shape[ -1 ] )
@@ -385,6 +431,7 @@ class Visualizer:
             "nb"  : int( len( dirs ) ),
             "fcol": [ *_rgb( color ), float( opacity ) ],
             "ecol": [ *_rgb( edge_color if edge_color is not None else _darker( color ) ), 1.0 ],
+            "edg" : bool( edges ),
         } )
         return self
 
@@ -476,7 +523,7 @@ class Visualizer:
 
     @property
     def polytopes( self ):
-        """Les polytopes donnés en H-représentation, `[ ( dirs [c, d], offs [c], rgba ), ... ]`.
+        """Les polytopes en H-représentation, `[ ( dirs [c, d], offs [c], rgba, edges ), ... ]`.
 
         Ils n'ont PAS de sommets : une sortie qui en veut (VTK) doit les énumérer elle-même,
         comme le fait la page HTML à chaque coupe.
@@ -485,7 +532,7 @@ class Visualizer:
         for h in self._hpolys:
             dirs = np.frombuffer( base64.b64decode( h[ "dirs" ] ), np.float32 ).reshape( -1, self.nb_dims )
             offs = np.frombuffer( base64.b64decode( h[ "offs" ] ), np.float32 )
-            res.append( ( dirs, offs, tuple( h[ "fcol" ] ) ) )
+            res.append( ( dirs, offs, tuple( h[ "fcol" ] ), h[ "edg" ] ) )
         return res
 
     def bounds( self ):
@@ -496,8 +543,12 @@ class Visualizer:
         grossier mais du bon ordre de grandeur (et sans objet dès qu'un vivier est là aussi).
         """
         d = self.nb_dims
-        if self._pools:
-            allp = self.positions
+        # ce qui CADRE, pas tout ce qui est stocké (voir `_pool( frames = )`). Une scène dont tout
+        # aurait renoncé à cadrer retombe sur ses sommets : mieux vaut une boîte trop grande que
+        # pas de boîte du tout.
+        pts = self._bb_pts or self._pools
+        if pts:
+            allp = np.concatenate( pts, axis = 0 )
             lo, hi = allp.min( axis = 0 ), allp.max( axis = 0 )
         else:
             r = 1.0
@@ -714,7 +765,7 @@ const EDG_V  = decI32("__EDG_V__"),  EDG_C    = decU16("__EDG_C__");
 const PNT_V  = decI32("__PNT_V__"),  PNT_C    = decU16("__PNT_C__"), PNT_R = decF32("__PNT_R__");
 
 const HPOLY  = __HPOLY__.map(h => ({                                     // polytopes en H-rep
-  nb: h.nb, dirs: decF32(h.dirs), offs: decF32(h.offs), fcol: h.fcol, ecol: h.ecol,
+  nb: h.nb, dirs: decF32(h.dirs), offs: decF32(h.offs), fcol: h.fcol, ecol: h.ecol, edg: h.edg,
 }));
 // IMAGES : chacune n'est qu'une PLAGE dans les listes ci-dessus (elles ne partagent rien
 // d'autre que le vivier de sommets) -- FR_* donne les bornes, FR_VAL l'abscisse sur l'axe.
@@ -815,12 +866,17 @@ function polyhedron3D(A, b) {
   }
   if (V.length < 3) return null;
 
-  const faces = [];
+  // sur quels plans chaque sommet se tient : c'est ce qui permet ensuite de reconnaître une
+  // arête portée par la BOÎTE DE ROGNAGE, qui n'est pas une arête du polytope (voir buildScene).
+  const vpl = V.map(() => []);
+  const faces = [], fpl = [];
   for (let p = 0; p < n; p++) {
     const on = [];
     for (let v = 0; v < V.length; v++) {
       const q = V[v];
-      if (Math.abs(A[p][0] * q[0] + A[p][1] * q[1] + A[p][2] * q[2] - b[p]) < eps * 10) on.push(v);
+      if (Math.abs(A[p][0] * q[0] + A[p][1] * q[1] + A[p][2] * q[2] - b[p]) < eps * 10) {
+        on.push(v); vpl[v].push(p);
+      }
     }
     if (on.length < 3) continue;
     const nz = A[p];
@@ -840,9 +896,9 @@ function polyhedron3D(A, b) {
       return Math.atan2(dx * w[0] + dy * w[1] + dz * w[2], dx * u[0] + dy * u[1] + dz * u[2]);
     };
     on.sort((p1, p2) => ang(V[p1]) - ang(V[p2]));
-    faces.push(on);
+    faces.push(on); fpl.push(p);
   }
-  return { V, faces };
+  return { V, faces, fpl, vpl };
 }
 
 // même chose à plat : un sommet est l'intersection de 2 droites, et il n'y a qu'une face.
@@ -861,11 +917,14 @@ function polygon2D(A, b) {
     key.set(kk, V.length); V.push(p);
   }
   if (V.length < 3) return null;
+  const vpl = V.map(() => []);
+  for (let p = 0; p < n; p++) for (let v = 0; v < V.length; v++)
+    if (Math.abs(A[p][0] * V[v][0] + A[p][1] * V[v][1] - b[p]) < eps * 10) vpl[v].push(p);
   const ctr = V.reduce((a, q) => [a[0] + q[0] / V.length, a[1] + q[1] / V.length, 0], [0, 0, 0]);
   const idx = V.map((_, i) => i);
   idx.sort((p1, p2) => Math.atan2(V[p1][1] - ctr[1], V[p1][0] - ctr[0])
                      - Math.atan2(V[p2][1] - ctr[1], V[p2][0] - ctr[0]));
-  return { V, faces: [idx] };
+  return { V, faces: [idx], fpl: [-1], vpl };
 }
 
 // ============================================================================================
@@ -905,6 +964,12 @@ function buildScene() {
     const A = s.A.concat(box.A), b = Array.from(s.b).concat(box.b);
     const poly = AX[2] >= 0 ? polyhedron3D(A, b) : polygon2D(A, b);
     if (!poly) continue;
+    // La boîte est un moyen de MONTRER un polytope ouvert, pas une partie de lui : ses plans
+    // remplissent la face par où le polytope sort du champ (sans quoi on verrait dedans), mais
+    // ils ne donnent aucune arête -- une arête posée sur la boîte, c'est la boîte qu'on dessine,
+    // et elle réapparaîtrait seule dès qu'on décoche les faces.
+    const nReal = s.A.length;
+    const onBox = (i0, i1) => poly.vpl[i0].some(q => q >= nReal && poly.vpl[i1].indexOf(q) >= 0);
     const seen = new Set();
     for (const f of poly.faces) {
       for (let k = 1; k + 1 < f.length; k++) {
@@ -912,11 +977,13 @@ function buildScene() {
           hp.push(poly.V[v][0], poly.V[v][1], poly.V[v][2]);
         hpc.push(h.fcol);
       }
+      if (!h.edg) continue;                             // l'appelant trace ses arêtes lui-même
       for (let k = 0; k < f.length; k++) {
         const i0 = f[k], i1 = f[(k + 1) % f.length];
         const kk = Math.min(i0, i1) + "," + Math.max(i0, i1);
         if (seen.has(kk)) continue;                     // une arête est portée par 2 faces
         seen.add(kk);
+        if (onBox(i0, i1)) continue;
         hl.push(poly.V[i0][0], poly.V[i0][1], poly.V[i0][2],
                 poly.V[i1][0], poly.V[i1][1], poly.V[i1][2]);
         hlc.push(h.ecol);

@@ -16,6 +16,8 @@ tmp/
 .codewhale
 .envs.py
 .qwen/
+old_sdot/
+very_old_sdot/
 
 otrec/src/otrec/benchmarks/results/*.png
 graphify-out/

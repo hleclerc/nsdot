@@ -84,13 +84,22 @@ def vertices_of( dirs, offs, tol = 1e-9 ):
     return X, active
 
 
-def edges_of( active, nb_dims ):
-    """Les arêtes : deux sommets qui partagent au moins `d-1` plans actifs."""
+def edges_of( active, nb_dims, nb_real = None ):
+    """Les arêtes : deux sommets qui partagent au moins `d-1` plans actifs.
+
+    `nb_real` marque la frontière entre les plans du polytope (les premiers) et ceux de la BOÎTE
+    DE ROGNAGE (voir `clip_planes`) : une arête posée sur la boîte n'est pas une arête du
+    polytope, c'est le bord du champ, et la tracer revient à dessiner la boîte.
+    """
     res = []
     for i in range( len( active ) ):
         for j in range( i + 1, len( active ) ):
-            if len( active[ i ] & active[ j ] ) >= nb_dims - 1:
-                res.append( ( i, j ) )
+            shared = active[ i ] & active[ j ]
+            if len( shared ) < nb_dims - 1:
+                continue
+            if nb_real is not None and any( p >= nb_real for p in shared ):
+                continue
+            res.append( ( i, j ) )
     return np.array( res, np.int64 ).reshape( -1, 2 )
 
 
@@ -149,6 +158,13 @@ def polytope_mesh( dirs, offs, bounds = None ):
     """
     dirs = np.asarray( dirs, np.float64 )
     offs = np.asarray( offs, np.float64 ).reshape( -1 )
+
+    # les plans dégénérés sont écartés ICI et non dans `vertices_of` : celui-ci renumérote ce
+    # qu'il garde, et la frontière `nb_real` ne s'y retrouverait plus.
+    nrm = np.linalg.norm( dirs, axis = 1 )
+    dirs, offs = dirs[ nrm > 1e-12 ], offs[ nrm > 1e-12 ]
+    nb_real = len( dirs )
+
     if bounds is not None:
         cd, co = clip_planes( bounds )
         dirs, offs = np.concatenate( [ dirs, cd ] ), np.concatenate( [ offs, co ] )
@@ -157,5 +173,9 @@ def polytope_mesh( dirs, offs, bounds = None ):
     if len( verts ) == 0:
         return verts, np.zeros( ( 0, 2 ), np.int64 ), []
     d = dirs.shape[ 1 ]
+
+    # deux listes d'arêtes, et ce n'est pas une inélégance : les FACES ont besoin de toutes (une
+    # face de rognage est faite d'arêtes de rognage, et sans elle on verrait l'intérieur du
+    # polytope), le TRACÉ n'a besoin que de celles du polytope.
     edges = edges_of( active, d )
-    return verts, edges, faces_of( verts, active, edges, d )
+    return verts, edges_of( active, d, nb_real ), faces_of( verts, active, edges, d )

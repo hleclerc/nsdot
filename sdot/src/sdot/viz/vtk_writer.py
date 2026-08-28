@@ -165,7 +165,7 @@ def _frame_mesh( viz, index, axes ):
     # polytopes : ils n'ont pas de sommets, on les énumère (la boîte de la scène les borne, sans
     # quoi un polytope ouvert n'aurait rien à montrer).
     bounds = viz.bounds()
-    for dirs, offs, col in fr[ "polytopes" ]:
+    for dirs, offs, col, with_edges in fr[ "polytopes" ]:
         pv, pe, pf = polytope_mesh( dirs, offs, bounds = bounds )
         if len( pv ) == 0:
             continue
@@ -174,7 +174,7 @@ def _frame_mesh( viz, index, axes ):
         for f in pf:
             cells.append( ( VTK_POLYGON, [ base + i for i in f ] ) )
             rgba.append( np.asarray( col, np.float64 ) )
-        for a, b in pe:
+        for a, b in ( pe if with_edges else [] ):
             cells.append( ( VTK_LINE, [ base + int( a ), base + int( b ) ] ) )
             # l'arête reprend la teinte de la face, assombrie, et toujours OPAQUE (l'opacité
             # d'une face n'a pas de sens pour un trait)

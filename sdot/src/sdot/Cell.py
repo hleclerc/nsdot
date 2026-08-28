@@ -316,55 +316,133 @@ class Cell( Aggregate ):
         - 3D : les faces se relisent sur `edge_indices` -- une arête y porte, après ses deux
           sommets, les coupes qui la contiennent ; les arêtes qui partagent une coupe forment le
           cycle de la face correspondante.
-        - au-delà, ou non bornée : on envoie la H-représentation (`cut_directions`/`cut_offsets`),
-          la seule description qui reste exploitable. La page en montre une COUPE 3D (couper des
-          demi-espaces redonne des demi-espaces) et, en dimension > 3, on ajoute le fil de fer
-          PROJETÉ, qui lui ne dépend d'aucun réglage de coupe.
+        - au-delà, ou non bornée : les faces partent en H-représentation
+          (`cut_directions`/`cut_offsets`), la seule description qui reste exploitable. La page en
+          montre une COUPE 3D (couper des demi-espaces redonne des demi-espaces) et, en dimension
+          > 3, on ajoute le fil de fer PROJETÉ, qui lui ne dépend d'aucun réglage de coupe.
 
-        Une cellule batchée pousse un item par élément du batch.
+        = Ce qui est FACTICE dans une cellule non bornée
+
+        Une cellule non bornée n'est pas décrite par ses sommets : `init_as_unbounded` tient lieu de
+        « tout l'espace » par un SIMPLEXE dont les plans sont marqués `INFINITE` et dont les offsets
+        sont inventés, que les coupes repoussent au fur et à mesure. Les dessiner tels quels
+        montrerait des parois qui n'existent pas, à une distance qui ne veut rien dire. Trois règles
+        en découlent, et elles se lisent toutes sur `cut_ids` :
+
+        - un plan `INFINITE` n'est pas envoyé -- ce qui reste est le vrai polytope, non borné, que
+          la page referme elle-même sur la boîte de la scène ;
+        - une arête POSÉE sur des plans factices (tous ses plans le sont) n'est pas une arête de la
+          cellule : elle n'est pas tracée ;
+        - une arête qui n'en TOUCHE un que par un bout est une vraie arête, mais qui part à
+          l'infini et qu'on a coupée quelque part : elle est tracée en POINTILLÉS.
+
+        Le cadrage suit la même logique : seuls les sommets réels le fixent, un sommet factice
+        n'étant qu'un point de troncature.
+
+        Une cellule batchée pousse un item par élément du batch, chacun dessiné sur SON PROPRE
+        compte -- un diagramme de Voronoï, le cas courant d'un batch, n'a pas deux cellules de la
+        même taille.
         """
         nb_dims = int( self.nb_dims.value )
-        vps     = np.asarray( self.vertex_positions ).reshape( -1, int( self.nb_vertices.value ), nb_dims )
-        cds     = np.asarray( self.cut_directions   ).reshape( -1, int( self.nb_cuts.value ), nb_dims )
-        cos     = np.asarray( self.cut_offsets      ).reshape( -1, int( self.nb_cuts.value ) )
-        bounded = np.asarray( self.is_fully_bounded ).reshape( -1 )
-        eis     = ( np.asarray( self.edge_indices ).reshape( -1, int( self.nb_edges.value ), nb_dims + 1 )
-                    if nb_dims > 2 else None )
 
-        for b in range( len( vps ) ):
-            col = color if color is not None else viz.take_color()   # UNE couleur par cellule
-            edge_col = viz.darker( col )    # arêtes = la teinte de la face, assombrie
-            # un SEUL tableau, passé tel quel à chaque `add_*` : le visualiseur reconnaît le
-            # vivier de sommets à l'identité de l'objet reçu, et ne le stocke donc qu'une fois
-            # pour les faces, les arêtes et les sommets de la cellule.
-            vp = vps[ b ]
+        # le nombre d'items se lit sur `is_fully_bounded` -- un scalaire par item, donc jamais de
+        # longueur nulle, contrairement aux tableaux de géométrie.
+        bounded  = np.asarray( self.is_fully_bounded ).reshape( -1 )
+        nb_items = len( bounded )
 
-            if nb_dims > 3 or not bool( bounded[ b ] ):
-                # les sommets ne décrivent pas forcément la cellule (non bornée), mais ils disent
-                # toujours où elle est : de quoi cadrer la vue et rogner ce qui part à l'infini.
-                viz.note_bounds( vp )
-                # `faces = False` -> opacité nulle plutôt que pas de faces du tout : elles
-                # restent envoyées, donc écrites dans le z-buffer, donc les arêtes cachées le
-                # restent (c'est la passe de profondeur pure qui s'en charge côté page).
-                viz.add_polytope( cds[ b ], cos[ b ], nb_dims = nb_dims, color = col,
-                                  opacity = opacity if faces else 0 )
-                if nb_dims > 3 and edges and eis is not None:
-                    viz.add_edges( vp, eis[ b ][ :, :2 ], color = edge_col, opacity = 0.55 )
-                if points:
-                    viz.add_points( vp, color = edge_col )
+        nvs = _counts_per_item( self.nb_vertices, nb_items )
+        ncs = _counts_per_item( self.nb_cuts, nb_items )
+        nes = _counts_per_item( self.nb_edges, nb_items ) if nb_dims > 2 else None
+
+        # les tableaux sont denses au PLUS GRAND des items ; chaque item est ensuite tranché sur son
+        # propre compte. Sans sommet nulle part il n'y a rien à montrer -- une cellule vide est un
+        # état parfaitement légitime (une coupe a tout exclu), pas une erreur.
+        max_v, max_c = int( nvs.max() ), int( ncs.max() )
+        if max_v == 0:
+            return viz
+
+        vps = np.asarray( self.vertex_positions ).reshape( nb_items, max_v, nb_dims )
+        cds = np.asarray( self.cut_directions   ).reshape( nb_items, max_c, nb_dims )
+        cos = np.asarray( self.cut_offsets      ).reshape( nb_items, max_c )
+        cis = np.asarray( self.cut_ids          ).reshape( nb_items, max_c )
+        vis = eis = None
+        if nb_dims > 2:
+            vis = np.asarray( self.vertex_indices ).reshape( nb_items, max_v, nb_dims )
+            eis = np.asarray( self.edge_indices   ).reshape( nb_items, int( nes.max() ), nb_dims + 1 )
+
+        # PREMIÈRE PASSE : ce qui, dans chaque item, tient au simplexe factice. Il faut la vue
+        # d'ENSEMBLE avant de dessiner quoi que ce soit -- la longueur qu'on donne à un rayon
+        # tronqué se prend sur l'étendue RÉELLE de la scène, jamais sur celle du remplaçant, qui
+        # est arbitraire et qui écraserait tout le reste de l'image.
+        parts = {}
+        for b in range( nb_items ):
+            nv, nc = int( nvs[ b ] ), int( ncs[ b ] )
+            if nv == 0:
+                continue
+            parts[ b ] = _infinite_parts(
+                nb_dims, cis[ b ][ : nc ] == INFINITE, nv,
+                vis[ b ][ : nv ] if vis is not None else None,
+                eis[ b ][ : int( nes[ b ] ) ] if eis is not None else None )
+        stub = _ray_length( vps, nvs, parts )
+
+        for b in range( nb_items ):
+            nv, nc = int( nvs[ b ] ), int( ncs[ b ] )
+            if nv == 0:
                 continue
 
-            if nb_dims <= 2:
-                polys, edge_idx, closed = [ list( range( len( vp ) ) ) ], None, True
-            else:
-                polys, edge_idx, closed = _faces_from_edges( eis[ b ], int( self.nb_cuts.value ) ), \
-                                          eis[ b ][ :, :2 ], False
-            if faces:
-                viz.add_faces( vp, polys, color = col, opacity = opacity )
-            if edges:
-                viz.add_edges( vp, edge_idx, color = edge_col, closed = closed )
+            col = color if color is not None else viz.take_color()   # UNE couleur par cellule
+            edge_col = viz.darker( col )    # arêtes = la teinte de la face, assombrie
+
+            infinite = cis[ b ][ : nc ] == INFINITE
+            fake, ev, hide, dash = parts[ b ]
+
+            # un SEUL tableau, gardé dans une variable et repassé tel quel à chaque `add_*` : le
+            # visualiseur reconnaît le vivier de sommets à l'IDENTITÉ de l'objet reçu, donc une
+            # tranche refaite à chaque appel lui ferait stocker les mêmes sommets trois fois.
+            vp = _truncated_rays( vps[ b ][ : nv ], fake, ev, stub )
+            real = vp[ ~fake ] if fake.any() else vp
+
+            # dès qu'il y a du factice, ce vivier-là ne CADRE plus la scène : le bout d'un rayon
+            # est à une distance qu'on a choisie, pas mesurée, et la laisser peser sur la boîte
+            # écraserait le diagramme au centre de l'image. Ce sont les VRAIS sommets qui cadrent,
+            # et eux seuls -- le rayon, lui, sort du cadre, ce qui est exactement ce qu'il dit.
+            frames = not fake.any()
+            if not frames:
+                viz.note_bounds( real if len( real ) else vp )
+
+            if nb_dims > 3 or not bool( bounded[ b ] ):
+                keep = ~infinite
+                if keep.any():
+                    # `faces = False` -> opacité nulle plutôt que pas de faces du tout : elles
+                    # restent envoyées, donc écrites dans le z-buffer, donc les arêtes cachées le
+                    # restent (c'est la passe de profondeur pure qui s'en charge côté page).
+                    # `edges` : au-delà de la 3D ce polytope est une COUPE, et ses arêtes sont
+                    # celles de la coupe -- personne d'autre ne les a. En 2D/3D c'est la cellule
+                    # elle-même, dont on trace les arêtes plus bas en sachant ce qui est tronqué :
+                    # laisser l'énumération les redonner ferait un trait PLEIN jusqu'au bord de la
+                    # boîte là où on veut un pointillé qui s'arrête.
+                    viz.add_polytope( cds[ b ][ : nc ][ keep ], cos[ b ][ : nc ][ keep ],
+                                      nb_dims = nb_dims, color = col,
+                                      opacity = opacity if faces else 0,
+                                      edges = nb_dims > 3 )
+            elif faces and nb_dims >= 2:
+                polys = ( [ list( range( nv ) ) ] if nb_dims == 2
+                          else _faces_from_edges( eis[ b ][ : int( nes[ b ] ) ], nc ) )
+                viz.add_faces( vp, polys, color = col, opacity = opacity, frames = frames )
+
+            if edges and len( ev ):
+                # en dimension > 3 le fil de fer est une PROJECTION, pas la cellule : il s'efface
+                # derrière la coupe, que la page, elle, montre en vraie grandeur.
+                op = 0.55 if nb_dims > 3 else 1.0
+                solid = ~hide & ~dash
+                if solid.any():
+                    viz.add_edges( vp, ev[ solid ], color = edge_col, opacity = op, frames = frames )
+                if dash.any():
+                    viz.add_edges( vp, ev[ dash ], color = edge_col, opacity = op,
+                                   dashed = True, frames = False )
+
             if points:
-                viz.add_points( vp, color = edge_col )
+                viz.add_points( real if len( real ) else vp, color = edge_col )
         return viz
 
     # -- ce qui dépend du RÉGIME DE DIMENSION -------------------------------------------------
@@ -494,6 +572,114 @@ class Cell( Aggregate ):
         if d > 2:
             res[ "cell.nb_edges" ] = max( 8, 2 * d * 2 ** ( d - 1 ) )
         return res
+
+
+def _counts_per_item( shape_var, nb_items ):
+    """Le compte de chaque item du batch.
+
+    Un compte qu'un KERNEL écrit en a un par item (rien ne dit que deux items s'accordent, cf.
+    `CallArg_ShapeVar`) ; un compte connu de l'hôte reste la valeur unique qu'il est, et on la
+    diffuse alors sur les items.
+    """
+    v = np.atleast_1d( np.asarray( shape_var.value ) ).reshape( -1 ).astype( int )
+    return v if v.size == nb_items else np.broadcast_to( v, ( nb_items, ) )
+
+
+def _infinite_parts( nb_dims, infinite, nb_vertices, vertex_cuts, edge_rows ):
+    """Ce qui, dans une cellule, tient au SIMPLEXE FACTICE plutôt qu'à la cellule elle-même.
+
+    Rend `( fake, ev, hide, dash )` : quels sommets sont factices, la liste des arêtes en indices
+    de sommets, et lesquelles ne pas tracer / tracer en pointillés (voir `Cell.add_to_viz`).
+
+    `infinite` est le masque des plans marqués `INFINITE`, indexé comme les coupes. Tout le reste
+    en découle par le treillis -- et le treillis n'a pas la même forme selon la dimension :
+
+    - d == 2 il est IMPLICITE, porté par l'invariant du chemin 2D (la coupe i porte l'arête
+      `[ v_i, v_i+1 ]`, donc `v_i` est le coin des coupes `i-1` et `i`, et `nb_cuts == nb_vertices`) ;
+    - d > 2 il est STOCKÉ, dans `vertex_indices` / `edge_indices` ;
+    - d == 1 il n'y en a pas : un segment n'a qu'une arête, et rien à classer.
+    """
+    if nb_dims >= 3:
+        vc = np.asarray( vertex_cuts )
+        ev = np.asarray( edge_rows )[ :, :2 ].astype( int )
+        ec = np.asarray( edge_rows )[ :, 2: ].astype( int )
+    elif nb_dims == 2:
+        i = np.arange( nb_vertices )
+        vc = np.stack( [ ( i - 1 ) % nb_vertices, i ], axis = 1 )
+        ev = np.stack( [ i, ( i + 1 ) % nb_vertices ], axis = 1 )
+        ec = i[ :, None ]
+    else:
+        ev = np.array( [ [ 0, 1 ] ] ) if nb_vertices >= 2 else np.zeros( ( 0, 2 ), int )
+        return ( np.zeros( nb_vertices, bool ), ev,
+                 np.zeros( len( ev ), bool ), np.zeros( len( ev ), bool ) )
+
+    # un sommet est factice dès qu'UN de ses plans l'est : il n'est pas à l'intersection des plans
+    # de la cellule, mais à celle d'une paroi inventée -- donc quelque part sur un rayon, à une
+    # distance qui ne veut rien dire.
+    fake = infinite[ vc ].any( axis = 1 ) if len( infinite ) else np.zeros( nb_vertices, bool )
+
+    # une arête POSÉE sur des plans factices (tous les siens le sont) n'est pas une arête de la
+    # cellule. Une arête qui n'en TOUCHE un que par un bout en est une, mais tronquée : pointillés.
+    hide = infinite[ ec ].all( axis = 1 ) if len( infinite ) else np.zeros( len( ev ), bool )
+    dash = ( fake[ ev[ :, 0 ] ] | fake[ ev[ :, 1 ] ] ) & ~hide
+    return fake, ev, hide, dash
+
+
+def _ray_length( vps, nvs, parts ):
+    """La longueur à donner à un rayon tronqué : une fraction de l'étendue RÉELLE de la scène.
+
+    Un sommet factice est posé là où `Cell::cut` a dû repousser le simplexe de remplacement pour
+    que le classement soit celui de l'infini -- c'est-à-dire assez loin pour ne plus rien changer,
+    donc sans commune mesure avec la cellule. Le dessiner là écraserait toute l'image sur un point
+    (et le cadrage de la scène avec). On garde donc du rayon sa DIRECTION, qui veut dire quelque
+    chose, et on lui donne une longueur qui n'en veut aucune -- ce que le pointillé dit déjà.
+
+    Prise sur TOUS les items à la fois : un diagramme de Voronoï doit avoir le même moignon partout,
+    et une cellule prise isolément n'a pas d'échelle à elle (deux sommets réels, parfois aucun).
+    """
+    real = [ vps[ b ][ : int( nvs[ b ] ) ][ ~parts[ b ][ 0 ] ] for b in parts ]
+    real = [ r for r in real if len( r ) ]
+    if not real:
+        # aucune cellule n'a de vrai sommet ( un unique germe, sans domaine ) : plus rien ne donne
+        # d'échelle, on garde alors le simplexe tel quel plutôt que d'en inventer une.
+        return None
+    pts = np.concatenate( real, axis = 0 )
+    # les percentiles et non le min/max : un sommet de Voronoï est un centre de cercle circonscrit,
+    # et trois germes presque alignés en donnent un très loin. Il est RÉEL, il a donc sa place dans
+    # la boîte de la scène -- mais il ne dit rien de l'échelle à laquelle on regarde, et le prendre
+    # pour telle allongerait tous les moignons du diagramme.
+    lo, hi = np.percentile( pts, 5, axis = 0 ), np.percentile( pts, 95, axis = 0 )
+    diag = float( np.linalg.norm( hi - lo ) )
+    return 0.2 * diag if diag > 0 else None
+
+
+def _truncated_rays( vp, fake, ev, stub ):
+    """`vp` avec ses sommets FACTICES ramenés à `stub` du sommet réel dont ils partent.
+
+    Le sommet réel se lit sur les arêtes : une arête qui joint un vrai sommet à un faux EST le
+    rayon, et c'est de son extrémité réelle qu'il part. Un sommet factice qui n'en a pas (une arête
+    dont les deux bouts sont faux) est ramené par rapport au centre des sommets réels de la cellule
+    -- à défaut de rayon identifiable, il reste au moins dans le cadre.
+    """
+    if stub is None or not fake.any():
+        return vp
+
+    src = np.full( len( vp ), -1 )
+    for a, b in ev:
+        if fake[ a ] and not fake[ b ]: src[ a ] = b
+        if fake[ b ] and not fake[ a ]: src[ b ] = a
+
+    real = vp[ ~fake ]
+    centre = real.mean( axis = 0 ) if len( real ) else vp.mean( axis = 0 )
+
+    res = np.array( vp, dtype = float )
+    for f in np.nonzero( fake )[ 0 ]:
+        origin = vp[ src[ f ] ] if src[ f ] >= 0 else centre
+        ray = vp[ f ] - origin
+        n = float( np.linalg.norm( ray ) )
+        if n > 1e-12:
+            res[ f ] = origin + ray / n * stub
+    return res
 
 
 def _faces_from_edges( edge_indices, nb_cuts ):

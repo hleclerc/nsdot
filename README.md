@@ -30,9 +30,10 @@ par transport optimal 1D, voir [Prototype `unidim`](#prototype-unidim) plus bas.
 # Benchmark -- même mécanisme que test(), dans les mêmes fichiers
 ./run bench "test_OtPlan1d::*" --nb-diracs=5000
 
-# Expérience -- un fichier = une expérience, params typés
-./run experiment exp_lung               # Nom de fichier complet
-./run experiment exp_lung --nb-diracs=5000  # Override de paramètre
+# Expérience -- même mécanisme encore, pour ce qui se REGARDE (html, ParaView, png)
+./run experiment exp_lung                   # tout exp_lung.py
+./run experiment "test_Cell::viz 3D"        # une entrée précise
+./run experiment exp_lung --nb-diracs=5000  # override, `a,b` pour balayer
 ```
 
 ## Commandes
@@ -41,18 +42,23 @@ par transport optimal 1D, voir [Prototype `unidim`](#prototype-unidim) plus bas.
 |---|---|
 | `./run test [pattern]` | Tests C++ (via acpp) + Python (tous les projets) |
 | `./run bench [pattern]` | Benchmarks Python (même mécanisme que `test`) |
-| `./run experiment <fichier>` | Expérience, nom de fichier complet (ex. `exp_lung`) |
+| `./run experiment [pattern]` | Expériences Python (même mécanisme que `test`), avec balayage de params |
 | `./run install` | `pip install -e` des 3 projets dans l'ordre |
 | `./run toolchain` | Diagnostic (acpp, LLVM, CUDA) |
 | `./run build-sif` | Build des images Apptainer (.sif depuis .def) |
 | `./run env` | Lister les environnements configurés |
 
-### `test` / `bench` : sélection par pattern
+### `test` / `bench` / `experiment` : sélection par pattern
 
-`test()`/`bench()` (`loom.testing`) sont deux variantes d'un même mécanisme —
-une garde comme `if __name__ == "__main__":`, en plus élaboré : plusieurs par
-fichier, identifiées par site d'appel (pas par nom, donc les homonymes sont
-permis), et mixables dans un même fichier sous `{projet}/tests/`.
+`test()`/`bench()`/`experiment()` (`loom.testing`) sont trois variantes d'un
+même mécanisme — une garde comme `if __name__ == "__main__":`, en plus élaboré :
+plusieurs par fichier, identifiées par site d'appel (pas par nom, donc les
+homonymes sont permis), et mixables dans un même fichier sous `{projet}/tests/`.
+
+Ce qui les sépare n'est pas la mécanique mais l'ATTENTE, donc la commande qui
+les lance : un `test` doit passer, un `bench` doit être rapide (et laisse des
+chiffres datés dans `p.results`), une `experiment` doit être REGARDÉE — sa
+sortie est un fichier qu'on ouvre.
 
 Le `pattern` positionnel est une liste de specs séparées par `,`, chacune de
 la forme `fichier[::nom]` :
@@ -76,7 +82,7 @@ glob pour en sélectionner plusieurs). `--project` restreint au premier
 segment du chemin (ex. `loom`, `sdot`, `otrec`), mais n'importe quel
 répertoire de premier niveau marche.
 
-`bench` (et `test`, à l'occasion) peut déclarer des `Param` typés, listés via
+N'importe laquelle des trois peut déclarer des `Param` typés, listés via
 `--help` et résumés avant chaque exécution :
 
 ```python
@@ -91,14 +97,26 @@ if p := bench( "cost", nb_diracs = Param( 1000, help = "nb diracs" ) ):
 ./run bench cost --nb-diracs=5000
 ```
 
+`./run experiment` ajoute le BALAYAGE : `--nb-diracs=1000,2000` lance chaque
+combinaison, chacune dans son propre répertoire (le hash des params diffère),
+ce qui est exactement ce qu'on veut pour comparer des images. `test`/`bench`
+ne le font pas — on n'asserte pas un produit cartésien.
+
 ### Répertoires de sortie
 
-Chaque (test/bench, jeu de params, env, date) a son propre répertoire feuille,
+Chaque (entrée, jeu de params, env, date) a son propre répertoire feuille,
 effacé et recréé à chaque lancement :
 
 ```
 tmp/{test|bench}/{fichier}__{nom}/[hash-des-params/]{env}/{date}/
+tmp/experiment/{fichier}__{nom}/[hash-des-params/]{env}/          <- sans la date
 ```
+
+Une expérience s'arrête à `{env}` : ce qu'une date achète est un HISTORIQUE à
+comparer, et une expérience n'a rien de comparable à produire — sa sortie est
+un fichier qu'on ouvre. Ce qu'une date coûte, là, est la seule chose qui
+compte : un chemin qui bouge sous l'onglet resté ouvert dessus. Chemin stable,
+rechargement, fin.
 
 (le hash n'apparaît que s'il y a des params). La feuille contient toujours
 `result.yaml` (status, durée, RAM pic, params résolus, `p.results`), et
@@ -116,6 +134,9 @@ voisins, pas un historique en mémoire) :
   min/max des valeurs numériques de `p.results`, ou de la durée à défaut).
 - `[hash]/summary.yaml` — une ligne par `{env}/{date}`, tous envs confondus.
 
+Pour une expérience il n'y en a qu'un — `[hash]/summary.yaml`, une ligne par
+env : sans niveau de date, il n'y a pas d'historique par env à résumer.
+
 En exécution distante, seuls les `[hash]/` des cas effectivement sélectionnés
 par le pattern sont rapatriés (par `rsync`, un par entrée) — pas tout
 `tmp/test`/`tmp/bench` : `tmp/` n'est pas remis à zéro par le push du repo, un
@@ -124,8 +145,8 @@ l'invocation en cours. Le contrôleur local prédit le chemin exact (mêmes
 règles de hash/date) avant même que le run distant n'ait eu lieu — pas de
 mécanisme de marqueurs (`OUTPUT:`) déclarés à l'exécution.
 
-`./run experiment` n'a pas ce chemin déterministe (fichiers choisis librement
-par l'auteur) : rien n'est rapatrié automatiquement pour l'instant.
+C'est vrai des trois : une expérience écrit dans son `p.out_dir` comme un
+test, donc son `[hash]/` se prédit et se rapatrie pareil.
 
 Options communes à toutes les commandes :
 
@@ -190,10 +211,8 @@ env("lmo-cuda-jax", LMO + CUDA_JAX_SIF)
 
 Le flux distant (géré par `Remote`) : `rsync` du repo → `ssh` → exécution →
 `rsync` ciblé de retour des chemins passés à `pull=[...]` par l'appelant
-(déterministe — `tmp/test`/`tmp/bench` pour `./run test`/`bench`, `tmp` en
-entier pour `./run experiment`, qui écrit sous des chemins choisis par
-l'auteur plutôt qu'un schéma fixe). Ce flux s'annonce en gris avant de
-s'exécuter :
+(déterministe : les `tmp/{kind}/…/[hash]/` des entrées sélectionnées). Ce flux
+s'annonce en gris avant de s'exécuter :
 
 ```
   → machine=lmo (/home/leclerc/nsdot)  driver=jax
@@ -239,26 +258,38 @@ Environnements (.envs.py):
 
 ## Expériences
 
-Même découverte que `test`/`bench` (tout le dépôt, filtrée au contenu du
-fichier — ici `from loom.cli import`, plutôt que `loom.testing` — aucun
-répertoire réservé) : nom de fichier complet obligatoire, préfixe inclus
-(`exp_lung`, pas `lung`) — même convention que `test_Cell.py`/`bench_cost.py`.
-
-Une expérience utilise le harnais déclaratif :
+Même déclaration, même découverte et même sélection par pattern que
+`test`/`bench` (voir ci-dessus) : une expérience est une entrée parmi les
+autres, plusieurs par fichier, mixables avec des tests dans le même fichier —
+`sdot/tests/test_Cell.py` en a cinq, une par régime d'affichage, à côté de ses
+tests de géométrie.
 
 ```python
-from loom.cli import experiment, Param
+from loom.testing import experiment, Param
 
-if p := experiment("lung BFGS", nb_diracs=Param(10_000, help="Nombre de Diracs")):
-    # p.nb_diracs vaut 10000 (ou la valeur passée en CLI)
-    ...
+if p := experiment( "viz 3D" ):
+    c = Cell.make_hypercube( 3, [ 0, 0, 0 ], numpy.eye( 3 ).tolist() )
+    c.cut( [ 1, 1, 1 ], 2.5 )
+    v = Visualizer(); c.add_to_viz( v )
+    v.write_html( p.out_dir / "cell_3d.html" )   # la page autonome
+    v.write_vtk ( p.out_dir / "cell_3d.vtu" )    # et ParaView
 ```
 
 ```bash
-./run experiment exp_lung
-./run experiment exp_lung --nb-diracs=5000
-./run experiment exp_lung --help          # liste les params déclarés
+./run experiment test_Cell                 # les cinq
+./run experiment "test_Cell::viz 3D"       # une seule
+./run experiment "test_Cell::viz cut*" --nb-cuts=4,8   # balayage : une sortie par valeur
+./run experiment --help                    # toutes celles du dépôt, avec leurs params
 ```
+
+Chaque entrée affiche, en fin de run, son répertoire et ce qu'elle y a écrit —
+il n'y a donc pas de schéma de nommage à reconstituer pour retrouver le
+fichier à ouvrir.
+
+Les fichiers écrits contre l'ancien harnais (`from loom.cli import experiment`,
+un fichier = une expérience) marchent tels quels : `loom.cli` ré-exporte
+`experiment`/`Param`, et `./run experiment exp_lung` reste le stem du fichier
+comme pattern.
 
 ## Prototype `unidim`
 
