@@ -1,7 +1,11 @@
+"""
+reconstruction tomo classique voir : https://lemasyma.github.io/cours/posts/imed2_tp3/
+
+"""
+
 import time
 import torch
 print(f"torch.__version__=={torch.__version__}")
-import torch.optim as optim
 import subprocess
 from geometry import CtGeometry
 from sinogram import Sinogram
@@ -26,21 +30,42 @@ def _w2_1d(proj, bin_mass, bin_edges):
     n = proj.shape[0]
     w = 1.0 / n
     dw = bin_edges[1] - bin_edges[0]
+    bin_mass = bin_mass
+    bin_edges = bin_edges
     bin_center = bin_edges[:-1] + dw / 2
+    bin_center = bin_center
 
     cum = torch.cumsum(bin_mass, dim=0)
-    cum_start = cum - bin_mass
-    prefix_M = torch.cumsum(bin_mass * bin_center, dim=0) - bin_mass * bin_center
+    cum_start = (cum - bin_mass)
+    prefix_M = (torch.cumsum(bin_mass * bin_center, dim=0) - bin_mass * bin_center)
 
     def M(q):
-        # print(f"cum.is_contiguous(): {cum.is_contiguous()} is view {cum._is_view()} cum.stride(): {cum.stride()}")  # <-- Ajoute ceci
-        # print(f"q.is_contiguous(): {q.is_contiguous()} is view {q._is_view()} q.stride(): {q.stride()}")  # <-- Ajoute ceci
-        j = torch.clamp(torch.searchsorted(cum, q, right=True), 0, bin_mass.shape[0] - 1)
+        q = q.contiguous()
+        q_plus_w = (q + w).contiguous()  # <-- Ajoute ceci
+        # print(f"cum.is_contiguous(): {cum.is_contiguous()}")
+        # print(f"q.is_contiguous(): {q.is_contiguous()}")
+        # print(f"bin_mass.is_contiguous(): {bin_mass.is_contiguous()}")
+        # print(f"bin_edges.is_contiguous(): {bin_edges.is_contiguous()}")
+        # print(f"q_plus_w.is_contiguous(): {(q + w).is_contiguous()}")  # Vérifie
+        sort_cum_q = torch.searchsorted(cum, q, right=True)
+        print(f"sort_cum_q.is_contiguous(): {sort_cum_q.is_contiguous()}")
+        sort_cum_q_plus_w = torch.searchsorted(cum, q_plus_w, right=True)
+        print(f"sort_cum_q_plus_w.is_contiguous(): {sort_cum_q_plus_w.is_contiguous()}")
+
+        j = torch.clamp(sort_cum_q, 0, bin_mass.shape[0] - 1)
+        j_plus_w = torch.clamp(sort_cum_q_plus_w, 0, bin_mass.shape[0] - 1)
+        # print("clamped")
         f = torch.where(bin_mass[j] > 0, (q - cum_start[j]) / bin_mass[j], 0.0)
-        return prefix_M[j] + bin_mass[j] * (bin_edges[j] * f + dw * f * f / 2)
+        f_plus_w = torch.where(bin_mass[j_plus_w] > 0, (q_plus_w - cum_start[j_plus_w]) / bin_mass[j_plus_w], 0.0)
+        bary = (prefix_M[j_plus_w] + bin_mass[j_plus_w] * (
+                    bin_edges[j_plus_w] * f_plus_w + dw * f_plus_w * f_plus_w / 2) -
+                (prefix_M[j] + bin_mass[j] * (bin_edges[j] * f + dw * f * f / 2))) / w
+        # bary = prefix_M[j] + bin_mass[j] * (bin_edges[j] * f + dw * f * f / 2)
+        return bary
 
     s = torch.sort(proj).values.to(torch.float64)
     q = torch.arange(n, dtype=torch.float64, device=proj.device) * w
+    q = q.contiguous()  # Ensure q is contiguous
     bary = (M(q + w) - M(q)) / w
 
     target_second_moment = torch.sum(bin_mass * bin_center ** 2) + dw * dw / 12
@@ -54,18 +79,32 @@ def _sino_arrays(sino):
     bin_mass = bin_mass / bin_mass.sum(dim=1, keepdim=True)
     return normals, bin_edges, bin_mass
 
-def loss(points, normals, bin_edges, bin_mass, mem_budget_bytes=-1):
-    n, A = points.shape[0], normals.shape[0]
-
+def loss(points,
+         normals,
+         bin_edges,
+         bin_mass,
+         mem_budget_bytes=-1):
+    bin_edges_contiguous = bin_edges.contiguous()  # Rendre bin_edges contiguous une fois
     def angle_cost(normal, mass):
         proj = points @ normal
-        return _w2_1d(proj, mass, bin_edges)
+        proj = proj.contiguous()
+        mass = mass.contiguous()
+        # bin_edges = bin_edges.contiguous()
+        return _w2_1d(proj, mass, bin_edges_contiguous)
 
     # Vectorise angle_cost sur les normales et bin_mass
     vectorized_cost = torch.vmap(angle_cost)
 
     # Applique à toutes les normales/mass
     costs = vectorized_cost(normals, bin_mass)
+    # Since torch.vmap is used to vectorize angle_cost, it might be creating non-contiguous tensors during its operations. To fix this:
+    # Option 1: Replace torch.vmap with a manual loop (if performance allows).
+    # Option 2: Ensure all tensors inside vmap are contiguous by explicitly calling .contiguous() on the inputs to angle_cost.
+    # n, A = points.shape[0], normals.shape[0]
+    # costs = torch.zeros(A, device=device)
+    # for i in range(A):
+    #     costs[i] = angle_cost(normals[i], bin_mass[i])
+
     return costs.sum().float()
 
 def optimize(points,
@@ -78,7 +117,7 @@ def optimize(points,
     normals, bin_edges, bin_mass = _sino_arrays(sino)
     points = points.clone().requires_grad_(True).to(device)
 
-    optimizer = optim.LBFGS([points], lr=1.0, max_iter=max_iter, line_search_fn='strong_wolfe')
+    optimizer = torch.optim.LBFGS([points], lr=1.0, max_iter=max_iter, line_search_fn='strong_wolfe')
 
     def closure():
         optimizer.zero_grad()
@@ -115,15 +154,17 @@ def optimize(points,
 
 def _split(points, n, key, jitter):
     reps = -(-n // points.shape[0])
-    tiled = points.repeat(reps, 1)[:n]
-    noise = jitter * torch.randn_like(tiled)  # Utilise `tiled` comme référence pour le device
-    return tiled + noise
+    tiled = points.detach().repeat(reps, 1)[:n]
+    points = tiled + jitter * torch.randn_like(tiled)
+    return points.detach().requires_grad_(True)
 
 def multiscale_optimize(sino, nb_points_final, nb_points_init=200, factor=4, seed=0, tracker=None, timings=None, **kwargs):
     extent = sino.geometry.extent
     torch.manual_seed(seed)
-    points = torch.rand((nb_points_init, 2), dtype=torch.float32, device=device) * extent - extent / 2
-
+    points = torch.rand((nb_points_init, 2),
+                        dtype=torch.float32,
+                        device=device) * extent - extent / 2
+    points =points.detach().requires_grad_(True)
     n = nb_points_init
     while True:
         grad_timer = GradTimer() if timings is not None else None
@@ -138,7 +179,7 @@ def multiscale_optimize(sino, nb_points_final, nb_points_init=200, factor=4, see
 
         n = min(n * factor, nb_points_final)
         points = _split(points, n, None, jitter=sino.geometry.dw / 1e6)
-
+        points = points.detach().requires_grad_(True)
 if __name__ == "__main__":
     nb_diracs = 1_000
 
