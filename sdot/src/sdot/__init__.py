@@ -9,5 +9,6 @@ from .distributions.SumOfDiracs1d import SumOfDiracs1d as SumOfDiracs1d
 from .distributions.SumOfDiracs import SumOfDiracs as SumOfDiracs
 from .distributions.ProjectedSumOfDiracs import ProjectedSumOfDiracs as ProjectedSumOfDiracs
 from .distributions.Image import Image as Image
+from .distributions.SumOfGaussians import SumOfGaussians as SumOfGaussians
 
 from .viz.Visualizer import Visualizer as Visualizer

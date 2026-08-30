@@ -48,6 +48,15 @@ class PowerDiagram( Aggregate ):
     la propriété qu'il faut retenir : un accélérateur ne peut que taire des coupes qui n'auraient
     rien enlevé, donc les cellules obtenues sont les MÊMES, aux erreurs d'arrondi près (voir
     `SpatialAccelerator.py` pour le contrat, et `cell_may_be_cut` pour le test qui le garantit).
+
+    CONTRE QUOI on mesure est un second point d'extension, indépendant du premier : par défaut la
+    mesure de Lebesgue (le volume), mais `distribution = Image( ... )` fait rendre à `measures`
+    l'intégrale d'une densité sur chaque cellule. Là encore le diagramme ne sait rien de la
+    distribution : elle DÉCOUPE la cellule en morceaux sur lesquels sa densité est simple, et le
+    diagramme intègre sur un morceau -- de sorte qu'une autre grandeur que la mesure (un
+    barycentre, un moment second) s'écrira comme une seconde fonctionnelle sur le MÊME découpage.
+    « Pas de distribution » est un cas ordinaire de ce code-là, `UnitDensity`, et non une absence
+    de code. Voir `distributions/Distribution.py`.
     """
 
     positions      : RealTensor[ "num_point", "dim" ]
@@ -74,7 +83,7 @@ class PowerDiagram( Aggregate ):
     nb_dims        : CtShapeVar
 
     def __init__( self, positions, weights = None, boundaries = None, box = None, max_nb_cuts = None,
-                  accelerator = None, **kwargs ):
+                  accelerator = None, distribution = None, **kwargs ):
         """`positions` : `[ n, d ]`. `weights` : `[ n ]`, ou rien (le cas euclidien). Le domaine, au choix :
 
         - `box = ( mi, ma )` -- le pavé `mi <= x <= ma`, développé ici en `2d` demi-espaces ;
@@ -86,11 +95,31 @@ class PowerDiagram( Aggregate ):
 
         `accelerator` : de quoi n'essayer que les germes qui peuvent servir (`AaBsp.of( pd )`).
         Facultatif, et sans effet sur le RÉSULTAT -- seulement sur ce qu'il coûte.
+
+        `distribution` : CONTRE QUOI intégrer (`Image`, `SumOfGaussians`, ...). Absente, `measures`
+        rend le volume des cellules ; présente, l'intégrale de sa densité dessus. Elle est
+        NORMALISÉE ici, une fois pour toutes (`normalized_version`), de sorte que la somme des
+        mesures soit sa masse cible et pas ce que ses valeurs brutes valaient. Si elle a un SUPPORT
+        borné, il s'ajoute au domaine -- gratuit et sans effet sur le résultat, voir
+        `Distribution.bounding_half_spaces`. Voir `distributions/Distribution.py` pour le contrat.
         """
         if box is not None:
             if boundaries is not None:
                 raise ValueError( "give either `box` or `boundaries`, not both" )
             boundaries = box_half_spaces( *box )
+
+        # le SUPPORT de la distribution borne le domaine, gratuitement et sans rien changer au
+        # résultat : ce qui dépasse n'apporte aucune masse. Voir `Distribution.bounding_half_spaces`
+        # pour ce que ça fait gagner ; le domaine de l'appelant, s'il y en a un, est INTERSECTÉ avec
+        # (les demi-espaces s'ajoutent), pas remplacé.
+        if distribution is not None:
+            support = distribution.bounding_half_spaces()
+            if support is not None:
+                if boundaries is None:
+                    boundaries = support
+                else:
+                    boundaries = ( np.concatenate( [ np.asarray( boundaries[ 0 ], dtype = float ), support[ 0 ] ] ),
+                                   np.concatenate( [ np.asarray( boundaries[ 1 ], dtype = float ), support[ 1 ] ] ) )
 
         # pas de domaine -> on ne NOMME pas les deux tenseurs : les laisser `Unbound` (jamais
         # alloués, `NoneTensor` côté C++) n'est pas la même chose que leur passer `None`, qui est
@@ -113,6 +142,40 @@ class PowerDiagram( Aggregate ):
         # de template) -- alors que côté kernel l'absence a déjà un nom, `EverySeed`, qui est un
         # accélérateur comme un autre et se fabrique sur place (`PowerDiagram::every_seed`).
         self.accelerator = accelerator
+
+        # PAS un champ non plus, et pour la même raison que l'accélérateur : c'est un argument
+        # d'APPEL. Normalisée DÈS ICI plutôt qu'à chaque `measures` -- « le diagramme intègre CETTE
+        # mesure-là » est une propriété de l'objet, et la normalisation est un calcul (la masse
+        # totale) qu'on ne veut pas refaire à chaque requête.
+        self.distribution = None
+        if distribution is not None:
+            nd = int( self.nb_dims.value )
+            dd = int( distribution.nb_dims.value )
+            if dd != nd:
+                raise ValueError( f"the distribution lives in { dd }D, this diagram in { nd }D" )
+            self.distribution = distribution.normalized_version()
+
+
+    def _dist_for( self ):
+        """Comment cet appel nomme sa distribution : `( expression C++, expression de sa cotangente,
+        kwargs de l'appel )`.
+
+        Sans distribution, l'expression est `power_diagram.unit_density()` -- une valeur que le C++
+        fabrique lui-même -- et la cotangente un `0` littéral, que `UnitDensity` ignore. Rien n'est
+        donc passé depuis Python dans ce cas : pas d'agrégat vide à engendrer, et une seule
+        signature C++ par méthode. Exactement le montage de `_acc_for`.
+        """
+        if self.distribution is None:
+            return "power_diagram.unit_density()", "0", {}
+        return "distribution", "grad_for_distribution", { "distribution": self.distribution }
+
+
+    def _extra_cuts_per_piece( self ):
+        """Combien de coupes de plus qu'une cellule un morceau peut porter -- 0 sans distribution
+        (le morceau EST la cellule, donc pas de cellules de découpe du tout)."""
+        if self.distribution is None:
+            return 0
+        return int( self.distribution.extra_cuts_per_piece( int( self.nb_dims.value ) ) )
 
 
     def _acc_for( self, batch_axis ):
@@ -151,12 +214,23 @@ class PowerDiagram( Aggregate ):
         à lui, en écrit le volume, et recommence avec le germe suivant. Rien du diagramme n'est
         conservé entre deux germes -- c'est tout l'intérêt.
 
+        Avec une `distribution`, ce n'est plus le volume mais l'INTÉGRALE de sa densité sur la
+        cellule -- même balayage, même mémoire : la distribution découpe la cellule en morceaux où
+        sa densité est simple, et on intègre morceau par morceau sans jamais en garder un
+        (`PowerDiagram.cxx::integrate_into`, et `distributions/Distribution.py` pour le contrat).
+        La distribution ayant été normalisée à la construction, la somme des mesures est sa masse
+        cible dès que les cellules la recouvrent.
+
         DÉRIVABLE par rapport aux germes, `positions` comme `weights` (voir
-        `PowerDiagram.cxx::measures_bwd`). Le backward refait le même balayage : les cellules
-        n'ayant pas été gardées, il les REconstruit plutôt que de les relire, ce qui lui coûte un
-        forward de plus et rien en mémoire. Le DOMAINE, lui, est traité comme une constante : une
-        coupe venue de `bnd_directions` porte `cut_id == BOUNDARY`, qui dit « pas un germe » et non
-        LEQUEL, donc sa part n'a nulle part où aller.
+        `PowerDiagram.cxx::measures_bwd`), et par rapport aux VALEURS de la distribution -- la
+        masse en étant linéaire, la dérivée par rapport à la valeur d'un morceau est le volume de
+        ce morceau. Le backward refait le même balayage : les cellules n'ayant pas été gardées, il
+        les REconstruit plutôt que de les relire (les morceaux aussi), ce qui lui coûte un forward
+        de plus et rien en mémoire. Le DOMAINE, lui, est traité comme une constante : une coupe
+        venue de `bnd_directions` porte `cut_id == BOUNDARY`, qui dit « pas un germe » et non
+        LEQUEL, donc sa part n'a nulle part où aller. La GÉOMÉTRIE d'une distribution
+        (`origin` / `frame` / `knots` d'une image) est constante pour la même raison : les plans
+        d'un morceau qui en viennent portent `BOUNDARY` eux aussi.
         """
         d = int( self.nb_dims.value )
         if d < 2:
@@ -164,16 +238,30 @@ class PowerDiagram( Aggregate ):
 
         cap_v, cap_e, cap_c = self._capacities()
 
-        # le budget qui décide du parallélisme : ce qu'UN work-item immobilise. Deux cellules
-        # (la navette), les cotangentes par sommet du backward (`grad_vp`), plus les scratchs du
-        # régime d > 2 -- la table de compaction de la coupe (`corr`) et les apex de la
-        # triangulation (`facet_apex`), tous deux dimensionnés sur les DEUX cellules (voir plus
-        # bas). Le device en déduit combien de work-items il peut se permettre, plafonné par le
-        # nombre de germes (inutile d'en réserver plus qu'il n'y a de travail).
+        # les cellules de DÉCOUPE, s'il y a une distribution : un morceau porte les coupes de la
+        # cellule plus celles que le découpage ajoute (`extra_cuts_per_piece`), donc elles sont
+        # plus grandes. Deux, parce qu'une suite de coupes fait la navette entre deux tampons --
+        # et deux DE PLUS plutôt que réutiliser celles du clip : la cellule, elle, doit survivre à
+        # tous ses morceaux (voir `PieceWorkspace.h`).
+        extra = self._extra_cuts_per_piece()
+        pce_v, pce_e, pce_c = self._capacities( extra )
+
+        # le budget qui décide du parallélisme : ce qu'UN work-item immobilise. Les cellules de
+        # travail (la navette du clip, plus celle du découpage), les cotangentes par sommet du
+        # backward (`grad_vp`), plus les scratchs du régime d > 2 -- la table de compaction de la
+        # coupe (`corr`) et les apex de la triangulation (`facet_apex`). Tous les trois sont
+        # dimensionnés sur la SOMME des cellules de travail, comme les axes plus bas. Le device en
+        # déduit combien de work-items il peut se permettre, plafonné par le nombre de germes
+        # (inutile d'en réserver plus qu'il n'y a de travail).
+        tot_v, tot_c = 2 * cap_v, 2 * cap_c
         per_thread = 2 * self._bytes_per_cell( cap_v, cap_e, cap_c )
-        per_thread += 8 * 2 * cap_v * d                 # `grad_vp`, le tampon du backward
+        if extra:
+            tot_v += 2 * pce_v
+            tot_c += 2 * pce_c
+            per_thread += 2 * self._bytes_per_cell( pce_v, pce_e, pce_c )
+        per_thread += 8 * tot_v * d                     # `grad_vp`, le tampon du backward
         if d > 2:
-            per_thread += 8 * ( 2 * cap_v + 2 * cap_c + 1 ) + 8 * d * 2 * cap_c
+            per_thread += 8 * ( tot_v + tot_c + 1 ) + 8 * d * tot_c
         if self.accelerator is not None:
             per_thread += self.accelerator.bytes_per_thread()
         nt = driver.device.nb_threads( nb_local_bytes_per_thread = per_thread,
@@ -185,18 +273,28 @@ class PowerDiagram( Aggregate ):
         # nombre, et la boucle striée sur les germes se lit directement dessus.
         num_thread = new_batch_axis( nt, prefix = "thread" )
 
-        ws_0 = Cell( d, init_as_unbounded = False, batch_axes = [ num_thread ] )
-        ws_1 = Cell( d, init_as_unbounded = False, batch_axes = [ num_thread ] )
+        def work_cell():
+            return Cell( d, init_as_unbounded = False, batch_axes = [ num_thread ] )
 
-        # Les deux scratchs sont dimensionnés en EXPRESSION DES COMPTES DES CELLULES, pas sur des
+        ws_0 = work_cell()
+        ws_1 = work_cell()
+
+        # `ws_2` / `ws_3` n'existent QUE s'il y a quelque chose à découper : sans distribution le
+        # morceau est la cellule, donc pas un tampon de plus, pas une coupe de plus, et le C++ reçoit
+        # une paire bidon (`UnitDensity` n'y touche jamais).
+        piece_cells = [ "ws_2", "ws_3" ] if extra else []
+        piece_kwargs = { n: work_cell() for n in piece_cells }
+        work_cells = [ ws_0, ws_1 ] + list( piece_kwargs.values() )
+
+        # Les scratchs sont dimensionnés en EXPRESSION DES COMPTES DES CELLULES, pas sur des
         # entiers figés : une capacité n'est qu'une supposition, et quand elle ne suffit pas c'est
         # `driver.call` qui la double et relance -- si le scratch ne suivait pas, la coupe suivante
         # écrirait à côté (`corr` est indexé par les anciens sommets PUIS les anciennes coupes,
-        # `facet_apex` par le numéro de coupe). La SOMME des deux cellules, et non leur max : les
-        # deux ont leur propre compte, la croissance peut n'en toucher qu'un, et une somme majore
-        # les deux -- au prix d'un facteur deux sur un scratch déjà petit devant les cellules.
-        cuts = Affine.of( ws_0.nb_cuts ) + Affine.of( ws_1.nb_cuts )
-        verts = Affine.of( ws_0.nb_vertices ) + Affine.of( ws_1.nb_vertices )
+        # `facet_apex` par le numéro de coupe). La SOMME des cellules, et non leur max : chacune a
+        # son propre compte, la croissance peut n'en toucher qu'une, et une somme les majore
+        # toutes -- au prix d'un facteur sur un scratch déjà petit devant les cellules.
+        cuts = _sum_of( Affine.of( c.nb_cuts ) for c in work_cells )
+        verts = _sum_of( Affine.of( c.nb_vertices ) for c in work_cells )
 
         # Axes NOMMÉS, construits DIRECTEMENT et pas via `Axis[ sv ]( name = ... )` :
         # `Parametrized.__call__` plierait `name` dans les template_kwargs.
@@ -206,8 +304,9 @@ class PowerDiagram( Aggregate ):
         # le seul tampon que le BACKWARD ajoute : une cotangente par sommet de la cellule courante,
         # ce que `Cell::measure_bwd` écrit et ce que la remontée vers les plans relit. Dimensionné
         # comme les autres sur une expression affine des comptes, pour suivre un doublement de
-        # capacité. Il est déclaré dès le forward parce qu'un scratch appartient à L'APPEL, pas à
-        # l'une de ses deux directions -- le forward l'alloue et n'y touche pas.
+        # capacité -- et sur la somme, donc il couvre aussi un MORCEAU, qui a plus de sommets que la
+        # cellule dont il sort. Il est déclaré dès le forward parce qu'un scratch appartient à
+        # L'APPEL, pas à l'une de ses deux directions -- le forward l'alloue et n'y touche pas.
         num_grad_vertex = Axis( verts, name = "num_grad_vertex" )
 
         res = RealTensor[ self.num_point ]()
@@ -217,33 +316,50 @@ class PowerDiagram( Aggregate ):
         scratch = [ "corr", "facet_apex" ] if d > 2 else []
 
         acc_expr, acc_ws_expr, acc_kwargs, acc_scratch = self._acc_for( num_thread )
+        dist_expr, grad_dist_expr, dist_kwargs = self._dist_for()
+
+        # le scratch de découpe, monté CÔTÉ C++ par agrégation (`PieceWorkspace.h`) : une seule
+        # expression à passer, donc une seule signature, qu'il y ait une distribution ou non.
+        a, b = ( piece_cells if extra else [ "ws_0", "ws_1" ] )
+        piece_ws_expr = f"PieceWorkspace{{ { a }( batch_index ), { b }( batch_index ), corr( batch_index ) }}"
+
+        capacities = {}
+        exceptions = []
+        for name, cell in zip( [ "ws_0", "ws_1" ] + piece_cells, work_cells ):
+            capacities |= self._cell_capacities( name, extra if name in piece_cells else 0 )
+            exceptions += cell._face_lattice_exceptions( name )
 
         driver.call(
             FfiCodeParallel( name = "power_diagram_measures",
                 fwd_code = "power_diagram.measures( res, ws_0( batch_index ), ws_1( batch_index ), "
                            "corr( batch_index ), facet_apex( batch_index ), "
-                           f"{ acc_expr }, { acc_ws_expr }, thread_index, nb_threads );",
+                           f"{ acc_expr }, { acc_ws_expr }, { dist_expr }, { piece_ws_expr }, "
+                           "thread_index, nb_threads );",
                 # `grad_for_power_diagram.positions` / `.weights` sont PARTAGÉS par tous les items
                 # (ils ne portent pas l'axe de batch) : chaque work-item y accumule pour ses germes,
                 # d'où les `atomic_add` côté C++ -- et la plateforme les met à zéro avant le corps,
                 # ce qu'elle fait justement pour une sortie flottante partagée d'un appel batché
-                # (`CallArg_Tensor.cpp_seed_member`), donc pas de `bwd_setup_code` ici.
+                # (`CallArg_Tensor.cpp_seed_member`), donc pas de `bwd_setup_code` ici. Idem pour
+                # `grad_for_distribution.values`, qui reçoit les mêmes `atomic_add`.
                 bwd_code = "power_diagram.measures_bwd( res, grad_for_res, "
                            "grad_for_power_diagram.positions, grad_for_power_diagram.weights, "
                            "ws_0( batch_index ), ws_1( batch_index ), corr( batch_index ), "
                            "facet_apex( batch_index ), grad_vp( batch_index ), "
-                           f"{ acc_expr }, { acc_ws_expr }, thread_index, nb_threads );" ),
-            output_capacities = self._cell_capacities( "ws_0" ) | self._cell_capacities( "ws_1" ),
-            output_exceptions = ws_0._face_lattice_exceptions( "ws_0" ) + ws_1._face_lattice_exceptions( "ws_1" ),
-            output_attributes = [ "res", "ws_0", "ws_1", "grad_vp" ] + scratch + acc_scratch,
+                           f"{ acc_expr }, { acc_ws_expr }, { dist_expr }, { grad_dist_expr }, "
+                           f"{ piece_ws_expr }, thread_index, nb_threads );" ),
+            output_capacities = capacities,
+            output_exceptions = exceptions,
+            output_attributes = [ "res", "ws_0", "ws_1", "grad_vp" ] + piece_cells + scratch + acc_scratch,
             # des tampons de travail, pas des résidus : leur contenu ne survit pas à l'appel (les
             # work-items se les repassent d'un germe à l'autre).
-            scratch_attributes = [ "ws_0", "ws_1", "grad_vp" ] + scratch + acc_scratch,
+            scratch_attributes = [ "ws_0", "ws_1", "grad_vp" ] + piece_cells + scratch + acc_scratch,
             power_diagram = self,
             res = res,
             **acc_kwargs,
+            **dist_kwargs,
             ws_0 = ws_0,
             ws_1 = ws_1,
+            **piece_kwargs,
             # des INDICES : `IntTensor`, sinon leurs lectures reviendraient en flottants.
             corr = IntTensor[ num_thread, num_corr ](),
             facet_apex = IntTensor[ num_thread, num_level, num_cut_slot ](),
@@ -368,8 +484,12 @@ class PowerDiagram( Aggregate ):
 
     # -- ce qu'UNE cellule immobilise ---------------------------------------------------------
 
-    def _capacities( self ):
+    def _capacities( self, extra_cuts = 0 ):
         """`( sommets, arêtes, coupes )` : la taille des tampons d'une cellule.
+
+        `extra_cuts` dit combien de coupes de plus qu'une cellule le tampon doit encaisser -- ce que
+        demande une cellule de DÉCOUPE, un morceau portant les coupes de la cellule plus celles que
+        la distribution ajoute (voir `Distribution.extra_cuts_per_piece`).
 
         Une SUPPOSITION, pas un contrat -- si elle ne suffit pas, le kernel l'enregistre, sort sans
         rien écrire de faux, et la plateforme relance avec le double (voir `driver.call`). On part
@@ -379,15 +499,15 @@ class PowerDiagram( Aggregate ):
         beaucoup plus lâche au-delà.
         """
         d = int( self.nb_dims.value )
-        cap_c = self._max_nb_cuts or 32
+        cap_c = ( self._max_nb_cuts or 32 ) + extra_cuts
         if d == 2:
             return cap_c, 0, cap_c          # l'invariant du chemin 2D : une coupe par sommet
         if d == 3:
             return 2 * cap_c, 3 * cap_c, cap_c
         return 4 * ( d - 2 ) * cap_c, 8 * ( d - 2 ) * cap_c, cap_c
 
-    def _cell_capacities( self, name ):
-        cap_v, cap_e, cap_c = self._capacities()
+    def _cell_capacities( self, name, extra_cuts = 0 ):
+        cap_v, cap_e, cap_c = self._capacities( extra_cuts )
         res = { f"{ name }.nb_vertices": cap_v, f"{ name }.nb_cuts": cap_c }
         if int( self.nb_dims.value ) > 2:
             res[ f"{ name }.nb_edges" ] = cap_e
@@ -399,6 +519,14 @@ class PowerDiagram( Aggregate ):
         if d > 2:
             res += cap_v * d + cap_e * ( d + 1 )                    # le treillis de faces
         return 8 * res
+
+
+def _sum_of( affines ):
+    """La somme d'une suite d'`Affine` (`Affine` n'a pas d'élément neutre à donner à `sum`)."""
+    res = None
+    for a in affines:
+        res = a if res is None else res + a
+    return res
 
 
 def box_half_spaces( mi, ma ):

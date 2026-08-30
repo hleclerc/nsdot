@@ -4,6 +4,9 @@
 #include <loom/support/containers/IotaTensor.h>       // IotaTensor<TF> (knots = 0,1,2) -- default `knots`
 #include <loom/support/containers/Vector.h>           // Vector<TF,d>::zeros()          -- default `origin`
 #include <loom/support/containers/Matrix.h>
+#include <loom/support/atomic_add.h>
+#include "Cell/CellBoundary.h"
+#include "ConstantDensity.h"
 #include "CstUdPiece.h"
 #include "Image.h"
 #include <cmath>
@@ -65,6 +68,149 @@ UTP typename DTP::TF DTP::measure() const {
         }
         return sum;
     } );
+}
+
+namespace detail {
+    /// Un multi-indice RUNTIME (`Vector<SI,d>`) rendu en `Tuple`, que `TensorView::offset` déplie
+    /// tout seul -- de quoi écrire `values( k )` avec un `k` dont les composantes sont calculées.
+    /// Même récursion `Ct` que `unravel_index` (voir `CartesianIndices.h`).
+    auto image_index_tuple( const auto &k, auto &&acc, auto done ) {
+        constexpr int i = DECAYED_TYPE_OF( done )::value;
+        constexpr int n = DECAYED_TYPE_OF( k.size() )::value;
+        if constexpr ( i == n )
+            return acc;
+        else
+            return image_index_tuple( k, acc.with_appended_value( SI( k[ i ] ) ), Ct<int,i+1>() );
+    }
+}
+
+UTP SI DTP::knot_index( SI axis, TF t, SI nb_cells ) const {
+    SI b = 0, e = nb_cells;                 // on cherche dans [ b, e ), invariant : la réponse y est
+    while ( e - b > 1 ) {
+        const SI m = ( b + e ) / 2;
+        if ( TF( knots( axis, m ) ) <= t ) b = m;
+        else                               e = m;
+    }
+    return b;
+}
+
+UTP void DTP::for_each_piece( const auto &cell, auto &&ws, auto &&func ) const {
+    with_defaults( [&]( auto &&img ) { img._for_each_piece( cell, ws, func ); } );
+}
+
+UTP void DTP::_for_each_piece( const auto &cell, auto &&ws, auto &&func ) const {
+    constexpr int d = ct_dim;
+    static_assert( d >= 1 );
+
+    if ( SI( cell.nb_vertices ) == 0 )
+        return;
+
+    // ---- les plans de la grille, en coordonnées PHYSIQUES.
+    // La convention est celle de `measure` : `x = origin + F^T t`, donc `t = ( F^T )^-1 ( x - origin )`
+    // et la ligne `a` de `( F^T )^-1` est la COLONNE `a` de `F^-1`, c.-à-d. `solve_ge( F, e_a )`.
+    // On n'inverse donc rien : d résolutions, une par axe, et le pavé `k` est l'intersection des
+    // bandes `knots( a, k_a ) <= n_a . ( x - origin ) <= knots( a, k_a + 1 )`.
+    const auto F = Matrix<TF,d>::with_func( [&]( auto r, auto c ) { return TF( frame( r, c ) ); } );
+    const auto og = Vector<TF,d>::with_func( [&]( PI c ) { return TF( origin( c ) ); } );
+
+    Vector<Vector<TF,d>,d> nrm;
+    Vector<TF,d> shift;                     // `n_a . origin`, ce qui décale l'offset du plan
+    for ( PI a = 0; a < d; ++a ) {
+        nrm[ a ] = Matrix<TF,d>::solve_ge( F, Vector<TF,d>::with_value_at( a, TF( 1 ) ) );
+        shift[ a ] = dot( nrm[ a ], og );
+    }
+
+    // ---- QUELS pavés essayer : ceux que la boîte englobante de la cellule rencontre.
+    // Une cellule NON BORNÉE n'a pas de boîte -- ses sommets sont ceux d'un simplexe bouche-trou
+    // (`Cell::init_as_unbounded`) et ne bornent rien. On balaie alors toute l'image, ce qui reste
+    // JUSTE (l'image est à support compact, donc l'intégrale est finie même sur une cellule
+    // infinie) et se paie en temps seulement -- un domaine (`box = ...`) supprime le cas.
+    Vector<SI,d> k0, k1;
+    const bool bounded = bool( cell.is_fully_bounded );
+    for ( PI a = 0; a < d; ++a ) {
+        const SI nb = SI( values.shape( a ) );
+        if ( nb <= 0 )
+            return;
+        if ( ! bounded ) {
+            k0[ a ] = 0;
+            k1[ a ] = nb;
+            continue;
+        }
+
+        const SI nv = cell.nb_vertices;
+        TF t_min = 0, t_max = 0;
+        for ( SI v = 0; v < nv; ++v ) {
+            TF t = - shift[ a ];
+            for ( PI c = 0; c < d; ++c )
+                t += nrm[ a ][ c ] * TF( cell.vertex_positions( v, c ) );
+            if ( v == 0 || t < t_min ) t_min = t;
+            if ( v == 0 || t > t_max ) t_max = t;
+        }
+
+        // hors de l'image de ce côté-là : rien à intégrer du tout.
+        if ( t_max < TF( knots( a, 0 ) ) || t_min > TF( knots( a, nb ) ) )
+            return;
+
+        k0[ a ] = knot_index( a, t_min, nb );
+        k1[ a ] = knot_index( a, t_max, nb ) + 1;
+    }
+
+    // ---- un morceau par pavé. Compteur kilométrique sur `[ k0, k1 )`, et 2d coupes par pavé.
+    //
+    // Une descente RÉCURSIVE (couper d'abord la tranche de l'axe 0, puis subdiviser dedans) ferait
+    // ~2 coupes par pavé au lieu de 2d, et élaguerait les tranches vides d'un coup ; elle demande
+    // en revanche une cellule de rechange PAR NIVEAU, là où celle-ci en demande deux en tout. À
+    // faire le jour où le profil le réclame -- le contrat côté Python (`extra_cuts_per_piece`) ne
+    // change pas.
+    Vector<SI,d> k = k0;
+    for ( PI a = 0; a < d; ++a )
+        if ( k0[ a ] >= k1[ a ] )
+            return;
+
+    while ( true ) {
+        bool alive = true, fitted = true;
+        for ( PI a = 0; a < d && alive; ++a ) {
+            const TF lo = TF( knots( a, k[ a ] ) ) + shift[ a ];
+            const TF hi = TF( knots( a, k[ a ] + 1 ) ) + shift[ a ];
+
+            // `cut_id = BOUNDARY` : ces plans-là ne font face à aucun germe, et c'est exactement ce
+            // que l'adjoint lit pour savoir que leur part ne va nulle part (voir
+            // `PowerDiagram::scatter_cell_grad`).
+            fitted = ( a == 0 ) ? ws.start( cell, nrm[ a ], hi, CellBoundary::BOUNDARY )
+                                : ws.cut  (       nrm[ a ], hi, CellBoundary::BOUNDARY );
+            if ( ! fitted ) break;
+            if ( ws.nb_vertices() == 0 ) { alive = false; break; }
+
+            fitted = ws.cut( - nrm[ a ], - lo, CellBoundary::BOUNDARY );
+            if ( ! fitted ) break;
+            if ( ws.nb_vertices() == 0 ) { alive = false; break; }
+        }
+
+        // une coupe qui n'a pas tenu : la capacité manquante est enregistrée, l'hôte relancera avec
+        // le double et ce résultat-ci sera jeté. On s'arrête là plutôt que de continuer sur une
+        // géométrie qui n'existe plus.
+        if ( ! fitted )
+            return;
+
+        if ( alive ) {
+            const auto idx = detail::image_index_tuple( k, tuple(), Ct<int,0>() );
+            const TF value = TF( values( idx ) );
+            ws.with_current( [&]( const auto &piece ) {
+                func( piece, ConstantDensity{ value, [&]( auto &&grad_dist, TF g ) {
+                    // le puits de gradient du morceau : `d masse / d values( k )` est le volume du
+                    // morceau, et `k` est ce que cette fermeture-ci sait et que l'appelant ignore.
+                    // Atomique : plusieurs work-items intègrent des cellules qui touchent le même pavé.
+                    if constexpr ( CT_VALUE( grad_dist.values.is_valid() ) )
+                        atomic_add( grad_dist.values( idx ).ref(), g );
+                } } );
+            } );
+        }
+
+        PI a = 0;
+        while ( a < d && ++k[ a ] >= k1[ a ] ) { k[ a ] = k0[ a ]; ++a; }
+        if ( a == PI( d ) )
+            break;
+    }
 }
 
 UTP void DTP::measure_bwd( auto &&grad_values, auto &&grad_mass ) const {

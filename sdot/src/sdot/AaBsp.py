@@ -250,51 +250,114 @@ def _weight_majorant( pos, w ):
 
 
 def _build( pos, w, leaf_size ):
-    """L'arbre, à plat : un nœud par entrée des tableaux, numérotés en préordre (racine = 0)."""
+    """L'arbre, à plat : un nœud par entrée des tableaux, numérotés en largeur (racine = 0).
+
+    Deux décisions font tout le coût de la construction, et elles viennent d'un profil, pas d'une
+    intuition -- la première version, récursive et par nœud, passait 9 us PAR NOEUD, dont 43 % en
+    surcharge d'appel numpy sur des tableaux de trente lignes (`min` / `max`), 26 % dans le corps
+    Python de la récursion, 13 % dans `argpartition`.
+
+      * Un nœud n'est pas une liste d'indices mais une TRANCHE `[ begin, end )` d'une permutation
+        réarrangée en place, les positions (et les poids) tenues permutées en parallèle. Un nœud lit
+        donc ses points par une VUE, et `seed_indices` EST la permutation à la fin -- rien à
+        recoller feuille par feuille.
+      * On avance PAR NIVEAU, pas par nœud. À un niveau donné les tranches sont disjointes et
+        ordonnées, donc les boîtes de tout le niveau se lisent en DEUX appels `reduceat` au lieu de
+        deux par nœud. C'était le premier poste du profil, et il disparaît.
+
+    Ce qui reste par nœud est la partition médiane elle-même (`argpartition` + l'application de la
+    permutation), qui ne se vectorise pas à travers des tranches de tailles différentes.
+
+    La numérotation est en LARGEUR et non plus en préordre. Rien ne dépend de l'ordre -- le kernel
+    descend par `node_left` / `node_right`, et la racine est 0 dans les deux cas.
+    """
     n, d = pos.shape
+
+    order = np.arange( n, dtype = np.int64 )
+    # une COPIE, toujours : on permute ce tableau en place, et `pos` appartient à l'appelant (et
+    # peut très bien être en lecture seule). `ascontiguousarray` ne copierait pas si l'entrée est
+    # déjà contiguë -- et permuter les positions du diagramme sous ses pieds ne se voit pas tout
+    # de suite, ça se voit aux mesures.
+    P = np.array( pos, dtype = float )
+    W = None if w is None else np.array( w, dtype = float )
 
     node_left, node_right, node_begin, node_end = [], [], [], []
     node_lo, node_hi, node_wa, node_wb = [], [], [], []
-    order = []                                          # les germes, feuille par feuille
 
-    def add_node():
-        node_left.append( -1 ); node_right.append( -1 )
-        node_begin.append( 0 ); node_end.append( 0 )
-        node_lo.append( None ); node_hi.append( None )
-        node_wa.append( None ); node_wb.append( 0.0 )
-        return len( node_left ) - 1
+    # le niveau courant : une tranche et l'identifiant déjà réservé pour elle
+    beg = np.zeros( 1, dtype = np.int64 )
+    end = np.full( 1, n, dtype = np.int64 )
+    nid = np.zeros( 1, dtype = np.int64 )
+    node_left.append( -1 ); node_right.append( -1 )
+    node_begin.append( 0 ); node_end.append( n )
+    node_lo.append( None ); node_hi.append( None )
+    node_wa.append( None ); node_wb.append( 0.0 )
 
-    def rec( idx, depth ):
-        me = add_node()                                 # AVANT de descendre : d'où le préordre
-        p = pos[ idx ]
-        lo, hi = p.min( axis = 0 ), p.max( axis = 0 )
-        node_lo[ me ], node_hi[ me ] = lo, hi
-        node_wa[ me ], node_wb[ me ] = _weight_majorant( p, None if w is None else w[ idx ] )
+    max_depth = 0
+    while len( beg ):
+        max_depth += 1
 
-        ax = int( np.argmax( hi - lo ) )
+        # ---- les boîtes de TOUT le niveau, en deux appels.
+        # `reduceat` réduit de `bounds[i]` à `bounds[i+1]`, donc on intercale les trous : les
+        # entrées PAIRES sont nos tranches, les impaires ce qui les sépare, et on jette celles-là.
+        # Le dernier indice doit rester < n (la dernière réduction va jusqu'au bout du tableau).
+        bounds = np.empty( 2 * len( beg ), dtype = np.int64 )
+        bounds[ 0::2 ] = beg
+        bounds[ 1::2 ] = end
+        if bounds[ -1 ] >= n:
+            bounds = bounds[ :-1 ]
+        lo = np.minimum.reduceat( P, bounds, axis = 0 )[ 0::2 ]
+        hi = np.maximum.reduceat( P, bounds, axis = 0 )[ 0::2 ]
+
+        ax = np.argmax( hi - lo, axis = 1 )
+        rows = np.arange( len( beg ) )
         # `hi[ ax ] <= lo[ ax ]` : tous les germes au même endroit. Aucune coupe ne les
         # sépareraient, et insister ferait une récursion infinie -- on en fait une feuille, quitte
         # à ce qu'elle soit grosse.
-        if len( idx ) <= leaf_size or hi[ ax ] <= lo[ ax ]:
-            node_begin[ me ] = len( order )
-            order.extend( int( i ) for i in idx )
-            node_end[ me ] = len( order )
-            return me, depth
+        leaf = ( end - beg <= leaf_size ) | ( hi[ rows, ax ] <= lo[ rows, ax ] )
 
-        # la MÉDIANE, pas le milieu de la boîte : c'est ce qui borne la profondeur par
-        # `log2( n / leaf_size )` quelle que soit la distribution -- un nuage très inhomogène
-        # ferait dégénérer une coupe géométrique en une chaîne.
-        k = len( idx ) // 2
-        part = np.argpartition( p[ :, ax ], k )
-        left, dl = rec( idx[ part[ :k ] ], depth + 1 )
-        right, dr = rec( idx[ part[ k: ] ], depth + 1 )
-        node_left[ me ], node_right[ me ] = left, right
-        return me, max( dl, dr )
+        for i in range( len( beg ) ):
+            k = int( nid[ i ] )
+            node_lo[ k ], node_hi[ k ] = lo[ i ], hi[ i ]
+            node_wa[ k ], node_wb[ k ] = ( ( np.zeros( d ), 0.0 ) if W is None else
+                                           _weight_majorant( P[ beg[ i ]:end[ i ] ],
+                                                             W[ beg[ i ]:end[ i ] ] ) )
 
-    _, max_depth = rec( np.arange( n ), 1 )
+        # ---- les enfants du niveau suivant
+        nb, ne, nn = [], [], []
+        for i in np.flatnonzero( ~leaf ):
+            b, e, a = int( beg[ i ] ), int( end[ i ] ), int( ax[ i ] )
+
+            # la MÉDIANE, pas le milieu de la boîte : c'est ce qui borne la profondeur par
+            # `log2( n / leaf_size )` quelle que soit la distribution -- un nuage très inhomogène
+            # ferait dégénérer une coupe géométrique en une chaîne.
+            h = ( e - b ) // 2
+            p = P[ b:e ]
+            part = np.argpartition( p[ :, a ], h )
+
+            # la permutation, appliquée EN PLACE à la tranche : les deux enfants sont alors ses
+            # deux moitiés, et il n'y a plus rien à transporter en descendant.
+            order[ b:e ] = order[ b:e ][ part ]
+            P[ b:e ] = p[ part ]
+            if W is not None:
+                W[ b:e ] = W[ b:e ][ part ]
+
+            for cb, ce in ( ( b, b + h ), ( b + h, e ) ):
+                node_left.append( -1 ); node_right.append( -1 )
+                node_begin.append( cb ); node_end.append( ce )
+                node_lo.append( None ); node_hi.append( None )
+                node_wa.append( None ); node_wb.append( 0.0 )
+                nb.append( cb ); ne.append( ce ); nn.append( len( node_left ) - 1 )
+
+            k = int( nid[ i ] )
+            node_left[ k ], node_right[ k ] = nn[ -2 ], nn[ -1 ]
+
+        beg = np.array( nb, dtype = np.int64 )
+        end = np.array( ne, dtype = np.int64 )
+        nid = np.array( nn, dtype = np.int64 )
 
     return dict(
-        seed_indices = np.array( order, dtype = np.int64 ),
+        seed_indices = order,
         node_left    = np.array( node_left, dtype = np.int64 ),
         node_right   = np.array( node_right, dtype = np.int64 ),
         node_begin   = np.array( node_begin, dtype = np.int64 ),

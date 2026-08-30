@@ -37,6 +37,17 @@ sized to n, the other over the angles in the current chunk).
 """
 import time
 
+# Ce fichier ne vaut que sous torch. La découverte des entrées IMPORTE chaque fichier candidat,
+# donc sans cette sortie l'`import torch` ci-dessous s'exécuterait aussi sous jax -- et sur une
+# machine où torch est cassé (chez `lmo`, `libcusparseLt.so.0` manque) c'est toute la session qui
+# tombe, pas seulement ce fichier.
+import sys
+
+from loom.testing import driver_is
+
+if not driver_is( "torch" ):
+    sys.exit( 0 )
+
 import torch
 import torch.utils.cpp_extension
 from loom.testing import Param, bench

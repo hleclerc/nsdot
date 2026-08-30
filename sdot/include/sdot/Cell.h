@@ -99,6 +99,15 @@ struct Cell {
     void measure_bwd            ( auto &&res, auto &&grad_res, auto &&grad_vertex_positions ) const;
     void measure                ( auto &&res ) const;
 
+    // ... mais découper en SIMPLICES a un sens ici aussi, et c'est ce que demande une grandeur qui
+    // n'a pas de formule fermée sur la cellule (une quadrature, par exemple -- voir
+    // `PowerDiagram::integrate_into` face à une densité lisse). Un éventail depuis le sommet 0 en
+    // 2D (l'ordre cyclique est déjà là, cf. `vertex_ordering_2D`), le segment lui-même en 1D. Même
+    // signature de callback que le cas d > 2 -- `ct_dim + 1` INDICES de sommets -- de sorte qu'une
+    // fonctionnelle s'écrive une fois pour toutes ; et aucun scratch de ce côté-ci, donc pas de
+    // `facet_apex` dans la signature.
+    void for_each_simplex       ( auto &&func ) const;
+
     // d > 2: no formula to read off the vertices any more -- the cell has to be CUT INTO SIMPLICES
     // first, and that is a walk on the face lattice, hence `vertex_indices` (and only it: the fan
     // never needs `edge_indices`, an edge being just a face like any other here).

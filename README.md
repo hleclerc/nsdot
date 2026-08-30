@@ -24,7 +24,6 @@ par transport optimal 1D, voir [Prototype `unidim`](#prototype-unidim) plus bas.
 ./run test test_Cell                # Tout test_Cell.py
 ./run test test_Cell::batch         # Juste le test "batch" de test_Cell.py
 ./run test "test_Cell::grad_*"      # Glob sur le nom
-./run test --project=sdot           # Un seul projet
 ./run test --fp=FP32                # Précision FP32
 
 # Benchmark -- même mécanisme que test(), dans les mêmes fichiers
@@ -78,9 +77,9 @@ distinction de projet ni de répertoire), filtrée aux fichiers qui référencen
 La partie fichier matche le stem COMPLET (préfixe `test_`/`bench_` inclus —
 `Cell` ne matche plus rien, il faut `test_Cell`). Sans `*` dans la partie
 fichier, le nom doit désigner un fichier unique — sinon erreur (utiliser un
-glob pour en sélectionner plusieurs). `--project` restreint au premier
-segment du chemin (ex. `loom`, `sdot`, `otrec`), mais n'importe quel
-répertoire de premier niveau marche.
+glob pour en sélectionner plusieurs). Pour ne prendre qu'un projet, c'est le
+motif qui le dit -- `./run test "test_Cell::*,test_PowerDiagram::*"` -- il n'y
+a pas d'option pour restreindre à un répertoire.
 
 N'importe laquelle des trois peut déclarer des `Param` typés, listés via
 `--help` et résumés avant chaque exécution :

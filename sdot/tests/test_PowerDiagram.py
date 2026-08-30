@@ -3,7 +3,7 @@ import numpy
 from loom import driver
 from loom.testing import bench, check_grad, test, experiment, Param
 
-from sdot import AaBsp, PowerDiagram, Visualizer, Voronoi
+from sdot import AaBsp, Image, PowerDiagram, SumOfGaussians, Visualizer, Voronoi
 
 
 def _measures( v ):
@@ -820,6 +820,8 @@ if p := bench( "pd accelerated",
                nb_dims   = Param( 2, help = "dimension" ),
                leaf_size = Param( 30, help = "germes par feuille du BSP" ),
                weights   = Param( 0, help = "1 pour un diagramme de puissance" ),
+               plain     = Param( 1, help = "0 pour ne PAS chronométrer le balayage complet" ),
+               reps      = Param( 3, help = "répétitions chronométrées (on garde le minimum)" ),
                seed      = Param( 0, help = "graine du tirage" ) ):
     # Une vraie boucle, et le MINIMUM : les noms d'axes de batch sont empruntés à une réserve
     # (`loom.tensor.batch`), donc deux appels identiques produisent la même source C++ et le second
@@ -842,30 +844,40 @@ if p := bench( "pd accelerated",
     bsp = AaBsp( pos, w, max_seeds_per_leaf = p.leaf_size )
     t_build = time.perf_counter() - t
 
-    def run( acc, reps = 3 ):
+    def run( acc ):
         def once():
             t = time.perf_counter()
             m = numpy.asarray( PowerDiagram( pos, weights = w, box = box, accelerator = acc ).measures.tensor )
             return time.perf_counter() - t, m.reshape( -1 )
         once()                                          # chauffe : c'est celui-là qui compile
         best, m = once()
-        for _ in range( reps - 1 ):
+        for _ in range( p.reps - 1 ):
             best = min( best, once()[ 0 ] )
         return best, m
 
-    t_plain, m_plain = run( None )
+    # Le balayage complet est en `n^2` : à 1e6 germes il ne finit pas, et le chronométrer n'aurait
+    # de toute façon aucun intérêt. `--plain=0` le saute -- on ne mesure alors QUE le chemin qu'on
+    # utiliserait vraiment, et il n'y a plus d'oracle pour comparer les mesures (c'est le rôle des
+    # tests, pas d'un banc).
     t_acc, m_acc = run( bsp )
-
-    p.results[ "t_plain" ] = t_plain
     p.results[ "t_accelerated" ] = t_acc
     p.results[ "t_bsp_build" ] = t_build
-    p.results[ "speedup" ] = t_plain / t_acc
-    p.results[ "max_abs_diff" ] = float( numpy.abs( m_plain - m_acc ).max() )
     p.results[ "bsp_depth" ] = bsp.max_depth
     p.results[ "bsp_leaves" ] = bsp.nb_leaves
-    print( f"  {n} germes en {d}D : {t_plain:.2f} s -> {t_acc:.2f} s"
-           f" (x{t_plain / t_acc:.0f}), arbre bâti en {t_build * 1e3:.0f} ms"
-           f", écart max {numpy.abs( m_plain - m_acc ).max():.1e}" )
+    p.results[ "ns_per_seed" ] = t_acc / n * 1e9
+
+    if p.plain:
+        t_plain, m_plain = run( None )
+        p.results[ "t_plain" ] = t_plain
+        p.results[ "speedup" ] = t_plain / t_acc
+        p.results[ "max_abs_diff" ] = float( numpy.abs( m_plain - m_acc ).max() )
+        print( f"  {n} germes en {d}D : {t_plain:.2f} s -> {t_acc:.2f} s"
+               f" (x{t_plain / t_acc:.0f}), arbre bâti en {t_build * 1e3:.0f} ms"
+               f", écart max {numpy.abs( m_plain - m_acc ).max():.1e}" )
+    else:
+        print( f"  {n} germes en {d}D : {t_acc:.3f} s ({t_acc / n * 1e9:.0f} ns/germe)"
+               f", arbre bâti en {t_build * 1e3:.0f} ms"
+               f", somme des mesures {m_acc.sum():.6f}" )
 
 
 # -- ce qu'on REGARDE ----------------------------------------------------------------------------
@@ -985,3 +997,573 @@ if p := experiment( "pd 2D weights",
         PowerDiagram( pos, weights = weights, box = box ).add_to_viz( viz )
         viz.add_points( pos, color = "#ffffff" )
     _write_both( p, viz, "pd_2d_weights" )
+
+
+# ---- intégrer contre une DISTRIBUTION ---------------------------------------------------------
+# `measures` ne rend pas forcément le VOLUME d'une cellule : avec une distribution il rend
+# l'intégrale de sa densité dessus. Le contrat est dans `distributions/Distribution.py` -- la
+# distribution DÉCOUPE la cellule en morceaux où sa densité est simple, le diagramme intègre sur
+# un morceau -- et « pas de distribution » en est un cas ordinaire (`UnitDensity`), pas une
+# absence de code. Ce qui suit vérifie les deux bouts : que le cas ordinaire n'a pas bougé, et
+# que le cas image dit bien ce qu'une définition indépendante dit.
+
+
+def _unit_box_image( shape, values ):
+    """Une image sur `[ 0, shape_0 ] x ...` : origine 0, repère identité, noeuds 0, 1, 2, ... --
+    les défauts, donc le pavé `k` est littéralement le cube unité en `k`."""
+    return Image( values = numpy.asarray( values, float ).reshape( shape ) )
+
+
+def _mc_image_measures( pos, values, weights = None, nb_samples = 300000, seed = 0 ):
+    """Les mesures par ÉCHANTILLONNAGE, densité comprise.
+
+    Comme `_monte_carlo_measures`, mais chaque point pèse la densité de son pavé au lieu de 1 --
+    et la densité est normalisée à masse 1, ce que `PowerDiagram` fait de son côté
+    (`normalized_version`). Aucune géométrie en commun avec le kernel : ni coupe, ni morceau,
+    juste « quel germe gagne » et « dans quel pavé je suis tombé »."""
+    values = numpy.asarray( values, float )
+    d = values.ndim
+    mi = numpy.zeros( d )
+    ma = numpy.asarray( values.shape, float )
+
+    rng = numpy.random.default_rng( seed )
+    pts = rng.uniform( mi, ma, size = ( nb_samples, d ) )
+    d2 = ( ( pts[ :, None, : ] - pos[ None, :, : ] ) ** 2 ).sum( axis = 2 )
+    if weights is not None:
+        d2 = d2 - numpy.asarray( weights, float )[ None, : ]
+    nearest = d2.argmin( axis = 1 )
+
+    # le pavé de chaque point (les noeuds valent 0, 1, 2, ... : l'indice est la partie entière)
+    idx = tuple( numpy.clip( pts[ :, k ].astype( int ), 0, values.shape[ k ] - 1 ) for k in range( d ) )
+    rho = values[ idx ] / values.sum()          # masse d'un pavé = valeur * 1, donc la somme
+
+    res = numpy.zeros( len( pos ) )
+    numpy.add.at( res, nearest, rho )
+    return res * float( numpy.prod( ma - mi ) ) / nb_samples
+
+
+if test( "a_constant_image_is_the_volume_up_to_its_mass" ):
+    # le repère où les deux définitions doivent coïncider EXACTEMENT (pas d'échantillonnage) : une
+    # densité constante intégrée sur une cellule, c'est son volume -- normalisé, donc divisé par
+    # le volume total. Si le découpage en morceaux perdait, dupliquait ou décalait quoi que ce
+    # soit, c'est ici que ça se verrait au chiffre près.
+    for d, shape in ( ( 2, ( 3, 4 ) ), ( 3, ( 2, 3, 2 ) ) ):
+        rng = numpy.random.default_rng( 900 + d )
+        n = 12
+        pos = rng.uniform( 0.2, numpy.array( shape ) - 0.2, size = ( n, d ) )
+        box = ( numpy.zeros( d ), numpy.array( shape, float ) )
+
+        plain = _measures( PowerDiagram( pos, box = box ) )
+        img = _unit_box_image( shape, numpy.ones( shape ) )
+        with_img = _measures( PowerDiagram( pos, box = box, distribution = img ) )
+
+        total = float( numpy.prod( shape ) )
+        assert numpy.allclose( with_img, plain / total, atol = 1e-9 ), ( d, with_img, plain / total )
+        # ... et la masse s'y retrouve : les cellules pavent le domaine, donc l'image entière.
+        assert abs( with_img.sum() - 1 ) < 1e-9, ( d, with_img.sum() )
+
+
+if test( "no_distribution_is_still_the_plain_volume" ):
+    # l'autre bout du même contrat : `UnitDensity` ne doit RIEN changer. La ligne de code
+    # `measures` est pourtant la même dans les deux cas (un morceau, densité 1) -- ce test dit
+    # que le passage par `for_each_piece` ne coûte pas un chiffre.
+    rng = numpy.random.default_rng( 901 )
+    for d in ( 2, 3 ):
+        pos = rng.uniform( 0, 1, size = ( 20, d ) )
+        box = ( numpy.zeros( d ), numpy.ones( d ) )
+        m = _measures( PowerDiagram( pos, box = box ) )
+        assert abs( m.sum() - 1 ) < 1e-9, ( d, m.sum() )
+
+
+if test( "an_image_integrates_what_a_sampling_says" ):
+    # la vérification INDÉPENDANTE : une image non triviale (des valeurs quelconques, des zéros
+    # compris) contre un tirage uniforme. La tolérance est celle d'un Monte-Carlo, pas celle du
+    # kernel -- ce qu'on cherche ici est une erreur de convention (un pavé décalé d'un cran, une
+    # valeur lue à la mauvaise place), pas un ulp.
+    for d, shape, n in ( ( 2, ( 4, 3 ), 10 ), ( 3, ( 2, 3, 2 ), 8 ) ):
+        rng = numpy.random.default_rng( 902 + d )
+        values = rng.uniform( 0, 1, size = shape )
+        values.reshape( -1 )[ 0 ] = 0.0                     # un pavé vide : il ne doit rien donner
+        pos = rng.uniform( 0.1, numpy.array( shape ) - 0.1, size = ( n, d ) )
+        box = ( numpy.zeros( d ), numpy.array( shape, float ) )
+
+        got = _measures( PowerDiagram( pos, box = box, distribution = _unit_box_image( shape, values ) ) )
+        ref = _mc_image_measures( pos, values, nb_samples = 400000, seed = 7 )
+
+        assert abs( got.sum() - 1 ) < 1e-9, ( d, got.sum() )
+        assert numpy.abs( got - ref ).max() < 0.02, ( d, got, ref )
+
+
+if test( "an_image_integrates_what_a_sampling_says_with_weights" ):
+    # les poids déplacent les bissectrices ; la densité, elle, ne bouge pas. Les deux mécanismes
+    # sont indépendants et se composent -- encore faut-il le vérifier une fois.
+    d, shape, n = 2, ( 4, 4 ), 9
+    rng = numpy.random.default_rng( 903 )
+    values = rng.uniform( 0.2, 1, size = shape )
+    pos = rng.uniform( 0.3, numpy.array( shape ) - 0.3, size = ( n, d ) )
+    w = rng.uniform( -0.3, 0.3, size = n )
+    box = ( numpy.zeros( d ), numpy.array( shape, float ) )
+
+    got = _measures( PowerDiagram( pos, weights = w, box = box,
+                                   distribution = _unit_box_image( shape, values ) ) )
+    ref = _mc_image_measures( pos, values, weights = w, nb_samples = 400000, seed = 11 )
+    assert abs( got.sum() - 1 ) < 1e-9, got.sum()
+    assert numpy.abs( got - ref ).max() < 0.02, ( got, ref )
+
+
+def _mc_image_measures_general( pos, values, origin, frame, knots, nb_samples = 400000, seed = 0 ):
+    """`_mc_image_measures`, mais pour une image qui n'est pas le cube unité : `x = origin + F^T t`
+    et des noeuds quelconques. Tirer uniformément en `t` revient à tirer uniformément en `x` (le
+    jacobien est constant), et le `|det F|` disparaît de la normalisation -- il multiplie tous les
+    pavés pareil."""
+    values = numpy.asarray( values, float )
+    d = values.ndim
+    lo = numpy.array( [ knots[ a ][ 0 ] for a in range( d ) ] )
+    hi = numpy.array( [ knots[ a ][ values.shape[ a ] ] for a in range( d ) ] )
+
+    rng = numpy.random.default_rng( seed )
+    t = rng.uniform( lo, hi, size = ( nb_samples, d ) )
+    pts = numpy.asarray( origin ) + t @ numpy.asarray( frame )
+
+    d2 = ( ( pts[ :, None, : ] - pos[ None, :, : ] ) ** 2 ).sum( axis = 2 )
+    nearest = d2.argmin( axis = 1 )
+
+    idx = tuple( numpy.clip( numpy.searchsorted( knots[ a ][ : values.shape[ a ] + 1 ], t[ :, a ],
+                                                 side = "right" ) - 1, 0, values.shape[ a ] - 1 )
+                 for a in range( d ) )
+
+    # la masse d'un pavé est `valeur * |det F| * produit des pas` ; le `|det F|` se simplifie
+    spacing = numpy.ones( values.shape )
+    for a in range( d ):
+        w = numpy.diff( numpy.asarray( knots[ a ][ : values.shape[ a ] + 1 ], float ) )
+        spacing = spacing * w.reshape( [ -1 if k == a else 1 for k in range( d ) ] )
+    rho = values[ idx ] / float( ( values * spacing ).sum() )
+
+    res = numpy.zeros( len( pos ) )
+    numpy.add.at( res, nearest, rho )
+    return res * float( numpy.prod( hi - lo ) ) / nb_samples
+
+
+if test( "an_image_honors_its_origin_frame_and_knots" ):
+    # la géométrie de l'image n'est pas forcément le cube unité : `origin` la déplace, `frame` la
+    # déforme, `knots` la dé-régularise. Les plans d'un pavé sont écrits à partir de `F^-1` (voir
+    # `Image::_for_each_piece`), donc une transposée oubliée passerait inaperçue sur une identité
+    # et pas ici -- et les noeuds inégaux disent que l'indice du pavé est bien CHERCHÉ et pas
+    # calculé par une division.
+    d, n = 2, 8
+    shape = ( 3, 3 )
+    rng = numpy.random.default_rng( 904 )
+    values = rng.uniform( 0.2, 1, size = shape )
+
+    origin = numpy.array( [ -1.0, 2.0 ] )
+    frame = numpy.array( [ [ 2.0, 0.5 ], [ 0.0, 1.5 ] ] )               # `x = origin + F^T t`
+    knots = numpy.array( [ [ 0.0, 1.0, 2.5, 4.0 ], [ -1.0, 0.5, 1.0, 3.0 ] ] )
+
+    # les germes, tirés en coordonnées de grille puis transportés : ils tombent donc dans l'image.
+    t = rng.uniform( knots[ :, 0 ] + 0.1, knots[ :, -1 ] - 0.1, size = ( n, d ) )
+    pos = origin + t @ frame
+
+    img = Image( values = values, origin = origin, frame = frame, knots = knots )
+
+    # le domaine, écrit dans le repère physique : la colonne `a` de `F^-1` est la normale de l'axe
+    # `a`, et la bande utile va de `knots( a, 0 )` à `knots( a, shape_a )`.
+    inv = numpy.linalg.inv( frame )
+    sh = inv.T @ origin                                                 # `n_a . origin`, par axe
+    dirs = numpy.concatenate( [ inv.T, -inv.T ] )
+    offs = numpy.concatenate( [ knots[ :, -1 ] + sh, -( knots[ :, 0 ] + sh ) ] )
+
+    got = _measures( PowerDiagram( pos, boundaries = ( dirs, offs ), distribution = img ) )
+    ref = _mc_image_measures_general( pos, values, origin, frame, knots, nb_samples = 500000, seed = 17 )
+
+    assert abs( got.sum() - 1 ) < 1e-6, got.sum()
+    assert numpy.abs( got - ref ).max() < 0.02, ( got, ref )
+
+
+if test( "an_unbounded_diagram_is_finite_against_an_image" ):
+    # sans domaine, les cellules du bord sont infinies et `measures` rend `TF::max`. Avec une
+    # image, plus du tout : l'image est à support compact, donc l'intégrale est finie -- et la
+    # somme fait toujours la masse. C'est le cas où `for_each_piece` n'a aucune boîte englobante à
+    # lire et balaie l'image entière (voir `Image::_for_each_piece`).
+    d, shape, n = 2, ( 3, 3 ), 6
+    rng = numpy.random.default_rng( 905 )
+    values = rng.uniform( 0.2, 1, size = shape )
+    pos = rng.uniform( 0.5, numpy.array( shape ) - 0.5, size = ( n, d ) )
+
+    plain = _measures( PowerDiagram( pos ) )
+    assert ( plain > 1e300 ).any(), plain          # bien des cellules infinies
+
+    got = _measures( PowerDiagram( pos, distribution = _unit_box_image( shape, values ) ) )
+    assert numpy.isfinite( got ).all(), got
+    assert abs( got.sum() - 1 ) < 1e-9, got.sum()
+
+    ref = _mc_image_measures( pos, values, nb_samples = 400000, seed = 13 )
+    assert numpy.abs( got - ref ).max() < 0.02, ( got, ref )
+
+
+if test( "an_image_leaves_the_derivatives_right" ):
+    # l'adjoint contre la différence finie. Un morceau est un polytope dont les coupes portent
+    # l'indice du germe qu'elles font face -- c'est CE fait qui permet de réutiliser
+    # `scatter_cell_grad` tel quel dessus -- et c'est ce que ce test met à l'épreuve, positions et
+    # poids en même temps.
+    d, shape, n = 2, ( 3, 3 ), 6
+    rng = numpy.random.default_rng( 906 )
+    values = rng.uniform( 0.3, 1, size = shape )
+    pos = rng.uniform( 0.4, numpy.array( shape ) - 0.4, size = ( n, d ) )
+    w = rng.uniform( -0.1, 0.1, size = n )
+    box = ( numpy.zeros( d ), numpy.array( shape, float ) )
+
+    check_grad( lambda p, q: PowerDiagram( p, weights = q, box = box,
+                    distribution = _unit_box_image( shape, values ) ).measures, pos, w )
+
+
+if test( "the_density_carries_its_own_derivative" ):
+    # `d masse / d valeur d'un pavé` est le VOLUME du morceau -- la seule chose que la
+    # distribution ait à savoir accumuler, et la seule que le diagramme ne puisse pas deviner.
+    # La normalisation (`values / masse totale`) est du côté Python, donc l'autodiff la traverse
+    # toute seule : ce que ce test vérifie est la chaîne ENTIÈRE, pas juste le kernel.
+    d, shape, n = 2, ( 3, 3 ), 5
+    rng = numpy.random.default_rng( 907 )
+    values = rng.uniform( 0.3, 1, size = shape )
+    pos = rng.uniform( 0.4, numpy.array( shape ) - 0.4, size = ( n, d ) )
+    box = ( numpy.zeros( d ), numpy.array( shape, float ) )
+
+    check_grad( lambda v: PowerDiagram( pos, box = box,
+                    distribution = Image( values = v ) ).measures, values )
+
+
+if test( "the_support_of_a_distribution_bounds_the_cells" ):
+    # une image a un support compact, donc le clipper dessus est une IDENTITÉ, pas une
+    # approximation -- et ça borne les cellules pour rien. Deux témoins : sans domaine explicite
+    # les cellules deviennent finies, et le résultat est le même qu'avec le domaine écrit à la main.
+    d, shape, n = 2, ( 3, 3 ), 7
+    rng = numpy.random.default_rng( 908 )
+    values = rng.uniform( 0.2, 1, size = shape )
+    pos = rng.uniform( 0.4, numpy.array( shape ) - 0.4, size = ( n, d ) )
+    img = lambda: _unit_box_image( shape, values )
+
+    free = PowerDiagram( pos, distribution = img() )
+    boxed = PowerDiagram( pos, box = ( numpy.zeros( d ), numpy.array( shape, float ) ), distribution = img() )
+
+    assert numpy.allclose( _measures( free ), _measures( boxed ), atol = 1e-7 )
+
+    # les cellules elles-mêmes sont bornées, ce qui est ce qu'un accélérateur demande pour élaguer
+    # (`cell_may_be_cut` n'a rien à mordre sur une cellule infinie) -- et ce que le découpage
+    # demande pour avoir une boîte englobante à lire.
+    assert numpy.asarray( free.cells.is_fully_bounded ).reshape( -1 ).all()
+    assert not numpy.asarray( PowerDiagram( pos ).cells.is_fully_bounded ).reshape( -1 ).all()
+
+
+if test( "the_support_intersects_a_given_domain" ):
+    # domaine de l'appelant ET support : les demi-espaces s'AJOUTENT, ils ne se remplacent pas.
+    # Ici la boîte demandée est plus petite que l'image, donc c'est elle qui doit gagner.
+    d, shape, n = 2, ( 4, 4 ), 6
+    rng = numpy.random.default_rng( 909 )
+    values = numpy.ones( shape )
+    pos = rng.uniform( 1.1, 2.9, size = ( n, d ) )
+    small = ( numpy.ones( d ), 3 * numpy.ones( d ) )
+
+    m = _measures( PowerDiagram( pos, box = small, distribution = _unit_box_image( shape, values ) ) )
+    # image constante de masse 1 sur 16 pavés : la petite boîte en couvre 4, donc un quart.
+    assert abs( m.sum() - 0.25 ) < 1e-6, m.sum()
+
+
+# ---- une densité LISSE : la quadrature, et la délégation des dérivées -------------------------
+# `SumOfGaussians` ne découpe rien et ne connaît pas les cellules : elle ne répond qu'en un POINT
+# (`value_at`, `gradient_at`, `add_value_grad_at`). C'est `PowerDiagram` qui, voyant
+# `is_constant == false`, découpe le morceau en simplices et y fait sa quadrature. Ce qui suit
+# éprouve ce partage-là -- surtout côté dérivées, où chacun ne doit produire QUE sa moitié.
+
+
+def _gaussian_density( x, centers, sigmas, weights ):
+    """rho( x ) écrit en numpy, indépendamment du kernel. `x` : `[ m, d ]`."""
+    d = x.shape[ 1 ]
+    r2 = ( ( x[ :, None, : ] - centers[ None, :, : ] ) ** 2 ).sum( axis = 2 )
+    norm = ( 2 * numpy.pi * sigmas ** 2 ) ** ( -d / 2 )
+    return ( weights * norm * numpy.exp( - r2 / ( 2 * sigmas ** 2 ) ) ).sum( axis = 1 )
+
+
+def _mc_gaussian_measures( pos, centers, sigmas, weights, mi, ma, nb_samples = 400000, seed = 0 ):
+    """Les mesures par échantillonnage, densité gaussienne comprise -- normalisée à masse 1 comme
+    `PowerDiagram` le fait, et TRONQUÉE au domaine comme lui aussi (les queues qui sortent de la
+    boîte ne sont dans aucune cellule)."""
+    mi, ma = numpy.asarray( mi, float ), numpy.asarray( ma, float )
+    rng = numpy.random.default_rng( seed )
+    pts = rng.uniform( mi, ma, size = ( nb_samples, mi.size ) )
+
+    rho = _gaussian_density( pts, centers, sigmas, weights / weights.sum() )
+    nearest = ( ( pts[ :, None, : ] - pos[ None, :, : ] ) ** 2 ).sum( axis = 2 ).argmin( axis = 1 )
+
+    res = numpy.zeros( len( pos ) )
+    numpy.add.at( res, nearest, rho )
+    return res * float( numpy.prod( ma - mi ) ) / nb_samples
+
+
+if test( "a_smooth_density_integrates_what_a_sampling_says" ):
+    # la quadrature est exacte au degré 2 sur chaque simplexe : avec des gaussiennes LARGES devant
+    # les cellules -- le régime des applications -- elle doit tomber sur la référence à la
+    # tolérance du Monte-Carlo et pas à la sienne.
+    for d, n in ( ( 2, 12 ), ( 3, 10 ) ):
+        rng = numpy.random.default_rng( 910 + d )
+        mi, ma = numpy.zeros( d ), numpy.ones( d )
+        centers = rng.uniform( 0.2, 0.8, size = ( 3, d ) )
+        sigmas = rng.uniform( 0.35, 0.6, size = 3 )
+        weights = rng.uniform( 0.5, 1.5, size = 3 )
+        pos = rng.uniform( 0.05, 0.95, size = ( n, d ) )
+
+        sog = SumOfGaussians( positions = centers, sigmas = sigmas, weights = weights )
+        got = _measures( PowerDiagram( pos, box = ( mi, ma ), distribution = sog ) )
+        ref = _mc_gaussian_measures( pos, centers, sigmas, weights, mi, ma,
+                                     nb_samples = 500000, seed = 23 )
+
+        assert numpy.isfinite( got ).all(), ( d, got )
+        assert numpy.abs( got - ref ).max() < 0.01, ( d, got, ref )
+        # la masse HORS du domaine est perdue, donc la somme est la masse cible moins les queues :
+        # inférieure à 1, et égale à ce que le même échantillonnage en dit.
+        assert got.sum() < 1.0 and abs( got.sum() - ref.sum() ) < 0.01, ( d, got.sum(), ref.sum() )
+
+
+if test( "a_smooth_density_is_exact_on_an_affine_one" ):
+    # la règle de quadrature est exacte jusqu'au degré 2, donc sur une densité affine elle ne doit
+    # pas faire d'erreur DU TOUT. Une gaussienne très large en est une, au second ordre près : on
+    # prend plutôt le test net -- une seule gaussienne centrée, très large, dont on compare la
+    # somme des mesures à son intégrale exacte sur la boîte (erf), pas à un tirage.
+    from math import erf, sqrt
+    d, n = 2, 9
+    rng = numpy.random.default_rng( 912 )
+    mi, ma = numpy.zeros( d ), numpy.ones( d )
+    centers = numpy.full( ( 1, d ), 0.5 )
+    sigmas = numpy.array( [ 4.0 ] )                     # très plate devant la boîte
+    weights = numpy.array( [ 1.0 ] )
+    pos = rng.uniform( 0.05, 0.95, size = ( n, d ) )
+
+    sog = SumOfGaussians( positions = centers, sigmas = sigmas, weights = weights )
+    got = _measures( PowerDiagram( pos, box = ( mi, ma ), distribution = sog ) )
+
+    # l'intégrale exacte de la gaussienne normalisée sur le carré : un produit d'erf par axe
+    part = erf( 0.5 / ( sigmas[ 0 ] * sqrt( 2.0 ) ) ) ** d
+    assert abs( got.sum() - part ) < 2e-4, ( got.sum(), part )
+
+
+if test( "a_smooth_density_leaves_the_derivatives_right" ):
+    # LE test de délégation. L'adjoint traverse trois responsabilités séparées :
+    #   * la distribution ne rend que `gradient_at` (comment la densité varie en un point) ;
+    #   * l'intégrateur sait qu'un noeud de quadrature est une combinaison barycentrique FIXE des
+    #     sommets du simplexe, donc comment la cotangente d'un point retombe sur eux, et comment
+    #     le volume bouge avec eux ;
+    #   * `scatter_cell_grad` remonte des sommets aux germes, sans rien savoir de la densité.
+    # Si l'un des trois oublie sa moitié, la différence finie le dit. Positions ET poids ensemble.
+    d, n = 2, 7
+    rng = numpy.random.default_rng( 913 )
+    mi, ma = numpy.zeros( d ), numpy.ones( d )
+    centers = rng.uniform( 0.2, 0.8, size = ( 2, d ) )
+    sigmas = numpy.array( [ 0.4, 0.55 ] )
+    weights = numpy.array( [ 1.0, 0.7 ] )
+    pos = rng.uniform( 0.1, 0.9, size = ( n, d ) )
+    w = rng.uniform( -0.01, 0.01, size = n )
+
+    check_grad( lambda p, q: PowerDiagram( p, weights = q, box = ( mi, ma ),
+                    distribution = SumOfGaussians( positions = centers, sigmas = sigmas,
+                                                   weights = weights ) ).measures, pos, w )
+
+
+if test( "the_gaussians_carry_their_own_derivatives" ):
+    # l'autre moitié : `d mesure / d ( centres, sigmas, poids )`. Elle ne passe PAS par la
+    # géométrie -- les cellules ne bougent pas quand la densité change -- donc elle éprouve
+    # exactement `SumOfGaussians::add_value_grad_at`, et la normalisation (`w / somme( w )`) que
+    # l'autodiff traverse côté Python.
+    d, n = 2, 6
+    rng = numpy.random.default_rng( 914 )
+    mi, ma = numpy.zeros( d ), numpy.ones( d )
+    pos = rng.uniform( 0.1, 0.9, size = ( n, d ) )
+    centers = rng.uniform( 0.25, 0.75, size = ( 2, d ) )
+    sigmas = numpy.array( [ 0.45, 0.6 ] )
+    weights = numpy.array( [ 1.0, 0.8 ] )
+    box = ( mi, ma )
+
+    check_grad( lambda c, s, q: PowerDiagram( pos, box = box,
+                    distribution = SumOfGaussians( positions = c, sigmas = s, weights = q ) ).measures,
+                centers, sigmas, weights )
+
+
+def _fine_triangle_integral( A, B, C, centers, sigmas, weights, depth ):
+    """L'intégrale de la densité sur un triangle, par subdivision récursive + règle à 3 noeuds.
+
+    Une référence INDÉPENDANTE du kernel : aucune fonction spéciale, aucune formule fermée -- juste
+    de la force brute, `4 ** depth` sous-triangles."""
+    if depth == 0:
+        # le produit vectoriel 2D écrit à la main : `numpy.cross` sur des vecteurs de dimension 2
+        # est SUPPRIMÉ depuis NumPy 2 (il ne prend plus que de la dimension 3). Passait en local
+        # avec un avertissement, échouait dans le conteneur, dont le numpy est plus récent.
+        u, v = B - A, C - A
+        area = abs( u[ 0 ] * v[ 1 ] - u[ 1 ] * v[ 0 ] ) / 2
+        pts = numpy.array( [ A, B, C ] )
+        al, be = 2 / 3, 1 / 6
+        s = 0.0
+        for q in range( 3 ):
+            bar = numpy.full( 3, be ); bar[ q ] = al
+            s += _gaussian_density( ( bar @ pts )[ None, : ], centers, sigmas, weights )[ 0 ]
+        return area * s / 3
+    AB, BC, CA = ( A + B ) / 2, ( B + C ) / 2, ( C + A ) / 2
+    return ( _fine_triangle_integral( A, AB, CA, centers, sigmas, weights, depth - 1 )
+           + _fine_triangle_integral( AB, B, BC, centers, sigmas, weights, depth - 1 )
+           + _fine_triangle_integral( CA, BC, C, centers, sigmas, weights, depth - 1 )
+           + _fine_triangle_integral( AB, BC, CA, centers, sigmas, weights, depth - 1 ) )
+
+
+def _brute_force_cell_integrals( pd, centers, sigmas, weights, depth = 5 ):
+    """L'intégrale de la densité sur CHAQUE cellule de `pd`, calculée en numpy sur la géométrie que
+    le kernel a produite. Ce qu'on éprouve ainsi est l'INTÉGRATION seule, la géométrie étant la
+    même des deux côtés."""
+    cs = pd.cells
+    nvs = numpy.asarray( cs.nb_vertices.value ).reshape( -1 )
+    vps = numpy.asarray( cs.vertex_positions )
+    res = numpy.zeros( len( nvs ) )
+    for i in range( len( nvs ) ):
+        v = vps[ i, : int( nvs[ i ] ) ]
+        for k in range( 1, len( v ) - 1 ):      # éventail depuis le sommet 0, comme le kernel
+            res[ i ] += _fine_triangle_integral( v[ 0 ], v[ k ], v[ k + 1 ],
+                                                 centers, sigmas, weights, depth )
+    return res
+
+
+if test( "the_exact_2d_gaussian_holds_where_a_quadrature_could_not" ):
+    # LE test qui distingue l'exact de la quadrature. Une gaussienne ÉTROITE devant les cellules :
+    # une règle de degré 2 sur la cellule y fait une erreur en `( taille / sigma ) ^ 4`, c.-à-d.
+    # énorme, là où la réduction 1D ne dépend pas du tout de la forme de la cellule.
+    #
+    # Deux témoins indépendants : la masse totale, qui a une forme close (un produit d'erf sur la
+    # boîte), et chaque cellule prise à part contre une subdivision en force brute.
+    from math import erf, sqrt
+    d, n = 2, 6
+    rng = numpy.random.default_rng( 920 )
+    mi, ma = numpy.zeros( d ), numpy.ones( d )
+    centers = numpy.array( [ [ 0.5, 0.5 ] ] )
+    sigmas = numpy.array( [ 0.09 ] )            # cellules ~0.4 : sigma 4x plus petit
+    weights = numpy.array( [ 1.0 ] )
+    pos = rng.uniform( 0.08, 0.92, size = ( n, d ) )
+
+    sog = lambda: SumOfGaussians( positions = centers, sigmas = sigmas, weights = weights )
+    pd = PowerDiagram( pos, box = ( mi, ma ), distribution = sog() )
+    got = _measures( pd )
+
+    # la masse dans la boîte, en forme close -- la gaussienne est normalisée à 1
+    part = erf( 0.5 / ( sigmas[ 0 ] * sqrt( 2.0 ) ) ) ** d
+    assert abs( got.sum() - part ) < 1e-5, ( got.sum(), part )
+
+    ref = _brute_force_cell_integrals( PowerDiagram( pos, box = ( mi, ma ) ),
+                                       centers, sigmas, weights / weights.sum(), depth = 6 )
+    assert numpy.abs( got - ref ).max() < 1e-5, ( got, ref )
+
+
+if test( "the_exact_2d_gaussian_survives_the_awkward_placements" ):
+    # les configurations qui font trébucher la réduction si les signes ou les queues sont faux :
+    # un germe EXACTEMENT sur le centre d'une gaussienne (l'origine tombe sur un sommet de cellule
+    # et les distances aux droites deviennent minuscules), et des cellules immenses devant sigma.
+    d = 2
+    mi, ma = numpy.zeros( d ), numpy.ones( d )
+    centers = numpy.array( [ [ 0.30, 0.42 ], [ 0.75, 0.60 ] ] )
+    sigmas = numpy.array( [ 0.05, 0.35 ] )
+    weights = numpy.array( [ 1.0, 0.6 ] )
+    # le premier germe EST le premier centre ; les trois autres sont loin -> grandes cellules
+    pos = numpy.array( [ [ 0.30, 0.42 ], [ 0.95, 0.05 ], [ 0.05, 0.95 ], [ 0.95, 0.95 ] ] )
+
+    sog = SumOfGaussians( positions = centers, sigmas = sigmas, weights = weights )
+    got = _measures( PowerDiagram( pos, box = ( mi, ma ), distribution = sog ) )
+    ref = _brute_force_cell_integrals( PowerDiagram( pos, box = ( mi, ma ) ),
+                                       centers, sigmas, weights / weights.sum(), depth = 7 )
+
+    assert numpy.isfinite( got ).all(), got
+    assert numpy.abs( got - ref ).max() < 1e-5, ( got, ref )
+
+
+if test( "the_exact_2d_gaussian_derives_right_too" ):
+    # l'adjoint du chemin EXACT est un tout autre code que celui de la quadrature : des intégrales
+    # de bord (`erf`) au lieu d'un cofacteur plus un gradient aux noeuds. Il mérite donc sa propre
+    # différence finie -- et sur une gaussienne étroite, là où les deux chemins ne peuvent pas se
+    # confondre.
+    d, n = 2, 6
+    rng = numpy.random.default_rng( 921 )
+    mi, ma = numpy.zeros( d ), numpy.ones( d )
+    centers = numpy.array( [ [ 0.42, 0.55 ], [ 0.68, 0.30 ] ] )
+    sigmas = numpy.array( [ 0.12, 0.20 ] )
+    weights = numpy.array( [ 1.0, 0.7 ] )
+    pos = rng.uniform( 0.1, 0.9, size = ( n, d ) )
+    w = rng.uniform( -0.01, 0.01, size = n )
+
+    check_grad( lambda p, q: PowerDiagram( p, weights = q, box = ( mi, ma ),
+                    distribution = SumOfGaussians( positions = centers, sigmas = sigmas,
+                                                   weights = weights ) ).measures, pos, w )
+
+    check_grad( lambda c, s, q: PowerDiagram( pos, box = ( mi, ma ),
+                    distribution = SumOfGaussians( positions = c, sigmas = s, weights = q ) ).measures,
+                centers, sigmas, weights )
+
+
+if test( "the_quadrature_subdivides_until_it_sees_the_density" ):
+    # En 3D on ne sait pas s'intégrer, donc c'est `PointwiseDensity` qui travaille -- mais une règle
+    # de degré 2 posée sur un tétraèdre plus large que sigma est simplement AVEUGLE à la densité.
+    # D'où la bissection adaptative : on coupe la plus longue arête tant que le simplexe et ses deux
+    # moitiés ne s'accordent pas.
+    #
+    # Témoin : la masse totale dans la boîte, qui a une forme close (un produit d'erf par axe) et ne
+    # doit rien au kernel. Les cellules pavant la boîte, la somme des mesures est cette masse-là.
+    from math import erf, sqrt
+    d, n = 3, 8
+    rng = numpy.random.default_rng( 930 )
+    mi, ma = numpy.zeros( d ), numpy.ones( d )
+    centers = numpy.full( ( 1, d ), 0.5 )
+    sigmas = numpy.array( [ 0.15 ] )            # cellules ~0.5 : la règle brute ne verrait rien
+    weights = numpy.array( [ 1.0 ] )
+    pos = rng.uniform( 0.1, 0.9, size = ( n, d ) )
+
+    sog = SumOfGaussians( positions = centers, sigmas = sigmas, weights = weights )
+    got = _measures( PowerDiagram( pos, box = ( mi, ma ), distribution = sog ) )
+
+    part = erf( 0.5 / ( sigmas[ 0 ] * sqrt( 2.0 ) ) ) ** d
+    assert numpy.isfinite( got ).all(), got
+    assert abs( got.sum() - part ) < 2e-3, ( got.sum(), part )
+
+
+if test( "the_subdivided_quadrature_derives_right" ):
+    # L'adjoint du chemin quadrature : il doit refaire EXACTEMENT la même subdivision que le forward
+    # (le critère est déterministe), dériver chaque feuille, et ramener les cotangentes jusqu'aux
+    # sommets d'origine par leurs coordonnées barycentriques.
+    #
+    # LE PAS de la différence finie est CHOISI, et il n'y a pas de bon réglage par défaut ici : les
+    # deux sources d'erreur varient en sens inverse, donc il y a un optimum.
+    #   * une quadrature adaptative PAR LA VALEUR n'est lisse qu'à `rtol` près -- quand un
+    #     sous-simplexe bascule de « raffiner » à « accepter », la valeur saute d'autant. L'adjoint,
+    #     lui, dérive la branche localement lisse, ce qui est correct et ce dont un optimiseur a
+    #     besoin ; mais la différence finie DIVISE ce saut par le pas, donc ce terme est en `1/pas`.
+    #   * la TRONCATURE de la différence centrée, elle, est en `pas^2`.
+    # MESURÉ sur ce cas (trois pas, trois erreurs) : le premier terme vaut ~4.6e-6/pas, le second
+    # ~20*pas^2. L'optimum est donc vers 5e-3, et l'erreur y vaut ~1.4e-3 -- soit environ 1 % de la
+    # dérivée. C'est un PLANCHER : aucun pas ne fait mieux, et la tolérance ci-dessous est prise à
+    # 3 % pour ne pas dépendre de la direction que `check_grad` tire au hasard.
+    #
+    # Ce test est donc un contrôle à 1 %, pas à 1e-4. Il attrape ce pour quoi il est là -- un signe,
+    # un facteur, un terme oublié dans le cofacteur, le gradient aux noeuds ou le report
+    # barycentrique -- mais il ne dirait rien d'une erreur relative de 1e-3.
+    #
+    # Durcir `rtol` du schéma ne changerait pas la donne à un coût raisonnable : il faudrait le
+    # descendre de deux décades (donc payer des bissections partout) pour gagner une décade ici.
+    # La vérification SERRÉE, au pas par défaut, c'est le chemin exact 2D
+    # (`the_exact_2d_gaussian_derives_right_too`), qui lui est parfaitement lisse.
+    d, n = 3, 6
+    rng = numpy.random.default_rng( 931 )
+    mi, ma = numpy.zeros( d ), numpy.ones( d )
+    pos = rng.uniform( 0.15, 0.85, size = ( n, d ) )
+
+    for sigmas in ( numpy.array( [ 0.7, 0.9 ] ),        # lisse : la règle voit tout
+                    numpy.array( [ 0.18, 0.30 ] ) ):    # étroit : la subdivision travaille
+        centers = rng.uniform( 0.3, 0.7, size = ( 2, d ) )
+        weights = numpy.array( [ 1.0, 0.6 ] )
+
+        check_grad( lambda p: PowerDiagram( p, box = ( mi, ma ),
+                        distribution = SumOfGaussians( positions = centers, sigmas = sigmas,
+                                                       weights = weights ) ).measures,
+                    pos, eps = 5e-3, rtol = 3e-2 )
+
+        check_grad( lambda c, s, q: PowerDiagram( pos, box = ( mi, ma ),
+                        distribution = SumOfGaussians( positions = c, sigmas = s, weights = q ) ).measures,
+                    centers, sigmas, weights, eps = 5e-3, rtol = 3e-2 )

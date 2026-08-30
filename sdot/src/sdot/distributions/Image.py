@@ -1,14 +1,9 @@
-from typing import TYPE_CHECKING, cast, overload
+import numpy
 
-from loom.tensor import CtShapeVar
-from loom.tensor import ShapeVar
-from loom.tensor import AxisList
-from loom.tensor import RealTensor
-from loom.tensor import Axis
-
-from loom.util import ComputedAttribute
 from loom.compilation.FfiCode import FfiCodeParallel
 from loom.drivers.driver import driver
+from loom.tensor import Axis, AxisList, CtShapeVar, RealTensor, ShapeVar
+from loom.util import ComputedAttribute
 
 from .Distribution import Distribution
 
@@ -59,6 +54,38 @@ class Image( Distribution ):
 
     def __init__( self, values, **kwargs ) -> None:
         self.__base_init__( values = values, target_mass = 1.0, **kwargs )
+
+    def bounding_half_spaces( self ):
+        # voir `Distribution.bounding_half_spaces`. Le support est le pavé de la grille, écrit en
+        # coordonnées PHYSIQUES : `t_a = n_a . ( x - origin )` avec `n_a` la colonne `a` de `F^-1`
+        # (convention `x = origin + F^T t`, celle de `Image::measure`), et la bande utile va de
+        # `knots( a, 0 )` à `knots( a, shape_a )`.
+        try:
+            d = int( self.nb_dims.value )
+            shape = numpy.asarray( self.shape.value, dtype = int ).reshape( -1 )
+            frame = numpy.asarray( self.frame, dtype = float ).reshape( d, d ) if self.frame.is_defined else numpy.eye( d )
+            origin = numpy.asarray( self.origin, dtype = float ).reshape( -1 ) if self.origin.is_defined else numpy.zeros( d )
+            if self.knots.is_defined:
+                knots = numpy.asarray( self.knots, dtype = float ).reshape( d, -1 )
+                lo = knots[ :, 0 ]
+                hi = numpy.array( [ knots[ a, shape[ a ] ] for a in range( d ) ] )
+            else:
+                lo, hi = numpy.zeros( d ), shape.astype( float )
+            nrm = numpy.linalg.inv( frame ).T                    # ligne `a` = la normale de l'axe `a`
+        except ( TypeError, ValueError ):
+            # géométrie non lisible côté hôte (un tracer sous `jit`) : borner est une optimisation,
+            # on s'en passe plutôt que de faire échouer l'appel.
+            return None
+
+        sh = nrm @ origin
+        return ( numpy.concatenate( [ nrm, -nrm ] ),
+                 numpy.concatenate( [ hi + sh, -( lo + sh ) ] ) )
+
+    def extra_cuts_per_piece( self, nb_dims ):
+        # un morceau est `cellule INTER pavé de la grille`, et un pavé est l'intersection de 2d
+        # demi-espaces (voir `Image::_for_each_piece`). Les coupes de la cellule, elles, sont déjà
+        # comptées par la capacité de la cellule.
+        return 2 * nb_dims
 
     @property
     def nb_pieces( self ):

@@ -1,0 +1,185 @@
+# Apptainer image for JAX on NVIDIA GPUs, compiling AHEAD OF TIME.
+#
+# Same chain as cuda-jax.def (AdaptiveCpp v25.10.0 / LLVM 20 / CUDA 12.8) and the same JAX-only
+# rule -- see that file and containers/README.md for why JAX and PyTorch never share an image.
+# ONE difference, and it is the whole point:
+#
+#   cuda-jax.def compiles through the `generic` (SSCP) flow, which JITs PTX at run time and
+#   therefore needs no vendor toolkit afterwards; its final stage deliberately DROPS the CUDA
+#   toolkit and keeps only `libdevice.10.bc`, so that no toolkit library can shadow JAX's pinned
+#   wheels.
+#
+#   Here the kernels are compiled AHEAD OF TIME, at run time -- `loom` writes a .cpp and calls
+#   acpp on it while the program runs -- so `ptxas` and `fatbinary` must BE THERE. The final
+#   stage is the CUDA devel image itself, toolkit included.
+#
+# What that costs, and how it is contained: the devel image puts its own CUDA libraries on the
+# loader's path, which is exactly what cuda-jax.def avoids. So the toolkit stays for its
+# BINARIES (PATH) and its loader entry is removed (see %post) -- JAX keeps resolving its CUDA
+# user space through its wheels' own RUNPATHs, as in the other image.
+#
+# Why one would want this image at all: a JIT'd kernel is invisible to the tools that read real
+# binaries. `compute-sanitizer` reports nothing on an SSCP run -- measured, not supposed -- and a
+# profiler sees little. AOT gives ordinary cubins, hence a usable memcheck.
+#
+# Build from the repository root:
+#   ./run build-sif --env lmo-cuda-jax-aot
+# or by hand:
+#   apptainer build --fakeroot containers/cuda-jax-aot.sif containers/cuda-jax-aot.def
+# Run:
+#   apptainer exec --nvccli containers/cuda-jax-aot.sif \
+#       env SDOT_DEVICE=cuda compute-sanitizer python -m loom.cli test "test_PowerDiagram::*"
+
+Bootstrap: docker
+From: nvidia/cuda:12.8.1-devel-ubuntu24.04
+Stage: toolchain
+
+%files
+    requirements.txt       /opt/sdot/requirements.txt
+    loom/pyproject.toml    /opt/sdot/loom/pyproject.toml
+    loom/src               /opt/sdot/loom/src
+    loom/include           /opt/sdot/loom/include
+
+%post
+    set -eux
+    LLVM_VER=20
+    export SDOT_ACPP_VERSION=v25.10.0
+    export DEBIAN_FRONTEND=noninteractive
+    export SDOT_CACHE_DIR=/opt/sdot-cache
+    export CUDA_HOME=/usr/local/cuda
+
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        build-essential cmake ninja-build git ca-certificates \
+        wget gnupg lsb-release software-properties-common \
+        python3 python3-pip python3-venv
+    wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+    chmod +x /tmp/llvm.sh
+    /tmp/llvm.sh ${LLVM_VER} all
+    apt-get install -y --no-install-recommends libomp-${LLVM_VER}-dev
+    rm -f /tmp/llvm.sh
+
+    export CC=clang-${LLVM_VER}
+    export CXX=clang++-${LLVM_VER}
+    python3 -m venv /opt/build-venv
+    /opt/build-venv/bin/pip install --no-cache-dir --upgrade pip
+    /opt/build-venv/bin/pip install --no-cache-dir -r /opt/sdot/requirements.txt
+    PYTHONPATH=/opt/sdot/loom/src /opt/build-venv/bin/python -c \
+        "from loom.compilation.adaptive_cpp import ensure_acpp; print('acpp full/cuda:', ensure_acpp('full', ('cuda',)))"
+    chmod -R a+rX /opt/sdot-cache
+
+
+# Le CUDA devel, et non `ubuntu:24.04` : c'est là toute la différence avec `cuda-jax.def`.
+Bootstrap: docker
+From: nvidia/cuda:12.8.1-devel-ubuntu24.04
+Stage: final
+
+%files
+    requirements.txt       /opt/sdot/requirements.txt
+    loom/pyproject.toml    /opt/sdot/loom/pyproject.toml
+    loom/src               /opt/sdot/loom/src
+    loom/include           /opt/sdot/loom/include
+    sdot/pyproject.toml    /opt/sdot/sdot/pyproject.toml
+    sdot/src               /opt/sdot/sdot/src
+    sdot/include           /opt/sdot/sdot/include
+    otrec/pyproject.toml   /opt/sdot/otrec/pyproject.toml
+    otrec/src              /opt/sdot/otrec/src
+
+%files from toolchain
+    /opt/sdot-cache /opt/sdot-cache
+
+%environment
+    export SDOT_CACHE_DIR=/opt/sdot-cache
+    export PATH=/opt/venv-jax/bin:/usr/lib/llvm-20/bin:/usr/local/cuda/bin:$PATH
+    export DEBIAN_FRONTEND=noninteractive
+    # C'est l'image AOT : elle le dit elle-même, plutôt que d'obliger chaque appel à penser à la
+    # variable. `SDOT_ACPP_TARGET` reste prioritaire pour épingler une autre architecture.
+    export LOOM_GPU_AOT=1
+    # `CUDA_HOME` pour que acpp trouve `ptxas`/`fatbinary`/les en-têtes ; toujours PAS de
+    # `LD_LIBRARY_PATH`, et on l'efface explicitement : l'image `devel` en pose un, et il ferait
+    # passer les libs du toolkit devant les wheels épinglées de JAX (le travers que
+    # `cuda-jax.def` évite en supprimant le toolkit -- ici on le garde, il faut donc le contenir).
+    export CUDA_HOME=/usr/local/cuda
+    unset LD_LIBRARY_PATH
+
+%post
+    set -eux
+    LLVM_VER=20
+    export DEBIAN_FRONTEND=noninteractive
+
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        ca-certificates wget gnupg lsb-release software-properties-common \
+        python3 python3-pip python3-venv
+    wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+    chmod +x /tmp/llvm.sh
+    /tmp/llvm.sh ${LLVM_VER} all
+    apt-get install -y --no-install-recommends libomp-${LLVM_VER}-dev
+    rm -f /tmp/llvm.sh
+    apt-get purge -y wget gnupg lsb-release software-properties-common
+    apt-get autoremove -y
+
+    python3 -m venv /opt/venv-jax
+    /opt/venv-jax/bin/pip install --no-cache-dir --upgrade pip
+    /opt/venv-jax/bin/pip install --no-cache-dir -r /opt/sdot/requirements.txt
+    /opt/venv-jax/bin/pip install --no-cache-dir "jax[cuda12]"
+
+    /opt/venv-jax/bin/pip install --no-cache-dir -e /opt/sdot/loom
+    /opt/venv-jax/bin/pip install --no-cache-dir -e /opt/sdot/sdot
+    /opt/venv-jax/bin/pip install --no-cache-dir -e /opt/sdot/otrec
+
+    # Le toolkit reste, mais SEULEMENT pour ses binaires. On retire son entrée du chargeur
+    # dynamique : sinon `libcudart`/`libcublas` du toolkit passeraient devant celles des wheels
+    # JAX, ce qui est précisément le mélange que l'autre image évite en supprimant le toolkit.
+    rm -f /etc/ld.so.conf.d/*cuda*.conf /etc/ld.so.conf.d/nvidia*.conf
+    ldconfig
+
+    # ... et comme dans cuda-jax.def, on donne à acpp SA libcudart : son plugin CUDA porte le
+    # RUNPATH absolu du toolkit avec lequel il a été bâti, et le repli suivant est `$ORIGIN/../`.
+    # En y posant celle de JAX, ni le toolkit qu'on vient de sortir du cache ni une injection
+    # `--nv` ne peuvent lui en faire choisir une autre. Nécessaire ICI PLUS QU'AILLEURS : c'est la
+    # seule image où le toolkit est encore présent sur le disque.
+    ACPP_LIB=$(find /opt/sdot-cache/adaptivecpp -maxdepth 3 -path '*/lib/hipSYCL' -printf '%h\n' | head -1)
+    test -n "$ACPP_LIB"
+    JAX_CUDART=$(/opt/venv-jax/bin/python -c "import pathlib, nvidia.cuda_runtime as m; print(pathlib.Path(next(iter(m.__path__))) / 'lib/libcudart.so.12')")
+    test -f "$JAX_CUDART"
+    cp "$JAX_CUDART" "$ACPP_LIB/"
+
+    chmod -R a+rX /opt/sdot-cache
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+%test
+    # 1. la chaîne acpp est là, en profil `full` avec le backend cuda
+    SDOT_CACHE_DIR=/opt/sdot-cache /opt/venv-jax/bin/python -c \
+        "from loom.compilation.adaptive_cpp import is_available; assert is_available('full', ('cuda',)); print('acpp full/cuda ok')"
+    # 2. ce que cette image a de plus que cuda-jax.sif : le toolkit, à l'exécution
+    test -x /usr/local/cuda/bin/ptxas
+    test -x /usr/local/cuda/bin/fatbinary
+    ptxas --version | head -1
+    # 3. et il ne doit PAS s'être remis sur le chemin du chargeur
+    sh -c '! ldconfig -p | grep -q "libcudart.*cuda/lib64"' \
+        || ( echo "le toolkit CUDA est encore dans ld.so.cache" && false )
+    /opt/venv-jax/bin/python -c "import importlib.util, jax; assert importlib.util.find_spec('torch') is None; print('jax', jax.__version__)"
+    /opt/venv-jax/bin/python -c "import loom, sdot, otrec; print('loom ok, sdot ok, otrec ok')"
+    # 4. un vrai calcul, sur CPU (pas de GPU pendant un build)
+    SDOT_CACHE_DIR=/opt/sdot-cache ACPP_APPDB_DIR=/tmp/acpp-appdb \
+    SDOT_DEVICE=cpu JAX_PLATFORMS=cpu LOOM_GPU_AOT= /opt/venv-jax/bin/python -c \
+        "import numpy as np; from sdot import Cell; c = Cell.make_hypercube(2, [0, 0], [[2, 0], [0, 1]]); m = float(np.asarray(c.measure)); assert abs(m - 2.0) < 1e-9, m; print('Cell.measure ok:', m)"
+
+%labels
+    org.sdot.role    cuda-jax-toolchain-aot
+    org.sdot.acpp    v25.10.0
+    org.sdot.llvm    20
+    org.sdot.cuda    12.8
+
+%help
+    Comme cuda-jax.sif, mais compilant AHEAD OF TIME : le toolkit CUDA reste dans l'image parce
+    que `ptxas`/`fatbinary` sont appelés À L'EXÉCUTION (loom compile ses kernels pendant que le
+    programme tourne). `LOOM_GPU_AOT=1` est posé par l'image.
+
+    À quoi ça sert : les kernels deviennent de vrais cubins, donc visibles des outils qui lisent
+    des binaires -- `compute-sanitizer` ne voit RIEN sur un run SSCP (mesuré), et c'est ce qui
+    bloque aujourd'hui la recherche d'un accès mémoire illégal sur le chemin `cells`.
+
+      apptainer exec --nvccli containers/cuda-jax-aot.sif \
+          env SDOT_DEVICE=cuda compute-sanitizer python -m loom.cli test "test_PowerDiagram::*"

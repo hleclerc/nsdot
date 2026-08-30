@@ -1083,6 +1083,39 @@ UTP void DTP::measure( auto &&res ) const {
     }
 }
 
+UTP void DTP::for_each_simplex( auto &&func ) const {
+    static_assert( ct_dim <= 2, "this walk is the d <= 2 one (see Cell.h)" );
+
+    const SI nv = nb_vertices;
+    if ( nv < ct_dim + 1 )
+        return;
+
+    Vector<SI,ct_dim+1> chain;
+    if constexpr ( ct_dim == 1 ) {
+        // le « simplexe » est le segment lui-même, pris entre ses deux extrémités -- les mêmes que
+        // celles que `measure` retient, donc les deux vues s'accordent.
+        SI i_min = 0, i_max = 0;
+        for ( SI i = 1; i < nv; ++i ) {
+            if ( vertex_positions( i, 0 ) < vertex_positions( i_min, 0 ) ) i_min = i;
+            if ( vertex_positions( i, 0 ) > vertex_positions( i_max, 0 ) ) i_max = i;
+        }
+        chain[ 0 ] = i_min;
+        chain[ 1 ] = i_max;
+        func( chain );
+    } else {
+        // 2D : un éventail depuis le sommet 0. Les sommets sont cycliquement ordonnés et la
+        // cellule est convexe, donc les triangles `( 0, i, i+1 )` la PAVENT sans recouvrement --
+        // la somme de leurs aires est celle du lacet, au signe près (qu'on prend en valeur absolue,
+        // comme le fait le cas d > 2).
+        chain[ 0 ] = 0;
+        for ( SI i = 1; i + 1 < nv; ++i ) {
+            chain[ 1 ] = i;
+            chain[ 2 ] = i + 1;
+            func( chain );
+        }
+    }
+}
+
 // ---- d > 2 ------------------------------------------------------------------------------------
 // No formula to read off the vertices any more: the cell has to be CUT INTO SIMPLICES first, and
 // that is a walk on the face lattice (`vertex_indices`). See `Cell.h` for what `facet_apex` is and

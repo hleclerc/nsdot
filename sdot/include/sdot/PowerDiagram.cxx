@@ -5,6 +5,7 @@
 #include <loom/support/containers/Vector.h>
 #include <loom/support/atomic_add.h>
 #include "PowerDiagram.h"
+#include <cmath>
 
 #define UTP SDOT_TEMPLATE_DECL_FOR_PowerDiagram
 #define DTP PowerDiagram<SDOT_TEMPLATE_ARGS_FOR_PowerDiagram>
@@ -169,17 +170,120 @@ UTP void DTP::measure_into( auto &&res, auto &&cell, auto &&facet_apex ) const {
         cell.measure( res );
 }
 
+UTP void DTP::for_each_simplex_of( const auto &cell, auto &&facet_apex, auto &&func ) const {
+    // les deux régimes de `Cell::for_each_simplex` : au-delà de 2D c'est une marche sur le treillis
+    // de faces, qui a besoin de son scratch d'apex ; en deçà, un éventail depuis le sommet 0, qui
+    // n'a besoin de rien. Même callback des deux côtés (`ct_dim + 1` indices de sommets).
+    if constexpr ( ct_dim > 2 )
+        cell.for_each_simplex( facet_apex, func );
+    else
+        cell.for_each_simplex( func );
+}
+
+UTP auto DTP::simplex_points( const auto &cell, const auto &chain ) const {
+    return Vector<Vector<TF,ct_dim>,ct_dim+1>( Function(), [&]( PI k ) {
+        return Vector<TF,ct_dim>::with_func( [&]( PI c ) { return TF( cell.vertex_positions( chain[ k ], c ) ); } );
+    } );
+}
+
+UTP void DTP::integrate_into( auto &&res, auto &&cell, auto &&facet_apex,
+                              const auto &dist, auto &&piece_ws ) const {
+    // La distribution DÉCOUPE, on INTÈGRE. Sans distribution (`UnitDensity`) il n'y a qu'un
+    // morceau, la cellule elle-même, pas une coupe, et une densité constante : le `TF( 1 ) *` se
+    // replie, donc ce chemin calcule exactement ce que `measure_into` calculait tout seul --
+    // cellule infinie (`TF::max`) et cellule vide (0) comprises, qui traversent la somme telles
+    // quelles.
+    TF sum = 0;
+    dist.for_each_piece( cell, piece_ws, [&]( const auto &piece, const auto &dens ) {
+        if constexpr ( DECAYED_TYPE_OF( dens )::is_constant ) {
+            TF m = 0;
+            measure_into( m, piece, facet_apex );
+            sum += dens.value * m;
+        } else {
+            // Densité non constante : on ne sait pas l'intégrer, ELLE sait. On ne lui donne que des
+            // SIMPLEXES -- le découpage géométrique, la seule chose qu'on apporte ici -- et elle
+            // rend l'intégrale sur chacun, par une formule fermée si elle en a une, par la
+            // quadrature générique (`PointwiseDensity`) si elle n'est qu'une boîte noire. Aucune
+            // règle d'intégration n'est écrite de ce côté-ci.
+            //
+            // Une cellule non bornée n'a pas de simplices qui veuillent dire quoi que ce soit : on
+            // répond `TF::max`, comme `measure`, plutôt qu'un nombre inventé.
+            if ( ! piece.is_fully_bounded ) {
+                sum = std::numeric_limits<TF>::max();
+                return;
+            }
+
+            for_each_simplex_of( piece, facet_apex, [&]( const auto &chain ) {
+                sum += dens.integrate_over_simplex( simplex_points( piece, chain ) );
+            } );
+        }
+    } );
+    res = sum;
+}
+
+UTP void DTP::integrate_bwd_into( SI i0, auto &&grad_res, auto &&cell, auto &&facet_apex, auto &&grad_vp,
+                                  auto &&grad_positions, auto &&grad_weights, auto &&grad_dist,
+                                  const auto &dist, auto &&piece_ws ) const {
+    const TF g = grad_res;
+    dist.for_each_piece( cell, piece_ws, [&]( const auto &piece, const auto &dens ) {
+        if constexpr ( DECAYED_TYPE_OF( dens )::is_constant ) {
+            TF m = 0;
+            measure_into( m, piece, facet_apex );
+
+            // la part de la DENSITÉ : la masse est linéaire en elle, donc la dérivée par rapport à
+            // la valeur portée par ce morceau EST le volume du morceau. Un morceau infini n'en a
+            // pas (`measure_into` y répond `TF::max`) : il ne peut venir que d'une densité qui ne
+            // découpe rien, donc qui n'a de toute façon aucune valeur où accumuler.
+            if ( piece.is_fully_bounded )
+                dens.add_value_grad( grad_dist, g * m );
+
+            // ... et la part de la GÉOMÉTRIE, par la chaîne habituelle. Le morceau est un polytope
+            // comme un autre : ses coupes portent l'indice du germe qu'elles font face, ou
+            // `BOUNDARY` pour celles que la distribution a ajoutées, et `scatter_cell_grad` ne
+            // demande rien de plus.
+            measure_bwd_into( m, g * dens.value, piece, facet_apex, grad_vp );
+            scatter_cell_grad( i0, piece, grad_vp, grad_positions, grad_weights );
+        } else {
+            // Le miroir : la densité rend la cotangente des `d + 1` SOMMETS du simplexe (et range
+            // elle-même celle de ses propres paramètres), on la recolle sur les sommets du morceau.
+            // De là, c'est la remontée de toujours -- `scatter_cell_grad` ne sait rien de plus ici
+            // que dans le cas constant.
+            if ( ! piece.is_fully_bounded )
+                return;
+
+            const SI nv = piece.nb_vertices;
+            for ( SI v = 0; v < nv; ++v )
+                for ( PI c = 0; c < ct_dim; ++c )
+                    grad_vp( v, c ) = 0;
+
+            for_each_simplex_of( piece, facet_apex, [&]( const auto &chain ) {
+                auto grad_pts = Vector<Vector<TF,ct_dim>,ct_dim+1>( Function(), []( PI ) {
+                    return Vector<TF,ct_dim>::zeros(); } );
+
+                dens.integrate_over_simplex_bwd( simplex_points( piece, chain ), g, grad_pts, grad_dist );
+
+                for ( SI k = 0; k <= ct_dim; ++k )
+                    for ( PI c = 0; c < ct_dim; ++c )
+                        grad_vp( chain[ k ], c ) += grad_pts[ k ][ c ];
+            } );
+
+            scatter_cell_grad( i0, piece, grad_vp, grad_positions, grad_weights );
+        }
+    } );
+}
+
 UTP void DTP::measures( auto &&res, auto &&ws_0, auto &&ws_1, auto &&corr, auto &&facet_apex,
-                        const auto &acc, auto &&acc_ws, SI thread_index, SI nb_threads ) const {
+                        const auto &acc, auto &&acc_ws, const auto &dist, auto &&piece_ws,
+                        SI thread_index, SI nb_threads ) const {
     const SI n = nb_points;
     for ( SI i = thread_index; i < n; i += nb_threads ) {
         // built, measured, forgotten -- in that order, and never two cells alive at once (bar the
-        // ping-pong pair the clip needs). Writing the volume straight into its slot is what keeps
-        // the diagram from ever existing as a whole.
+        // ping-pong pair the clip needs, and the pair a distribution cuts its pieces in). Writing
+        // the volume straight into its slot is what keeps the diagram from ever existing as a whole.
         if ( make_cell( i, ws_0, ws_1, corr, acc, acc_ws ) )
-            measure_into( res( i ), ws_0, facet_apex );
+            integrate_into( res( i ), ws_0, facet_apex, dist, piece_ws );
         else
-            measure_into( res( i ), ws_1, facet_apex );
+            integrate_into( res( i ), ws_1, facet_apex, dist, piece_ws );
     }
 }
 
@@ -261,20 +365,20 @@ UTP void DTP::scatter_cell_grad( SI i0, auto &&cell, auto &&grad_vp,
 
 UTP void DTP::measures_bwd( auto &&res, auto &&grad_res, auto &&grad_positions, auto &&grad_weights,
                             auto &&ws_0, auto &&ws_1, auto &&corr, auto &&facet_apex, auto &&grad_vp,
-                            const auto &acc, auto &&acc_ws, SI thread_index, SI nb_threads ) const {
+                            const auto &acc, auto &&acc_ws, const auto &dist, auto &&grad_dist,
+                            auto &&piece_ws, SI thread_index, SI nb_threads ) const {
     // the forward's loop, run again: same seeds for this work-item, same buffers, same builds. The
     // cells are not residuals -- they were never kept -- so the only way back through them is to
-    // make them once more.
+    // make them once more. The pieces are not kept either, for the same reason and at the same
+    // price: the distribution cuts them a second time.
     const SI n = nb_points;
     for ( SI i = thread_index; i < n; i += nb_threads ) {
-        const bool in_0 = make_cell( i, ws_0, ws_1, corr, acc, acc_ws );
-        if ( in_0 ) {
-            measure_bwd_into( res( i ), grad_res( i ), ws_0, facet_apex, grad_vp );
-            scatter_cell_grad( i, ws_0, grad_vp, grad_positions, grad_weights );
-        } else {
-            measure_bwd_into( res( i ), grad_res( i ), ws_1, facet_apex, grad_vp );
-            scatter_cell_grad( i, ws_1, grad_vp, grad_positions, grad_weights );
-        }
+        if ( make_cell( i, ws_0, ws_1, corr, acc, acc_ws ) )
+            integrate_bwd_into( i, grad_res( i ), ws_0, facet_apex, grad_vp,
+                                grad_positions, grad_weights, grad_dist, dist, piece_ws );
+        else
+            integrate_bwd_into( i, grad_res( i ), ws_1, facet_apex, grad_vp,
+                                grad_positions, grad_weights, grad_dist, dist, piece_ws );
     }
 }
 

@@ -5,6 +5,8 @@
 #include <sdot/generated/aggregates/PowerDiagram.h>
 #include <loom/support/common_macros.h>
 #include "Cell/CellBoundary.h"
+#include "PieceWorkspace.h"
+#include "UnitDensity.h"
 #include "EverySeed.h"
 
 namespace sdot {
@@ -81,6 +83,58 @@ struct PowerDiagram {
 
     void measure_into  ( auto &&res, auto &&cell, auto &&facet_apex ) const;
 
+    // ---- CONTRE QUOI on intègre -------------------------------------------------------------------
+    // Une cellule n'est pas forcément mesurée à la Lebesgue : `measures` peut intégrer une
+    // DENSITÉ dessus. Le partage est le même que pour les accélérateurs -- la distribution sait
+    // DÉCOUPER la cellule en morceaux sur lesquels elle est simple, nous savons ce qu'on calcule
+    // SUR un morceau -- et c'est lui qui fait qu'une image, une somme de gaussiennes ou rien du
+    // tout se branchent au même endroit. Le concept est écrit dans `distributions/Distribution.py`.
+
+    /// La distribution qui n'en est pas une : densité 1, un seul morceau (la cellule). Ce que
+    /// `measures` reçoit quand l'appelant n'en a donné aucune, pour qu'il n'y ait qu'un intégrateur.
+    UnitDensity unit_density() const { return {}; }
+
+    /// Les simplices de `cell`, quelle que soit la dimension : c'est le découpage GÉOMÉTRIQUE, par
+    /// opposition à celui de la distribution. Deux régimes derrière (`Cell::for_each_simplex`), un
+    /// seul point d'appel, et un scratch qui n'existe qu'au-delà de 2D.
+    void for_each_simplex_of( const auto &cell, auto &&facet_apex, auto &&func ) const;
+
+    /// Les `ct_dim + 1` sommets du simplexe `chain`, comme points -- ce qu'une densité reçoit pour
+    /// s'intégrer dessus. La seule chose que l'intégrateur apporte au régime non constant.
+    auto simplex_points( const auto &cell, const auto &chain ) const;
+
+    /// `res` = l'intégrale de `dist` sur `cell`.
+    ///
+    /// C'est la seule chose ici qui soit propre à MEASURE : le découpage, lui, est celui de la
+    /// distribution, et une autre grandeur (un barycentre, un moment second, un coût) s'écrira
+    /// comme une seconde fonctionnelle sur le MÊME `for_each_piece`, sans rien redécouper.
+    ///
+    /// DEUX régimes, choisis À LA COMPILATION sur `dens.is_constant` :
+    ///   * densité constante sur le morceau (une image, la densité unité) -> `valeur * mesure`,
+    ///     exact et sans un calcul de plus qu'avant ;
+    ///   * sinon -> le morceau est découpé en SIMPLICES, et c'est LA DENSITÉ qui s'intègre sur
+    ///     chacun (`integrate_over_simplex`). Aucune règle d'intégration n'est écrite ici : une
+    ///     densité qui a une formule fermée la donne, une boîte noire s'emballe dans la quadrature
+    ///     générique (`PointwiseDensity`). La quadrature n'est donc pas un régime de
+    ///     l'intégrateur -- c'est une implémentation du contrat parmi d'autres possibles.
+    void integrate_into( auto &&res, auto &&cell, auto &&facet_apex,
+                         const auto &dist, auto &&piece_ws ) const;
+
+    /// L'adjoint de `integrate_into`, morceau par morceau -- et il n'a besoin de rien de neuf.
+    ///
+    /// Un morceau est un POLYTOPE dont les coupes portent, telles quelles, les indices de germes de
+    /// la cellule dont il sort (`Cell::cut` propage `cut_id`) ; celles que la distribution a
+    /// ajoutées portent `BOUNDARY`, donc « pas un germe ». La chaîne
+    /// `mesure du morceau <- sommets <- plans <- germes` est mot pour mot celle de la cellule
+    /// entière, et `scatter_cell_grad` s'applique au morceau sans une ligne de plus.
+    ///
+    /// Reste la part de la DENSITÉ elle-même : la masse étant linéaire en elle,
+    /// `d masse / d valeur du morceau` est le VOLUME du morceau, et c'est la distribution qui sait
+    /// où l'accumuler (le troisième argument du callback).
+    void integrate_bwd_into( SI i0, auto &&grad_res, auto &&cell, auto &&facet_apex, auto &&grad_vp,
+                             auto &&grad_positions, auto &&grad_weights, auto &&grad_dist,
+                             const auto &dist, auto &&piece_ws ) const;
+
     // The cell of seed `i`, KEPT: built in the two work cells like any other, then copied out into
     // `res`. This is the one query that does not collapse a cell to a number, so it is also the one
     // whose memory is a function of the number of seeds -- which is what DISPLAY is: every cell has
@@ -93,7 +147,8 @@ struct PowerDiagram {
     // cells (and `corr` / `facet_apex`) are reused from one seed to the next and memory is sized
     // on CONCURRENCY, not on the number of seeds.
     void measures      ( auto &&res, auto &&ws_0, auto &&ws_1, auto &&corr, auto &&facet_apex,
-                         const auto &acc, auto &&acc_ws, SI thread_index, SI nb_threads ) const;
+                         const auto &acc, auto &&acc_ws, const auto &dist, auto &&piece_ws,
+                         SI thread_index, SI nb_threads ) const;
 
     // ---- the adjoint of `measures` ---------------------------------------------------------------
     // The chain is `m_i <- vertices <- planes <- seeds`, and each arrow is a closed form:
@@ -115,7 +170,8 @@ struct PowerDiagram {
     // skipped, so what does flow to the seeds is right.
     void measures_bwd     ( auto &&res, auto &&grad_res, auto &&grad_positions, auto &&grad_weights,
                             auto &&ws_0, auto &&ws_1, auto &&corr, auto &&facet_apex, auto &&grad_vp,
-                            const auto &acc, auto &&acc_ws, SI thread_index, SI nb_threads ) const;
+                            const auto &acc, auto &&acc_ws, const auto &dist, auto &&grad_dist,
+                            auto &&piece_ws, SI thread_index, SI nb_threads ) const;
 
     void measure_bwd_into ( auto &&res, auto &&grad_res, auto &&cell, auto &&facet_apex, auto &&grad_vp ) const;
 

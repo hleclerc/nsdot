@@ -22,6 +22,23 @@ struct Image {
     // total measure of the piecewise-constant function: sum over cells of value * cell volume.
     TF     measure      () const;
 
+    // ---- intégrer une CELLULE contre cette image -------------------------------------------------
+    // L'image comme DISTRIBUTION : ce que `PowerDiagram::measures` appelle quand on lui en donne
+    // une. Le contrat (celui de toute distribution) est écrit dans `distributions/Distribution.py` ;
+    // il tient en une phrase : découper `cell` en morceaux sur lesquels la densité est CONSTANTE,
+    // et passer chacun à `func( morceau, valeur, add_value_grad )`.
+    //
+    // Ici un morceau est `cellule INTER pavé de la grille`. Le découpage n'est donc que 2d coupes
+    // par pavé rencontré, faites dans les deux cellules de rechange que l'appelant fournit
+    // (`PieceWorkspace.h`) -- la cellule d'origine, elle, n'est jamais touchée, ce qui permet
+    // d'ouvrir un morceau après l'autre sans la copier.
+    void   for_each_piece ( const auto &cell, auto &&ws, auto &&func ) const;
+    void   _for_each_piece( const auto &cell, auto &&ws, auto &&func ) const;
+
+    // le plus grand `i` tel que `knots( axis, i ) <= t`, borné dans `[ 0, nb_cells - 1 ]` (les
+    // noeuds sont croissants, donc une dichotomie -- une image de production a beaucoup de pavés).
+    SI     knot_index   ( SI axis, TF t, SI nb_cells ) const;
+
     // adjoint of `measure` w.r.t. `values`: since mass = Sum_c values(c) * cell_volume(c) is linear
     // in `values`, grad_values(c) = grad_mass * cell_volume(c). `grad_mass` is the scalar cotangent.
     void   measure_bwd  ( auto &&grad_values, auto &&grad_mass ) const;
