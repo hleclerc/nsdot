@@ -5,7 +5,7 @@ import jax.numpy as jnp
 import jax.random as jr
 import optax
 # from loom.testing import Param, bench
-from gpu_mem import jax_mem_budget_bytes
+from gpu_mem import jax_mem_budget_bytes, jax_memory_info
 from tracker import GradTimer
 
 # Needed for the float64 promotion in `_w2_1d` below -- disabled by default,
@@ -13,7 +13,7 @@ from tracker import GradTimer
 jax.config.update("jax_enable_x64", True)
 
 # See `loss`'s docstring for how this was measured.
-_BYTES_PER_CHUNK_ELEMENT = 256
+_BYTES_PER_CHUNK_ELEMENT = 256 # no effect on gpu mem
 
 
 def _w2_1d(proj, bin_mass,bin_edges):
@@ -47,6 +47,8 @@ def _w2_1d(proj, bin_mass,bin_edges):
     Returns:
         La distance de Wasserstein quadratique entre les deux mesures.
     """
+    ext_dtype = jnp.float64 if jax.config.x64_enabled else jnp.float32
+
     n = proj.shape[0]                    # Nombre de Dirac dans la projection
     w = 1.0 / n                          # Chaque Dirac porte la masse 1/n
 
@@ -78,29 +80,31 @@ def _w2_1d(proj, bin_mass,bin_edges):
 
 
     # Trie les projections : elles deviennent les quantiles  de la mesure empirique.
-    s = jnp.sort(proj).astype(jnp.float64)
-    q = jnp.arange(n, dtype=jnp.float64) * w     # Début de chaque intervalle de quantile de largeur w = 1/n
+    s = jnp.sort(proj).astype(ext_dtype)
+    q = jnp.arange(n, dtype=ext_dtype) * w     # Début de chaque intervalle de quantile de largeur w = 1/n
     # Barycentre de la masse cible correspondant à chaque Dirac.
     # C'est la position vers laquelle le Dirac devrait idéalement aller pour minimiser W₂.
     bary = (M(q + w) - M(q)) / w
     # Second moment de la distribution cible. dw²/12 est la variance d'une loi uniforme sur un bin.
     target_second_moment = jnp.sum(bin_mass * bin_center ** 2) + dw * dw / 12
-    return w * jnp.sum(s ** 2) - 2 * w * jnp.sum(s * bary) + target_second_moment
+    wasserstein2 = w * jnp.sum(s ** 2) - 2 * w * jnp.sum(s * bary) + target_second_moment
+    return  wasserstein2
 
 
-def _sino_arrays(sino):
-    """`(normals, bin_edges, bin_mass)` for `sino`, dtypes as `loss` needs
-    them. Split out of `loss` so `optimize` can compute this ONCE and pass
-    the results into `step` as actual `jax.jit` ARGUMENTS rather than
-    closed-over free variables -- see `loss`'s docstring for why that
-    distinction matters here."""
-    g = sino.geometry
-    normals = jnp.asarray(g.normals, dtype=jnp.float32)
-    bin_edges = jnp.asarray(g.bin_edges, dtype=jnp.float64)
-    bin_mass = jnp.asarray(sino.values, dtype=jnp.float64)
-    bin_mass = bin_mass / bin_mass.sum(axis=1, keepdims=True)
-    return normals, bin_edges, bin_mass
 
+def _get_chunk_size(n, nb_angles, mem_budget_bytes):
+    # Détermine combien d'angles peuvent être traités simultanément sans dépasser le budget mémoire.
+    if mem_budget_bytes is None:
+        return  1
+    else:
+        # Optimisation mémoire :
+        # Si tu as un budget mémoire limité (mem_budget_bytes), tu ne peux pas charger tous les angles (A) en une seule fois.
+        # Tu dois donc diviser le travail en chunks (morceaux) de taille chunk_size.
+        memory_for_one_angle = _BYTES_PER_CHUNK_ELEMENT * max(n, 1)
+        max_batch_size = mem_budget_bytes // memory_for_one_angle
+        max_batch_size = min(nb_angles, max_batch_size)  # ne pas dépasser le nombre total d'angles
+        max_batch_size = max(1, max_batch_size)
+    return max_batch_size
 
 def loss(points, normals, bin_edges, bin_mass, mem_budget_bytes=-1):
     """Sum over angles of the 1D Wasserstein distance between `points`
@@ -141,21 +145,19 @@ def loss(points, normals, bin_edges, bin_mass, mem_budget_bytes=-1):
     if mem_budget_bytes == -1:        # Si aucun budget n'est fourni, on interroge le gestionnaire mémoire.
         mem_budget_bytes = jax_mem_budget_bytes()
 
-    mem_budget_mb = mem_budget_bytes / (1024 ** 2)  # Conversion en Mo
-    print(f"{mem_budget_mb=:.2f} Mb")  # Affiche avec 2 décimales
-    n, A = points.shape[0], normals.shape[0]    # Nombre de points 2D, # Nombre d'angles
-    # Détermine combien d'angles peuvent être traités simultanément sans dépasser le budget mémoire.
-    if mem_budget_bytes is None:
-        chunk_size = 1
-    else :
-        # Optimisation mémoire :
-        # Si tu as un budget mémoire limité (mem_budget_bytes), tu ne peux pas charger tous les angles (A) en une seule fois.
-        # Tu dois donc diviser le travail en chunks (morceaux) de taille chunk_size.
 
-        memory_for_chunk = _BYTES_PER_CHUNK_ELEMENT * max(n, 1)
-        nb_chunk_in_memory = mem_budget_bytes // memory_for_chunk
-        nb_chunk = min(A, nb_chunk_in_memory) #  ne pas dépasser le nombre total d'angles
-        chunk_size = max(1,nb_chunk)
+
+    """1. Pas de budget connu
+       → CPU / memory_stats indisponible
+       → mem_budget_bytes = None
+       → chunk_size = 1
+    
+    2. Budget connu mais trop grand
+       → GPU provoque un OOM
+       → on réduit progressivement le budget
+       → éventuellement mem_budget_bytes = None
+       → chunk_size = 1
+    """
 
     def angle_cost(normal_and_mass):
         """
@@ -171,17 +173,18 @@ def loss(points, normals, bin_edges, bin_mass, mem_budget_bytes=-1):
         projections = points @ normal
         return _w2_1d(projections, mass, bin_edges)
     # fin angle cost , retour sur la loss
-
+    n, A = points.shape[0], normals.shape[0]    # Nombre de points 2D, # Nombre d'angles
+    chunk_size = _get_chunk_size(n,A,mem_budget_bytes,)
     # Applique angle_cost à tous les angles.
     # checkpoint économise de la mémoire pendant le calcul du gradient.
     batch_size = int(chunk_size) if chunk_size > 1 else None # TODO see if None
-    print(f"{batch_size=}")
 
     costs = jax.lax.map(jax.checkpoint(angle_cost),
                         (normals, bin_mass),
                         batch_size=batch_size)
-
-    return costs.sum().astype(jnp.float32)    # Somme des coûts de tous les angles = fonction objectif globale
+    cost_32 = costs.sum().astype(jnp.float32)  # Somme des coûts de tous les angles = fonction objectif globale
+    #TODO Tu calcules donc une loss en double précision pour finalement la tronquer en simple précision à la dernière étape.
+    return   cost_32
 
 
 def optimize(points,
@@ -201,7 +204,7 @@ def optimize(points,
      via une distance de Wasserstein. L'optimisation utilise L-BFGS d'Optax. Une seule fonction `step` est compilée
      avec `jax.jit`, puis réutilisée à chaque itération. Avant l'optimisation réelle, quelques itérations de "warmup"
      sont exécutées afin de déclencher la compilation JIT et de vérifier que la consommation mémoire est compatible
-     avec le GPU disponible. En cas de dépassement mémoire (OOM), le nombre d'angles traités simultanément
+     avec le GPU disponible. En cas de dépassement mémoire (OOM: Out Of Memory), le nombre d'angles traités simultanément
       est progressivement réduit. La boucle principale reste une boucle Python plutôt qu'un `jax.lax.scan`,
        afin de pouvoir mesurer chaque itération et enregistrer son évolution dans `tracker`.
    points: Positions initiales des Dirac, shape `(N, 2)`.
@@ -209,7 +212,13 @@ def optimize(points,
     max_linesearch_steps: Nombre maximal d'essais effectués par le line search pour déterminer une longueur de pas satisfaisante.
     Returns: Les positions 2D optimisées des Dirac, shape `(N, 2)`.
     """
-    normals, bin_edges, bin_mass = _sino_arrays(sino) #Conversion de l'objet `sino` en tableaux JAX directement utilisables
+    ext_dtype = jnp.float64 if jax.config.x64_enabled else jnp.float32
+    g = sino.geometry
+    normals = jnp.asarray(g.normals, dtype=jnp.float32)  # TODO pkoi pas ext_dtype
+    bin_edges = jnp.asarray(g.bin_edges, dtype=ext_dtype)
+    bin_mass = jnp.asarray(sino.values, dtype=ext_dtype)
+    bin_mass = bin_mass / bin_mass.sum(axis=1, keepdims=True)
+    #Conversion de l'objet `sino` en tableaux JAX directement utilisables
     # par la loss et par la fonction compilée avec `jax.jit`
     linesearch = optax.scale_by_zoom_linesearch(max_linesearch_steps=max_linesearch_steps, initial_guess_strategy="one")
     # L-BFGS propose une direction de déplacement pour les points, # mais il faut encore déterminer quelle distance parcourir dans # cette direction.
@@ -229,9 +238,8 @@ def optimize(points,
             # Fixe les données du problème qui ne changent pas pendant
             # l'optimisation. `fun` devient ainsi une fonction uniquement, fun(p) = loss(p, normals, bin_edges, bin_mass, ...)
             # de `loss` :
-            fun = partial(
-                loss,
-                normals=normals,  bin_edges=bin_edges,  bin_mass=bin_mass, mem_budget_bytes=mem_budget_bytes)
+            fun = partial(loss,normals=normals,  bin_edges=bin_edges,
+                          bin_mass=bin_mass, mem_budget_bytes=mem_budget_bytes)
             # Construit une fonction qui calcule à la fois la valeur de la loss
             # et son gradient par rapport aux paramètres `p`.
             #
@@ -276,11 +284,23 @@ def optimize(points,
     # Demande le budget mémoire disponible pour le calcul.
     # Ce budget sera utilisé dans `loss` pour déterminer combien d'angles peuvent être traités simultanément sur le GPU.
     mem_budget_bytes = jax_mem_budget_bytes()
+    platform, vram_total, vram_used, vram_free = jax_memory_info()
+
+    chunk_size = _get_chunk_size(points.shape[0],normals.shape[0], mem_budget_bytes)
+
+
+    # mem_budget_bytes = 4096 *1024 *1024
     # Construit la fonction `step` avec le budget mémoire initial.
     step = make_step(mem_budget_bytes)
     # Affiche le début de la phase de warmup. Cette phase sert principalement à déclencher la compilation JIT
     # et à vérifier que le calcul tient dans la mémoire disponible.
-    print(f"  [warmup] compiling/stabilizing JIT (n={points.shape[0]})...", end="", flush=True)
+    print(f"  [warmup] compiling/stabilizing JIT (n={points.shape[0]}, A={normals.shape[0]} )..."
+          f"  [memory] VRAM libre={vram_free / 1024 ** 3:.2f} GiB | "
+          f"VRAM utilisée={vram_used / 1024 ** 3:.2f} GiB | "
+          f"budget={mem_budget_bytes / 1024 ** 3:.2f} GiB | "
+          f"chunk={chunk_size}"
+          , end="", flush=True)
+
     t_warmup = time.time()# Démarre le chronomètre du warmup.
     # On utilise une boucle car le premier appel peut provoquer un OOM.
     # Dans ce cas, le budget mémoire sera réduit puis `step` sera recompilé.
@@ -301,8 +321,27 @@ def optimize(points,
             # Si on arrive ici, la compilation et les calculs de warmup ont réussi avec le budget mémoire actuel.
             break
         except jax.errors.JaxRuntimeError as e:
-            # Si l'erreur n'est pas liée à un dépassement de mémoire, on ne tente pas de la corriger automatiquement.
-            # L'erreur est donc propagée normalement.
+            print("\n\n===== JAX ERROR =====")
+            print(e)
+            print("====================\n")
+
+            # --------------------------------------------------------
+            # Gestion d'un éventuel dépassement mémoire (OOM)
+            # --------------------------------------------------------
+            #
+            # Le premier essai utilise le budget mémoire estimé par
+            # `jax_mem_budget_bytes()`. Cette estimation est volontairement
+            # approximative : le calcul réel peut nécessiter plus de mémoire
+            # que prévu.
+            #
+            # Si JAX rencontre un dépassement mémoire, on réduit donc
+            # progressivement le nombre d'angles traités simultanément.
+
+            # Si le budget est déjà `None`, on est déjà dans le mode
+            # le plus conservateur (`chunk_size = 1`).
+            #
+            # De même, si l'erreur n'est pas un OOM, elle ne doit pas
+            # être masquée : on la transmet normalement à l'appelant
             if mem_budget_bytes is None or "RESOURCE_EXHAUSTED" not in str(e):
                 raise
             # Un OOM a été détecté. On divise le budget mémoire par deux afin de forcer `loss`
@@ -311,7 +350,7 @@ def optimize(points,
             mem_budget_bytes = mem_budget_bytes // 2 if mem_budget_bytes >= 2 else None
             print(f" OOM, shrinking angle-chunk budget...", end="", flush=True)
             # Reconstruit `step` avec le nouveau budget mémoire.
-            #
+
             # Comme le budget influence le chunking utilisé dans `loss`,
             # JAX devra compiler à nouveau cette nouvelle version.
             step = make_step(mem_budget_bytes)
@@ -326,18 +365,6 @@ def optimize(points,
             tracker.start()
         if grad_timer is not None:
             t0 = time.time()
-        # Effectue une itération complète de l'optimisation :
-        #
-        #     points actuels
-        #          ↓
-        #     calcul de la loss
-        #          ↓
-        #     calcul du gradient
-        #          ↓
-        #     L-BFGS + line search
-        #          ↓
-        #     nouveaux points
-        #
         # `state` est également mis à jour pour conserver l'historique
         # nécessaire aux prochaines étapes de L-BFGS.
         points, state, value = step(points, state, normals, bin_edges, bin_mass)
@@ -399,24 +426,17 @@ def _split(points, n, key, jitter):
     """
     reps = -(-n // points.shape[0])  # ceil div ,     # On obtient donc au moins `n` points après répétition.
     # Répète les points `reps` fois suivant l'axe des lignes.
-    #
     # Si :
-    #
     #     points = [A, B, C]
-    #
     # alors :
-    #
     #     jnp.tile(points, (2, 1))
-    #
     # donne :
-    #
     #     [A]
     #     [B]
     #     [C]
     #     [A]
     #     [B]
     #     [C]
-    #
     # Le `[:n]` permet ensuite de conserver exactement `n` points.
     tiled = jnp.tile(points, (reps, 1))[:n]
     # Génère un bruit gaussien indépendant pour chacun des `n` points.
@@ -464,12 +484,12 @@ def multiscale_optimize(sino,
         nb_points_final:
             Nombre final de Dirac.
 
-        nb_points_init:
+        nb_points_init: TODO value of nb_points_init ?
             Nombre de Dirac utilisés à la première échelle.
 
         factor:
             Facteur de multiplication du nombre de points entre deux
-            niveaux.
+            niveaux. # TODO value of factor ?, depend on nb_points_init, nb_points_final ?
 
         seed:
             Graine aléatoire.
@@ -489,32 +509,34 @@ def multiscale_optimize(sino,
     n = nb_points_init
 
     while True:
-        grad_timer = GradTimer() if timings is not None else None
-        # Optimise les positions des n Dirac actuels
-        points = optimize(points, sino, tracker=tracker, grad_timer=grad_timer, **kwargs)
 
+        grad_timer = GradTimer() if timings is not None else None
+        points = optimize(points, sino, tracker=tracker, grad_timer=grad_timer, **kwargs) # Optimise les positions des n Dirac actuels
         if grad_timer is not None:
             timings[n] = grad_timer.mean_ms
             print(f"  n={n:8d}: {grad_timer.mean_ms:.3f} ms/grad ({len(grad_timer.times_ms)} calls)")
 
         if n >= nb_points_final:        # Si on a atteint le nombre demandé, terminé.
-            return points
+            break
+
         # Augmente le nombre de points pour l'échelle suivante.
         n = min(n * factor, nb_points_final)
         key, sub = jr.split(key)         # Nouvelle sous-clé aléatoire pour le jitter
         # Duplique les anciens points et les sépare légèrement.
-        points = _split(points, n, sub, jitter=sino.geometry.dw / 1e6)
+        points = _split(points, n, sub, jitter=sino.geometry.dw / 1e6) # dw = self.extent / self.nb_bins
+
+    return points
 
 
 if __name__=='__main__':
 
-    nb_diracs = 1_000
+    nb_diracs = 100_000
     # p = bench( "multiscale", nb_diracs = Param( 1_000, help = "nb diracs" ) )
     from geometry import CtGeometry
     from sinogram import Sinogram
-    from tracker import Tracker
+    # from tracker import Tracker
 
-    sino = Sinogram( CtGeometry( nb_angles = 600, nb_bins = 4096, extent = 2.0 ) )
+    sino = Sinogram( CtGeometry( nb_angles = 6000, nb_bins = 4096, extent = 2.0 ) )
     sino.add_disk( center = [ 0, 0 ], radius = 0.9, density = + 1.0 )
     sino.add_disk( center = [ 0, 0 ], radius = 0.7, density = - 1.0 )
 
@@ -523,17 +545,39 @@ if __name__=='__main__':
     plot_sinogram(sino,'input_sinogram.png')
 
 
-    tracker = Tracker( record_frames = True )
-    timings = {}
-
+    # tracker = Tracker( record_frames = True )
+    # timings = {}
+    tracker = None
+    timings = None
     points = multiscale_optimize( sino,
                                   nb_points_final = nb_diracs,
                                   tracker = tracker,
                                   timings = timings )
 
     # p.results[ "ms_per_grad_by_n" ] = timings
-    tracker.export_html("unidim_reconstruction.html", sino.geometry.extent )
+    # tracker.export_html("unidim_reconstruction.html", sino.geometry.extent )
     plot_final_points(points, 'final_points.png')
 
     # import subprocess
     # subprocess.Popen(["firefox", "unidim_reconstruction.html"])
+
+    """
+    NEXT TCHAGPT
+    dans    le    optimize    ya    aussi, cela
+
+    except jax.errors.JaxRuntimeError as e:
+    # Si l'erreur n'est pas liée à un dépassement de mémoire, on ne tente pas de la corriger automatiquement.
+    # L'erreur est donc propagée normalement.
+    if mem_budget_bytes is None or "RESOURCE_EXHAUSTED" not in str(e):
+        raise
+    # Un OOM a été détecté. On divise le budget mémoire par deux afin de forcer `loss`
+    # à traiter moins d'angles simultanément. Cela réduit la consommation mémoire au prix d'un calcul
+    # potentiellement plus long.
+    mem_budget_bytes = mem_budget_bytes // 2 if mem_budget_bytes >= 2 else None
+    print(f" OOM, shrinking angle-chunk budget...", end="", flush=True)
+    # Reconstruit `step` avec le nouveau budget mémoire.
+    #
+    # Comme le budget influence le chunking utilisé dans `loss`,
+    # JAX devra compiler à nouveau cette nouvelle version.
+    step = make_step(mem_budget_bytes)
+    """
