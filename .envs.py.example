@@ -45,6 +45,16 @@ env("default", [])
 #   JAX = [Driver("jax")]
 #   VFS = [Micromamba("vfs")]
 #   env("default", VFS + JAX)
+#
+# `python`/`channels`/`packages` say what `./run env create` BUILDS the env with
+# (a no-op if it already exists) -- `./run` itself needs nothing but a system
+# Python to get this far, so this is the actual bootstrap step on a fresh machine:
+#
+#   VFS = [Micromamba("vfs", python="3.13")]
+#   env("default", VFS + JAX)
+#
+#   $ ./run env create   # fabricates the "vfs" micromamba env
+#   $ ./run install       # then the usual editable installs
 
 # ── 4. Apptainer container (nsdot packages baked in as editable installs). ─
 #

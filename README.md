@@ -15,7 +15,13 @@ par transport optimal 1D, voir [Prototype `unidim`](#prototype-unidim) plus bas.
 
 ## Quick start
 
+`./run` lui-même ne dépend que d'un Python (stdlib seule, aucun paquet tiers) : pas besoin
+d'activer quoi que ce soit pour lancer `./run env`, `./run env create` ou `./run install`.
+
 ```bash
+# Première fois : fabrique l'env micromamba déclaré dans .envs.py (no-op s'il existe déjà)
+./run env create
+
 # Installer (une fois sur l'env par défaut)
 ./run install
 
@@ -46,6 +52,7 @@ par transport optimal 1D, voir [Prototype `unidim`](#prototype-unidim) plus bas.
 | `./run toolchain` | Diagnostic (acpp, LLVM, CUDA) |
 | `./run build-sif` | Build des images Apptainer (.sif depuis .def) |
 | `./run env` | Lister les environnements configurés |
+| `./run env create` | Fabriquer les envs micromamba déclarés (no-op sur ceux qui existent déjà) |
 
 ### `test` / `bench` / `experiment` : sélection par pattern
 
@@ -194,7 +201,14 @@ par défaut) — l'extra CUDA/ROCm dépend de l'env/du hardware, donc pas exprim
 un seul `pyproject.toml` partagé. Installé en premier, avant les `-e` des 3 projets.
 
 `Micromamba` wrappe avec `micromamba -n vfs run ...` (no-op si l'env est déjà activé
-localement). `Apptainer` wrappe avec `apptainer exec --bind ... image.sif ...`, et
+localement). `python`/`channels`/`packages` ne servent qu'à `./run env create` (fabrique
+l'env s'il n'existe pas encore ; sans effet sur un env déjà là) :
+
+```python
+MM = [Micromamba("vfs", python="3.13")]
+```
+
+`Apptainer` wrappe avec `apptainer exec --bind ... image.sif ...`, et
 utilise toujours le `python` du conteneur (les packages nsdot y sont déjà en editable
 install — aucun `PYTHONPATH` ni mount n'est nécessaire pour exécuter les tests).
 `Remote` (ssh) doit être le premier layer de la séquence quand il est présent :
