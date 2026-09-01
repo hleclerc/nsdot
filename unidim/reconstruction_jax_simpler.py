@@ -4,8 +4,19 @@ import optax
 from functools import partial
 import tqdm
 
-JAX_ENABLE_X64 = True
-jax.config.update("jax_enable_x64", JAX_ENABLE_X64)
+from unidim.plots import plot_final_points
+import nvidia_smi
+
+nvidia_smi.nvmlInit()
+handle = nvidia_smi.nvmlDeviceGetHandleByIndex(0)
+# input
+NB_ANGLES = 600
+NB_BINS = 4096
+NB_POINTS_FINAL = 100_000
+INNER_RADIUS = 0.7
+OUTER_RADIUS = 0.9
+# reconstruction
+JAX_ENABLE_X64 = False
 BYTES_PER_CHUNK_ELEMENT = 256  # no effect on gpu mem
 SAFETY_FRACTION = 0.5  # leave headroom for everything else alive on the device
 FALLBACK_BYTES = 512 * 1024 * 1024  # no CUDA visible -- a conservative default chunk budget
@@ -18,9 +29,10 @@ NB_POINTS_INIT=200
 FACTOR=4
 SEED=0
 
+jax.config.update("jax_enable_x64", JAX_ENABLE_X64)
+ext_dtype = jnp.float64 if jax.config.x64_enabled else jnp.float32
 
 def _w2_1d(proj, bin_mass, bin_edges):
-    ext_dtype = jnp.float64 if jax.config.x64_enabled else jnp.float32
     n = proj.shape[0]
     w = 1.0 / n
     dw = bin_edges[1] - bin_edges[0]
@@ -40,15 +52,20 @@ def _w2_1d(proj, bin_mass, bin_edges):
     target_second_moment = jnp.sum(bin_mass * bin_center * bin_center) + dw * dw / 12
     wasserstein2 = w * jnp.sum(s * s) - 2 * w * jnp.sum(s * bary) + target_second_moment
     return wasserstein2
+def compute_percent_in_ring(points):
+    distances = jnp.sqrt(points[:, 0] ** 2 + points[:, 1] ** 2)
+    in_ring = (distances >= INNER_RADIUS) & (distances <= OUTER_RADIUS)
+    percent_in_ring = jnp.mean(in_ring) * 100.  # Moyenne = proportion de True
+    return float(percent_in_ring)
 
 def _get_chunk_size(nb_points, nb_angles, mem_budget_bytes):
     if mem_budget_bytes is None:
-        return 1
+        max_batch_size= 1
     else:
         memory_for_one_angle = BYTES_PER_CHUNK_ELEMENT * max(nb_points, 1)
         max_batch_size = mem_budget_bytes // memory_for_one_angle
-        max_batch_size = jnp.maximum(1, jnp.minimum(nb_angles, max_batch_size))
-    return max_batch_size
+        max_batch_size = max(1, min(nb_angles, max_batch_size))
+    return max_batch_size #
 
 def loss(points, normals, bin_edges, bin_mass, mem_budget_bytes=-1):
     def angle_cost(normal_and_mass):
@@ -57,17 +74,10 @@ def loss(points, normals, bin_edges, bin_mass, mem_budget_bytes=-1):
         return _w2_1d(projections, mass, bin_edges)
 
     n, A = points.shape[0], normals.shape[0]
-    chunk_size = _get_chunk_size(n, A, mem_budget_bytes)
-    batch_size = jnp.where(chunk_size > 1, chunk_size, 0)
-
-    try:
-        batch_size = int(batch_size.item()) if batch_size > 0 else None
-    except:
-        batch_size = None
-
+    batch_size = _get_chunk_size(n, A, mem_budget_bytes)
     costs = jax.lax.map(jax.checkpoint(angle_cost), (normals, bin_mass), batch_size=batch_size)
-    cost_32 = costs.sum().astype(jnp.float32)
-    return cost_32
+
+    return costs.sum().astype(ext_dtype)
 
 def optimize(points, sino, max_iter=15, max_linesearch_steps=8, initial_guess_strategy='one'):
     def make_step(mem_budget_bytes):
@@ -79,13 +89,13 @@ def optimize(points, sino, max_iter=15, max_linesearch_steps=8, initial_guess_st
             value, grad = value_and_grad(p, state=state)
             updates, state = solver.update(grad, state, p, value=value, grad=grad, value_fn=fun)
             p = optax.apply_updates(p, updates)
+
             return p, state, value
 
         return step
 
-    ext_dtype = jnp.float64 if jax.config.x64_enabled else jnp.float32
     g = sino.geometry
-    normals = jnp.asarray(g.normals, dtype=jnp.float32)
+    normals = jnp.asarray(g.normals, dtype=ext_dtype)
     bin_edges = jnp.asarray(g.bin_edges, dtype=ext_dtype)
     bin_mass = jnp.asarray(sino.values, dtype=ext_dtype)
     bin_mass = bin_mass / bin_mass.sum(axis=1, keepdims=True)
@@ -97,6 +107,8 @@ def optimize(points, sino, max_iter=15, max_linesearch_steps=8, initial_guess_st
 
     device = jax.devices()[0]
     stats = device.memory_stats()
+    # Récupère les informations de mémoire
+    nvidia_mem = nvidia_smi.nvmlDeviceGetMemoryInfo(handle)
 
     if not stats or "bytes_limit" not in stats:
         mem_budget_bytes = FALLBACK_BYTES
@@ -111,48 +123,60 @@ def optimize(points, sino, max_iter=15, max_linesearch_steps=8, initial_guess_st
     step = make_step(mem_budget_bytes)
 
     for i in (pbar:= tqdm.tqdm(range(max_iter))):
-        pbar.set_description(f"for n = {points.shape[0]} Step: {i}| mem_budget_bytes: {mem_budget_bytes/1024**3:.2f} GiB VRAM used: {bytes_in_use/1024**3:.2f} GiB, VRAM tot: {bytes_limit/1024**3:.2f} GiB, Chunk size: {chunk_size}")
-        points, state, value = step(points, state, normals, bin_edges, bin_mass)
 
+        points, state, value = step(points, state, normals, bin_edges, bin_mass)
+        pbar.set_description(
+        f"for n = {points.shape[0]} Step: {i}| mem_budget_bytes: {mem_budget_bytes / 1024 ** 3:.2f} GiB, "
+        f"VRAM jax: {bytes_in_use / 1024 ** 3:.2f}/{bytes_limit / 1024 ** 3:.2f} GiB, "
+        f"VRAM nvidia: {nvidia_mem.used / 1024 ** 3:.2f}/{nvidia_mem.total / 1024 ** 3:.2f} GiB, "
+        f" Chunk size: {chunk_size},  in ring {compute_percent_in_ring(points):.1f} %")
     return points
 
-def multiscale_optimize(sino, nb_points_final,
-                        nb_points_init=200, factor=4, seed=0, **kwargs):
+def multiscale_optimize(sino,
+                        nb_points_final,
+                        nb_points_init=200,
+                        factor=4,
+                        seed=0,
+                        **kwargs):
     extent = sino.geometry.extent
     key, sub = jax.random.split(jax.random.PRNGKey(seed))
     points = jax.random.uniform(sub, (nb_points_init, 2),
                                 minval=-extent / 2, maxval=extent / 2,
-                                dtype=jnp.float32)
+                                dtype=ext_dtype)
     n = nb_points_init
     jitter = sino.geometry.dw / 1e6  # self.extent / nb_bins
-    steps = []
     while n < nb_points_final:
-        steps.append(n)
-        n = min(n * factor, nb_points_final)
-
-    for step in steps:
         points = optimize(points, sino, **kwargs)
+        n_next = min(n * factor, nb_points_final)
         key, sub = jax.random.split(key)
-        reps = -(-step // points.shape[0])
-        tiled = jnp.tile(points, (reps, 1))[:step]
-        noises = jitter * jax.random.normal(sub, (step, 2), dtype=points.dtype)
+        reps = -(-n_next // points.shape[0])
+        tiled = jnp.tile(points, (reps, 1))[:n_next]
+        noises = jitter * jax.random.normal(sub, (n_next, 2), dtype=points.dtype)
         points = tiled + noises
+        n = n_next
+        # La boucle s'arrête dès que n >= nb_points_final. Il reste alors à
+        # optimiser cette dernière population de `nb_points_final` points.
+
+    points = optimize(points, sino, **kwargs)
 
     return points
 
 if __name__ == '__main__':
-    nb_points_final = 100_000
+
+
     from geometry import CtGeometry
     from sinogram import Sinogram
-    sino = Sinogram(CtGeometry(nb_angles=6000, nb_bins=4096, extent=2.0))
-    sino.add_disk(center=[0, 0], radius=0.9, density=+1.0)
-    sino.add_disk(center=[0, 0], radius=0.7, density=-1.0)
+    sino = Sinogram(CtGeometry(nb_angles=NB_ANGLES, nb_bins=NB_BINS, extent= 2.0 ))
+    sino.add_disk(center=[0, 0], radius=OUTER_RADIUS, density=+1.0)
+    sino.add_disk(center=[0, 0], radius=INNER_RADIUS, density=-1.0)
 
     points = multiscale_optimize(sino,
-                                 nb_points_final=nb_points_final,
+                                 nb_points_final=NB_POINTS_FINAL,
                                  nb_points_init=NB_POINTS_INIT,
-                                 factor=NB_POINTS_INIT,
+                                 factor=FACTOR,
                                  seed=SEED,
                                  max_iter=MAX_ITER,
                                  max_linesearch_steps=MAX_LINESEARCH_STEPS,
                                  initial_guess_strategy=INITIAL_GUESS_STRATEGY)
+
+    plot_final_points(points, 'final_points.png')
