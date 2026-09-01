@@ -77,9 +77,23 @@ UTP void DTP::sort_diracs( auto &&sorted_indices, auto &&radix_tmp, auto &&sorte
     // when `sgs == 1` (always true on CPU, where `group_size` -- hence `local_size` -- is itself
     // always 1, see `Cpu.group_size`): `num_sg == local_size`, one lane per "sub-group", every wave
     // below is a single element with `intra_rank == 0`, i.e. the same sequential increment idiom.
-    const int sg_lid = int( sub_group.get_local_linear_id() );
+    // `sg_id`/`sg_lid` sont DERIVES de `local_index`, jamais demandes au backend.
+    //
+    // `sub_group.get_group_linear_id()` n'est pas fiable : le backend `omp.library-only` rapporte
+    // 0 pour TOUTE voie (mesure : `test_group_kernel::the_lane_to_subgroup_mapping_is_linear`),
+    // alors qu'il rapporte bien des `local_index` distincts. Le decoupage `[lo_s,hi_s)` ci-dessous
+    // s'effondrait alors sur le meme premier morceau pour toutes les voies : elles triaient toutes
+    // la meme tranche vers les memes destinations, et le reste de la sortie n'etait jamais ecrit --
+    // `sorted_indices`/`sorted_pos` uniformement remplis d'une seule entree, donc un cout de
+    // transport faux de quelques pourcents, sans le moindre accès hors bornes pour le signaler.
+    //
+    // La derivation vaut sur les deux backends : SYCL numerote les work-items d'un `nd_range` 1D
+    // lineairement dans leurs sous-groupes, donc `local_index / sgs` EST l'indice de sous-groupe et
+    // `local_index % sgs` la voie dedans -- ce que CUDA rapportait deja, et ce qui degenere
+    // correctement a `sgs == 1` (un sous-groupe par voie), le cas que le code croyait tenir.
     const int sgs    = int( sub_group.get_local_linear_range() );
-    const int sg_id  = int( sub_group.get_group_linear_id() );
+    const int sg_id  = local_index / sgs;
+    const int sg_lid = local_index % sgs;
     const int num_sg = ( local_size + sgs - 1 ) / sgs;
     const SI  lo_s    = ( nb * SI( sg_id ) ) / num_sg;
     const SI  hi_s    = ( nb * SI( sg_id + 1 ) ) / num_sg;

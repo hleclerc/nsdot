@@ -23,10 +23,18 @@ UTP auto DTP::nearness( const auto &from, SI n ) const {
 
 UTP void DTP::for_each_candidate( const auto &from, SI i0, auto &&scratch, auto &&may_cut, auto &&cut_with ) const {
     SI top = 0;
-    scratch( top++ ) = 0;                       // the root -- the nodes are numbered in preorder
+    scratch( top++ ) = 0;                       // the root -- the nodes are numbered in a HEAP
 
     while ( top > 0 ) {
         const SI n = SI( scratch( --top ) );
+
+        // an EMPTY slot: the right child of a node that had nothing left to split and passed its
+        // whole slice to the left one (see `AaBsp.py::_build`). Two integer loads answer it, where
+        // `may_cut` would have swept the cell's vertices against a box that means nothing.
+        const SI beg = SI( node_begin( n ) );
+        const SI end = SI( node_end( n ) );
+        if ( beg >= end )
+            continue;
 
         const auto lo = Vector<TF,ct_dim>::with_func( [&]( PI d ) { return TF( node_lo( n, d ) ); } );
         const auto hi = Vector<TF,ct_dim>::with_func( [&]( PI d ) { return TF( node_hi( n, d ) ); } );
@@ -48,8 +56,6 @@ UTP void DTP::for_each_candidate( const auto &from, SI i0, auto &&scratch, auto 
 
         const SI l = SI( node_left( n ) );
         if ( l < 0 ) {                          // a leaf: `node_left < 0` says so (see `AaBsp.py`)
-            const SI beg = SI( node_begin( n ) );
-            const SI end = SI( node_end( n ) );
             for ( SI k = beg; k < end; ++k ) {
                 const SI i1 = SI( seed_indices( k ) );
                 if ( i1 != i0 && ! cut_with( i1 ) )

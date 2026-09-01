@@ -563,6 +563,44 @@ if test( "the_tree_shape_does_not_depend_on_the_data" ):
                     assert nb <= AaBsp.max_nb_nodes_for( n, leaf ), ( n, leaf, d, kind, nb )
 
 
+if test( "the_kernel_build_gives_the_same_tree" ):
+    # `AaBsp` a DEUX constructions : `bsp_build_level.h` (un appel par niveau, celle qui sert) et
+    # la boucle numpy par nœud (`_build`). Elles doivent rendre le MÊME arbre, sans quoi tout ce
+    # qui est vérifié ici sur l'une ne dit rien de l'autre.
+    #
+    # « Le même » se lit au niveau des NŒUDS et pas du tableau `seed_indices` : à l'intérieur d'une
+    # tranche, l'ordre est celui que la sélection a laissé, et `argpartition` ne laisse pas le même
+    # que le quickselect du kernel. Ce n'est pas un écart, c'est la partie du résultat dont
+    # personne ne dépend -- ce qui compte est QUI est dans quelle tranche.
+    def _slices( bsp ):
+        left  = numpy.asarray( bsp.node_left ).reshape( -1 )
+        beg   = numpy.asarray( bsp.node_begin ).reshape( -1 )
+        end   = numpy.asarray( bsp.node_end ).reshape( -1 )
+        order = numpy.asarray( bsp.seed_indices ).reshape( -1 )
+        return [ frozenset( order[ int( beg[ k ] ) : int( end[ k ] ) ].tolist() ) for k in range( len( left ) ) ]
+
+    for d, n, leaf, with_w in ( ( 2, 200, 30, False ), ( 3, 137, 8, False ), ( 2, 1, 30, False ),
+                                ( 4, 40, 1, False ), ( 2, 400, 12, True ), ( 3, 300, 7, True ) ):
+        rng = numpy.random.default_rng( 450 + n )
+        pos = rng.uniform( 0, 1, size = ( n, d ) )
+        # des poids TENDANCIELS : c'est le régime où le majorant affine est retenu, donc celui où
+        # les moindres carrés du kernel (équations normales) et ceux de l'hôte (une SVD) pourraient
+        # diverger. Sur du bruit pur les deux se tairaient, et le test ne dirait rien.
+        w = ( 0.5 * pos[ :, 0 ] - 0.3 * pos[ :, 1 ] + 0.01 * rng.normal( size = n ) ) if with_w else None
+
+        fast = AaBsp( pos, w, max_seeds_per_leaf = leaf )
+        slow = AaBsp( pos, w, max_seeds_per_leaf = leaf, in_kernel = False )
+
+        assert fast.max_depth == slow.max_depth, ( d, n, leaf, with_w )
+        assert _slices( fast ) == _slices( slow ), ( d, n, leaf, with_w )
+        for name in ( "node_left", "node_right", "node_begin", "node_end", "node_lo", "node_hi" ):
+            a, b = numpy.asarray( getattr( slow, name ) ), numpy.asarray( getattr( fast, name ) )
+            assert numpy.array_equal( a, b ) if a.dtype.kind == "i" else numpy.allclose( a, b ), ( name, d, n )
+        if with_w:
+            assert numpy.allclose( numpy.asarray( slow.node_wa ), numpy.asarray( fast.node_wa ), atol = 1e-9 )
+            assert numpy.allclose( numpy.asarray( slow.node_wb ), numpy.asarray( fast.node_wb ), atol = 1e-9 )
+
+
 if test( "a_bsp_node_contains_its_subtree" ):
     # la boîte d'un nœud doit contenir TOUS les germes du sous-arbre, pas seulement ceux de ses
     # feuilles directes : c'est elle que la marche teste avant de refuser de descendre.
@@ -615,9 +653,14 @@ if test( "the_weight_majorant_majorates" ):
                 return list( order[ int( beg[ k ] ) : int( end[ k ] ) ] )
             return seeds_of( int( left[ k ] ) ) + seeds_of( int( right[ k ] ) )
 
-        nb_affine = 0
+        nb_affine = nb_nodes = 0
         for k in range( len( left ) ):
             sub = seeds_of( k )
+            # un emplacement VIDE : le fils droit d'un nœud qui a tout passé à gauche (voir
+            # `AaBsp.py::_build`). Il ne majore rien, il n'y a rien à majorer.
+            if not sub:
+                continue
+            nb_nodes += 1
             slack = wa[ k ] @ pos[ sub ].T + wb[ k ] - w[ sub ]
             assert slack.min() >= 0, ( name, k, slack.min() )
             # RELEVÉ jusqu'à toucher : un majorant qui ne touche jamais est un majorant lâche. Ce
@@ -632,7 +675,7 @@ if test( "the_weight_majorant_majorates" ):
         # corrige le resserrement que le hasard donne EN MOYENNE, pas celui d'un tirage
         # particulier, et un nœud qui passe quand même reste parfaitement valide -- c'est le
         # bloc au-dessus qui le dit.
-        frac = nb_affine / len( left )
+        frac = nb_affine / nb_nodes
         if name == "bruit":
             assert frac < 0.2, ( name, frac )
         else:
@@ -839,6 +882,12 @@ if p := bench( "pd accelerated",
     h = n ** ( -1.0 / d )
     w = rng.uniform( -0.3, 0.3, n ) * h * h if p.weights else None
     box = ( [ 0 ] * d, [ 1 ] * d )
+
+    # un tour de chauffe pour l'ARBRE aussi, et pour la même raison que pour le balayage plus bas :
+    # `AaBsp` se construit maintenant par des kernels (un appel par niveau, voir
+    # `AaBsp._build_in_kernel`), donc le premier passe par acpp. Sans ça `t_build` mesurait une
+    # compilation -- 11.8 s là où l'arbre en coûte 0.25.
+    AaBsp( pos[ :1000 ], None if w is None else w[ :1000 ], max_seeds_per_leaf = p.leaf_size )
 
     t = time.perf_counter()
     bsp = AaBsp( pos, w, max_seeds_per_leaf = p.leaf_size )
@@ -1529,41 +1578,55 @@ if test( "the_subdivided_quadrature_derives_right" ):
     # (le critère est déterministe), dériver chaque feuille, et ramener les cotangentes jusqu'aux
     # sommets d'origine par leurs coordonnées barycentriques.
     #
-    # LE PAS de la différence finie est CHOISI, et il n'y a pas de bon réglage par défaut ici : les
-    # deux sources d'erreur varient en sens inverse, donc il y a un optimum.
-    #   * une quadrature adaptative PAR LA VALEUR n'est lisse qu'à `rtol` près -- quand un
-    #     sous-simplexe bascule de « raffiner » à « accepter », la valeur saute d'autant. L'adjoint,
-    #     lui, dérive la branche localement lisse, ce qui est correct et ce dont un optimiseur a
-    #     besoin ; mais la différence finie DIVISE ce saut par le pas, donc ce terme est en `1/pas`.
-    #   * la TRONCATURE de la différence centrée, elle, est en `pas^2`.
-    # MESURÉ sur ce cas (trois pas, trois erreurs) : le premier terme vaut ~4.6e-6/pas, le second
-    # ~20*pas^2. L'optimum est donc vers 5e-3, et l'erreur y vaut ~1.4e-3 -- soit environ 1 % de la
-    # dérivée. C'est un PLANCHER : aucun pas ne fait mieux, et la tolérance ci-dessous est prise à
-    # 3 % pour ne pas dépendre de la direction que `check_grad` tire au hasard.
+    # = Pourquoi la tolérance a une part ABSOLUE, et pourquoi c'est elle qui compte
     #
-    # Ce test est donc un contrôle à 1 %, pas à 1e-4. Il attrape ce pour quoi il est là -- un signe,
-    # un facteur, un terme oublié dans le cofacteur, le gradient aux noeuds ou le report
-    # barycentrique -- mais il ne dirait rien d'une erreur relative de 1e-3.
+    # Une quadrature adaptative PAR LA VALEUR n'est lisse qu'à `rtol` près : quand un sous-simplexe
+    # bascule de « raffiner » à « accepter », la valeur SAUTE d'autant. L'adjoint, lui, dérive la
+    # branche localement lisse, ce qui est correct et ce dont un optimiseur a besoin. La différence
+    # finie, elle, divise ce saut par `2 eps` -- donc son erreur est un SAUT SUR UN PAS, une
+    # quantité ABSOLUE, qui ne se réduit pas quand la dérivée mesurée est petite.
     #
-    # Durcir `rtol` du schéma ne changerait pas la donne à un coût raisonnable : il faudrait le
-    # descendre de deux décades (donc payer des bissections partout) pour gagner une décade ici.
-    # La vérification SERRÉE, au pas par défaut, c'est le chemin exact 2D
-    # (`the_exact_2d_gaussian_derives_right_too`), qui lui est parfaitement lisse.
+    # Or `check_grad` projette la jacobienne sur une direction ALÉATOIRE, et cette projection peut
+    # tomber petite. MESURÉ ici, sur 40 directions, régime étroit : l'écart absolu reste dans
+    # `[ 3e-5, 6.4e-3 ]` quelle que soit la direction, tandis que la projection descend jusqu'à
+    # 4.3e-4 -- l'écart RELATIF monte donc à 165 % sans que rien ne soit faux. Une tolérance
+    # purement relative est la mauvaise forme pour ce test : c'est `atol` qui doit porter le
+    # plancher. (C'est exactement comme ça que ce test échouait dans la suite complète tout en
+    # passant seul : la direction tirée dépendait du nombre de tirages faits par les tests d'avant,
+    # d'où le `seed` ci-dessous.)
+    #
+    # LE PAS aussi est mesuré, et pas au bon endroit jusqu'ici : l'erreur du saut est en `1/eps`,
+    # la troncature en `eps^2`, donc il y a un optimum -- il est vers `2e-2` et non `5e-3`. Sur 16
+    # directions : max 3.6e-3 à `2e-2`, contre 1.1e-2 à `5e-3`. Le pas est donc remonté, et `atol`
+    # pris à ~3x le pire écart mesuré.
+    #
+    # Le régime LISSE, lui, n'a pas de subdivision qui bascule : son écart absolu y est 60x plus
+    # petit (max 1e-4 sur 40 directions), donc il mérite ses propres tolérances, bien plus serrées
+    # que celles qu'il partageait avec le régime étroit.
+    #
+    # Ce test reste un contrôle à quelques pourcents, pas à 1e-4 : il attrape un signe, un facteur,
+    # un terme oublié dans le cofacteur, le gradient aux noeuds ou le report barycentrique. La
+    # vérification SERRÉE, c'est le chemin exact 2D (`the_exact_2d_gaussian_derives_right_too`),
+    # qui lui est parfaitement lisse.
     d, n = 3, 6
     rng = numpy.random.default_rng( 931 )
     mi, ma = numpy.zeros( d ), numpy.ones( d )
     pos = rng.uniform( 0.15, 0.85, size = ( n, d ) )
 
-    for sigmas in ( numpy.array( [ 0.7, 0.9 ] ),        # lisse : la règle voit tout
-                    numpy.array( [ 0.18, 0.30 ] ) ):    # étroit : la subdivision travaille
+    #                        sigmas                      eps     rtol    atol
+    regimes = ( ( numpy.array( [ 0.7, 0.9 ] ),          5e-3,   3e-3,   1e-3 ),   # la règle voit tout
+                ( numpy.array( [ 0.18, 0.30 ] ),        2e-2,   3e-2,   1e-2 ) )  # la subdivision travaille
+
+    for k, ( sigmas, eps, rtol, atol ) in enumerate( regimes ):
         centers = rng.uniform( 0.3, 0.7, size = ( 2, d ) )
         weights = numpy.array( [ 1.0, 0.6 ] )
+        tol = dict( eps = eps, rtol = rtol, atol = atol )
 
         check_grad( lambda p: PowerDiagram( p, box = ( mi, ma ),
                         distribution = SumOfGaussians( positions = centers, sigmas = sigmas,
                                                        weights = weights ) ).measures,
-                    pos, eps = 5e-3, rtol = 3e-2 )
+                    pos, seed = 100 * k, **tol )
 
         check_grad( lambda c, s, q: PowerDiagram( pos, box = ( mi, ma ),
                         distribution = SumOfGaussians( positions = c, sigmas = s, weights = q ) ).measures,
-                    centers, sigmas, weights, eps = 5e-3, rtol = 3e-2 )
+                    centers, sigmas, weights, seed = 100 * k + 50, **tol )
