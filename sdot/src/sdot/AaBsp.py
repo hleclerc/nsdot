@@ -82,6 +82,7 @@ class AaBsp( SpatialAccelerator ):
     # une feuille est une lecture contiguë et pas une collecte d'indices épars.
     seed_indices : IntTensor[ "num_bsp_seed" ]
 
+
     # l'arbre, numeroté EN TAS : le nœud `k` a ses enfants en `2k+1` / `2k+2`, la racine est 0, et
     # le niveau `L` occupe `[ 2^L - 1, 2^(L+1) - 1 )`. `node_left < 0` DIT feuille, et n'arrive
     # qu'au DERNIER niveau -- un nœud qui n'a plus rien à couper passe sa tranche entière à son fils

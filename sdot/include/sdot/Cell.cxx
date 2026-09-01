@@ -293,7 +293,140 @@ UTP auto DTP::growth_for_cut( auto &&direction, auto off ) const {
     return g;
 }
 
-UTP bool DTP::cut( auto &&res, auto &&direction, auto &&offset, SI cut_id ) const {
+UTP CutResult DTP::cut_in_place( const auto &direction, TF offset, SI cut_id ) {
+    static_assert( ct_dim == 2, "l'ecriture en place n'existe qu'en 2D pour l'instant (voir Cell.h)" );
+
+    const SI nb = nb_vertices;
+    const TF off = offset;
+
+    auto sd = [&]( SI i ) {
+        TF r = -off;
+        for ( PI d = 0; d < ct_dim; ++d )
+            r += TF( direction( d ) ) * TF( vertex_positions( i, d ) );
+        return r;
+    };
+
+    // ---- UN balayage : combien de sommets dehors, et OU commence la plage exterieure.
+    // Ce `i1` est unique : l'exterieur d'un convexe coupe par un demi-espace est UNE plage
+    // cyclique. C'est ce qui remplace le masque de bits du code de reference, et ce qui fait qu'il
+    // n'y a pas de nombre maximal de sommets.
+    SI nb_out = 0, i1 = 0;
+    bool prev_out = nb > 0 && sd( nb - 1 ) > 0;
+    for ( SI i = 0; i < nb; ++i ) {
+        const bool out = sd( i ) > 0;
+        if ( out ) {
+            ++nb_out;
+            if ( ! prev_out )
+                i1 = i;
+        }
+        prev_out = out;
+    }
+
+    if ( nb_out == 0 )
+        return CutResult::unchanged;
+
+    if ( nb_out == nb ) {                       // tout dehors : il ne reste rien
+        nb_vertices.set( 0 );
+        nb_cuts.set( 0 );
+        return CutResult::done;
+    }
+
+    const SI nb_in = nb - nb_out;
+    const SI new_nb = nb_in + 2;
+
+    // La capacite se teste AVANT de bouger quoi que ce soit -- et une seule fois, car le seul cas
+    // qui fait grandir la cellule est `nb_out == 1`, qui est aussi le seul qui ne peut pas boucler
+    // (une plage qui boucle contient au moins deux sommets).
+    if ( new_nb > SI( vertex_positions.shape( 0 ) ) || new_nb > SI( cut_directions.shape( 0 ) ) ) {
+        nb_vertices.set( new_nb );
+        nb_cuts.set( new_nb );
+        return CutResult::overflow;
+    }
+
+    const SI i0 = ( i1 + nb - 1 ) % nb;         // dernier DEDANS avant la plage
+    const SI i2 = ( i1 + nb_out - 1 ) % nb;     // dernier DEHORS
+    const SI i3 = ( i2 + 1 ) % nb;              // premier DEDANS apres
+
+    // Les deux intersections, sous la meme forme symetrique que `cut_into` : le point est alors le
+    // meme quel que soit le bout de l'arete par lequel on commence.
+    const TF s0 = sd( i0 ), s1 = sd( i1 ), s2 = sd( i2 ), s3 = sd( i3 );
+    auto pa = Vector<TF,ct_dim>::with_func( [&]( PI d ) {
+        return ( s1 * TF( vertex_positions( i0, d ) ) - s0 * TF( vertex_positions( i1, d ) ) ) / ( s1 - s0 ); } );
+    auto pb = Vector<TF,ct_dim>::with_func( [&]( PI d ) {
+        return ( s3 * TF( vertex_positions( i2, d ) ) - s2 * TF( vertex_positions( i3, d ) ) ) / ( s3 - s2 ); } );
+
+    // Quelle coupe chacun PORTE (invariant : la coupe `i` porte l'arete `[ v_i, v_i+1 ]`). Ce qui
+    // part de `pa` longe le NOUVEAU plan ; ce qui part de `pb` est un morceau de l'ancienne arete
+    // `i2`. Lu maintenant : `i2` est dans la plage, donc sur le point d'etre ecrase.
+    auto db = Vector<TF,ct_dim>::with_func( [&]( PI d ) { return TF( cut_directions( i2, d ) ); } );
+    const TF ob = TF( cut_offsets( i2 ) );
+    const SI ib = SI( cut_ids( i2 ) );
+
+    auto move = [&]( SI dst, SI src ) {
+        for ( PI d = 0; d < ct_dim; ++d ) {
+            vertex_positions( dst, d ) = TF( vertex_positions( src, d ) );
+            cut_directions( dst, d ) = TF( cut_directions( src, d ) );
+        }
+        cut_offsets( dst ) = TF( cut_offsets( src ) );
+        cut_ids( dst ) = SI( cut_ids( src ) );
+    };
+    auto put = [&]( SI k, const auto &p, const auto &dir, TF o, SI id ) {
+        for ( PI d = 0; d < ct_dim; ++d ) {
+            vertex_positions( k, d ) = p[ d ];
+            cut_directions( k, d ) = dir[ d ];
+        }
+        cut_offsets( k ) = o;
+        cut_ids( k ) = id;
+    };
+
+    if ( i1 <= i2 ) {
+        // La plage ne boucle pas : la sortie garde sa place, `v_0 .. v_i0`, `pa`, `pb`, la queue.
+        if ( nb_out == 1 ) {                    // un cran de plus : on decale la queue A DROITE
+            for ( SI i = nb; i > i1 + 1; --i )
+                move( i, i - 1 );
+        } else if ( nb_out > 2 ) {              // trop de place : on ramene la queue A GAUCHE
+            // `i2 + 1` et NON `i3` : la plage exterieure ne boucle pas ici, mais elle peut FINIR
+            // au dernier sommet, auquel cas `i3` a boucle a 0 et il n'y a aucune queue a ramener.
+            // Repartir de `i3` recopiait alors tout le debut du tableau par-dessus lui-meme --
+            // c'etait le bug, et il ne se voyait qu'a partir de trois sommets dehors.
+            const SI gap = nb_out - 2;
+            for ( SI i = i2 + 1; i < nb; ++i )
+                move( i - gap, i );
+        }                                       // `nb_out == 2` : rien a decaler du tout
+        put( i1 + 0, pa, direction, off, cut_id );
+        put( i1 + 1, pb, db, ob, ib );
+    } else {
+        // La plage boucle (`[ i1, nb )` et `[ 0, i2 ]`), donc la plage INTERIEURE est contigue :
+        // `[ i3, i3 + nb_in )`. On l'amene en `[ 2, 2 + nb_in )`, puis `pa` en 0 et `pb` en 1.
+        // Le sens de la recopie depend de qui precede qui -- `i3` vaut 1 quand `i2` vaut 0.
+        if ( i3 >= 2 )
+            for ( SI o = 0; o < nb_in; ++o )
+                move( 2 + o, i3 + o );
+        else
+            for ( SI o = nb_in - 1; o >= 0; --o )
+                move( 2 + o, i3 + o );
+        put( 0, pa, direction, off, cut_id );
+        put( 1, pb, db, ob, ib );
+    }
+
+    nb_vertices.set( new_nb );
+    nb_cuts.set( new_nb );
+    return CutResult::done;
+}
+
+UTP SI DTP::nb_vertices_outside( const auto &direction, TF offset ) const {
+    const SI nb = nb_vertices;
+    SI nb_out = 0;
+    for ( SI i = 0; i < nb; ++i ) {
+        TF s = -offset;
+        for ( PI d = 0; d < ct_dim; ++d )
+            s += TF( direction( d ) ) * TF( vertex_positions( i, d ) );
+        nb_out += s > 0;
+    }
+    return nb_out;
+}
+
+UTP CutResult DTP::cut_into( auto &&res, auto &&direction, auto &&offset, SI cut_id ) const {
     static_assert( ct_dim == 2, "`cut` is 2D-only for now (see Cell.py::cut)" );
 
     // Sutherland-Hodgman on a CONVEX polygon held in cyclic order, run on both representations at
@@ -314,17 +447,6 @@ UTP bool DTP::cut( auto &&res, auto &&direction, auto &&offset, SI cut_id ) cons
     // on the pushed geometry. `g` is 0 for a bounded cell, where all of this vanishes.
     const TF g = growth_for_cut( direction, off );
 
-    // Reserve the WORST case up front: clipping a convex polygon by a half-space keeps at most its
-    // vertices plus one. Getting it out of the way here is what lets the loop below write without a
-    // single bound test. If the capacity does not fit, `set` has already recorded what was asked
-    // for -- the host reserves more and runs us again -- so all that is left is to stop before
-    // writing anything (`ok &=`, never `||`: we want BOTH counts recorded in one go, not one
-    // re-run per count).
-    bool ok = res.nb_vertices.set( nb + 1 );
-    ok &= res.nb_cuts.set( nb + 1 );
-    if ( ! ok )
-        return false;
-
     // signed distance to the cutting plane. `direction` is NOT normalized and `offset` is the dot
     // product it is compared to, so this is the plain `n . v - o`.
     //
@@ -340,6 +462,30 @@ UTP bool DTP::cut( auto &&res, auto &&direction, auto &&offset, SI cut_id ) cons
             r += direction( d ) * v[ d ];
         return r;
     };
+
+    // ---- LE BALAYAGE DE COMPTAGE. Les produits scalaires, et combien de sommets sont DEHORS.
+    //
+    // Aucun dehors -> le demi-espace contient deja toute la cellule, et la reecrire en produirait
+    // une copie a l'identique : on ne touche a rien. C'est le cas MAJORITAIRE (voir `CutResult`),
+    // et c'est exactement equivalent a faire la coupe -- le clip n'inscrit le nouveau plan que
+    // lorsqu'une arete le traverse, donc un plan qu'aucun sommet ne depasse n'y figurerait pas.
+    //
+    // Reserve aux cellules BORNEES : celle qui ne l'est pas est un simplexe de remplacement dont ce
+    // meme appel repousse d'abord les plans infinis (`g`), donc sa geometrie change meme quand
+    // aucun sommet ne sort.
+    if ( is_fully_bounded && nb_vertices_outside( direction, off ) == 0 )
+        return CutResult::unchanged;
+
+    // Reserve the WORST case up front: clipping a convex polygon by a half-space keeps at most its
+    // vertices plus one. Getting it out of the way here is what lets the loop below write without a
+    // single bound test. If the capacity does not fit, `set` has already recorded what was asked
+    // for -- the host reserves more and runs us again -- so all that is left is to stop before
+    // writing anything (`ok &=`, never `||`: we want BOTH counts recorded in one go, not one
+    // re-run per count).
+    bool ok = res.nb_vertices.set( nb + 1 );
+    ok &= res.nb_cuts.set( nb + 1 );
+    if ( ! ok )
+        return CutResult::overflow;
 
     // A cell is unbounded as long as one of the placeholder cuts of `init_as_unbounded` is still
     // part of it; the clip is what removes them, so the flag is recomputed from what survives.
@@ -408,10 +554,10 @@ UTP bool DTP::cut( auto &&res, auto &&direction, auto &&offset, SI cut_id ) cons
     res.nb_vertices.set( k );
     res.nb_cuts.set( k );
     res.is_fully_bounded = ! still_infinite;
-    return true;
+    return CutResult::done;
 }
 
-UTP bool DTP::cut( auto &&res, auto &&direction, auto &&offset, SI cut_id, auto &&corr ) const {
+UTP CutResult DTP::cut_into( auto &&res, auto &&direction, auto &&offset, SI cut_id, auto &&corr ) const {
     static_assert( ct_dim > 2, "this overload is the d > 2 one (see Cell.h)" );
 
     const SI nv = nb_vertices;
@@ -449,6 +595,14 @@ UTP bool DTP::cut( auto &&res, auto &&direction, auto &&offset, SI cut_id, auto 
         return r;
     };
 
+    // ---- LE BALAYAGE DE COMPTAGE, exactement comme en 2D : aucun sommet dehors -> le demi-espace
+    // contient deja toute la cellule, rien a reecrire. Le treillis de faces ne s'en trouve pas plus
+    // change que le polygone : un plan qu'aucun sommet ne depasse ne recoit aucune arete, donc
+    // aucune facette, donc il ne serait inscrit nulle part. Voir la version 2D pour le detail, et
+    // `CutResult` pour pourquoi ce cas merite son propre etat.
+    if ( is_fully_bounded && nb_vertices_outside( direction, off ) == 0 )
+        return CutResult::unchanged;
+
     // `corr` is this work-item's own row of scratch, in two halves: `[ 0, nv )` maps an old vertex
     // to its new index (-1 when dropped), `[ nv, nv + nc ]` an old cut to its new one. The cut half
     // doubles as the "is this cut still standing" flag while it is being filled, so it starts at 0.
@@ -465,7 +619,7 @@ UTP bool DTP::cut( auto &&res, auto &&direction, auto &&offset, SI cut_id, auto 
             corr( v ) = -1;
             continue;
         }
-        if ( kv >= cap_v ) { res.nb_vertices.set( cap_v + 1 ); return false; }
+        if ( kv >= cap_v ) { res.nb_vertices.set( cap_v + 1 ); return CutResult::overflow; }
         corr( v ) = kv;
         for ( PI d = 0; d < ct_dim; ++d )
             res.vertex_positions( kv, d ) = p[ d ];
@@ -486,7 +640,7 @@ UTP bool DTP::cut( auto &&res, auto &&direction, auto &&offset, SI cut_id, auto 
         res.nb_edges.set( 0 );
         res.nb_cuts.set( 0 );
         res.is_fully_bounded = 1;
-        return true;
+        return CutResult::done;
     }
 
     // ---- the edges, and with them the vertices the cut CREATES. The new cut takes index `nc` in
@@ -501,7 +655,7 @@ UTP bool DTP::cut( auto &&res, auto &&direction, auto &&offset, SI cut_id, auto 
             continue;
 
         if ( ca >= 0 && cb >= 0 ) { // wholly inside: carried over, ends renumbered
-            if ( ke >= cap_e ) { res.nb_edges.set( cap_e + 1 ); return false; }
+            if ( ke >= cap_e ) { res.nb_edges.set( cap_e + 1 ); return CutResult::overflow; }
             res.edge_indices( ke, 0 ) = ca;
             res.edge_indices( ke, 1 ) = cb;
             for ( PI r = 0; r + 1 < ct_dim; ++r )
@@ -517,8 +671,8 @@ UTP bool DTP::cut( auto &&res, auto &&direction, auto &&offset, SI cut_id, auto 
         const auto pi = grown_vertex( i, g ), po = grown_vertex( o, g );
         const TF si = sd( pi ), so = sd( po );
 
-        if ( kv >= cap_v ) { res.nb_vertices.set( cap_v + 1 ); return false; }
-        if ( ke >= cap_e ) { res.nb_edges.set( cap_e + 1 ); return false; }
+        if ( kv >= cap_v ) { res.nb_vertices.set( cap_v + 1 ); return CutResult::overflow; }
+        if ( ke >= cap_e ) { res.nb_edges.set( cap_e + 1 ); return CutResult::overflow; }
 
         // the weighted average `( so pi - si po ) / ( so - si )` rather than `pi + t ( po - pi )`:
         // the same point in exact arithmetic, but SYMMETRIC in the two ends, so an edge gives the
@@ -568,7 +722,7 @@ UTP bool DTP::cut( auto &&res, auto &&direction, auto &&offset, SI cut_id, auto 
             if ( nb_common != SI( ct_dim ) - 2 )
                 continue;
 
-            if ( ke >= cap_e ) { res.nb_edges.set( cap_e + 1 ); return false; }
+            if ( ke >= cap_e ) { res.nb_edges.set( cap_e + 1 ); return CutResult::overflow; }
             res.edge_indices( ke, 0 ) = m;
             res.edge_indices( ke, 1 ) = n;
             for ( SI r = 0; r < nb_common; ++r )
@@ -591,7 +745,7 @@ UTP bool DTP::cut( auto &&res, auto &&direction, auto &&offset, SI cut_id, auto 
             corr( cut_base + c ) = -1;
             continue;
         }
-        if ( kc >= cap_c ) { res.nb_cuts.set( cap_c + 1 ); return false; }
+        if ( kc >= cap_c ) { res.nb_cuts.set( cap_c + 1 ); return CutResult::overflow; }
 
         const bool is_new = ( c == new_cut );
         const SI id = ( is_new ? cut_id : SI( cut_ids( c ) ) );
@@ -621,7 +775,7 @@ UTP bool DTP::cut( auto &&res, auto &&direction, auto &&offset, SI cut_id, auto 
     res.nb_edges.set( ke );
     res.nb_cuts.set( kc );
     res.is_fully_bounded = ! still_infinite;
-    return true;
+    return CutResult::done;
 }
 
 UTP void DTP::crossing_bwd( auto &&direction, SI i, SI j, const auto &vi, const auto &vj, TF si, TF sj,
@@ -660,6 +814,20 @@ UTP void DTP::crossing_bwd( auto &&direction, SI i, SI j, const auto &vi, const 
     }
 
     atomic_add_to( grad_offset, u / D );
+}
+
+UTP bool DTP::cut( auto &&res, auto &&direction, auto &&offset, SI cut_id ) const {
+    const CutResult r = cut_into( res, direction, offset, cut_id );
+    if ( r == CutResult::unchanged )
+        copy_into( res );                       // le demandeur d'UNE coupe veut son resultat dans `res`
+    return r != CutResult::overflow;
+}
+
+UTP bool DTP::cut( auto &&res, auto &&direction, auto &&offset, SI cut_id, auto &&corr ) const {
+    const CutResult r = cut_into( res, direction, offset, cut_id, corr );
+    if ( r == CutResult::unchanged )
+        copy_into( res );
+    return r != CutResult::overflow;
 }
 
 UTP void DTP::cut_bwd_setup( auto &&queue, auto &&grad_cell, auto &&grad_direction, auto &&grad_offset ) const {

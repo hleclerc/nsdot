@@ -17,13 +17,19 @@ namespace sdot {
 struct EverySeed {
     SI nb_seeds;
 
-    /// Every seed but `i0`. `may_cut` is not even asked: a bound that is never used to skip
-    /// anything is a bound not worth computing, and the vertex sweep it costs is precisely what
-    /// this class is here to NOT pay when there is no tree to prune with.
+    /// The order to sweep the seeds in -- index order here, having nothing better to say.
+    SI seed_at( SI k ) const { return k; }
+
+    /// Every seed but `i0`, each with its index and its RANK in the sweep order -- here the two
+    /// are the same number, there being no grouping to speak of.
+    ///
+    /// `may_cut` is not even asked: a bound that is never used to skip anything is a bound not
+    /// worth computing, and the vertex sweep it costs is precisely what this class is here to NOT
+    /// pay when there is no tree to prune with.
     void for_each_candidate( const auto &/*from*/, SI i0, auto &&/*scratch*/,
                              auto &&/*may_cut*/, auto &&cut_with ) const {
         for ( SI i1 = 0; i1 < nb_seeds; ++i1 )
-            if ( i1 != i0 && ! cut_with( i1 ) )
+            if ( i1 != i0 && ! cut_with( i1, i1 ) )
                 return;
     }
 };

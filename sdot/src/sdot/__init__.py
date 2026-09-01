@@ -1,7 +1,9 @@
 from .AaBsp import AaBsp as AaBsp
 from .Cell import Cell as Cell
 from .OtPlan1d import OtPlan1d as OtPlan1d
+from .OtPlan import OtPlan as OtPlan
 from .PowerDiagram import PowerDiagram as PowerDiagram
+from .PowerDiagram import box_half_spaces as box_half_spaces
 from .SpatialAccelerator import SpatialAccelerator as SpatialAccelerator
 from .Voronoi import Voronoi as Voronoi
 
@@ -12,3 +14,4 @@ from .distributions.Image import Image as Image
 from .distributions.SumOfGaussians import SumOfGaussians as SumOfGaussians
 
 from .viz.Visualizer import Visualizer as Visualizer
+from .viz.convergence import write_convergence_html as write_convergence_html

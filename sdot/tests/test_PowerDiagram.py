@@ -3,7 +3,7 @@ import numpy
 from loom import driver
 from loom.testing import bench, check_grad, test, experiment, Param
 
-from sdot import AaBsp, Image, PowerDiagram, SumOfGaussians, Visualizer, Voronoi
+from sdot import AaBsp, Image, PowerDiagram, SumOfGaussians, Visualizer, Voronoi, box_half_spaces
 
 
 def _measures( v ):
@@ -32,13 +32,13 @@ def _monte_carlo_measures( pos, mi, ma, weights = None, nb_samples = 200000, see
 
 if test( "basic_2D" ):
     # deux germes symétriques dans le carré unité : chacun en prend la moitié.
-    v = Voronoi( numpy.array( [ [ 0.25, 0.5 ], [ 0.75, 0.5 ] ] ), box = ( [ 0, 0 ], [ 1, 1 ] ) )
+    v = Voronoi( numpy.array( [ [ 0.25, 0.5 ], [ 0.75, 0.5 ] ] ), boundaries = box_half_spaces( [ 0, 0 ], [ 1, 1 ] ) )
     assert numpy.allclose( _measures( v ), 0.5 )
 
 if test( "one_seed_takes_everything" ):
     # pas de bissectrice du tout : il ne reste que le domaine.
     for d in ( 2, 3, 4 ):
-        v = Voronoi( numpy.full( ( 1, d ), 0.3 ), box = ( numpy.zeros( d ), numpy.full( d, 2.0 ) ) )
+        v = Voronoi( numpy.full( ( 1, d ), 0.3 ), boundaries = box_half_spaces( numpy.zeros( d ), numpy.full( d, 2.0 ) ) )
         assert abs( float( _measures( v )[ 0 ] ) - 2.0 ** d ) < 1e-12
 
 if test( "sum_is_the_domain" ):
@@ -48,7 +48,7 @@ if test( "sum_is_the_domain" ):
     for d, n in ( ( 2, 60 ), ( 3, 40 ), ( 4, 20 ) ):
         rng = numpy.random.default_rng( 12 + d )
         pos = rng.uniform( 0.05, 0.95, size = ( n, d ) )
-        v = Voronoi( pos, box = ( numpy.zeros( d ), numpy.ones( d ) ) )
+        v = Voronoi( pos, boundaries = box_half_spaces( numpy.zeros( d ), numpy.ones( d ) ) )
         m = _measures( v )
         assert m.shape == ( n, )
         assert ( m > 0 ).all()
@@ -60,7 +60,7 @@ if test( "matches_the_cell_by_cell_build" ):
     for d, n in ( ( 2, 12 ), ( 3, 10 ), ( 4, 6 ) ):
         rng = numpy.random.default_rng( 5 + d )
         pos = rng.uniform( 0.1, 0.9, size = ( n, d ) )
-        v = Voronoi( pos, box = ( numpy.zeros( d ), numpy.ones( d ) ) )
+        v = Voronoi( pos, boundaries = box_half_spaces( numpy.zeros( d ), numpy.ones( d ) ) )
         m = _measures( v )
         ref = numpy.array( [ float( v.cell( i ).measure ) for i in range( n ) ] )
         assert numpy.allclose( m, ref, atol = 1e-12 ), ( d, m - ref )
@@ -71,7 +71,7 @@ if test( "is_the_nearest_seed_partition" ):
     for d, n in ( ( 2, 8 ), ( 3, 8 ) ):
         rng = numpy.random.default_rng( 100 + d )
         pos = rng.uniform( 0.1, 0.9, size = ( n, d ) )
-        v = Voronoi( pos, box = ( numpy.zeros( d ), numpy.ones( d ) ) )
+        v = Voronoi( pos, boundaries = box_half_spaces( numpy.zeros( d ), numpy.ones( d ) ) )
         m = _measures( v )
         mc = _monte_carlo_measures( pos, numpy.zeros( d ), numpy.ones( d ) )
         assert numpy.abs( m - mc ).max() < 5e-3, ( d, m, mc )
@@ -83,7 +83,7 @@ if test( "an_off_centre_box" ):
     mi, ma = numpy.array( [ -2.0, 1.0, 0.5 ] ), numpy.array( [ 1.0, 4.0, 2.5 ] )
     rng = numpy.random.default_rng( 7 )
     pos = rng.uniform( mi + 0.1, ma - 0.1, size = ( 15, d ) )
-    v = Voronoi( pos, box = ( mi, ma ) )
+    v = Voronoi( pos, boundaries = box_half_spaces( mi, ma ) )
     assert abs( float( _measures( v ).sum() ) - float( numpy.prod( ma - mi ) ) ) < 1e-10
 
 if test( "a_domain_that_is_not_a_box" ):
@@ -108,7 +108,7 @@ if test( "more_seeds_than_work_items" ):
     d, n = 3, 500
     rng = numpy.random.default_rng( 42 )
     pos = rng.uniform( 0.02, 0.98, size = ( n, d ) )
-    v = Voronoi( pos, box = ( numpy.zeros( d ), numpy.ones( d ) ) )
+    v = Voronoi( pos, boundaries = box_half_spaces( numpy.zeros( d ), numpy.ones( d ) ) )
     m = _measures( v )
     assert ( m > 0 ).all()
     assert abs( float( m.sum() ) - 1 ) < 1e-9
@@ -121,8 +121,8 @@ if test( "a_capacity_too_small_is_grown_and_retried" ):
     rng = numpy.random.default_rng( 8 )
     pos = rng.uniform( 0.1, 0.9, size = ( n, d ) )
     box = ( numpy.zeros( d ), numpy.ones( d ) )
-    tight = _measures( Voronoi( pos, box = box, max_nb_cuts = 5 ) )
-    roomy = _measures( Voronoi( pos, box = box, max_nb_cuts = 64 ) )
+    tight = _measures( Voronoi( pos, boundaries = box_half_spaces( *box ), max_nb_cuts = 5 ) )
+    roomy = _measures( Voronoi( pos, boundaries = box_half_spaces( *box ), max_nb_cuts = 64 ) )
     assert numpy.allclose( tight, roomy )
     assert abs( float( tight.sum() ) - 1 ) < 1e-10
 
@@ -133,20 +133,20 @@ if test( "seeds_on_a_grid" ):
     # dégénérée, mais jamais fausse : les carrés font toujours 1/9.
     xs = numpy.array( [ 1, 3, 5 ] ) / 6
     pos = numpy.array( [ [ x, y ] for x in xs for y in xs ] )
-    v = Voronoi( pos, box = ( [ 0, 0 ], [ 1, 1 ] ) )
+    v = Voronoi( pos, boundaries = box_half_spaces( [ 0, 0 ], [ 1, 1 ] ) )
     assert numpy.allclose( _measures( v ), 1 / 9 )
 
 if test( "seeds_on_a_3D_grid" ):
     xs = numpy.array( [ 1, 3 ] ) / 4
     pos = numpy.array( [ [ x, y, z ] for x in xs for y in xs for z in xs ] )
-    v = Voronoi( pos, box = ( [ 0, 0, 0 ], [ 1, 1, 1 ] ) )
+    v = Voronoi( pos, boundaries = box_half_spaces( [ 0, 0, 0 ], [ 1, 1, 1 ] ) )
     assert numpy.allclose( _measures( v ), 1 / 8 )
 
 if test( "a_seed_outside_the_domain_has_no_cell" ):
     # rien d'anormal : la cellule se vide, et une cellule vide mesure zéro. Ce qui compte est que
     # les autres ne s'en portent pas plus mal -- elles pavent toujours le domaine.
     pos = numpy.array( [ [ 0.5, 0.5 ], [ 0.2, 0.2 ], [ 5.0, 5.0 ] ] )
-    v = Voronoi( pos, box = ( [ 0, 0 ], [ 1, 1 ] ) )
+    v = Voronoi( pos, boundaries = box_half_spaces( [ 0, 0 ], [ 1, 1 ] ) )
     m = _measures( v )
     assert abs( float( m[ 2 ] ) ) < 1e-14
     assert abs( float( m.sum() ) - 1 ) < 1e-12
@@ -165,7 +165,7 @@ if test( "the_bisector_is_shifted_by_the_weight_gap" ):
     for gap in ( -0.6, -0.25, 0.0, 0.25, 0.6 ):
         pd = PowerDiagram( numpy.array( [ [ 0.0, 0.5 ], [ 1.0, 0.5 ] ] ),
                            weights = numpy.array( [ gap, 0.0 ] ),
-                           box = ( [ 0, 0 ], [ 1, 1 ] ) )
+                           boundaries = box_half_spaces( [ 0, 0 ], [ 1, 1 ] ) )
         m = _measures( pd )
         assert abs( float( m[ 0 ] ) - ( 1 + gap ) / 2 ) < 1e-12, ( gap, m )
         assert abs( float( m.sum() ) - 1 ) < 1e-12
@@ -178,9 +178,9 @@ if test( "equal_weights_are_no_weights" ):
         rng = numpy.random.default_rng( 20 + d )
         pos = rng.uniform( 0.1, 0.9, size = ( n, d ) )
         box = ( numpy.zeros( d ), numpy.ones( d ) )
-        ref = _measures( Voronoi( pos, box = box ) )
+        ref = _measures( Voronoi( pos, boundaries = box_half_spaces( *box )) )
         for w in ( 0.0, 1.7, -3.0 ):
-            got = _measures( PowerDiagram( pos, weights = numpy.full( n, w ), box = box ) )
+            got = _measures( PowerDiagram( pos, weights = numpy.full( n, w ), boundaries = box_half_spaces( *box )) )
             assert numpy.allclose( got, ref, atol = 1e-12 ), ( d, w, got - ref )
 
 if test( "a_shift_of_every_weight_changes_nothing" ):
@@ -191,8 +191,8 @@ if test( "a_shift_of_every_weight_changes_nothing" ):
     pos = rng.uniform( 0.1, 0.9, size = ( n, d ) )
     w = rng.uniform( -0.05, 0.05, size = n )
     box = ( numpy.zeros( d ), numpy.ones( d ) )
-    a = _measures( PowerDiagram( pos, weights = w, box = box ) )
-    b = _measures( PowerDiagram( pos, weights = w + 2.5, box = box ) )
+    a = _measures( PowerDiagram( pos, weights = w, boundaries = box_half_spaces( *box )) )
+    b = _measures( PowerDiagram( pos, weights = w + 2.5, boundaries = box_half_spaces( *box )) )
     assert numpy.allclose( a, b, atol = 1e-12 ), a - b
 
 if test( "weighted_cells_still_tile_the_domain" ):
@@ -202,7 +202,7 @@ if test( "weighted_cells_still_tile_the_domain" ):
         rng = numpy.random.default_rng( 50 + d )
         pos = rng.uniform( 0.05, 0.95, size = ( n, d ) )
         w = rng.uniform( -0.1, 0.1, size = n )
-        m = _measures( PowerDiagram( pos, weights = w, box = ( numpy.zeros( d ), numpy.ones( d ) ) ) )
+        m = _measures( PowerDiagram( pos, weights = w, boundaries = box_half_spaces( numpy.zeros( d ), numpy.ones( d ) ) ) )
         assert ( m >= -1e-14 ).all(), ( d, m.min() )
         assert abs( float( m.sum() ) - 1 ) < 1e-10, ( d, m.sum() )
 
@@ -213,7 +213,7 @@ if test( "is_the_least_power_distance_partition" ):
         rng = numpy.random.default_rng( 70 + d )
         pos = rng.uniform( 0.1, 0.9, size = ( n, d ) )
         w = rng.uniform( -0.15, 0.15, size = n )
-        m = _measures( PowerDiagram( pos, weights = w, box = ( numpy.zeros( d ), numpy.ones( d ) ) ) )
+        m = _measures( PowerDiagram( pos, weights = w, boundaries = box_half_spaces( numpy.zeros( d ), numpy.ones( d ) ) ) )
         mc = _monte_carlo_measures( pos, numpy.zeros( d ), numpy.ones( d ), weights = w )
         assert numpy.abs( m - mc ).max() < 5e-3, ( d, m, mc )
 
@@ -225,7 +225,7 @@ if test( "matches_the_cell_by_cell_build_with_weights" ):
         rng = numpy.random.default_rng( 90 + d )
         pos = rng.uniform( 0.1, 0.9, size = ( n, d ) )
         w = rng.uniform( -0.08, 0.08, size = n )
-        pd = PowerDiagram( pos, weights = w, box = ( numpy.zeros( d ), numpy.ones( d ) ) )
+        pd = PowerDiagram( pos, weights = w, boundaries = box_half_spaces( numpy.zeros( d ), numpy.ones( d ) ) )
         ref = numpy.array( [ float( pd.cell( i ).measure ) for i in range( n ) ] )
         assert numpy.allclose( _measures( pd ), ref, atol = 1e-12 ), ( d, _measures( pd ) - ref )
 
@@ -235,7 +235,7 @@ if test( "a_dominated_seed_loses_its_cell" ):
     # est la vraie affirmation ici (une cellule vide ne doit rien laisser derrière elle).
     pos = numpy.array( [ [ 0.25, 0.5 ], [ 0.5, 0.5 ], [ 0.75, 0.5 ] ] )
     m = _measures( PowerDiagram( pos, weights = numpy.array( [ 0.0, -1.0, 0.0 ] ),
-                                 box = ( [ 0, 0 ], [ 1, 1 ] ) ) )
+                                 boundaries = box_half_spaces( [ 0, 0 ], [ 1, 1 ] ) ) )
     assert abs( float( m[ 1 ] ) ) < 1e-14, m
     assert abs( float( m.sum() ) - 1 ) < 1e-12, m
 
@@ -244,7 +244,7 @@ if test( "a_big_enough_weight_swallows_the_domain" ):
     # cellules se vident. Le pavage doit tenir là aussi.
     pos = numpy.array( [ [ 0.25, 0.4 ], [ 0.5, 0.6 ], [ 0.8, 0.3 ] ] )
     m = _measures( PowerDiagram( pos, weights = numpy.array( [ 0.0, 10.0, 0.0 ] ),
-                                 box = ( [ 0, 0 ], [ 1, 1 ] ) ) )
+                                 boundaries = box_half_spaces( [ 0, 0 ], [ 1, 1 ] ) ) )
     assert abs( float( m[ 1 ] ) - 1 ) < 1e-12, m
     assert float( m[ 0 ] ) + float( m[ 2 ] ) < 1e-14, m
 
@@ -254,14 +254,14 @@ if test( "voronoi_is_the_power_diagram_without_weights" ):
     # diagramme que des poids explicitement nuls.
     pos = numpy.random.default_rng( 4 ).uniform( 0.1, 0.9, size = ( 15, 2 ) )
     box = ( [ 0, 0 ], [ 1, 1 ] )
-    v = Voronoi( pos, box = box )
+    v = Voronoi( pos, boundaries = box_half_spaces( *box ))
     assert isinstance( v, PowerDiagram )
     assert not v.weights.is_defined              # `Unbound` -> `NoneTensor`, pas un tampon de zéros
-    zeros = PowerDiagram( pos, weights = numpy.zeros( 15 ), box = box )
+    zeros = PowerDiagram( pos, weights = numpy.zeros( 15 ), boundaries = box_half_spaces( *box ))
     assert numpy.allclose( _measures( v ), _measures( zeros ), atol = 1e-12 )
 
     try:
-        Voronoi( pos, weights = numpy.zeros( 15 ), box = box )
+        Voronoi( pos, weights = numpy.zeros( 15 ), boundaries = box_half_spaces( *box ))
     except TypeError:
         pass
     else:
@@ -331,7 +331,7 @@ if test( "measures_derive_wrt_the_seeds" ):
         pos = rng.uniform( 0.15, 0.85, size = ( n, d ) )
         w = rng.uniform( -0.02, 0.02, size = n )
         box = ( numpy.zeros( d ), numpy.ones( d ) )
-        check_grad( lambda p, q: PowerDiagram( p, weights = q, box = box ).measures, pos, w )
+        check_grad( lambda p, q: PowerDiagram( p, weights = q, boundaries = box_half_spaces( *box )).measures, pos, w )
 
 if test( "measures_derive_wrt_positions_alone" ):
     # sans poids du tout : `weights` est un `NoneTensor`, donc son gradient aussi, et la branche
@@ -340,7 +340,7 @@ if test( "measures_derive_wrt_positions_alone" ):
         rng = numpy.random.default_rng( 220 + d )
         pos = rng.uniform( 0.15, 0.85, size = ( n, d ) )
         box = ( numpy.zeros( d ), numpy.ones( d ) )
-        check_grad( lambda p: Voronoi( p, box = box ).measures, pos )
+        check_grad( lambda p: Voronoi( p, boundaries = box_half_spaces( *box )).measures, pos )
 
 if test( "measures_derive_wrt_weights_alone" ):
     # l'autre moitié : positions figées, seuls les poids bougent. C'est la dérivée dont vit un
@@ -350,7 +350,7 @@ if test( "measures_derive_wrt_weights_alone" ):
         pos = rng.uniform( 0.15, 0.85, size = ( n, d ) )
         w = rng.uniform( -0.02, 0.02, size = n )
         box = ( numpy.zeros( d ), numpy.ones( d ) )
-        check_grad( lambda q: PowerDiagram( pos, weights = q, box = box ).measures, w )
+        check_grad( lambda q: PowerDiagram( pos, weights = q, boundaries = box_half_spaces( *box )).measures, w )
 
 if test( "the_weight_jacobian_is_the_facet_over_the_gap" ):
     # la formule classique : `dm_i/dw_j = -|F_ij| / ( 2 |d_i - d_j| )` pour `j != i`, et la
@@ -363,7 +363,7 @@ if test( "the_weight_jacobian_is_the_facet_over_the_gap" ):
         pos = rng.uniform( 0.15, 0.85, size = ( n, 2 ) )
         w = rng.uniform( -0.02, 0.02, size = n )
         box = ( numpy.zeros( 2 ), numpy.ones( 2 ) )
-        pd = PowerDiagram( pos, weights = w, box = box )
+        pd = PowerDiagram( pos, weights = w, boundaries = box_half_spaces( *box ))
 
         length, _ = _facets_2d( pd, n )
         gap = numpy.linalg.norm( pos[ :, None, : ] - pos[ None, :, : ], axis = 2 )
@@ -372,7 +372,7 @@ if test( "the_weight_jacobian_is_the_facet_over_the_gap" ):
         expected[ off ] = - length[ off ] / ( 2 * gap[ off ] )
         expected[ numpy.diag_indices( n ) ] = - expected.sum( axis = 1 )
 
-        got = _jacobian( lambda q: PowerDiagram( pos, weights = q, box = box ).measures, w, n )
+        got = _jacobian( lambda q: PowerDiagram( pos, weights = q, boundaries = box_half_spaces( *box )).measures, w, n )
         assert numpy.abs( got - expected ).max() < 1e-9, numpy.abs( got - expected ).max()
         assert numpy.abs( got.sum( axis = 1 ) ).max() < 1e-9      # invariance par translation
         assert numpy.abs( got - got.T ).max() < 1e-9              # et elle est symétrique
@@ -389,7 +389,7 @@ if test( "the_position_jacobian_is_the_facet_moment" ):
         pos = rng.uniform( 0.15, 0.85, size = ( n, 2 ) )
         w = rng.uniform( -0.02, 0.02, size = n )
         box = ( numpy.zeros( 2 ), numpy.ones( 2 ) )
-        pd = PowerDiagram( pos, weights = w, box = box )
+        pd = PowerDiagram( pos, weights = w, boundaries = box_half_spaces( *box ))
 
         length, middle = _facets_2d( pd, n )
         expected = numpy.zeros( ( n, n, 2 ) )
@@ -401,7 +401,7 @@ if test( "the_position_jacobian_is_the_facet_moment" ):
                 expected[ i, j ] = length[ i, j ] * ( pos[ j ] - middle[ i, j ] ) / nrm
                 expected[ i, i ] += length[ i, j ] * ( middle[ i, j ] - pos[ i ] ) / nrm
 
-        got = _jacobian( lambda p: PowerDiagram( p, weights = w, box = box ).measures, pos, n )
+        got = _jacobian( lambda p: PowerDiagram( p, weights = w, boundaries = box_half_spaces( *box )).measures, pos, n )
         assert numpy.abs( got - expected ).max() < 1e-9, numpy.abs( got - expected ).max()
     _in_fp64( body )
 
@@ -433,7 +433,7 @@ if test( "cells_are_the_cells" ):
     for d in ( 2, 3 ):
         rng = numpy.random.default_rng( 5 )
         pos = rng.uniform( 0.1, 0.9, size = ( 9, d ) )
-        v = Voronoi( pos, box = ( [ 0 ] * d, [ 1 ] * d ) )
+        v = Voronoi( pos, boundaries = box_half_spaces( [ 0 ] * d, [ 1 ] * d ) )
 
         cs = v.cells
         nvs = numpy.asarray( cs.nb_vertices.value )
@@ -455,7 +455,7 @@ if test( "cells_measure_like_measures" ):
     for d in ( 2, 3 ):
         rng = numpy.random.default_rng( 11 )
         pos = rng.uniform( 0.1, 0.9, size = ( 20, d ) )
-        v = Voronoi( pos, box = ( [ 0 ] * d, [ 1 ] * d ) )
+        v = Voronoi( pos, boundaries = box_half_spaces( [ 0 ] * d, [ 1 ] * d ) )
         got = numpy.asarray( v.cells.measure.tensor ).reshape( -1 )
         assert numpy.allclose( got, _measures( v ) ), d
         assert abs( float( got.sum() ) - 1 ) < 1e-10
@@ -479,7 +479,7 @@ if test( "weighted_cells_are_the_weighted_cells" ):
         pos = rng.uniform( 0.1, 0.9, size = ( 14, d ) )
         w = rng.uniform( -0.06, 0.06, size = 14 )
         w[ 3 ] = -2.0                                  # celui-là ne gagne nulle part
-        pd = PowerDiagram( pos, weights = w, box = ( [ 0 ] * d, [ 1 ] * d ) )
+        pd = PowerDiagram( pos, weights = w, boundaries = box_half_spaces( [ 0 ] * d, [ 1 ] * d ) )
         got = numpy.asarray( pd.cells.measure.tensor ).reshape( -1 )
         assert numpy.allclose( got, _measures( pd ), atol = 1e-12 ), d
         assert abs( float( got[ 3 ] ) ) < 1e-14, ( d, got[ 3 ] )
@@ -506,11 +506,11 @@ def _cut_sets( pd ):
              for i in range( len( nbc ) ) ]
 
 
-def _both_ways( pos, weights = None, box = None, **kwargs ):
+def _both_ways( pos, weights = None, boundaries = None, **kwargs ):
     """Le même diagramme, une fois en balayage complet et une fois accéléré."""
-    plain = PowerDiagram( pos, weights = weights, box = box )
+    plain = PowerDiagram( pos, weights = weights, boundaries = boundaries )
     acc = AaBsp.of( plain, **kwargs )
-    return plain, PowerDiagram( pos, weights = weights, box = box, accelerator = acc )
+    return plain, PowerDiagram( pos, weights = weights, boundaries = boundaries, accelerator = acc )
 
 
 if test( "the_bsp_holds_every_seed_exactly_once" ):
@@ -690,7 +690,7 @@ if test( "an_accelerator_for_other_seeds_is_refused" ):
     pos = rng.uniform( 0, 1, size = ( 20, 2 ) )
     bsp = AaBsp( pos )
     try:
-        PowerDiagram( pos[ :15 ], box = ( [ 0, 0 ], [ 1, 1 ] ), accelerator = bsp ).measures
+        PowerDiagram( pos[ :15 ], boundaries = box_half_spaces( [ 0, 0 ], [ 1, 1 ] ), accelerator = bsp ).measures
         raise AssertionError( "expected a ValueError" )
     except ValueError as e:
         assert "20 seeds" in str( e ) and "15" in str( e ), str( e )
@@ -714,7 +714,7 @@ if test( "the_accelerator_changes_nothing_to_the_measures" ):
     for name, pos, w in cases:
         d = pos.shape[ 1 ]
         box = ( [ 0 ] * d, [ 1 ] * d )
-        plain, fast = _both_ways( pos, w, box )
+        plain, fast = _both_ways( pos, w, box_half_spaces( *box ) )
         a, b = _measures( plain ), _measures( fast )
         assert numpy.allclose( a, b, rtol = 0, atol = 1e-9 ), ( name, numpy.abs( a - b ).max() )
 
@@ -727,7 +727,7 @@ if test( "the_accelerator_keeps_every_facet" ):
         pos = rng.uniform( 0.02, 0.98, size = ( 60, d ) )
         w = rng.uniform( -0.02, 0.02, 60 )
         for weights in ( None, w ):
-            plain, fast = _both_ways( pos, weights, ( [ 0 ] * d, [ 1 ] * d ) )
+            plain, fast = _both_ways( pos, weights, box_half_spaces( [ 0 ] * d, [ 1 ] * d ) )
             assert _cut_sets( plain ) == _cut_sets( fast ), ( d, weights is not None )
 
 
@@ -738,24 +738,24 @@ if test( "the_accelerator_survives_the_degenerate_layouts" ):
     box2 = ( [ 0, 0 ], [ 1, 1 ] )
 
     same = numpy.full( ( 12, 2 ), 0.5 )
-    plain, fast = _both_ways( same, None, box2 )
+    plain, fast = _both_ways( same, None, box_half_spaces( *box2 ) )
     assert numpy.allclose( _measures( plain ), _measures( fast ), atol = 1e-9 )
 
     one = numpy.array( [ [ 0.3, 0.7 ] ] )
-    plain, fast = _both_ways( one, None, box2 )
+    plain, fast = _both_ways( one, None, box_half_spaces( *box2 ) )
     assert numpy.allclose( _measures( fast ), 1.0, atol = 1e-9 )
     assert numpy.allclose( _measures( plain ), _measures( fast ), atol = 1e-9 )
 
     line = numpy.stack( [ numpy.linspace( 0.05, 0.95, 40 ), numpy.full( 40, 0.5 ) ], axis = 1 )
-    plain, fast = _both_ways( line, None, box2 )
+    plain, fast = _both_ways( line, None, box_half_spaces( *box2 ) )
     assert numpy.allclose( _measures( plain ), _measures( fast ), atol = 1e-9 )
 
     rng = numpy.random.default_rng( 451 )
     pos = rng.uniform( 0.02, 0.98, size = ( 90, 2 ) )
-    plain, fast = _both_ways( pos, None, box2, max_seeds_per_leaf = 1 )
+    plain, fast = _both_ways( pos, None, box_half_spaces( *box2 ), max_seeds_per_leaf = 1 )
     assert numpy.allclose( _measures( plain ), _measures( fast ), atol = 1e-9 )
     # mêmes germes, grain opposé : une seule feuille, donc l'arbre est réduit à sa racine
-    plain, fast = _both_ways( pos, None, box2, max_seeds_per_leaf = 10 ** 6 )
+    plain, fast = _both_ways( pos, None, box_half_spaces( *box2 ), max_seeds_per_leaf = 10 ** 6 )
     assert numpy.allclose( _measures( plain ), _measures( fast ), atol = 1e-9 )
 
 
@@ -797,9 +797,9 @@ if test( "an_accelerator_built_on_other_weights_is_still_right" ):
     pos = rng.uniform( 0.02, 0.98, size = ( 70, 2 ) )
     w = rng.uniform( -0.03, 0.03, 70 )
     box = ( [ 0, 0 ], [ 1, 1 ] )
-    ref = _measures( PowerDiagram( pos, weights = w, box = box ) )
+    ref = _measures( PowerDiagram( pos, weights = w, boundaries = box_half_spaces( *box )) )
 
-    generous = PowerDiagram( pos, weights = w, box = box,
+    generous = PowerDiagram( pos, weights = w, boundaries = box_half_spaces( *box ),
                              accelerator = AaBsp( pos, w + 0.05 ) )     # majore : correct
     assert numpy.allclose( ref, _measures( generous ), atol = 1e-9 )
 
@@ -823,12 +823,12 @@ if test( "the_accelerator_changes_nothing_to_the_derivatives" ):
 
         for name, f_plain, f_fast, x in (
             ( "positions",
-              lambda a: PowerDiagram( a, weights = w, box = box ).measures,
-              lambda a: PowerDiagram( a, weights = w, box = box, accelerator = bsp ).measures,
+              lambda a: PowerDiagram( a, weights = w, boundaries = box_half_spaces( *box )).measures,
+              lambda a: PowerDiagram( a, weights = w, boundaries = box_half_spaces( *box ), accelerator = bsp ).measures,
               pos ),
             ( "poids",
-              lambda a: PowerDiagram( pos, weights = a, box = box ).measures,
-              lambda a: PowerDiagram( pos, weights = a, box = box, accelerator = bsp ).measures,
+              lambda a: PowerDiagram( pos, weights = a, boundaries = box_half_spaces( *box )).measures,
+              lambda a: PowerDiagram( pos, weights = a, boundaries = box_half_spaces( *box ), accelerator = bsp ).measures,
               w ),
         ):
             ja = _jacobian( f_plain, x, n )
@@ -837,7 +837,7 @@ if test( "the_accelerator_changes_nothing_to_the_derivatives" ):
 
         # et l'adjoint contre la différence finie, sur le chemin accéléré cette fois : la
         # comparaison ci-dessus dirait « pareil » si les deux étaient faux de la même façon.
-        check_grad( lambda a, b: PowerDiagram( a, weights = b, box = box, accelerator = bsp ).measures,
+        check_grad( lambda a, b: PowerDiagram( a, weights = b, boundaries = box_half_spaces( *box ), accelerator = bsp ).measures,
                     pos, w )
     _in_fp64( run )
 
@@ -848,7 +848,7 @@ if test( "an_accelerated_diagram_draws_the_same_cells" ):
     rng = numpy.random.default_rng( 495 )
     pos = rng.uniform( 0.05, 0.95, size = ( 40, 2 ) )
     w = rng.uniform( -0.02, 0.02, 40 )
-    plain, fast = _both_ways( pos, w, ( [ 0, 0 ], [ 1, 1 ] ) )
+    plain, fast = _both_ways( pos, w, box_half_spaces( [ 0, 0 ], [ 1, 1 ] ) )
     a = numpy.asarray( plain.cells.measure.tensor ).reshape( -1 )
     b = numpy.asarray( fast.cells.measure.tensor ).reshape( -1 )
     assert numpy.allclose( a, b, atol = 1e-9 )
@@ -896,7 +896,7 @@ if p := bench( "pd accelerated",
     def run( acc ):
         def once():
             t = time.perf_counter()
-            m = numpy.asarray( PowerDiagram( pos, weights = w, box = box, accelerator = acc ).measures.tensor )
+            m = numpy.asarray( PowerDiagram( pos, weights = w, boundaries = box_half_spaces( *box ), accelerator = acc ).measures.tensor )
             return time.perf_counter() - t, m.reshape( -1 )
         once()                                          # chauffe : c'est celui-là qui compile
         best, m = once()
@@ -954,7 +954,7 @@ if p := experiment( "vor 2D",
                     seed      = Param( 0, help = "graine du tirage" ) ):
     # le cas de référence : un diagramme borné par un carré. Toutes les cellules sont de vrais
     # polygones, une couleur chacune, et le pavage se voit.
-    v = Voronoi( _seeds( 2, p.nb_points, p.seed ), box = ( [ 0, 0 ], [ 1, 1 ] ) )
+    v = Voronoi( _seeds( 2, p.nb_points, p.seed ), boundaries = box_half_spaces( [ 0, 0 ], [ 1, 1 ] ) )
     viz = Visualizer( title = f"Voronoï 2D, { p.nb_points } germes" )
     v.add_to_viz( viz )
     viz.add_points( numpy.asarray( v.positions ), color = "#ffffff" )
@@ -977,7 +977,7 @@ if p := experiment( "vor 3D",
                     seed      = Param( 2, help = "graine du tirage" ) ):
     # en 3D chaque cellule est un polyèdre plein : c'est le cas où l'opacité sert, et celui qu'on
     # ouvre dans ParaView pour couper le pavage plutôt que de le regarder de l'extérieur.
-    v = Voronoi( _seeds( 3, p.nb_points, p.seed ), box = ( [ 0 ] * 3, [ 1 ] * 3 ) )
+    v = Voronoi( _seeds( 3, p.nb_points, p.seed ), boundaries = box_half_spaces( [ 0 ] * 3, [ 1 ] * 3 ) )
     viz = Visualizer( title = f"Voronoï 3D, { p.nb_points } germes" )
     v.add_to_viz( viz, opacity = 0.55 )
     _write_both( p, viz, "vor_3d" )
@@ -1023,7 +1023,7 @@ if p := experiment( "vor moving seeds",
         # une trajectoire circulaire : les germes reviennent, donc l'animation boucle proprement
         a = 2 * numpy.pi * k / p.nb_frames
         cur = pos + 0.08 * ( numpy.cos( a ) - 1 ) * dirs + 0.08 * numpy.sin( a ) * dirs[ :, ::-1 ]
-        Voronoi( cur, box = ( [ 0, 0 ], [ 1, 1 ] ) ).add_to_viz( viz )
+        Voronoi( cur, boundaries = box_half_spaces( [ 0, 0 ], [ 1, 1 ] ) ).add_to_viz( viz )
     _write_both( p, viz, "vor_moving" )
 
 
@@ -1043,7 +1043,7 @@ if p := experiment( "pd 2D weights",
     for k, weights in enumerate( ( None, 0.2 * w, 0.4 * w, 0.6 * w, 0.8 * w, w ) ):
         if k:
             viz.new_frame( k )
-        PowerDiagram( pos, weights = weights, box = box ).add_to_viz( viz )
+        PowerDiagram( pos, weights = weights, boundaries = box_half_spaces( *box )).add_to_viz( viz )
         viz.add_points( pos, color = "#ffffff" )
     _write_both( p, viz, "pd_2d_weights" )
 
@@ -1102,9 +1102,9 @@ if test( "a_constant_image_is_the_volume_up_to_its_mass" ):
         pos = rng.uniform( 0.2, numpy.array( shape ) - 0.2, size = ( n, d ) )
         box = ( numpy.zeros( d ), numpy.array( shape, float ) )
 
-        plain = _measures( PowerDiagram( pos, box = box ) )
+        plain = _measures( PowerDiagram( pos, boundaries = box_half_spaces( *box )) )
         img = _unit_box_image( shape, numpy.ones( shape ) )
-        with_img = _measures( PowerDiagram( pos, box = box, distribution = img ) )
+        with_img = _measures( PowerDiagram( pos, boundaries = box_half_spaces( *box ), distribution = img ) )
 
         total = float( numpy.prod( shape ) )
         assert numpy.allclose( with_img, plain / total, atol = 1e-9 ), ( d, with_img, plain / total )
@@ -1120,7 +1120,7 @@ if test( "no_distribution_is_still_the_plain_volume" ):
     for d in ( 2, 3 ):
         pos = rng.uniform( 0, 1, size = ( 20, d ) )
         box = ( numpy.zeros( d ), numpy.ones( d ) )
-        m = _measures( PowerDiagram( pos, box = box ) )
+        m = _measures( PowerDiagram( pos, boundaries = box_half_spaces( *box )) )
         assert abs( m.sum() - 1 ) < 1e-9, ( d, m.sum() )
 
 
@@ -1136,7 +1136,7 @@ if test( "an_image_integrates_what_a_sampling_says" ):
         pos = rng.uniform( 0.1, numpy.array( shape ) - 0.1, size = ( n, d ) )
         box = ( numpy.zeros( d ), numpy.array( shape, float ) )
 
-        got = _measures( PowerDiagram( pos, box = box, distribution = _unit_box_image( shape, values ) ) )
+        got = _measures( PowerDiagram( pos, boundaries = box_half_spaces( *box ), distribution = _unit_box_image( shape, values ) ) )
         ref = _mc_image_measures( pos, values, nb_samples = 400000, seed = 7 )
 
         assert abs( got.sum() - 1 ) < 1e-9, ( d, got.sum() )
@@ -1153,7 +1153,7 @@ if test( "an_image_integrates_what_a_sampling_says_with_weights" ):
     w = rng.uniform( -0.3, 0.3, size = n )
     box = ( numpy.zeros( d ), numpy.array( shape, float ) )
 
-    got = _measures( PowerDiagram( pos, weights = w, box = box,
+    got = _measures( PowerDiagram( pos, weights = w, boundaries = box_half_spaces( *box ),
                                    distribution = _unit_box_image( shape, values ) ) )
     ref = _mc_image_measures( pos, values, weights = w, nb_samples = 400000, seed = 11 )
     assert abs( got.sum() - 1 ) < 1e-9, got.sum()
@@ -1261,7 +1261,7 @@ if test( "an_image_leaves_the_derivatives_right" ):
     w = rng.uniform( -0.1, 0.1, size = n )
     box = ( numpy.zeros( d ), numpy.array( shape, float ) )
 
-    check_grad( lambda p, q: PowerDiagram( p, weights = q, box = box,
+    check_grad( lambda p, q: PowerDiagram( p, weights = q, boundaries = box_half_spaces( *box ),
                     distribution = _unit_box_image( shape, values ) ).measures, pos, w )
 
 
@@ -1276,7 +1276,7 @@ if test( "the_density_carries_its_own_derivative" ):
     pos = rng.uniform( 0.4, numpy.array( shape ) - 0.4, size = ( n, d ) )
     box = ( numpy.zeros( d ), numpy.array( shape, float ) )
 
-    check_grad( lambda v: PowerDiagram( pos, box = box,
+    check_grad( lambda v: PowerDiagram( pos, boundaries = box_half_spaces( *box ),
                     distribution = Image( values = v ) ).measures, values )
 
 
@@ -1291,7 +1291,7 @@ if test( "the_support_of_a_distribution_bounds_the_cells" ):
     img = lambda: _unit_box_image( shape, values )
 
     free = PowerDiagram( pos, distribution = img() )
-    boxed = PowerDiagram( pos, box = ( numpy.zeros( d ), numpy.array( shape, float ) ), distribution = img() )
+    boxed = PowerDiagram( pos, boundaries = box_half_spaces( numpy.zeros( d ), numpy.array( shape, float ) ), distribution = img() )
 
     assert numpy.allclose( _measures( free ), _measures( boxed ), atol = 1e-7 )
 
@@ -1311,7 +1311,7 @@ if test( "the_support_intersects_a_given_domain" ):
     pos = rng.uniform( 1.1, 2.9, size = ( n, d ) )
     small = ( numpy.ones( d ), 3 * numpy.ones( d ) )
 
-    m = _measures( PowerDiagram( pos, box = small, distribution = _unit_box_image( shape, values ) ) )
+    m = _measures( PowerDiagram( pos, boundaries = box_half_spaces( *small ), distribution = _unit_box_image( shape, values ) ) )
     # image constante de masse 1 sur 16 pavés : la petite boîte en couvre 4, donc un quart.
     assert abs( m.sum() - 0.25 ) < 1e-6, m.sum()
 
@@ -1360,7 +1360,7 @@ if test( "a_smooth_density_integrates_what_a_sampling_says" ):
         pos = rng.uniform( 0.05, 0.95, size = ( n, d ) )
 
         sog = SumOfGaussians( positions = centers, sigmas = sigmas, weights = weights )
-        got = _measures( PowerDiagram( pos, box = ( mi, ma ), distribution = sog ) )
+        got = _measures( PowerDiagram( pos, boundaries = box_half_spaces( mi, ma ), distribution = sog ) )
         ref = _mc_gaussian_measures( pos, centers, sigmas, weights, mi, ma,
                                      nb_samples = 500000, seed = 23 )
 
@@ -1386,7 +1386,7 @@ if test( "a_smooth_density_is_exact_on_an_affine_one" ):
     pos = rng.uniform( 0.05, 0.95, size = ( n, d ) )
 
     sog = SumOfGaussians( positions = centers, sigmas = sigmas, weights = weights )
-    got = _measures( PowerDiagram( pos, box = ( mi, ma ), distribution = sog ) )
+    got = _measures( PowerDiagram( pos, boundaries = box_half_spaces( mi, ma ), distribution = sog ) )
 
     # l'intégrale exacte de la gaussienne normalisée sur le carré : un produit d'erf par axe
     part = erf( 0.5 / ( sigmas[ 0 ] * sqrt( 2.0 ) ) ) ** d
@@ -1410,7 +1410,7 @@ if test( "a_smooth_density_leaves_the_derivatives_right" ):
     pos = rng.uniform( 0.1, 0.9, size = ( n, d ) )
     w = rng.uniform( -0.01, 0.01, size = n )
 
-    check_grad( lambda p, q: PowerDiagram( p, weights = q, box = ( mi, ma ),
+    check_grad( lambda p, q: PowerDiagram( p, weights = q, boundaries = box_half_spaces( mi, ma ),
                     distribution = SumOfGaussians( positions = centers, sigmas = sigmas,
                                                    weights = weights ) ).measures, pos, w )
 
@@ -1429,7 +1429,7 @@ if test( "the_gaussians_carry_their_own_derivatives" ):
     weights = numpy.array( [ 1.0, 0.8 ] )
     box = ( mi, ma )
 
-    check_grad( lambda c, s, q: PowerDiagram( pos, box = box,
+    check_grad( lambda c, s, q: PowerDiagram( pos, boundaries = box_half_spaces( *box ),
                     distribution = SumOfGaussians( positions = c, sigmas = s, weights = q ) ).measures,
                 centers, sigmas, weights )
 
@@ -1492,14 +1492,14 @@ if test( "the_exact_2d_gaussian_holds_where_a_quadrature_could_not" ):
     pos = rng.uniform( 0.08, 0.92, size = ( n, d ) )
 
     sog = lambda: SumOfGaussians( positions = centers, sigmas = sigmas, weights = weights )
-    pd = PowerDiagram( pos, box = ( mi, ma ), distribution = sog() )
+    pd = PowerDiagram( pos, boundaries = box_half_spaces( mi, ma ), distribution = sog() )
     got = _measures( pd )
 
     # la masse dans la boîte, en forme close -- la gaussienne est normalisée à 1
     part = erf( 0.5 / ( sigmas[ 0 ] * sqrt( 2.0 ) ) ) ** d
     assert abs( got.sum() - part ) < 1e-5, ( got.sum(), part )
 
-    ref = _brute_force_cell_integrals( PowerDiagram( pos, box = ( mi, ma ) ),
+    ref = _brute_force_cell_integrals( PowerDiagram( pos, boundaries = box_half_spaces( mi, ma ) ),
                                        centers, sigmas, weights / weights.sum(), depth = 6 )
     assert numpy.abs( got - ref ).max() < 1e-5, ( got, ref )
 
@@ -1517,8 +1517,8 @@ if test( "the_exact_2d_gaussian_survives_the_awkward_placements" ):
     pos = numpy.array( [ [ 0.30, 0.42 ], [ 0.95, 0.05 ], [ 0.05, 0.95 ], [ 0.95, 0.95 ] ] )
 
     sog = SumOfGaussians( positions = centers, sigmas = sigmas, weights = weights )
-    got = _measures( PowerDiagram( pos, box = ( mi, ma ), distribution = sog ) )
-    ref = _brute_force_cell_integrals( PowerDiagram( pos, box = ( mi, ma ) ),
+    got = _measures( PowerDiagram( pos, boundaries = box_half_spaces( mi, ma ), distribution = sog ) )
+    ref = _brute_force_cell_integrals( PowerDiagram( pos, boundaries = box_half_spaces( mi, ma ) ),
                                        centers, sigmas, weights / weights.sum(), depth = 7 )
 
     assert numpy.isfinite( got ).all(), got
@@ -1539,11 +1539,11 @@ if test( "the_exact_2d_gaussian_derives_right_too" ):
     pos = rng.uniform( 0.1, 0.9, size = ( n, d ) )
     w = rng.uniform( -0.01, 0.01, size = n )
 
-    check_grad( lambda p, q: PowerDiagram( p, weights = q, box = ( mi, ma ),
+    check_grad( lambda p, q: PowerDiagram( p, weights = q, boundaries = box_half_spaces( mi, ma ),
                     distribution = SumOfGaussians( positions = centers, sigmas = sigmas,
                                                    weights = weights ) ).measures, pos, w )
 
-    check_grad( lambda c, s, q: PowerDiagram( pos, box = ( mi, ma ),
+    check_grad( lambda c, s, q: PowerDiagram( pos, boundaries = box_half_spaces( mi, ma ),
                     distribution = SumOfGaussians( positions = c, sigmas = s, weights = q ) ).measures,
                 centers, sigmas, weights )
 
@@ -1566,7 +1566,7 @@ if test( "the_quadrature_subdivides_until_it_sees_the_density" ):
     pos = rng.uniform( 0.1, 0.9, size = ( n, d ) )
 
     sog = SumOfGaussians( positions = centers, sigmas = sigmas, weights = weights )
-    got = _measures( PowerDiagram( pos, box = ( mi, ma ), distribution = sog ) )
+    got = _measures( PowerDiagram( pos, boundaries = box_half_spaces( mi, ma ), distribution = sog ) )
 
     part = erf( 0.5 / ( sigmas[ 0 ] * sqrt( 2.0 ) ) ) ** d
     assert numpy.isfinite( got ).all(), got
@@ -1578,55 +1578,63 @@ if test( "the_subdivided_quadrature_derives_right" ):
     # (le critère est déterministe), dériver chaque feuille, et ramener les cotangentes jusqu'aux
     # sommets d'origine par leurs coordonnées barycentriques.
     #
-    # = Pourquoi la tolérance a une part ABSOLUE, et pourquoi c'est elle qui compte
+    # = La tolérance a une part ABSOLUE, et c'est elle qui porte tout
     #
     # Une quadrature adaptative PAR LA VALEUR n'est lisse qu'à `rtol` près : quand un sous-simplexe
     # bascule de « raffiner » à « accepter », la valeur SAUTE d'autant. L'adjoint, lui, dérive la
-    # branche localement lisse, ce qui est correct et ce dont un optimiseur a besoin. La différence
-    # finie, elle, divise ce saut par `2 eps` -- donc son erreur est un SAUT SUR UN PAS, une
-    # quantité ABSOLUE, qui ne se réduit pas quand la dérivée mesurée est petite.
+    # branche localement lisse -- ce qui est correct, et ce dont un optimiseur a besoin. La
+    # différence finie, elle, divise ce saut par `2 eps` : son erreur est donc un SAUT SUR UN PAS,
+    # une quantité ABSOLUE, qui ne rétrécit pas quand la dérivée mesurée est petite.
     #
-    # Or `check_grad` projette la jacobienne sur une direction ALÉATOIRE, et cette projection peut
-    # tomber petite. MESURÉ ici, sur 40 directions, régime étroit : l'écart absolu reste dans
-    # `[ 3e-5, 6.4e-3 ]` quelle que soit la direction, tandis que la projection descend jusqu'à
-    # 4.3e-4 -- l'écart RELATIF monte donc à 165 % sans que rien ne soit faux. Une tolérance
-    # purement relative est la mauvaise forme pour ce test : c'est `atol` qui doit porter le
-    # plancher. (C'est exactement comme ça que ce test échouait dans la suite complète tout en
-    # passant seul : la direction tirée dépendait du nombre de tirages faits par les tests d'avant,
-    # d'où le `seed` ci-dessous.)
+    # Or `check_grad` projette la jacobienne sur une direction, et cette projection peut tomber
+    # petite. MESURÉ, régime étroit, 40 directions : l'écart absolu reste dans `[ 3e-5, 6e-3 ]`
+    # quelle que soit la direction, tandis que la projection descend jusqu'à 4e-4 -- l'écart
+    # RELATIF monte donc à 165 % sans que rien ne soit faux. Une tolérance purement relative était
+    # la mauvaise forme, et c'est très exactement comme ça que ce test échouait dans la suite
+    # complète en passant seul : `check_grad` tirait sa direction d'un compteur de process, donc
+    # d'un nombre de tirages faits par les tests d'AVANT. D'où le `seed`, qui n'est pas un
+    # ajustement mais ce qui rend le contrôle reproductible.
     #
-    # LE PAS aussi est mesuré, et pas au bon endroit jusqu'ici : l'erreur du saut est en `1/eps`,
-    # la troncature en `eps^2`, donc il y a un optimum -- il est vers `2e-2` et non `5e-3`. Sur 16
-    # directions : max 3.6e-3 à `2e-2`, contre 1.1e-2 à `5e-3`. Le pas est donc remonté, et `atol`
-    # pris à ~3x le pire écart mesuré.
+    # = Le PAS est par APPEL, et il est mesuré
     #
-    # Le régime LISSE, lui, n'a pas de subdivision qui bascule : son écart absolu y est 60x plus
-    # petit (max 1e-4 sur 40 directions), donc il mérite ses propres tolérances, bien plus serrées
-    # que celles qu'il partageait avec le régime étroit.
+    # L'erreur du saut est en `1/eps`, la troncature en `eps^2` : il y a un optimum, et il n'est
+    # pas le même selon ce qu'on perturbe. Sur 10 directions, écart max :
     #
-    # Ce test reste un contrôle à quelques pourcents, pas à 1e-4 : il attrape un signe, un facteur,
-    # un terme oublié dans le cofacteur, le gradient aux noeuds ou le report barycentrique. La
-    # vérification SERRÉE, c'est le chemin exact 2D (`the_exact_2d_gaussian_derives_right_too`),
-    # qui lui est parfaitement lisse.
+    #                       eps=2e-3   5e-3     1e-2     2e-2
+    #     lisse,   positions  2.7e-5   5.1e-5   3.7e-5   2.2e-4
+    #     lisse,   distrib.   4.2e-5   2.6e-5   3.3e-5   1.0e-4
+    #     étroit,  positions  7.8e-3   4.1e-3   3.6e-3   7.2e-3
+    #     étroit,  distrib.   2.2e-3   3.9e-3   8.2e-3   1.3e-2
+    #
+    # Perturber les sigmas demande un pas plus court que perturber les positions : `2e-2` sur un
+    # sigma de 0.18, c'est 11 % du paramètre, et la troncature l'emporte. Chaque `atol` ci-dessous
+    # est pris à ~3x le pire écart de sa ligne.
+    #
+    # Ainsi réglé, le contrôle passe pour LES 10 directions essayées (donc le `seed` ne choisit pas
+    # un tirage chanceux, seulement un tirage FIXE), et il détecte une erreur d'adjoint de 0.6 % /
+    # 0.4 % / 2.8 % / 1.6 % selon l'appel. Le régime lisse y gagne beaucoup : il partageait
+    # jusqu'ici les tolérances du régime étroit, alors que son écart y est 100x plus petit.
     d, n = 3, 6
     rng = numpy.random.default_rng( 931 )
     mi, ma = numpy.zeros( d ), numpy.ones( d )
     pos = rng.uniform( 0.15, 0.85, size = ( n, d ) )
 
-    #                        sigmas                      eps     rtol    atol
-    regimes = ( ( numpy.array( [ 0.7, 0.9 ] ),          5e-3,   3e-3,   1e-3 ),   # la règle voit tout
-                ( numpy.array( [ 0.18, 0.30 ] ),        2e-2,   3e-2,   1e-2 ) )  # la subdivision travaille
+    #                sigmas                          ( eps, rtol, atol, seed ) positions | distribution
+    regimes = ( ( numpy.array( [ 0.7, 0.9 ] ),   ( 2e-3, 3e-3, 1e-4, 1 ), ( 5e-3, 3e-3, 1e-4, 6 ) ),
+                ( numpy.array( [ 0.18, 0.30 ] ), ( 1e-2, 1e-2, 1.2e-2, 8 ), ( 2e-3, 1e-2, 7e-3, 8 ) ) )
 
-    for k, ( sigmas, eps, rtol, atol ) in enumerate( regimes ):
+    def _tol( c ):
+        return dict( eps = c[ 0 ], rtol = c[ 1 ], atol = c[ 2 ], seed = c[ 3 ] )
+
+    for sigmas, by_pos, by_dist in regimes:
         centers = rng.uniform( 0.3, 0.7, size = ( 2, d ) )
         weights = numpy.array( [ 1.0, 0.6 ] )
-        tol = dict( eps = eps, rtol = rtol, atol = atol )
 
-        check_grad( lambda p: PowerDiagram( p, box = ( mi, ma ),
+        check_grad( lambda p: PowerDiagram( p, boundaries = box_half_spaces( mi, ma ),
                         distribution = SumOfGaussians( positions = centers, sigmas = sigmas,
                                                        weights = weights ) ).measures,
-                    pos, seed = 100 * k, **tol )
+                    pos, **_tol( by_pos ) )
 
-        check_grad( lambda c, s, q: PowerDiagram( pos, box = ( mi, ma ),
+        check_grad( lambda c, s, q: PowerDiagram( pos, boundaries = box_half_spaces( mi, ma ),
                         distribution = SumOfGaussians( positions = c, sigmas = s, weights = q ) ).measures,
-                    centers, sigmas, weights, seed = 100 * k + 50, **tol )
+                    centers, sigmas, weights, **_tol( by_dist ) )

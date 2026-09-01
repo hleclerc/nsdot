@@ -61,12 +61,43 @@ class PowerDiagram( Aggregate ):
 
     positions      : RealTensor[ "num_point", "dim" ]
 
+    # NOS positions, dans l'ordre où l'accélérateur balaie les germes -- `positions[ seed_at( k ) ]`.
+    # Une copie, et c'est tout l'objet : sans elle, essayer les germes d'une feuille allait chercher
+    # `positions( i1 )` à des endroits épars d'un tableau qui pèse 16 Mo à 1e6 germes, alors que les
+    # germes d'une feuille sont justement voisins DANS CET ORDRE-LÀ.
+    #
+    # Elle est ici et pas dans l'accélérateur, et c'est la leçon d'un bug : un accélérateur qui
+    # fournirait les positions rendrait celles du DIAGRAMME non déterminantes, donc ses dérivées
+    # fausses dès que l'accélérateur a été bâti sur un autre nuage (ce que
+    # `the_accelerator_changes_nothing_to_the_derivatives` vérifie). L'accélérateur ne répond que de
+    # l'ÉNUMÉRATION -- combinatoire, constante du trace, de gradient nul.
+    #
+    # Le rassemblement est fait par le backend (voir `_sorted_positions`), sous un `stop_gradient` :
+    # la dérivée par rapport aux positions est celle que `measures_bwd` calcule analytiquement et
+    # dépose dans `grad_positions`, donc la faire passer une seconde fois par cette copie la
+    # compterait deux fois. Absente (pas d'accélérateur), elle est `Unbound` et le kernel lit
+    # `positions( i1 )` comme avant.
+    sorted_positions : RealTensor[ "num_point", "dim" ]
+
     # FACULTATIF, exactement comme le domaine ci-dessous : absent (`Unbound`, `NoneTensor` côté
     # C++), le terme de poids disparaît du plan À LA COMPILATION et le diagramme est l'euclidien.
     # Ce n'est pas une optimisation gratuite mais la bonne façon de dire ce qu'on veut dire : un
     # poids constant ne se voit nulle part dans le diagramme, donc « pas de poids » est un ÉTAT,
     # pas un tableau de zéros.
     weights        : RealTensor[ "num_point" ]
+
+    # LA CELLULE DE DÉPART, quand on en connaît une meilleure que « tout l'espace » : le pavé
+    # `box_min <= x <= box_max`, posé d'un trait par `Cell::init_as_hypercube`. Absent (`Unbound`,
+    # `NoneTensor`), chaque cellule naît comme un SIMPLEXE DE REMPLACEMENT non borné dont toute
+    # coupe doit d'abord repousser les plans infinis -- et il en faut `2d` pour la borner.
+    #
+    # Ce n'est PAS un second domaine : c'est le même, exprimé sous la forme qu'on sait poser
+    # directement. Ce qu'un pavé ne dit pas reste dans `bnd_directions` / `bnd_offsets` et se coupe
+    # comme avant, de sorte qu'un domaine quelconque, ou un support de distribution qui n'est pas un
+    # pavé, marche exactement comme aujourd'hui. Voir `Distribution.bounding_box`, qui est l'autre
+    # source de ce pavé.
+    box_min        : RealTensor[ "dim" ]
+    box_max        : RealTensor[ "dim" ]
 
     # le domaine : une liste de demi-espaces, donc n'importe quel convexe polyédrique. Absent
     # (`Unbound`, `NoneTensor` côté C++), les cellules qui partent à l'infini le restent -- et se
@@ -82,12 +113,12 @@ class PowerDiagram( Aggregate ):
     nb_boundaries  : ShapeVar
     nb_dims        : CtShapeVar
 
-    def __init__( self, positions, weights = None, boundaries = None, box = None, max_nb_cuts = None,
+    def __init__( self, positions, weights = None, boundaries = None, max_nb_cuts = None,
                   accelerator = None, distribution = None, **kwargs ):
-        """`positions` : `[ n, d ]`. `weights` : `[ n ]`, ou rien (le cas euclidien). Le domaine, au choix :
+        """`positions` : `[ n, d ]`. `weights` : `[ n ]`, ou rien (le cas euclidien). Le domaine :
 
-        - `box = ( mi, ma )` -- le pavé `mi <= x <= ma`, développé ici en `2d` demi-espaces ;
-        - `boundaries = ( directions, offsets )` -- les demi-espaces `direction . x <= offset` ;
+        - `boundaries = ( directions, offsets )` -- les demi-espaces `direction . x <= offset`.
+          Un pavé s'écrit `box_half_spaces( mi, ma )`, qui est là pour ça ;
         - rien -- les cellules du bord restent infinies.
 
         `max_nb_cuts` dimensionne les tampons d'une cellule (voir `_capacities`). Ce n'est qu'une
@@ -103,10 +134,6 @@ class PowerDiagram( Aggregate ):
         borné, il s'ajoute au domaine -- gratuit et sans effet sur le résultat, voir
         `Distribution.bounding_half_spaces`. Voir `distributions/Distribution.py` pour le contrat.
         """
-        if box is not None:
-            if boundaries is not None:
-                raise ValueError( "give either `box` or `boundaries`, not both" )
-            boundaries = box_half_spaces( *box )
 
         # le SUPPORT de la distribution borne le domaine, gratuitement et sans rien changer au
         # résultat : ce qui dépasse n'apporte aucune masse. Voir `Distribution.bounding_half_spaces`
@@ -125,7 +152,23 @@ class PowerDiagram( Aggregate ):
         # alloués, `NoneTensor` côté C++) n'est pas la même chose que leur passer `None`, qui est
         # une valeur, et une valeur de rang 0.
         if boundaries is not None:
-            kwargs[ "bnd_directions" ], kwargs[ "bnd_offsets" ] = boundaries
+            # D'OÙ PARTIR, lu sur les demi-espaces eux-mêmes : les demi-espaces restent la seule
+            # façon d'ÉCRIRE le domaine, et le pavé n'en est qu'une lecture. Ceux qu'il exprime
+            # déjà sortent de la liste -- ils sont `2d` et reviendraient sur chaque cellule.
+            #
+            # Les DEUX chemins de construction doivent alors partir du même endroit, sans quoi le
+            # `cell( i )` coupe par coupe se retrouve sans domaine : voir `cell`, qui part du même
+            # pavé. C'est ce qui manquait à une première version, et ça se voyait à des mesures
+            # infinies.
+            start_box = axis_aligned_box( *boundaries )
+            if start_box is not None:
+                mi, ma, kept = start_box
+                kwargs[ "box_min" ], kwargs[ "box_max" ] = mi, ma
+                boundaries = ( np.asarray( boundaries[ 0 ], dtype = float )[ kept ],
+                               np.asarray( boundaries[ 1 ], dtype = float )[ kept ] )
+
+            if len( boundaries[ 1 ] ):
+                kwargs[ "bnd_directions" ], kwargs[ "bnd_offsets" ] = boundaries
 
         # même règle pour les poids : `None` n'est pas « des zéros », c'est « pas de poids ». On ne
         # nomme donc pas le membre plutôt que de lui passer une valeur.
@@ -176,6 +219,64 @@ class PowerDiagram( Aggregate ):
         if self.distribution is None:
             return 0
         return int( self.distribution.extra_cuts_per_piece( int( self.nb_dims.value ) ) )
+
+
+    def _domain_cell( self ):
+        """Le domaine comme POLYTOPE, calculé UNE FOIS -- ce dont chaque cellule part.
+
+        Avant, `make_cell` refaisait le domaine pour CHACUN des germes : la cellule de départ, puis
+        une coupe par plan restant. Sur un domaine qui n'est pas un pavé -- un octogone, le support
+        d'une distribution, un domaine tronqué -- ces plans étaient donc reclippés autant de fois
+        qu'il y a de germes, et on a mesuré que quatre plans redondants coûtaient déjà 25 %. Ici,
+        chaque germe le RECOPIE (`Cell::copy_into`), ce qui passe le coût par germe de `k` coupes à
+        une copie.
+
+        Ça vaut même pour un pavé : `init_as_hypercube` inverse le repère, donc résout un système
+        `d x d` par cellule, là où la copie ne fait que lire.
+
+        Construit avec le MÊME code que l'oracle `cell( i )` -- un `driver.call` par plan -- ce qui
+        ne coûte rien puisque c'est une fois par diagramme, et garde les deux descriptions du
+        domaine littéralement identiques. Mis en cache sur l'instance : le domaine ne change pas.
+        """
+        if getattr( self, "_dom_cell", None ) is None:
+            d = int( self.nb_dims.value )
+            if self.box_min.is_defined:
+                mi = np.asarray( self.box_min ).reshape( -1 )
+                ma = np.asarray( self.box_max ).reshape( -1 )
+                cell = Cell.make_hypercube( d, mi, np.diag( ma - mi ) )
+            else:
+                cell = Cell.make_unbounded( d )
+            if self.bnd_directions.is_defined:
+                # les VALEURS du backend, pas du numpy : sous un `jit` les demi-espaces peuvent être
+                # tracés, et les rapatrier côté hôte échouerait. Seul leur NOMBRE est lu ici, et il
+                # est connu (c'est une entrée prescrite).
+                #
+                # `stop_gradient` dit ce que `the_domain_carries_no_gradient` vérifie : le domaine
+                # est une constante du problème. Une coupe qui en vient porte `BOUNDARY`, c'est-à-dire
+                # « pas un germe », donc sa part n'a de toute façon nulle part où aller (voir
+                # `measures`) -- le dire ici évite que jax cherche à la faire remonter par la
+                # construction de cette cellule.
+                dirs = driver.stop_gradient( self.bnd_directions.raw )
+                offs = driver.stop_gradient( self.bnd_offsets.raw )
+                for b in range( int( self.bnd_directions.shape[ 0 ] ) ):
+                    cell.cut( dirs[ b ], offs[ b ], BOUNDARY )
+            self._dom_cell = cell
+        return self._dom_cell
+
+
+    def _sorted_positions( self ):
+        """NOS positions rangées dans l'ordre de l'accélérateur -- voir le champ `sorted_positions`.
+
+        `stop_gradient` : la valeur est celle du diagramme, mais la dérivée qui la concerne est déjà
+        produite analytiquement par `measures_bwd`. Sans lui, jax ajouterait la contribution du
+        rassemblement à celle du kernel, et le gradient serait compté deux fois.
+        """
+        if self.accelerator is None:
+            return
+        order = self.accelerator.seed_indices.raw
+        if order is None:
+            return
+        self.sorted_positions = driver.stop_gradient( self.positions.raw[ order ] )
 
 
     def _acc_for( self, batch_axis ):
@@ -315,6 +416,7 @@ class PowerDiagram( Aggregate ):
         # arrivent en `NoneTensor`, ce qu'attendent les `if constexpr ( ct_dim > 2 )` du C++.
         scratch = [ "corr", "facet_apex" ] if d > 2 else []
 
+        self._sorted_positions()
         acc_expr, acc_ws_expr, acc_kwargs, acc_scratch = self._acc_for( num_thread )
         dist_expr, grad_dist_expr, dist_kwargs = self._dist_for()
 
@@ -331,7 +433,7 @@ class PowerDiagram( Aggregate ):
 
         driver.call(
             FfiCodeParallel( name = "power_diagram_measures",
-                fwd_code = "power_diagram.measures( res, ws_0( batch_index ), ws_1( batch_index ), "
+                fwd_code = "power_diagram.measures( res, dom_cell, ws_0( batch_index ), ws_1( batch_index ), "
                            "corr( batch_index ), facet_apex( batch_index ), "
                            f"{ acc_expr }, { acc_ws_expr }, { dist_expr }, { piece_ws_expr }, "
                            "thread_index, nb_threads );",
@@ -341,7 +443,7 @@ class PowerDiagram( Aggregate ):
                 # ce qu'elle fait justement pour une sortie flottante partagée d'un appel batché
                 # (`CallArg_Tensor.cpp_seed_member`), donc pas de `bwd_setup_code` ici. Idem pour
                 # `grad_for_distribution.values`, qui reçoit les mêmes `atomic_add`.
-                bwd_code = "power_diagram.measures_bwd( res, grad_for_res, "
+                bwd_code = "power_diagram.measures_bwd( res, dom_cell, grad_for_res, "
                            "grad_for_power_diagram.positions, grad_for_power_diagram.weights, "
                            "ws_0( batch_index ), ws_1( batch_index ), corr( batch_index ), "
                            "facet_apex( batch_index ), grad_vp( batch_index ), "
@@ -354,6 +456,7 @@ class PowerDiagram( Aggregate ):
             # work-items se les repassent d'un germe à l'autre).
             scratch_attributes = [ "ws_0", "ws_1", "grad_vp" ] + piece_cells + scratch + acc_scratch,
             power_diagram = self,
+            dom_cell = self._domain_cell(),
             res = res,
             **acc_kwargs,
             **dist_kwargs,
@@ -419,7 +522,7 @@ class PowerDiagram( Aggregate ):
 
         driver.call(
             FfiCodeParallel( name = "power_diagram_cells",
-                fwd_code = "power_diagram.build_cell( SI( seeds( batch_index ) ), cells( batch_index ), "
+                fwd_code = "power_diagram.build_cell( SI( seeds( batch_index ) ), dom_cell, cells( batch_index ), "
                            "ws_0( batch_index ), ws_1( batch_index ), corr( batch_index ), "
                            f"{ acc_expr }, { acc_ws_expr } );" ),
             output_capacities = ( self._cell_capacities( "cells" )
@@ -429,9 +532,15 @@ class PowerDiagram( Aggregate ):
                                 + ws_0._face_lattice_exceptions( "ws_0" )
                                 + ws_1._face_lattice_exceptions( "ws_1" ) ),
             output_attributes = [ "cells", "ws_0", "ws_1" ] + scratch + acc_scratch,
+            # `sorted_positions` est la copie de NOS positions dans l'ordre de l'accélérateur, et
+            # elle s'indexe par le RANG du germe. Ici l'item EST le germe : il n'y a pas de rang à
+            # offrir, donc on force le membre à rester non lié (un `measures` précédent sur le même
+            # objet l'aurait laissé lié). `build_cell` le vérifie à la compilation.
+            input_exceptions = [ "power_diagram.sorted_positions" ],
             # `cells` est LA sortie ; les deux autres et `corr` ne sont que la navette du clip.
             scratch_attributes = [ "ws_0", "ws_1" ] + scratch + acc_scratch,
             power_diagram = self,
+            dom_cell = self._domain_cell(),
             seeds = seeds,
             **acc_kwargs,
             cells = cells,
@@ -454,7 +563,14 @@ class PowerDiagram( Aggregate ):
         d = int( self.nb_dims.value )
         pos = np.asarray( self.positions ).reshape( -1, d )
 
-        res = Cell.make_unbounded( d )
+        # le MÊME point de départ que le kernel (voir `__init__`) : l'oracle est une autre
+        # orchestration de la même géométrie, pas un autre domaine.
+        if self.box_min.is_defined:
+            mi = np.asarray( self.box_min ).reshape( -1 )
+            ma = np.asarray( self.box_max ).reshape( -1 )
+            res = Cell.make_hypercube( d, mi, np.diag( ma - mi ) )
+        else:
+            res = Cell.make_unbounded( d )
         if self.bnd_directions.is_defined:
             bds = np.asarray( self.bnd_directions ).reshape( -1, d )
             bos = np.asarray( self.bnd_offsets ).reshape( -1 )
@@ -529,11 +645,68 @@ def _sum_of( affines ):
     return res
 
 
+def axis_aligned_box( directions, offsets ):
+    """`( mi, ma, gardes )` : le pavé que ces demi-espaces bornent, et lesquels d'entre eux il ne
+    remplace PAS. `None` s'ils ne bornent pas de pavé.
+
+    On ne cherche pas à reconnaître un pavé « écrit comme il faut » : on cherche, axe par axe, la
+    borne la plus serrée que les demi-espaces ALIGNÉS SUR CET AXE donnent. Un domaine qui n'est pas
+    un pavé mais qui en contient un (un octogone, une boîte plus deux plans obliques) fournit donc
+    quand même un point de départ, et ce qui dépasse est retiré par les plans restants -- qui sont
+    de toute façon tous coupés.
+
+    `None` dès qu'un axe n'est pas borné des deux côtés : la cellule de départ doit être un polytope
+    BORNÉ, sans quoi il n'y a rien à poser d'un trait.
+    """
+    try:
+        dirs = np.asarray( directions, dtype = float )
+        offs = np.asarray( offsets, dtype = float ).reshape( -1 )
+    except ( TypeError, ValueError ):
+        return None                              # géométrie non lisible ici (un tracer) : tant pis
+    if dirs.ndim != 2 or len( dirs ) != len( offs ):
+        return None
+
+    d = dirs.shape[ 1 ]
+    mi, ma = np.full( d, -np.inf ), np.full( d, np.inf )
+    for k in range( len( dirs ) ):
+        nz = np.flatnonzero( dirs[ k ] )
+        if nz.size != 1:
+            continue                             # pas aligné sur un axe : il sera coupé, c'est tout
+        a = int( nz[ 0 ] )
+        c = dirs[ k, a ]
+        if c > 0:
+            ma[ a ] = min( ma[ a ], offs[ k ] / c )
+        else:
+            mi[ a ] = max( mi[ a ], offs[ k ] / c )
+
+    if not np.isfinite( mi ).all() or not np.isfinite( ma ).all():
+        return None
+    # un pavé vide ou dégénéré ne se pose pas : `init_as_hypercube` en ferait un polytope retourné.
+    # Le chemin général, lui, videra la cellule proprement.
+    if not ( mi < ma ).all():
+        return None
+
+    # QUELS plans le pavé exprime déjà : ceux, alignés, qui atteignent la borne retenue sur leur
+    # axe. Ils sont RETIRÉS de la liste, et ce n'est pas une élégance -- les repasser coûte 25 %
+    # (mesuré) : ils sont `2d` et ils reviennent sur CHAQUE cellule, alors qu'une cellule ne porte
+    # que six coupes utiles. Un plan alignés plus lâche, ou un plan oblique, reste dans la liste.
+    kept = np.ones( len( dirs ), dtype = bool )
+    for k in range( len( dirs ) ):
+        nz = np.flatnonzero( dirs[ k ] )
+        if nz.size != 1:
+            continue
+        a = int( nz[ 0 ] )
+        c = dirs[ k, a ]
+        bound = ma[ a ] if c > 0 else mi[ a ]
+        kept[ k ] = offs[ k ] / c != bound
+    return mi, ma, kept
+
+
 def box_half_spaces( mi, ma ):
     """Le pavé `mi <= x <= ma` en `2d` demi-espaces `direction . x <= offset`."""
     mi = np.asarray( mi, dtype = float ).reshape( -1 )
     ma = np.asarray( ma, dtype = float ).reshape( -1 )
     if mi.size != ma.size:
-        raise ValueError( "`box = ( mi, ma )` wants two corners of the same dimension" )
+        raise ValueError( "`box_half_spaces( mi, ma )` wants two corners of the same dimension" )
     d = mi.size
     return np.concatenate( [ np.eye( d ), -np.eye( d ) ] ), np.concatenate( [ ma, -mi ] )

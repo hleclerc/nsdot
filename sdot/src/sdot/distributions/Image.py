@@ -55,11 +55,10 @@ class Image( Distribution ):
     def __init__( self, values, **kwargs ) -> None:
         self.__base_init__( values = values, target_mass = 1.0, **kwargs )
 
-    def bounding_half_spaces( self ):
-        # voir `Distribution.bounding_half_spaces`. Le support est le pavé de la grille, écrit en
-        # coordonnées PHYSIQUES : `t_a = n_a . ( x - origin )` avec `n_a` la colonne `a` de `F^-1`
-        # (convention `x = origin + F^T t`, celle de `Image::measure`), et la bande utile va de
-        # `knots( a, 0 )` à `knots( a, shape_a )`.
+    def _grid_geometry( self ):
+        """`( d, frame, origin, lo, hi )` de la grille, côté HÔTE -- ou `None` si elle n'est pas
+        lisible ici (un tracer sous `jit`). Borner est une optimisation : on s'en passe plutôt que
+        de faire échouer l'appel."""
         try:
             d = int( self.nb_dims.value )
             shape = numpy.asarray( self.shape.value, dtype = int ).reshape( -1 )
@@ -71,11 +70,20 @@ class Image( Distribution ):
                 hi = numpy.array( [ knots[ a, shape[ a ] ] for a in range( d ) ] )
             else:
                 lo, hi = numpy.zeros( d ), shape.astype( float )
-            nrm = numpy.linalg.inv( frame ).T                    # ligne `a` = la normale de l'axe `a`
         except ( TypeError, ValueError ):
-            # géométrie non lisible côté hôte (un tracer sous `jit`) : borner est une optimisation,
-            # on s'en passe plutôt que de faire échouer l'appel.
             return None
+        return d, frame, origin, lo, hi
+
+    def bounding_half_spaces( self ):
+        # voir `Distribution.bounding_half_spaces`. Le support est le pavé de la grille, écrit en
+        # coordonnées PHYSIQUES : `t_a = n_a . ( x - origin )` avec `n_a` la colonne `a` de `F^-1`
+        # (convention `x = origin + F^T t`, celle de `Image::measure`), et la bande utile va de
+        # `knots( a, 0 )` à `knots( a, shape_a )`.
+        g = self._grid_geometry()
+        if g is None:
+            return None
+        d, frame, origin, lo, hi = g
+        nrm = numpy.linalg.inv( frame ).T                        # ligne `a` = la normale de l'axe `a`
 
         sh = nrm @ origin
         return ( numpy.concatenate( [ nrm, -nrm ] ),

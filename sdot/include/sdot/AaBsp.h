@@ -32,6 +32,13 @@ struct AaBsp {
     // else is looked at, and the rest of the tree is pruned against an already small cell.
     void for_each_candidate( const auto &from, SI i0, auto &&scratch, auto &&may_cut, auto &&cut_with ) const;
 
+    // The order to sweep the seeds in: the one the BUILD grouped them in, so that two seeds handled
+    // one after another are spatial NEIGHBOURS and their two walks re-read the same nodes -- see
+    // `PowerDiagram::measures`, which is what asks. It costs one indirection and not a byte: the
+    // permutation is `seed_indices`, which the tree carries anyway.
+    SI seed_at( SI k ) const { return SI( seed_indices( k ) ); }
+
+
     // Squared distance from `from` to node `n`'s box -- 0 inside it. Only an ORDERING key, so it
     // stays this cheap on purpose: the real test (`may_cut`) sweeps the cell's vertices, and
     // paying for it on both children just to decide which to look at first would double the walk.

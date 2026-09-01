@@ -56,9 +56,15 @@ UTP void DTP::for_each_candidate( const auto &from, SI i0, auto &&scratch, auto 
 
         const SI l = SI( node_left( n ) );
         if ( l < 0 ) {                          // a leaf: `node_left < 0` says so (see `AaBsp.py`)
+            // Le candidat est rendu par son indice ET par son RANG dans le regroupement. Le rang
+            // est ce qui permet a l'appelant de lire la position dans une copie triee CONTIGUE
+            // (voir `PowerDiagram::sorted_positions`) : les germes d'une feuille sont voisins ici,
+            // alors qu'ils sont epars dans le tableau d'origine. Ce n'est PAS a nous de fournir la
+            // position : elle appartient au diagramme, et un accelerateur qui la fournirait
+            // rendrait les positions du diagramme non determinantes, donc ses derivees fausses.
             for ( SI k = beg; k < end; ++k ) {
                 const SI i1 = SI( seed_indices( k ) );
-                if ( i1 != i0 && ! cut_with( i1 ) )
+                if ( i1 != i0 && ! cut_with( i1, k ) )
                     return;
             }
             continue;

@@ -9,6 +9,7 @@ requires-python = ">=3.10"
 dependencies = [
     "loom",
     "numpy",
+    "scipy",
 ]
 
 [tool.hatch.build.targets.wheel]

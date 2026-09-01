@@ -4,6 +4,7 @@
 // globals the generated source happens to define around us. Written to the build include tree.
 #include <sdot/generated/aggregates/PowerDiagram.h>
 #include <loom/support/common_macros.h>
+#include <loom/support/kernels/CpuKernelMemorySpace.h>
 #include "Cell/CellBoundary.h"
 #include "PieceWorkspace.h"
 #include "UnitDensity.h"
@@ -52,7 +53,11 @@ struct PowerDiagram {
     /// The accelerator that accelerates nothing: every seed, in index order. What `make_cell` gets
     /// when the caller supplied none, so that "no acceleration" is an ordinary case of the same
     /// code and not a second implementation of it.
-    EverySeed every_seed() const { return EverySeed{ SI( nb_points ) }; }
+    /// Le point du germe `i`, dont `k` est le RANG dans l'ordre de balayage -- voir
+    /// `sorted_positions` (PowerDiagram.py) pour pourquoi les deux existent.
+    auto point_at( SI i, SI k ) const;
+
+    auto every_seed() const { return EverySeed{ SI( nb_points ) }; }
 
     /// The prune test, and the ONLY thing the accelerator asks of us: could a seed sitting anywhere
     /// in the box `[ lo, hi ]`, of weight at most `wa . y + wb`, still cut `cell`?
@@ -67,19 +72,37 @@ struct PowerDiagram {
     /// Relaxing the seed to the whole box is where the affine majorant pays for itself:
     /// `min_y ( |p - y|^2 - wa . y )` is SEPARABLE per axis, its free minimum is at `y = p + wa/2`,
     /// so one clamp per axis gives it exactly. A constant majorant is the same code with `wa = 0`.
-    bool cell_may_be_cut( const auto &cell, const auto &p0, TF w0,
+    ///
+    /// `[ clo, chi ]` est la BOITE ENGLOBANTE de la cellule, et elle porte un test prealable en
+    /// `O( d )` qui evite le balayage des sommets dans le cas -- de tres loin le plus frequent --
+    /// ou le noeud est simplement trop loin. Ce balayage est le poste dominant : mesure, le cout
+    /// FIXE par cellule ne fait que 3 % du temps, et il ne reste que six coupes par cellule.
+    ///
+    /// La borne, en majorant les sommets par la boite de la cellule plutot que par une SPHERE
+    /// (ce qu'on faisait avant, et une sphere autour d'une cellule de Voronoi est bien plus grosse
+    /// qu'elle) :
+    ///     `s( p ) >= dist^2( C, B ) - max_{y in B}( wa . y )`   et   `|p - p0|^2 <= max_{p in C} ...`
+    /// d'ou le rejet des que
+    ///     `dist^2( C, B ) - max_y( wa . y ) - wb - max_{p in C} |p - p0|^2 + w0 > 0`.
+    /// Chaque terme est une somme par axe, sans racine carree.
+    bool cell_may_be_cut( const auto &cell, const auto &p0, TF w0, const auto &clo, const auto &chi,
                           const auto &lo, const auto &hi, const auto &wa, TF wb ) const;
+
+    /// La BOITE ENGLOBANTE de la cellule, `[ clo, chi ]` : ce que `cell_may_be_cut` prend pour la
+    /// borner sans regarder ses sommets. Recalculee apres chaque coupe EFFECTIVE -- une poignee par
+    /// cellule -- alors que le test, lui, est pose a chaque noeud depile.
+    void cell_box      ( const auto &cell, auto &&clo, auto &&chi ) const;
 
     // One cut, applied to whichever of the two work cells currently holds the geometry, the
     // result landing in the other -- `in_0` is that parity, and this is what flips it. Answers
     // whether the result fitted (see `Cell::cut`).
-    bool cut_by        ( bool &in_0, auto &&ws_0, auto &&ws_1, auto &&corr, const auto &dir, TF off, SI cut_id ) const;
+    CutResult cut_by   ( bool &in_0, auto &&ws_0, auto &&ws_1, auto &&corr, const auto &dir, TF off, SI cut_id ) const;
     void make_empty    ( auto &&cell ) const;                   ///< a well-defined nothing, for the bail-outs
 
     // The cell of seed `i0`, built from scratch into `ws_0`/`ws_1`; returns `true` when it ends up
     // in `ws_0`. The domain is cut FIRST on purpose: until the cell is bounded every cut pays for
     // pushing the stand-in simplex out (`Cell::growth_for_cut`), and a bounded one pays nothing.
-    bool make_cell     ( SI i0, auto &&ws_0, auto &&ws_1, auto &&corr, const auto &acc, auto &&acc_ws ) const;
+    bool make_cell     ( SI i0, SI k0, const auto &dom, auto &&ws_0, auto &&ws_1, auto &&corr, const auto &acc, auto &&acc_ws ) const;
 
     void measure_into  ( auto &&res, auto &&cell, auto &&facet_apex ) const;
 
@@ -140,13 +163,13 @@ struct PowerDiagram {
     // whose memory is a function of the number of seeds -- which is what DISPLAY is: every cell has
     // to exist at once for a picture to be drawn of it. One work-item per seed here (no strided
     // loop), so the work cells cost twice the output rather than a fixed per-work-item budget.
-    void build_cell    ( SI i, auto &&res, auto &&ws_0, auto &&ws_1, auto &&corr, const auto &acc, auto &&acc_ws ) const;
+    void build_cell    ( SI i, const auto &dom, auto &&res, auto &&ws_0, auto &&ws_1, auto &&corr, const auto &acc, auto &&acc_ws ) const;
 
     // `res( i )` = the measure of cell `i`, for the seeds this work-item is in charge of. The
     // strided loop is the point: `nb_threads` work-items share `nb_points` cells, so the two work
     // cells (and `corr` / `facet_apex`) are reused from one seed to the next and memory is sized
     // on CONCURRENCY, not on the number of seeds.
-    void measures      ( auto &&res, auto &&ws_0, auto &&ws_1, auto &&corr, auto &&facet_apex,
+    void measures      ( auto &&res, const auto &dom, auto &&ws_0, auto &&ws_1, auto &&corr, auto &&facet_apex,
                          const auto &acc, auto &&acc_ws, const auto &dist, auto &&piece_ws,
                          SI thread_index, SI nb_threads ) const;
 
@@ -168,7 +191,7 @@ struct PowerDiagram {
     // dropped -- the domain is a constant here. The vertices standing on it are still handled
     // exactly: the solve accounts for all `ct_dim` rows, only the scatter of the boundary rows is
     // skipped, so what does flow to the seeds is right.
-    void measures_bwd     ( auto &&res, auto &&grad_res, auto &&grad_positions, auto &&grad_weights,
+    void measures_bwd     ( auto &&res, const auto &dom, auto &&grad_res, auto &&grad_positions, auto &&grad_weights,
                             auto &&ws_0, auto &&ws_1, auto &&corr, auto &&facet_apex, auto &&grad_vp,
                             const auto &acc, auto &&acc_ws, const auto &dist, auto &&grad_dist,
                             auto &&piece_ws, SI thread_index, SI nb_threads ) const;

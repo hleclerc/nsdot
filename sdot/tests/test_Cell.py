@@ -3,7 +3,7 @@ import numpy
 from loom.testing import check_grad, test, experiment, Param
 
 from loom import driver, new_batch_axis
-from sdot import Cell, Visualizer
+from sdot import Cell, Visualizer, box_half_spaces
 
 if test( "basic" ):
     c = Cell.make_hypercube( 2, [ 0, 0 ], [ [ 2, 0 ], [ 0, 1 ] ] )
@@ -938,7 +938,7 @@ if test( "viz_of_a_batch_uses_each_item_own_counts" ):
     # qu'elle n'utilise pas. C'est le cas courant d'un diagramme de Voronoï.
     from sdot import Voronoi
     pos = numpy.array( [ [ 0.2, 0.5 ], [ 0.55, 0.5 ], [ 0.9, 0.2 ], [ 0.9, 0.8 ] ] )
-    cs = Voronoi( pos, box = ( [ 0, 0 ], [ 1, 1 ] ) ).cells
+    cs = Voronoi( pos, boundaries = box_half_spaces( [ 0, 0 ], [ 1, 1 ] ) ).cells
     nvs = numpy.asarray( cs.nb_vertices.value )
     assert nvs.min() < nvs.max(), f"il faut des tailles différentes pour que le test dise quelque chose ({ nvs })"
 
@@ -961,12 +961,12 @@ if test( "viz_colors_are_the_seed_and_nothing_else" ):
         return [ tuple( viz.colors[ c ][ :3 ] ) for c in viz.polygon_colors ]
 
     full = Visualizer()
-    PowerDiagram( pos, box = box ).add_to_viz( full )
+    PowerDiagram( pos, boundaries = box_half_spaces( *box )).add_to_viz( full )
     assert len( full.polygons ) == 3
     assert numpy.allclose( face_colors( full ), [ scale_color( i ) for i in range( 3 ) ] )
 
     holed = Visualizer()
-    PowerDiagram( pos, weights = numpy.array( [ 0.0, -1.0, 0.0 ] ), box = box ).add_to_viz( holed )
+    PowerDiagram( pos, weights = numpy.array( [ 0.0, -1.0, 0.0 ] ), boundaries = box_half_spaces( *box )).add_to_viz( holed )
     assert len( holed.polygons ) == 2                      # celle du milieu a disparu
     assert numpy.allclose( face_colors( holed ), [ scale_color( 0 ), scale_color( 2 ) ] )
 
@@ -982,7 +982,7 @@ if test( "viz_colors_do_not_drift_from_one_frame_to_the_next" ):
     for k in range( nb_frames ):
         if k:
             v.new_frame( k )
-        Voronoi( pos + 0.02 * k, box = ( [ 0, 0 ], [ 1, 1 ] ) ).add_to_viz( v )
+        Voronoi( pos + 0.02 * k, boundaries = box_half_spaces( [ 0, 0 ], [ 1, 1 ] ) ).add_to_viz( v )
 
     cols = [ tuple( v.colors[ c ][ :3 ] ) for c in v.polygon_colors ]
     assert len( cols ) == n * nb_frames

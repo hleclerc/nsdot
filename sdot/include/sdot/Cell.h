@@ -60,7 +60,67 @@ struct Cell {
     // the orderings of `init_as_*` establish -- CUT i CARRIES THE EDGE [ v_i, v_i+1 ], hence
     // `nb_cuts == nb_vertices`. Sutherland-Hodgman then rewrites both in ONE cyclic pass, with
     // nothing tabulated: no scratch, hence no cap on the number of threads.
+    // La coupe TELLE QU'ELLE EST UTILISEE PAR UN BALAYAGE : elle peut repondre `unchanged` et ne
+    // rien ecrire du tout, `res` restant alors intact (voir `CutResult`). C'est ce que veut celui
+    // qui fait la navette entre deux tampons -- il lui suffit de ne pas echanger.
+    //
+    // Le test « rien a enlever » n'est PAS un pre-passage separe : c'est le meme balayage qui
+    // calcule les produits scalaires et compte les sommets dehors. Un seul predicat (`s > 0`), a un
+    // seul endroit -- deux copies du meme test finiraient par ne plus repondre pareil sur un sommet
+    // a l'epsilon pres du plan, et l'une sauterait la coupe que l'autre inscrirait.
+    // Combien de sommets le demi-espace `direction . x <= offset` laisse DEHORS.
+    //
+    // Zero == « il contient deja toute la cellule », donc la couper n'ecrirait qu'une copie a
+    // l'identique -- et c'est le cas MAJORITAIRE (un accelerateur propose des feuilles entieres,
+    // dont 6 germes en moyenne sont vraiment voisins en 2D).
+    //
+    // Une fonction A PART, et petite, pour deux raisons qui tirent dans le meme sens. Le predicat
+    // `s > 0` n'est ecrit QU'ICI, donc `cut_into` et son appelant ne peuvent pas se mettre a
+    // repondre differemment sur un sommet a l'epsilon du plan. Et l'appelant qui balaie peut
+    // l'interroger SANS entrer dans le corps du clip : mesure, le seul fait d'y entrer pour en
+    // ressortir aussitot coute +26 % a leaf=12 et +47 % a leaf=30 -- le clip est enorme, il est
+    // inline deux fois par `PowerDiagram::cut_by`, et le chemin rejete payait son cadre.
+    SI nb_vertices_outside      ( const auto &direction, TF offset ) const;
+
+    // LA COUPE EN PLACE : elle modifie CETTE cellule, sans second tampon.
+    //
+    // Ce qu'elle evite n'est pas le calcul mais la RECOPIE. Le clip ordinaire reecrit la cellule
+    // entiere dans l'autre tampon, y compris les sommets que la coupe ne touche pas ; ici seuls
+    // les deux points d'intersection sont ecrits, plus le decalage qu'impose le changement de
+    // taille. A 1e6 germes et six coupes utiles par cellule, la recopie evitee se compte en Go.
+    //
+    // = Ce qui la rend possible
+    //
+    // La sortie fait EXACTEMENT `nb - nb_dehors + 2` sommets, et les sommets conserves forment UNE
+    // plage cyclique -- l'exterieur d'un convexe coupe par un demi-espace est d'un seul tenant. Le
+    // sens du decalage est donc connu avant de bouger quoi que ce soit : `nb_dehors == 1` allonge
+    // d'un cran, `== 2` laisse la taille inchangee (rien a decaler du tout), `>= 3` raccourcit.
+    //
+    // Rien n'est stocke : le balayage retient `nb_dehors` et le DEBUT de la plage exterieure (le
+    // `i` tel que dehors(i) et dedans(i-1), unique par ce qui precede), et les quatre distances
+    // dont les deux intersections ont besoin se recalculent en `O(1)`. Pas de masque, donc pas de
+    // borne sur le nombre de sommets.
+    //
+    // = Pourquoi le CPU seulement
+    //
+    // Trois branches selon `nb_dehors` et des decalages de longueur variable : sur GPU les voies
+    // d'un warp prendraient des chemins differents et boucleraient des nombres de fois differents,
+    // ce qui coute plus que la recopie qu'on evite. `PowerDiagram::cut_by` regarde l'espace memoire
+    // des tenseurs pour choisir -- rien n'a a traverser depuis Python.
+    //
+    // Reservee aux cellules BORNEES : une cellule non bornee est un simplexe de remplacement dont
+    // la coupe repousse d'abord les plans infinis, donc sa geometrie change meme quand aucun sommet
+    // ne sort, et ce n'est plus un simple decoupage.
+    CutResult cut_in_place      ( const auto &direction, TF offset, SI cut_id );
+
+    CutResult cut_into          ( auto &&res, auto &&direction, auto &&offset, SI cut_id ) const;
+    CutResult cut_into          ( auto &&res, auto &&direction, auto &&offset, SI cut_id, auto &&corr ) const;
+
+    // La coupe COMPLETE : `res` tient toujours le resultat, meme quand la coupe n'enleve rien --
+    // elle recopie alors. C'est ce que veut un appelant qui a demande UNE coupe et attend son
+    // resultat quelque part (`Cell.py::cut`), par opposition a celui qui balaie.
     bool cut                    ( auto &&res, auto &&direction, auto &&offset, SI cut_id ) const;
+
 
     // d > 2: no cyclic order to lean on. The FACE LATTICE (`vertex_indices` / `edge_indices`) is
     // what carries the cell, and the clip rewrites it: vertices are classified, the surviving ones

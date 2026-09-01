@@ -16,6 +16,17 @@ UTP auto DTP::point( SI i ) const {
     return Vector<TF,ct_dim>::with_func( [&]( PI d ) { return TF( positions( i, d ) ); } );
 }
 
+UTP auto DTP::point_at( SI i, SI k ) const {
+    // `k` est le RANG du germe dans l'ordre de l'accelerateur, `i` son indice. Les deux disent le
+    // meme point ; le rang le dit par une lecture CONTIGUE quand la copie triee est la, l'indice
+    // par une lecture eparse quand elle ne l'est pas (pas d'accelerateur -> `NoneTensor`, et la
+    // branche part a la compilation).
+    if constexpr ( CT_VALUE( sorted_positions.is_valid() ) )
+        return Vector<TF,ct_dim>::with_func( [&]( PI d ) { return TF( sorted_positions( k, d ) ); } );
+    else
+        return point( i );
+}
+
 UTP auto DTP::weight( SI i ) const {
     // absent weights are the Euclidean case: `weights` is then a `NoneTensor`, the branch is
     // resolved at COMPILE time, and no zero is ever read.
@@ -25,31 +36,64 @@ UTP auto DTP::weight( SI i ) const {
         return TF( 0 );
 }
 
-UTP bool DTP::cut_by( bool &in_0, auto &&ws_0, auto &&ws_1, auto &&corr, const auto &dir, TF off, SI cut_id ) const {
-    bool ok;
+UTP CutResult DTP::cut_by( bool &in_0, auto &&ws_0, auto &&ws_1, auto &&corr, const auto &dir, TF off, SI cut_id ) const {
+    // Le plan ne touche pas la cellule ? On repond ICI, sans entrer dans le clip.
+    //
+    // `cut_into` refait ce test -- meme fonction, donc pas de risque qu'ils divergent -- mais y
+    // ARRIVER coute deja cher : le clip est enorme et il est inline DEUX FOIS juste en dessous
+    // (une par tampon), donc le chemin qui n'a rien a faire payait le cadre des deux. Ce test-ci
+    // est quelques produits scalaires.
+    //
+    // Ca vaut pour les deux boucles de `make_cell` : les candidats de l'accelerateur, dont la
+    // plupart ne coupent rien, et les plans du DOMAINE, dont plus aucun ne coupe des lors que la
+    // cellule part deja de la boite qu'ils decrivent.
+    if ( in_0 ? ws_0.is_fully_bounded && ws_0.nb_vertices_outside( dir, off ) == 0
+              : ws_1.is_fully_bounded && ws_1.nb_vertices_outside( dir, off ) == 0 )
+        return CutResult::unchanged;
+
+    // EN PLACE quand on peut : pas de second tampon, donc pas de recopie des sommets que la coupe
+    // ne touche pas. Reserve au CPU et a la 2D -- voir `Cell::cut_in_place` pour les deux raisons
+    // (divergence sur GPU, et le clip `d > 2` reecrit un treillis de faces, pas un cycle).
+    //
+    // L'espace memoire des tenseurs DIT deja sur quoi on tourne, donc rien n'a a traverser depuis
+    // Python : `CpuKernelMemorySpace` d'un cote, `CudaKernelMemorySpace` de l'autre.
+    if constexpr ( ct_dim == 2 && std::is_same_v<typename DECAYED_TYPE_OF( ws_0.vertex_positions )::MemorySpace,CpuKernelMemorySpace> ) {
+        if ( in_0 ? bool( ws_0.is_fully_bounded ) : bool( ws_1.is_fully_bounded ) )
+            return in_0 ? ws_0.cut_in_place( dir, off, cut_id )
+                        : ws_1.cut_in_place( dir, off, cut_id );
+    }
+
+    CutResult r;
     if constexpr ( ct_dim > 2 ) {
         // d > 2 rewrites the face lattice and COMPACTS it, which is what `corr` is for (the old ->
         // new index tables, one row per work-item). Below 3D the clip is a single cyclic pass with
         // nothing tabulated, and `corr` is not even allocated (a `NoneTensor` -- see `PowerDiagram.py`).
-        ok = in_0 ? ws_0.cut( ws_1, dir, off, cut_id, corr )
-                  : ws_1.cut( ws_0, dir, off, cut_id, corr );
+        r = in_0 ? ws_0.cut_into( ws_1, dir, off, cut_id, corr )
+                 : ws_1.cut_into( ws_0, dir, off, cut_id, corr );
     } else {
-        ok = in_0 ? ws_0.cut( ws_1, dir, off, cut_id )
-                  : ws_1.cut( ws_0, dir, off, cut_id );
+        r = in_0 ? ws_0.cut_into( ws_1, dir, off, cut_id )
+                 : ws_1.cut_into( ws_0, dir, off, cut_id );
     }
+
+    // Rien n'a ete enleve, donc rien n'a ete ecrit : la cellule est restee ou elle etait, et on
+    // n'echange PAS. C'est le cas majoritaire (voir `CutResult`), et c'est tout ce qui distingue
+    // maintenant un candidat inutile d'une reecriture complete de la cellule.
+    if ( r == CutResult::unchanged )
+        return r;
+
     in_0 = ! in_0;
 
-    // A cut that did not fit wrote NOTHING (see `Cell::cut`), so what is now "the" cell is the
+    // A cut that did not fit wrote NOTHING (see `Cell::cut_into`), so what is now "the" cell is the
     // stale content of the other buffer -- the previous seed's cell, or, for the first seed a
     // work-item builds, whatever the fresh output buffer happened to hold. Leave a well-defined
     // nothing instead: the run is doomed either way (the overflow is recorded, the host reserves
     // more and runs again, this result is thrown away), what matters is that the walk that reads
     // it afterwards stays on values it can trust.
-    if ( ! ok ) {
+    if ( r == CutResult::overflow ) {
         if ( in_0 ) make_empty( ws_0 );
         else        make_empty( ws_1 );
     }
-    return ok;
+    return r;
 }
 
 UTP void DTP::make_empty( auto &&cell ) const {
@@ -60,7 +104,21 @@ UTP void DTP::make_empty( auto &&cell ) const {
         cell.nb_edges.set( 0 );
 }
 
-UTP bool DTP::cell_may_be_cut( const auto &cell, const auto &p0, TF w0,
+UTP void DTP::cell_box( const auto &cell, auto &&clo, auto &&chi ) const {
+    const SI nv = cell.nb_vertices;
+    for ( PI d = 0; d < ct_dim; ++d ) {
+        clo[ d ] = nv ? TF( cell.vertex_positions( 0, d ) ) : TF( 0 );
+        chi[ d ] = clo[ d ];
+    }
+    for ( SI v = 1; v < nv; ++v )
+        for ( PI d = 0; d < ct_dim; ++d ) {
+            const TF x = TF( cell.vertex_positions( v, d ) );
+            clo[ d ] = x < clo[ d ] ? x : clo[ d ];
+            chi[ d ] = x > chi[ d ] ? x : chi[ d ];
+        }
+}
+
+UTP bool DTP::cell_may_be_cut( const auto &cell, const auto &p0, TF w0, const auto &clo, const auto &chi,
                                const auto &lo, const auto &hi, const auto &wa, TF wb ) const {
     // The vertex sweep bounds the cell only when the cell IS the hull of its vertices, i.e. when
     // it is bounded. An unbounded one is a stand-in simplex whose corners are made up
@@ -70,6 +128,30 @@ UTP bool DTP::cell_may_be_cut( const auto &cell, const auto &p0, TF w0,
     // right answer, not a slow path anybody chose.
     if ( ! cell.is_fully_bounded )
         return true;
+
+    // ---- le test en `O( d )`, qui repond sans regarder un seul sommet (voir `PowerDiagram.h`).
+    // La cellule est majoree par SA BOITE, pas par une sphere : c'est bien plus serre pour une
+    // cellule de Voronoi, et ca ne coute pas plus cher -- une somme par axe, sans racine.
+    // `dist^2( C, B ) - max_y( wa . y ) - wb - max_{p in C} |p - p0|^2 + w0`, terme a terme : on
+    // rejette des que c'est POSITIF (aucun sommet ne peut satisfaire `<= 0`).
+    TF far = w0 - wb;
+    for ( PI d = 0; d < ct_dim; ++d ) {
+        // `dist^2( C, B )` : l'ecart par axe, nul quand les deux boites se chevauchent.
+        const TF g = clo[ d ] > hi[ d ] ? clo[ d ] - hi[ d ] : ( lo[ d ] > chi[ d ] ? lo[ d ] - chi[ d ] : TF( 0 ) );
+        far += g * g;
+
+        // `max_{p in C} |p - p0|^2`, atteint a un coin de `C`.
+        const TF a = clo[ d ] - p0[ d ], b = chi[ d ] - p0[ d ];
+        far -= ( a * a > b * b ? a * a : b * b );
+
+        // `max_{y in B}( wa . y )`, atteint a un coin de `B`.
+        if constexpr ( CT_VALUE( weights.is_valid() ) ) {
+            const TF u = wa[ d ] * lo[ d ], v = wa[ d ] * hi[ d ];
+            far -= u > v ? u : v;
+        }
+    }
+    if ( far > 0 )
+        return false;
 
     const SI nv = cell.nb_vertices;
     for ( SI v = 0; v < nv; ++v ) {
@@ -102,37 +184,36 @@ UTP bool DTP::cell_may_be_cut( const auto &cell, const auto &p0, TF w0,
     return false;
 }
 
-UTP bool DTP::make_cell( SI i0, auto &&ws_0, auto &&ws_1, auto &&corr, const auto &acc, auto &&acc_ws ) const {
+UTP bool DTP::make_cell( SI i0, SI k0, const auto &dom, auto &&ws_0, auto &&ws_1, auto &&corr, const auto &acc, auto &&acc_ws ) const {
     bool in_0 = true;
-    ws_0.init_as_unbounded();
 
-    // ---- the domain. First, so that everything after it runs on a BOUNDED cell: an unbounded one
-    // is only a stand-in whose artificial planes each cut has to push out again (`Cell.h`) -- and
-    // it is also what the accelerator's prune test needs, having no hull to test against otherwise
-    // (`cell_may_be_cut`).
-    if constexpr ( CT_VALUE( bnd_directions.is_valid() ) ) {
-        // read off the BUFFER, not off `nb_boundaries`: a bound input carries exactly its data, so
-        // its extent is the count -- and the count then costs nothing to cross.
-        const SI nb = SI( bnd_directions.shape( 0 ) );
-        for ( SI b = 0; b < nb; ++b ) {
-            const auto dir = Vector<TF,ct_dim>::with_func( [&]( PI d ) { return TF( bnd_directions( b, d ) ); } );
-            if ( ! cut_by( in_0, ws_0, ws_1, corr, dir, TF( bnd_offsets( b ) ), CellBoundary::BOUNDARY ) )
-                break;
-        }
-    }
+    // ---- LA CELLULE DE DEPART : le domaine, RECOPIE. Il a ete calcule une fois pour toutes
+    // (`PowerDiagram.py::_domain_cell`), donc il n'y a plus ni cellule a initialiser ni plan de
+    // domaine a couper -- et il y en avait `2d` au minimum, refaits pour chacun des germes.
+    //
+    // Une capacite insuffisante est enregistree par `copy_into` : on s'arrete la, l'hote reserve
+    // plus grand et relance.
+    if ( ! dom.copy_into( ws_0 ) )
+        return in_0;
 
     // ---- the seeds. WHICH ones is the accelerator's business (`SpatialAccelerator.py`); what a
     // cut IS, and whether a region can still reach the cell, is ours. `acc` is `EverySeed` when
     // the caller gave no accelerator, so there is one builder here and not two.
-    const auto p0 = point( i0 );
+    const auto p0 = point_at( i0, k0 );
     const TF w0 = weight( i0 );
+
+    // la BOITE de la cellule : ce qui rend l'elagage bon marche. Recalculee apres chaque coupe
+    // EFFECTIVE (une poignee), jamais par candidat.
+    auto clo = Vector<TF,ct_dim>::zeros(), chi = Vector<TF,ct_dim>::zeros();
+    auto refresh_box = [&]() { if ( in_0 ) cell_box( ws_0, clo, chi ); else cell_box( ws_1, clo, chi ); };
+    refresh_box();
 
     acc.for_each_candidate( p0, i0, acc_ws,
         [&]( const auto &lo, const auto &hi, const auto &wa, TF wb ) {
-            return in_0 ? cell_may_be_cut( ws_0, p0, w0, lo, hi, wa, wb )
-                        : cell_may_be_cut( ws_1, p0, w0, lo, hi, wa, wb );
+            return in_0 ? cell_may_be_cut( ws_0, p0, w0, clo, chi, lo, hi, wa, wb )
+                        : cell_may_be_cut( ws_1, p0, w0, clo, chi, lo, hi, wa, wb );
         },
-        [&]( SI i1 ) {
+        [&]( SI i1, SI k1 ) {
             // The cell of `i0` is where its power distance wins, so one half-space per other seed.
             // `|x - d_0|^2 - w_0 <= |x - d_1|^2 - w_1` loses its `|x|^2` on both sides and becomes
             // `( d_1 - d_0 ) . x <= ( d_1 - d_0 ) . ( d_0 + d_1 ) / 2 + ( w_0 - w_1 ) / 2`: the
@@ -141,7 +222,7 @@ UTP bool DTP::make_cell( SI i0, auto &&ws_0, auto &&ws_1, auto &&corr, const aut
             // compared to), which is also why the weight term is halved rather than divided by
             // `|d_1 - d_0|`. `cut_id` is the NEIGHBOUR's index, so a surviving cut says which seed
             // it faces.
-            const auto p1 = point( i1 );
+            const auto p1 = point_at( i1, k1 );
             const auto dir = p1 - p0;
             TF off = 0;
             for ( PI d = 0; d < ct_dim; ++d )
@@ -149,8 +230,16 @@ UTP bool DTP::make_cell( SI i0, auto &&ws_0, auto &&ws_1, auto &&corr, const aut
             if constexpr ( CT_VALUE( weights.is_valid() ) )
                 off += ( w0 - TF( weights( i1 ) ) ) / 2;
 
-            if ( ! cut_by( in_0, ws_0, ws_1, corr, dir, off, i1 ) )
+            const CutResult r = cut_by( in_0, ws_0, ws_1, corr, dir, off, i1 );
+            if ( r == CutResult::overflow )
                 return false;
+
+            // Le plan ne touchait pas la cellule : rien n'a bouge, donc ni rayon a refaire ni
+            // cellule a retester. C'est le cas majoritaire.
+            if ( r == CutResult::unchanged )
+                return true;
+
+            refresh_box();
 
             // nothing left to clip. Not an anomaly -- two seeds at the very same place leave one of
             // them with an empty cell -- and going on would cost a full walk for a cell that can
@@ -272,15 +361,23 @@ UTP void DTP::integrate_bwd_into( SI i0, auto &&grad_res, auto &&cell, auto &&fa
     } );
 }
 
-UTP void DTP::measures( auto &&res, auto &&ws_0, auto &&ws_1, auto &&corr, auto &&facet_apex,
+UTP void DTP::measures( auto &&res, const auto &dom, auto &&ws_0, auto &&ws_1, auto &&corr, auto &&facet_apex,
                         const auto &acc, auto &&acc_ws, const auto &dist, auto &&piece_ws,
                         SI thread_index, SI nb_threads ) const {
     const SI n = nb_points;
-    for ( SI i = thread_index; i < n; i += nb_threads ) {
+    // L'ORDRE est celui de l'accelerateur (`seed_at`), pas celui des indices. Deux germes traites
+    // l'un apres l'autre sont alors des voisins dans l'espace, donc leurs deux marches relisent les
+    // MEMES noeuds et les memes positions ; a 1e6 germes l'arbre pese ~8 Mo et les positions 16 Mo,
+    // donc en ordre d'indice chaque cellule repartait de zero dans le cache. Les work-items avancent
+    // par pas de `nb_threads`, ce qui les garde tous dans la meme region de l'espace au meme moment
+    // -- ils se partagent alors les noeuds au lieu de se les disputer. `res( i )` etant ecrit PAR
+    // INDICE, l'ordre du balayage ne change rien au resultat.
+    for ( SI k = thread_index; k < n; k += nb_threads ) {
+        const SI i = acc.seed_at( k );
         // built, measured, forgotten -- in that order, and never two cells alive at once (bar the
         // ping-pong pair the clip needs, and the pair a distribution cuts its pieces in). Writing
         // the volume straight into its slot is what keeps the diagram from ever existing as a whole.
-        if ( make_cell( i, ws_0, ws_1, corr, acc, acc_ws ) )
+        if ( make_cell( i, k, dom, ws_0, ws_1, corr, acc, acc_ws ) )
             integrate_into( res( i ), ws_0, facet_apex, dist, piece_ws );
         else
             integrate_into( res( i ), ws_1, facet_apex, dist, piece_ws );
@@ -363,7 +460,7 @@ UTP void DTP::scatter_cell_grad( SI i0, auto &&cell, auto &&grad_vp,
     }
 }
 
-UTP void DTP::measures_bwd( auto &&res, auto &&grad_res, auto &&grad_positions, auto &&grad_weights,
+UTP void DTP::measures_bwd( auto &&res, const auto &dom, auto &&grad_res, auto &&grad_positions, auto &&grad_weights,
                             auto &&ws_0, auto &&ws_1, auto &&corr, auto &&facet_apex, auto &&grad_vp,
                             const auto &acc, auto &&acc_ws, const auto &dist, auto &&grad_dist,
                             auto &&piece_ws, SI thread_index, SI nb_threads ) const {
@@ -372,8 +469,9 @@ UTP void DTP::measures_bwd( auto &&res, auto &&grad_res, auto &&grad_positions, 
     // make them once more. The pieces are not kept either, for the same reason and at the same
     // price: the distribution cuts them a second time.
     const SI n = nb_points;
-    for ( SI i = thread_index; i < n; i += nb_threads ) {
-        if ( make_cell( i, ws_0, ws_1, corr, acc, acc_ws ) )
+    for ( SI k = thread_index; k < n; k += nb_threads ) {
+        const SI i = acc.seed_at( k );
+        if ( make_cell( i, k, dom, ws_0, ws_1, corr, acc, acc_ws ) )
             integrate_bwd_into( i, grad_res( i ), ws_0, facet_apex, grad_vp,
                                 grad_positions, grad_weights, grad_dist, dist, piece_ws );
         else
@@ -382,11 +480,19 @@ UTP void DTP::measures_bwd( auto &&res, auto &&grad_res, auto &&grad_positions, 
     }
 }
 
-UTP void DTP::build_cell( SI i, auto &&res, auto &&ws_0, auto &&ws_1, auto &&corr, const auto &acc, auto &&acc_ws ) const {
+UTP void DTP::build_cell( SI i, const auto &dom, auto &&res, auto &&ws_0, auto &&ws_1, auto &&corr, const auto &acc, auto &&acc_ws ) const {
+    // Ce chemin-ci designe une cellule par son INDICE, pas par son rang dans l'ordre de balayage --
+    // c'est une requete « la cellule du germe i », pas un balayage. Il n'a donc pas de rang a
+    // donner a `make_cell`, et lui passer l'indice a sa place ne serait juste que tant que la copie
+    // triee est absente. On l'exige plutot que de l'esperer : l'appel Python la retire de ses
+    // entrees (`input_exceptions`), et cette ligne le verifie a la compilation.
+    static_assert( ! CT_VALUE( sorted_positions.is_valid() ),
+                   "build_cell indexe par le germe, pas par le rang : `sorted_positions` doit rester non lie" );
+
     // `make_cell` reports WHICH of the two buffers the ping-pong ended on; the copy is what turns a
     // transient work cell into a kept one. An overflow in the copy is reported the same way as one
     // in a cut -- nothing written, the count recorded, the host runs again with more room.
-    if ( make_cell( i, ws_0, ws_1, corr, acc, acc_ws ) )
+    if ( make_cell( i, i, dom, ws_0, ws_1, corr, acc, acc_ws ) )
         ws_0.copy_into( res );
     else
         ws_1.copy_into( res );
