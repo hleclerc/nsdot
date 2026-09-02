@@ -185,11 +185,11 @@ class OtPlan:
         mémoire de courbure, jamais le pas candidat rejeté -- même principe que
         `otrec.optimizers.SubspaceNewtonLBFGS`.
 
-        PAS de `driver.jit` : combiné à un domaine en BOÎTE (`boundaries` réductible à `box_min` /
-        `box_max`), `jax.jit` fait remonter un `TracerArrayConversionError` sur `box_min` --
-        confirmé indépendant de cette classe (même échec sur un `PowerDiagram(...).measures` nu
-        sous `driver.jit`), un problème du greffage Aggregate/Tensor sous jit à corriger là-bas.
-        En attendant, chaque gradient RETRACE (plus lent qu'un pas jité), mais reste correct.
+        Le gradient est JITÉ une fois (`grad_fn`, ci-dessous) et réutilisé à chaque pas : `x`
+        garde la même forme du début à la fin, donc une seule trace/compilation sert toute la
+        descente au lieu d'en refaire une par pas. Deux bugs l'interdisaient jusqu'ici -- un
+        domaine en BOÎTE illisible sous `jit` (`box_min` / `box_max`, voir `JaxDriver.array`) et
+        le terme de barrière de `_objective_raw` ci-dessus -- tous deux corrigés désormais.
         """
         s_hist, y_hist = deque( maxlen = memory ), deque( maxlen = memory )
 
@@ -220,7 +220,10 @@ class OtPlan:
         # plancher protège contre la CHUTE à zéro, pas contre un déséquilibre déjà là.
         floor = min( float( min_measure_floor ), 0.1 * float( m.min() ) )
 
-        g = np.asarray( driver.grad( self._objective_raw )( x ) )
+        # jité UNE FOIS : `x` garde la même forme tout du long, donc la trace/compilation d'ici
+        # sert tous les pas au lieu d'en refaire une par pas (voir la docstring de la méthode).
+        grad_fn = driver.jit( driver.grad( self._objective_raw ) )
+        g = np.asarray( grad_fn( x ) )
 
         for it in range( 1, max_iter + 1 ):
             direction = _two_loop_direction( g, s_hist, y_hist )
@@ -239,7 +242,7 @@ class OtPlan:
             if x_new is None:
                 break                                       # plus aucun pas praticable
 
-            g_new = np.asarray( driver.grad( self._objective_raw )( x_new ) )
+            g_new = np.asarray( grad_fn( x_new ) )
             s, y = x_new - x, g_new - g
             sy = float( np.dot( s, y ) )
             if sy > 1e-12 * float( np.dot( s, s ) ):         # condition de courbure -- sans elle

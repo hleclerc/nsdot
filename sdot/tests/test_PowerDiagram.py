@@ -86,6 +86,26 @@ if test( "an_off_centre_box" ):
     v = Voronoi( pos, boundaries = box_half_spaces( mi, ma ) )
     assert abs( float( _measures( v ).sum() ) - float( numpy.prod( ma - mi ) ) ) < 1e-10
 
+if test( "a_box_domain_survives_driver_jit" ):
+    # `box_min` / `box_max` (le raccourci d'un domaine en boîte, voir `axis_aligned_box`) sont des
+    # CONSTANTES fermées sur elles-mêmes, jamais fonction de ce qu'un `driver.jit` trace -- mais
+    # `_domain_cell` les relit côté hôte (`np.asarray`), ce qui échouait (`TracerArrayConversionError`)
+    # dès que la CONSTRUCTION du diagramme avait lieu À L'INTÉRIEUR d'un tracé : `jax.jit` fait de
+    # tout appel jax exécuté dans son étendue lexicale un traceur de SA trace, même un appel sur
+    # une pure constante (voir `JaxDriver.array`). Même résultat, jité ou non, est ce qui montre
+    # que le domaine n'a pas changé de sens en cours de route.
+    rng = numpy.random.default_rng( 0 )
+    pos = rng.uniform( 0.05, 0.95, size = ( 10, 2 ) )
+    bnd = box_half_spaces( [ 0, 0 ], [ 1, 1 ] )
+
+    def loss( w ):
+        return PowerDiagram( pos, w, boundaries = bnd ).measures.tensor.sum()
+
+    w0 = numpy.zeros( 10 )
+    eager  = float( loss( w0 ) )
+    jitted = float( driver.jit( loss )( w0 ) )
+    assert abs( eager - jitted ) < 1e-10, ( eager, jitted )
+
 if test( "a_domain_that_is_not_a_box" ):
     # `box` n'est qu'un raccourci : le domaine est une LISTE DE DEMI-ESPACES, donc n'importe quel
     # convexe polyédrique. Ici le simplexe `x, y, z >= 0, x + y + z <= 1` (volume 1/6).
