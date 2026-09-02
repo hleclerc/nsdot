@@ -41,7 +41,7 @@ class OtPlan:
 
     def __init__( self, src_dist, dst_dist, boundaries = None, accelerator = None,
                   max_nb_cuts = None, weights0 = None, max_iter = 200, ftol = 1e-13,
-                  barrier_eps = 1e-4, min_measure_fraction = 1e-2, memory = 10,
+                  barrier_eps = 1e-4, min_measure_floor = 1e-6, memory = 10,
                   c1 = 1e-4, rho = 0.5, max_backtracks = 30, callback = None ):
         """`src_dist` : une `SumOfDiracs` (ses `weights`, normalisés, sont les masses cibles).
         `dst_dist` : la distribution CONTINUE contre laquelle intégrer (`Image`,
@@ -54,9 +54,13 @@ class OtPlan:
         cellule prenant sa part purement géométrique.
 
         `barrier_eps` : le poids du terme de répulsion (voir la docstring de la classe) -- `0`
-        (ou `None`) le désactive, le rejet dur de `min_measure_fraction` restant seul en jeu.
-        `min_measure_fraction` : la mesure la plus basse qu'une cellule ait le droit d'atteindre,
-        en fraction de la plus petite masse cible.
+        (ou `None`) le désactive, le rejet dur de `min_measure_floor` restant seul en jeu.
+        `min_measure_floor` : la mesure la plus basse qu'une cellule ait le droit d'atteindre, en
+        VALEUR ABSOLUE (l'unité est celle de `src_dist.weights` normalisés -- `1.0` de masse
+        totale par défaut, voir `Distribution.normalized_version`). `_fit` la plafonne de toute
+        façon à `0.1 *` la plus petite mesure DE DÉPART : sur un nuage déjà très déséquilibré au
+        point de départ ( `weights0` ), un plancher fixe pourrait sinon interdire jusqu'au tout
+        premier pas.
 
         `max_iter` / `ftol` : nombre de pas et écart de perte en dessous duquel on s'arrête.
         `memory` : nombre de paires `( s, y )` gardées par la récursion à deux boucles (voir
@@ -95,7 +99,7 @@ class OtPlan:
         #: réellement à annuler.
         self.history = []
 
-        self.weights = self._fit( w0, max_iter, ftol, min_measure_fraction, memory,
+        self.weights = self._fit( w0, max_iter, ftol, min_measure_floor, memory,
                                   c1, rho, max_backtracks, callback )
 
 
@@ -145,26 +149,36 @@ class OtPlan:
         """LA MÊME perte augmentée que `_evaluate`, mais en `Tensor` -- DÉRIVABLE (voir
         `driver.grad` dans `_fit`). `.tensor` en sortie : `driver.grad`/`driver.jit` veulent un
         tableau brut du backend, pas l'objet `Tensor` (voir `otrec.Reconstruction.scalar_loss`,
-        même convention)."""
+        même convention).
+
+        Le terme de barrière s'écrit `( 1.0 / m ) * self._masses`, PAS `self._masses / m` : un
+        `numpy.ndarray` À GAUCHE d'un opérateur essaie de convertir l'AUTRE côté en tableau avant
+        de lui laisser sa chance (`Tensor.__array__`), ce qui échoue sous trace (`m` y est un
+        tracer, pas une valeur -- `TracerArrayConversionError`, même symptôme que le bug
+        `PowerDiagram` + boîte + `jit`, mais ici sous `driver.grad` seul et dans CE code-ci,
+        pas dans `PowerDiagram`). Un `Tensor` toujours à GAUCHE de l'opérateur (`1.0 / m`, un
+        flottant Python ne dispute jamais la priorité) passe par SA propre surcharge et l'évite.
+        """
         m = self.power_diagram( weights ).measures
         r = m - self._masses
         loss = 0.5 * ( r * r ).sum()
         if self._barrier_eps:
-            loss = loss + self._barrier_eps * ( self._masses / m ).sum()
+            loss = loss + self._barrier_eps * ( ( 1.0 / m ) * self._masses ).sum()
         return loss.tensor
 
 
     # -- L-BFGS maison + recherche linéaire sous contrainte de faisabilité --------------------------
 
-    def _fit( self, w0, max_iter, ftol, min_measure_fraction, memory, c1, rho, max_backtracks,
+    def _fit( self, w0, max_iter, ftol, min_measure_floor, memory, c1, rho, max_backtracks,
              callback ):
         """L-BFGS maison (récursion à deux boucles, Nocedal & Wright algorithme 7.4) + recherche
         linéaire par retour arrière -- PAS `scipy.optimize.minimize` : sa recherche linéaire ne
         connaît que la valeur SCALAIRE de l'objectif, alors que ce qu'il faut rejeter ici est un
         fait GÉOMÉTRIQUE (une cellule vidée), pas seulement une valeur qui remonte -- voir la
-        docstring de la classe. `floor = min_measure_fraction * min( masses )` : tout pas essayé
-        qui laisserait UNE SEULE cellule en dessous est refusé SANS MÊME regarder l'objectif,
-        retour arrière (`x *= rho`) et nouvel essai.
+        docstring de la classe. `floor` (au plus `min_measure_floor`, voir `__init__`, PLAFONNÉ à
+        `0.1 *` la plus petite mesure de départ) : tout pas essayé qui laisserait UNE SEULE
+        cellule en dessous est refusé SANS MÊME regarder l'objectif, retour arrière (`x *= rho`)
+        et nouvel essai.
 
         Le pas EFFECTIVEMENT pris (LBFGS, ou le secours en descente de gradient si le retour
         arrière s'épuise -- garanti descendant pour un pas assez petit) alimente ensuite la
@@ -177,8 +191,6 @@ class OtPlan:
         sous `driver.jit`), un problème du greffage Aggregate/Tensor sous jit à corriger là-bas.
         En attendant, chaque gradient RETRACE (plus lent qu'un pas jité), mais reste correct.
         """
-        floor = float( min_measure_fraction * self._masses.min() )
-
         s_hist, y_hist = deque( maxlen = memory ), deque( maxlen = memory )
 
         def record( step, w, m, loss ):
@@ -193,8 +205,20 @@ class OtPlan:
         x = np.asarray( w0, dtype = float ).copy()
         m, f = self._evaluate( x )
         record( 0, x, m, f )
-        if m.min() <= floor:
-            raise ValueError( "OtPlan: a cell is already (near-)empty at the starting weights" )
+        if m.min() <= 0:
+            # PAS un cas que le retour arrière puisse réparer : une cellule déjà VIDE aux poids de
+            # départ a un gradient identiquement nul (voir la docstring de la classe), donc AUCUN
+            # pas, si petit soit-il, ne la fait bouger -- un plancher positif serait alors
+            # insatisfiable pour toujours (`floor = 0.1 * 0 = 0`, et `mesure > 0` resterait faux
+            # indéfiniment). Seul un autre point de départ (`weights0`, par défaut `0` -- le
+            # Voronoï, toujours non vide pour un germe intérieur) peut en sortir.
+            raise ValueError( "OtPlan: a cell is already empty at the starting weights "
+                              "(min measure = 0) -- try a milder weights0" )
+
+        # PLAFONNÉ à `0.1 *` la plus petite mesure DE DÉPART : un nuage déjà déséquilibré au point
+        # de départ ( `weights0` ) ne doit pas rendre le tout premier pas impraticable -- le
+        # plancher protège contre la CHUTE à zéro, pas contre un déséquilibre déjà là.
+        floor = min( float( min_measure_floor ), 0.1 * float( m.min() ) )
 
         g = np.asarray( driver.grad( self._objective_raw )( x ) )
 

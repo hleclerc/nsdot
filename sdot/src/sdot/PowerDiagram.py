@@ -416,8 +416,12 @@ class PowerDiagram( Aggregate ):
         # arrivent en `NoneTensor`, ce qu'attendent les `if constexpr ( ct_dim > 2 )` du C++.
         scratch = [ "corr", "facet_apex" ] if d > 2 else []
 
-        self._sorted_positions()
+        # `_acc_for` D'ABORD : c'est lui qui vérifie que l'accélérateur indexe bien NOS germes, et
+        # le rassemblement ci-dessous suppose justement cette correspondance -- sur un accélérateur
+        # d'un autre nuage il lèverait un `IndexError` opaque là où le test dit clairement ce qui
+        # cloche (voir `an_accelerator_for_other_seeds_is_refused`).
         acc_expr, acc_ws_expr, acc_kwargs, acc_scratch = self._acc_for( num_thread )
+        self._sorted_positions()
         dist_expr, grad_dist_expr, dist_kwargs = self._dist_for()
 
         # le scratch de découpe, monté CÔTÉ C++ par agrégation (`PieceWorkspace.h`) : une seule
