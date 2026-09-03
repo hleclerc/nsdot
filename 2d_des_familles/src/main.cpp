@@ -7,6 +7,7 @@
 #include "AaBsp.h"
 #include "AaBsp4.h"
 #include "ObBsp.h"
+#include "Newton.h"
 #include "AaBspPacked.h"
 #include "AaBspHull.h"
 #include "AaBspPack.h"
@@ -51,6 +52,12 @@ struct Args {
     bool psigrid     = false;      ///< le critere `min_B h_i > M( B )` sur une grille reguliere
     bool enclos      = false;      ///< mesurer l'ENCLOS par sous-echantillon, au lieu de mesurer
     SI   prerate     = 16;         ///< la pre-passe coupe d'abord contre un germe sur `prerate`
+    bool newton      = false;      ///< resoudre le probleme d'aires egales, au lieu de mesurer
+    double ntol      = 1e-6;       ///< arret : `max_i |a_i - nu| <= ntol * nu`
+    int  nmax        = 100;        ///< iterations de Newton au maximum
+    double cgtol     = 1e-10;      ///< arret du gradient conjugue, en residu RELATIF
+    int  cgmax       = 20000;
+    bool direct      = true;       ///< factoriser (Eigen) plutot que le gradient conjugue
 };
 
 /// Lire un nuage produit par `cases/gen_cases.py` : des lignes `#` de commentaire, `n`, puis `n`
@@ -1254,6 +1261,80 @@ int baisse_stats( const Args &a, const std::vector<TF> &X, const std::vector<TF>
     return 0;
 }
 
+/// LA BASELINE : un probleme de transport resolu de bout en bout, chronometre par poste.
+///
+/// Ce qu'on veut en lire n'est pas le temps total mais sa REPARTITION. Un accelerateur qui doit
+/// survivre d'une iteration a l'autre ne se juge que la : s'il faut douze diagrammes pour
+/// converger, un index qui coute une passe et en fait gagner un quart se rembourse -- alors qu'il
+/// est une perte seche sur une passe isolee.
+/// Le nombre d iterations de CG, ou rien du tout quand on a factorise.
+inline const char *cg_txt( int nb ) {
+    static char buf[ 64 ];
+    if ( ! nb ) return "";
+    std::snprintf( buf, sizeof( buf ), " (%d iterations)", nb );
+    return buf;
+}
+
+template<class Cell, bool BOX, bool IN>
+int newton_go( const Args &a, const std::vector<TF> &X, const std::vector<TF> &Y, const TF *Wref ) {
+    const SI n = a.n;
+
+    // l'arbre est bati UNE FOIS, sur des poids nuls, et ne sera plus que rafraichi : les positions
+    // ne bougent pas d'une iteration de Newton a l'autre.
+    AaBsp tr;
+    std::vector<TF> zero( n, TF( 0 ) );
+    const double tb = now();
+    tr.build( X.data(), Y.data(), zero.data(), n, a.leaf );
+    const double t_build = now() - tb;
+
+    PowerDiagram<Cell, AaBsp, BOX, IN, false, true> pd{ tr };
+    Newton nw;
+    nw.n = n;
+    nw.direct = a.direct;
+
+    const double t0 = now();
+    const bool ok = nw.resout<Cell>( pd, tr, X.data(), Y.data(), TF( a.ntol ), a.nmax,
+                                     TF( a.cgtol ), a.cgmax, a.threads, a.split, a.pin, true );
+    const double tot = now() - t0;
+
+    const double autre = tot - nw.t_diag - nw.t_maj - nw.t_syst - nw.t_cg;
+    std::printf( "  newton %s (max|a-nu|/nu = %.2e) : n=%d threads=%d nv=%d box=%d  %d iterations,"
+                 " %d diagrammes (%d reculs), solveur %s%s\n",
+                 nw.fin, double( nw.reste ), int( n ), a.threads, Cell::max_nb_vertices, int( BOX ),
+                 nw.nb_iter, nw.nb_diag, nw.nb_recul,
+                 nw.nb_cg ? "gradient conjugue" : "Cholesky creux", cg_txt( nw.nb_cg ) );
+    std::printf( "         arbre %.3f | diagrammes %.3f | majorants %.3f | assemblage %.3f"
+                 " | resolution %.3f | reste %.3f | TOTAL %.3f s\n",
+                 t_build, nw.t_diag, nw.t_maj, nw.t_syst, nw.t_cg, autre, tot + t_build );
+    std::printf( "         soit %.0f %% de diagramme, %.3f s par diagramme, %.1f us/germe en tout\n",
+                 100 * nw.t_diag / ( tot + t_build ), nw.t_diag / std::max( nw.nb_diag, 1 ),
+                 1e6 * ( tot + t_build ) / n );
+
+    std::printf( "         resolution en detail : triplets %.3f | analyse %.3f | factorisation %.3f | descente %.3f\n",
+                 nw.t_tri, nw.t_ana, nw.t_fac, nw.t_sol );
+    if ( nw.nb_ana )
+        std::printf( "         (%d analyses symboliques pour %d factorisations)\n",
+                     nw.nb_ana, nw.nb_iter );
+    const SI novf = pd.nb_overflow.load();
+    if ( novf )
+        std::printf( "  ATTENTION : %d coupes ont DEBORDE %d sommets pendant la resolution.\n",
+                     int( novf ), Cell::max_nb_vertices );
+
+    // La verification qui ne coute rien : le nuage `_equal` PORTE deja la solution, obtenue par
+    // L-BFGS dans `gen_cases.py`. Elle n'est definie qu'a une constante pres, donc on recale sur
+    // le germe 0 -- exactement la jauge que Newton impose.
+    if ( Wref ) {
+        TF m = 0, ampl = 0;
+        for ( SI i = 0; i < n; ++i ) {
+            m = std::max( m, std::fabs( ( nw.w[ i ] - nw.w[ 0 ] ) - ( Wref[ i ] - Wref[ 0 ] ) ) );
+            ampl = std::max( ampl, std::fabs( Wref[ i ] - Wref[ 0 ] ) );
+        }
+        std::printf( "  contre les poids du fichier : ecart max %.3e sur une amplitude %.3e\n",
+                     double( m ), double( ampl ) );
+    }
+    return ok && novf == 0 ? 0 : 1;
+}
+
 } // namespace
 
 int main( int argc, char **argv ) {
@@ -1283,6 +1364,12 @@ int main( int argc, char **argv ) {
         else if ( s == "--cross" )   a.cross = true;
         else if ( s == "--pre-overlap" ) pre_overlap = true;
         else if ( s == "--pre-rate" ) a.prerate = std::atoi( val() );
+        else if ( s == "--newton" )  a.newton = true;
+        else if ( s == "--newton-tol" ) a.ntol = std::atof( val() );
+        else if ( s == "--newton-max" ) a.nmax = std::atoi( val() );
+        else if ( s == "--cg-tol" )  a.cgtol = std::atof( val() );
+        else if ( s == "--cg-max" )  a.cgmax = std::atoi( val() );
+        else if ( s == "--solver" )  a.direct = std::string( val() ) != "cg";
         else if ( s == "--pack-rate" ) pack_rate = std::atoi( val() );
         else if ( s == "--hull-rate" ) hull_rate = std::atoi( val() );
         else if ( s == "--no-hull-init" ) hull_init = false;
@@ -1318,8 +1405,14 @@ int main( int argc, char **argv ) {
                 "                  coupe DEUX FOIS par le meme plan -- le cas degenere, expres\n"
                 "  --psigrid       mesure le critere min_B h_i > M(B) sur une grille reguliere\n"
                 "  --baisse        la parabole ABAISSEE : un enclos par paquet, et ce qu il reste\n"
-                "  --enclos        mesure l'enclos par sous-echantillon (rayon, mesure, cout)\n",
-                int( a.n ), a.reps, a.threads, int( a.leaf ), int( a.prerate ), a.maxnv, a.seed );
+                "  --enclos        mesure l'enclos par sous-echantillon (rayon, mesure, cout)\n"
+                "  --newton        RESOUT le probleme d aires egales (Newton amorti, w_0 = 0)\n"
+                "  --newton-tol T  ... arret sur max|a_i - nu| / nu           (%.0e)\n"
+                "  --newton-max K  ... iterations au maximum                  (%d)\n"
+                "  --cg-tol T      ... arret du gradient conjugue, relatif    (%.0e)\n"
+                "  --solver S      ... chol (Eigen, defaut) | cg (maison)\n",
+                int( a.n ), a.reps, a.threads, int( a.leaf ), int( a.prerate ), a.maxnv, a.seed,
+                a.ntol, a.nmax, a.cgtol );
             return s == "--help" || s == "-h" ? 0 : 1;
         }
     }
@@ -1350,6 +1443,26 @@ int main( int argc, char **argv ) {
 
     pre_rate = a.prerate;
     hull_threads = a.threads;
+
+    if ( a.newton ) {
+        // les poids du fichier ne servent PAS de depart -- on part de zero, comme demande -- mais
+        // de temoin quand ils resolvent deja le probleme d'aires egales.
+        const TF *ref = a.load.find( "equal" ) != std::string::npos ? Wp : nullptr;
+        auto go_n = [ & ]( auto cell_tag ) {
+            using Cell = decltype( cell_tag );
+            if ( a.cellbox && ! a.skipin ) return newton_go<Cell, true, false>( a, X, Y, ref );
+            if ( a.cellbox &&   a.skipin ) return newton_go<Cell, true, true >( a, X, Y, ref );
+            if ( ! a.cellbox && ! a.skipin ) return newton_go<Cell, false, false>( a, X, Y, ref );
+            return newton_go<Cell, false, true>( a, X, Y, ref );
+        };
+        switch ( a.maxnv ) {
+            case 16: return go_n( CellSoAT<16>{} );
+            case 24: return go_n( CellSoAT<24>{} );
+            case 48: return go_n( CellSoAT<48>{} );
+            case 64: return go_n( CellSoAT<64>{} );
+            default: return go_n( CellSoAT<32>{} );
+        }
+    }
 
     if ( a.cross )
         return cross( a, X, Y, Wp );
