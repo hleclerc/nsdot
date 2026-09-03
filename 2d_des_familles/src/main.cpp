@@ -1922,6 +1922,9 @@ int newton_go( const Args &a, const std::vector<TF> &X, const std::vector<TF> &Y
         std::printf( "         index du front, %d preparations : arbres %.3f | diagramme grossier"
                      " %.3f | fronts %.3f | listes %.3f\n",
                      tr.nb_prep, tr.t_arbres, tr.t_gros, tr.t_front, tr.t_listes );
+    if constexpr ( requires ( const Tree &t ) { t.nb_reuse; } )
+        std::printf( "         bouclier : %d reconstructions pour %d evaluations, %d reutilisations\n",
+                     tr.nb_prep, tr.nb_prep + tr.nb_reuse, tr.nb_reuse );
 
     if constexpr ( requires ( const Tree &t ) { t.nb_rejoue; } )
         std::printf( "         memo : %.2f coupes rejouees dans %.2f feuilles, et %.1f boites"
@@ -1977,6 +1980,7 @@ int main( int argc, char **argv ) {
         else if ( s == "--psigrid" ) a.psigrid = true;
         else if ( s == "--front" )   a.front = true;
         else if ( s == "--front-rate" ) a.frontrate = std::atoi( val() );
+        else if ( s == "--front-bouclier" ) front_bouclier = true;
         else if ( s == "--baisse" )  a.baisse = true;
         else if ( s == "--cross" )   a.cross = true;
         else if ( s == "--pre-overlap" ) pre_overlap = true;
@@ -2032,6 +2036,7 @@ int main( int argc, char **argv ) {
                 "  --psigrid       mesure le critere min_B h_i > M(B) sur une grille reguliere\n"
                 "  --front         l ETALEMENT sur grille : amorce par descente, front, manques\n"
                 "  --front-rate R  ... sur les CELLULES d un diagramme grossier, un germe sur R\n"
+                "  --front-bouclier  garder l index entre iterations avec une marge 2 eps\n"
                 "  --baisse        la parabole ABAISSEE : un enclos par paquet, et ce qu il reste\n"
                 "  --enclos        mesure l'enclos par sous-echantillon (rayon, mesure, cout)\n"
                 "  --newton        RESOUT le probleme d aires egales (Newton amorti, w_0 = 0)\n"

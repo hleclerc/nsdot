@@ -1724,6 +1724,57 @@ comme manquante depuis `--tree hull`. Ce qu'il reste à mesurer : de combien la 
 listes, et combien d'itérations un index survit — sachant que dans une boucle de Newton amortie les
 poids bougent de moins en moins, donc `ε` décroît d'itération en itération.
 
+### LE BOUCLIER : exact, et inutilisable — la mesure qui ferme la piste
+
+L'idée est juste et la démonstration tient : `ψ ≤ h_k` ne dépend ni du pavage ni des poids, donc un
+index construit avec une marge `2ε` reste **valide** pour toute dérive de poids bornée par `ε`. La
+connexité survit aussi — l'ensemble retenu devient `{T : T ∩ E_i^{2ε} ≠ ∅}` avec
+`E_i^c = {x : h_i − ψ_S ≤ c}`, sous-niveau d'un **max de fonctions affines**, donc convexe.
+
+Implémenté (`--front-bouclier`, marge adaptative à quatre fois la dérive qui vient de la
+déclencher), ça marche exactement comme annoncé : **3 reconstructions pour 9 évaluations, 6
+réutilisations**, et `--check` passe.
+
+Et c'est inutilisable :
+
+| n=2e4, ρ=2 | sans bouclier | avec |
+|---|---|---|
+| front / germe | 6.35 | **970.9** |
+| candidats / germe | 37.3 | **6409.4** |
+| index | 3.8 Mo | **637 Mo** |
+| préparation | 0.40 s | **61 s** |
+
+**Pourquoi**, chiffré. `ecart` a la dimension d'une longueur au carré, et l'échelle d'une cellule à
+n=2e4 vaut ~6e-5. La dérive de poids entre deux évaluations de Newton, mesurée itération par
+itération :
+
+| | it 0 | it 1 | it 2 | it 3 | it 4+ |
+|---|---|---|---|---|---|
+| dérive globale `max abs D` | 8.5e-3 | 4.2e-3 | 6.4e-3 | 7.0e-5 | 1.1e-4 |
+| dérive **locale** `max abs( D_i − D_k )` | 6.5e-4 | 1.8e-3 | 2.7e-3 | 8.8e-5 | 1.6e-4 |
+| rapport | 13.1 | 2.3 | 2.3 | 0.8 | 0.7 |
+
+La quantité qui compte n'est pas `max abs D` mais `abs( D_i − D_k )` — le critère ne se décale que
+de `− D_i + D_k`. L'espoir était que le pas de Newton, étant un potentiel lisse, fasse bouger les
+germes voisins **ensemble** et rende cette différence beaucoup plus petite. Mesuré : elle n'est que
+**2 à 13 fois** plus petite, et parfois plus grande.
+
+Et surtout elle vaut **1.6e-4 à 2.7e-3 contre une échelle de cellule de 6e-5** : la marge nécessaire
+est de **trois à quarante-cinq fois** la taille de ce que l'index encode. L'ensemble retenu croît
+comme le carré, d'où le facteur 150.
+
+**Conclusion : l'index ne peut pas être rendu réutilisable en bornant la dérive des poids, parce que
+les poids bougent de plus que la géométrie que l'index encode.** C'est la même raison, chiffrée
+autrement, qui a fait échouer `--tree hull` (« il ne paie que si l'index survit à plusieurs
+itérations ») et le multi-échelle. Ce banc l'aura donc rencontrée trois fois par trois chemins
+différents.
+
+Ce que ça ne condamne pas : le front reste **2.1 à 4.3× plus rapide par diagramme**. Il paie
+partout où l'index n'a pas à être refait — un diagramme isolé, une boucle de Lloyd où seules les
+positions bougent, ou tout usage où les poids sont donnés. Ce qu'il faudrait pour l'amener dans
+Newton n'est pas un bouclier mais une **construction moins chère** : elle coûte aujourd'hui cinq
+diagrammes, dont 0.18 s de diagramme grossier et 0.25 s de listes pour 0.12 s de fronts.
+
 ## Ce qui reste à essayer
 
 `CellAoS` pour comparer avec `CellSoA` ; les boîtes de nœud en FP32 (deux nœuds par ligne de

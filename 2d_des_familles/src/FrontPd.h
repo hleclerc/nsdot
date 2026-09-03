@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <chrono>
+#include <cmath>
 #include <vector>
 
 namespace pd2d {
@@ -15,6 +16,13 @@ namespace pd2d {
 /// Le taux du pavage : un germe sur `front_rate` porte une cellule grossiere.
 inline SI front_rate = 4;
 inline int front_threads = 0;   ///< doit suivre `--threads`, sinon la preparation ment
+
+/// LE BOUCLIER, et il est DESACTIVE par defaut. Il est exact -- voir `reprepare` -- mais la marge
+/// qu'il demande pour survivre a une iteration de Newton est de trois a quarante-cinq fois
+/// l'echelle geometrique d'une cellule, et l'ensemble retenu grandit comme le carre de ca. Mesure a
+/// n=2e4 : le front passe de 6.35 a 970.9 cellules, les candidats de 37.3 a 6409, l'index de 3.8 Mo
+/// a 637 Mo, et la preparation de 0.4 s a 61 s. Garde pour que la mesure existe.
+inline bool front_bouclier = false;
 
 /// LE FRONT SUR UN DIAGRAMME GROSSIER : plus de marche dans l'arbre du tout.
 ///
@@ -121,18 +129,77 @@ struct FrontPd {
     /// Les postes de la preparation, pour savoir ou elle passe -- c'est elle qui decide si l'index
     /// se rembourse dans une boucle de Newton.
     mutable double t_arbres = 0, t_gros = 0, t_front = 0, t_listes = 0;
-    mutable int nb_prep = 0;
+    mutable int nb_prep = 0, nb_reuse = 0;
+    std::vector<TF> wref;           ///< les poids au moment de la derniere construction
+    TF bouclier = 0;                ///< la marge, qui couvre une derive de `bouclier / 2`
 
     /// LES POIDS CHANGENT, PAS LES POSITIONS. Les deux arbres gardent leur permutation et leurs
     /// boites ; seuls les majorants bougent. Tout le reste -- cellules grossieres, fronts, listes --
     /// depend des poids et se refait.
+    /// LE BOUCLIER : l'index n'a pas besoin d'etre SERRE, seulement VALIDE -- et `psi <= h_k` ne
+    /// depend ni du pavage ni des poids. Il suffit donc de borner la derive. Avec
+    /// `h_i( x ) = |x - p_i|^2 - w_i` et `w -> w + D` :
+    ///
+    ///     h_i^neuf - h_k^neuf = ( h_i^vieux - h_k^vieux ) - D_i + D_k >= ( ... ) - 2 eps
+    ///
+    /// avec `eps = max |D|`. Un index construit avec une MARGE `2 eps` reste donc valide pour tout
+    /// changement de poids borne par `eps` : retenir toute tuile telle que
+    /// `min_T ( h_i^vieux - h_k^vieux ) <= 2 eps`, c'est retenir un sur-ensemble de ce que le
+    /// critere neuf retiendrait. Rien a reconstruire -- ni le pavage, ni les fronts, ni les listes.
+    ///
+    /// Et la connexite survit : l'ensemble retenu devient `{ T : T rencontre E_i^{2 eps} }` avec
+    /// `E_i^c = { x : h_i - psi_S <= c }`, sous-niveau d'une fonction CONVEXE (un max d'affines),
+    /// donc convexe. Le front reste donc complet depuis une seule amorce.
+    ///
+    /// La marge est ADAPTATIVE : a chaque reconstruction on prend quatre fois la derive qui vient
+    /// de la declencher, donc on couvre les deux prochaines du meme ordre. Dans une boucle de
+    /// Newton amortie les pas retrecissent, donc l'index survit de plus en plus longtemps.
     void reprepare( const TF *W ) {
         const int th = front_threads > 0 ? front_threads : 1;
-        const double t0 = now_();
-        refresh_maj( full, W );
+        const SI n = full.nb_seeds();
+        double t0 = now_();
+        refresh_maj( full, W );                     // toujours : le PLAN de coupe en depend
         refresh_maj( sub, W );
         t_arbres += now_() - t0;
-        prepare( nullptr, nullptr, W, full.nb_seeds(), th );
+
+        TF eps = 0;
+        if ( W && SI( wref.size() ) == n )
+            for ( SI i = 0; i < n; ++i )
+                eps = std::max( eps, std::fabs( W[ i ] - wref[ i ] ) );
+        else if ( W )
+            eps = 1e300;
+
+        // LA VRAIE QUANTITE n'est pas `max |D|` mais `|D_i - D_k|` entre un germe et le
+        // proprietaire d'une tuile qu'il pourrait gagner : le critere ne se decale que de
+        // `- D_i + D_k`. Si le pas de Newton est un potentiel LISSE, les germes voisins bougent
+        // ensemble et cette difference est bien plus petite que la derive globale. On mesure les
+        // deux avant de choisir.
+        TF loc = 0;
+        if ( W && SI( wref.size() ) == n && ! foff.empty() )
+            for ( SI k = 0; k < n; ++k ) {
+                const SI i = full.order[ k ];
+                const TF di = W[ i ] - wref[ i ];
+                for ( SI u = foff[ k ]; u < foff[ k + 1 ]; ++u ) {
+                    const SI j = full.order[ cidx_seed[ fval[ u ] ] ];
+                    loc = std::max( loc, std::fabs( di - ( W[ j ] - wref[ j ] ) ) );
+                }
+            }
+        if ( std::getenv( "PD2D_FRONT_INFO" ) && eps < 1e299 )
+            std::printf( "  front: derive globale %.3e, derive LOCALE %.3e (rapport %.1f),"
+                         " bouclier %.3e\n", double( eps ), double( loc ),
+                         loc > 0 ? double( eps / loc ) : 0.0, double( bouclier ) );
+
+        if ( front_bouclier && 2 * eps <= bouclier ) {   // l'index est encore valide, tel quel
+            ++nb_reuse;
+            return;
+        }
+        bouclier = front_bouclier ? 4 * eps : TF( 0 );
+        if ( W ) {
+            wref.assign( W, W + n );
+            if ( ! ( bouclier < 1e299 ) )           // premiere fois : pas de reference
+                bouclier = 0;
+        }
+        prepare( nullptr, nullptr, W, n, th );
     }
 
     void build( const TF *X, const TF *Y, const TF *W, SI n, SI leaf ) {
@@ -236,7 +303,7 @@ private:
 
             SI c = encore && amorce[ k ] >= 0 ? amorce[ k ] : cidx[ localise( px, py ) ];
             TF v = ecart( px, py, pw, c );
-            for ( SI pas = 0; v > marge && pas < 4 * ns; ++pas ) {
+            for ( SI pas = 0; v > marge + bouclier && pas < 4 * ns; ++pas ) {
                 SI best = c;
                 TF bv = v;
                 for ( SI u = coff[ c ]; u < coff[ c + 1 ]; ++u ) {
@@ -251,7 +318,7 @@ private:
                 c = best;
                 v = bv;
             }
-            if ( v > marge ) {                          // pas d'amorce : cellule vide, on ne peut
+            if ( v > marge + bouclier ) {               // pas d'amorce : cellule vide, on ne peut
                 amorce[ k ] = -1;                       // rien affirmer, l'arbre reprendra la main
                 return;
             }
@@ -267,7 +334,7 @@ private:
                     bool vu = false;
                     for ( SI z : f )
                         vu |= z == d;
-                    if ( ! vu && ecart( px, py, pw, d ) <= marge )
+                    if ( ! vu && ecart( px, py, pw, d ) <= marge + bouclier )
                         f.push_back( d );
                 }
         } );
