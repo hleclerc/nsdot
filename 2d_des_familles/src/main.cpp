@@ -68,6 +68,10 @@ struct Args {
     double mstol     = 1e-2;       ///< ... tolerance des niveaux grossiers
     int  mspasses    = 4;          ///< ... passes de rattrapage des cellules vides
     double msmarge   = 0;          ///< ... de combien on releve, en fraction de la cible
+    bool memo        = false;      ///< garder d une iteration a l autre les coupes de la feuille
+    bool memobits    = true;       ///< ... le masque des voisins
+    bool memovides   = true;       ///< ... et le germe qui a vide la cellule
+    bool memosaut    = true;       ///< ... et ne pas represente a la coupe ce qui a ete rejoue
 };
 
 /// Lire un nuage produit par `cases/gen_cases.py` : des lignes `#` de commentaire, `n`, puis `n`
@@ -1370,17 +1374,18 @@ Niveau faire_niveau( const AaBsp &tr, const std::vector<TF> &X, const std::vecto
 /// diagramme fin est donc, a l'interieur d'un paquet, un VORONOI -- et globalement la solution
 /// grossiere. L'erreur restante est purement LOCALE, et c'est exactement le regime ou Newton prend
 /// des pas pleins.
-template<class Cell, bool BOX, bool IN>
+template<class Cell, bool BOX, bool IN, class Tree>
 int newton_go( const Args &a, const std::vector<TF> &X, const std::vector<TF> &Y, const TF *Wref ) {
     const SI n = a.n;
 
     // l'arbre du niveau FIN est bati une fois pour toutes, sur des poids nuls, et ne sera plus que
     // rafraichi : les positions ne bougent pas d'une iteration de Newton a l'autre. Sa permutation
     // sert AUSSI a decouper les paquets de tous les niveaux grossiers.
-    AaBsp tr;
+    Tree tr;
     std::vector<TF> zero( n, TF( 0 ) );
     const double tb = now();
     tr.build( X.data(), Y.data(), zero.data(), n, a.leaf );
+    if constexpr ( requires ( Tree &t ) { t.bits; } ) { tr.bits = a.memobits; tr.vides = a.memovides; tr.saute = a.memosaut; }
     const double t_avant = now() - tb;              // hors de `tot`, donc a rajouter a la fin
     double t_arbre = t_avant;
 
@@ -1461,7 +1466,7 @@ int newton_go( const Args &a, const std::vector<TF> &X, const std::vector<TF> &Y
         prolonge( tsup, wp, X.data(), Y.data(), n, w0 );
     }
 
-    PowerDiagram<Cell, AaBsp, BOX, IN, false, true> pd{ tr };
+    PowerDiagram<Cell, Tree, BOX, IN, false, true> pd{ tr };
     if ( ! niv.empty() )
         rattrape_vides( pd, tr, X.data(), Y.data(), n, w0, TF( a.msmarge ) / n, a.mspasses, a.threads,
                         a.split, a.pin, true );
@@ -1475,10 +1480,10 @@ int newton_go( const Args &a, const std::vector<TF> &X, const std::vector<TF> &Y
 
     const double total = tot + t_avant;
     const double autre = total - t_arbre - nw.t_diag - nw.t_maj - nw.t_syst - nw.t_cg;
-    std::printf( "  newton %s (max|a-nu|/nu = %.2e) : n=%d threads=%d nv=%d box=%d  %d iterations,"
+    std::printf( "  newton %s (max|a-nu|/nu = %.2e) : n=%d threads=%d nv=%d box=%d leaf=%d %s %d iterations,"
                  " %d diagrammes (%d reculs), solveur %s%s\n",
                  nw.fin, double( nw.reste ), int( n ), a.threads, Cell::max_nb_vertices, int( BOX ),
-                 nw.nb_iter, nw.nb_diag, nw.nb_recul,
+                 int( a.leaf ), Tree::name, nw.nb_iter, nw.nb_diag, nw.nb_recul,
                  nw.quel == 0 ? "AMGCL" : ( nw.quel == 1 ? "Cholesky creux" : "gradient conjugue" ),
                  cg_txt( nw.nb_cg ) );
     std::printf( "         arbres %.3f | diagrammes %.3f | majorants %.3f | assemblage %.3f"
@@ -1492,6 +1497,12 @@ int newton_go( const Args &a, const std::vector<TF> &X, const std::vector<TF> &Y
     if ( nw.nb_ana )
         std::printf( "         (%d montages pour %d iterations, pire residu lineaire %.2e)\n",
                      nw.nb_ana, nw.nb_iter, double( nw.pire_lin ) );
+
+    if constexpr ( requires ( const Tree &t ) { t.nb_rejoue; } )
+        std::printf( "         memo : %.2f coupes rejouees et %.4f sortie immediate par cellule"
+                     " (compteurs NON atomiques : a lire a --threads 1)\n",
+                     double( tr.nb_rejoue ) / ( double( n ) * std::max( nw.nb_diag - 1, 1 ) ),
+                     double( tr.nb_vide ) / ( double( n ) * std::max( nw.nb_diag - 1, 1 ) ) );
 
     const SI novf = pd.nb_overflow.load();
     if ( novf )
@@ -1554,6 +1565,10 @@ int main( int argc, char **argv ) {
         else if ( s == "--ms-tol" ) a.mstol = std::atof( val() );
         else if ( s == "--ms-passes" ) a.mspasses = std::atoi( val() );
         else if ( s == "--ms-marge" ) a.msmarge = std::atof( val() );
+        else if ( s == "--memo" )    a.memo = true;
+        else if ( s == "--no-memo-bits" ) a.memobits = false;
+        else if ( s == "--no-memo-vides" ) a.memovides = false;
+        else if ( s == "--no-memo-saut" ) a.memosaut = false;
         else if ( s == "--pack-rate" ) pack_rate = std::atoi( val() );
         else if ( s == "--hull-rate" ) hull_rate = std::atoi( val() );
         else if ( s == "--no-hull-init" ) hull_init = false;
@@ -1598,7 +1613,10 @@ int main( int argc, char **argv ) {
                 "  --amg-var V     ... 0 = agregation+spai0 | 1 = agregation+GS | 2 = Ruge-Stuben+GS\n"
                 "  --ms-ratio R    ... MULTI-ECHELLE : rapport entre deux niveaux, 1 = aucun (%d)\n"
                 "  --ms-min M      ... taille du niveau le plus grossier          (%d)\n"
-                "  --ms-tol T      ... tolerance des niveaux grossiers            (%.0e)\n",
+                "  --ms-tol T      ... tolerance des niveaux grossiers            (%.0e)\n"
+                "  --memo          garde d une iteration a l autre les coupes de la feuille\n"
+                "                  (un bit par germe) et le germe qui a vide la cellule\n"
+                "  --no-memo-bits / --no-memo-vides   ... n en garder qu une moitie\n",
                 int( a.n ), a.reps, a.threads, int( a.leaf ), int( a.prerate ), a.maxnv, a.seed,
                 a.ntol, a.nmax, a.cgtol, int( a.msratio ), int( a.msmin ), a.mstol );
             return s == "--help" || s == "-h" ? 0 : 1;
@@ -1638,10 +1656,14 @@ int main( int argc, char **argv ) {
         const TF *ref = a.load.find( "equal" ) != std::string::npos ? Wp : nullptr;
         auto go_n = [ & ]( auto cell_tag ) {
             using Cell = decltype( cell_tag );
-            if ( a.cellbox && ! a.skipin ) return newton_go<Cell, true, false>( a, X, Y, ref );
-            if ( a.cellbox &&   a.skipin ) return newton_go<Cell, true, true >( a, X, Y, ref );
-            if ( ! a.cellbox && ! a.skipin ) return newton_go<Cell, false, false>( a, X, Y, ref );
-            return newton_go<Cell, false, true>( a, X, Y, ref );
+            auto avec = [ & ]( auto tree_tag ) {
+                using Tree = decltype( tree_tag );
+                if ( a.cellbox && ! a.skipin ) return newton_go<Cell, true, false, Tree>( a, X, Y, ref );
+                if ( a.cellbox &&   a.skipin ) return newton_go<Cell, true, true, Tree >( a, X, Y, ref );
+                if ( ! a.cellbox && ! a.skipin ) return newton_go<Cell, false, false, Tree>( a, X, Y, ref );
+                return newton_go<Cell, false, true, Tree>( a, X, Y, ref );
+            };
+            return a.memo ? avec( AaBspMemo{} ) : avec( AaBsp{} );
         };
         switch ( a.maxnv ) {
             case 16: return go_n( CellSoAT<16>{} );

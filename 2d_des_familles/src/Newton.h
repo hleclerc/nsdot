@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AaBsp.h"
+#include "AaBspMemo.h"
 #include "PowerDiagram.h"
 #include "parallel.h"
 #include <algorithm>
@@ -58,6 +59,17 @@ inline void refresh_weights( AaBsp &tr, const TF *W, int nb_threads, Split split
         } );
     } );
 }
+
+/// Le meme, pour l'arbre qui se souvient : seuls les MAJORANTS bougent, les souvenirs restent
+/// valides -- un souvenir perime ne rend pas un resultat faux, il rend une coupe `unchanged`.
+inline void refresh_weights( AaBspMemo &t, const TF *W, int nb_threads, Split split, bool pin ) {
+    refresh_weights( t.tr, W, nb_threads, split, pin );
+}
+
+/// L'arbre nu, derriere l'accelerateur qui l'enveloppe : `psi_min` marche sur des boites et des
+/// germes, pas sur des souvenirs.
+inline const AaBsp &base( const AaBsp &t ) { return t; }
+inline const AaBsp &base( const AaBspMemo &t ) { return t.tr; }
 
 /// `psi( x ) = min_k ( |x - p_k|^2 - w_k )`, cherche dans l'arbre plutot que balaye.
 ///
@@ -120,8 +132,8 @@ inline TF psi_min( const AaBsp &tr, TF x, TF y, SI hors = -1 ) {
 /// 79 % -- alors que le diagramme n'avait aucune cellule vide, et l'iteration de point fixe n'avait
 /// pas converge apres quarante passes. Ce qu'on veut n'est pas « chaque germe dans sa cellule »,
 /// c'est « aucune cellule vide » : on ne releve donc que les fautives, qu'on trouve en mesurant.
-template<class PD>
-SI rattrape_vides( PD &pd, AaBsp &tr, const TF *X, const TF *Y, SI m, std::vector<TF> &w,
+template<class PD, class Tree>
+SI rattrape_vides( PD &pd, Tree &tr, const TF *X, const TF *Y, SI m, std::vector<TF> &w,
                    TF marge, int passes, int th, Split sp, bool pin, bool trace ) {
     std::vector<TF> a;
     SI nv = 0;
@@ -142,7 +154,7 @@ SI rattrape_vides( PD &pd, AaBsp &tr, const TF *X, const TF *Y, SI m, std::vecto
             // `marge` a la dimension d'une AIRE, comme un poids : elle donne a la cellule relevee
             // un rayon de l'ordre de celui qu'elle doit finir par avoir, au lieu de la laisser
             // exactement sur la frontiere.
-            w2[ i ] = -psi_min( tr, X[ i ], Y[ i ], i ) + marge;
+            w2[ i ] = -psi_min( base( tr ), X[ i ], Y[ i ], i ) + marge;
         } );
         w.swap( w2 );
     }
@@ -236,8 +248,8 @@ struct Newton {
 
     /// LES AIRES ET LES ARETES. Une passe de plus par cellule -- longueur d'arete, distance des
     /// deux germes -- faite une fois par iteration acceptee et non a chaque pas essaye.
-    template<class Cell, class PD>
-    void aires_et_aretes( PD &pd, AaBsp &tr, const TF *X, const TF *Y, const TF *W,
+    template<class Cell, class PD, class Tree>
+    void aires_et_aretes( PD &pd, Tree &tr, const TF *X, const TF *Y, const TF *W,
                           std::vector<TF> &res, std::vector<Arete> &ar, int th, Split sp,
                           bool pin ) {
         double t0 = now();
@@ -270,6 +282,9 @@ struct Newton {
         ar.clear();
         for ( auto &v : par )
             ar.insert( ar.end(), v.begin(), v.end() );
+        // la passe a eu lieu : les souvenirs sont remplis, on peut les rejouer
+        if constexpr ( requires ( const Tree &t ) { t.arme(); } )
+            tr.arme();
         t_diag += now() - t0;
         ++nb_diag;
     }
@@ -516,8 +531,8 @@ struct Newton {
     ///
     /// `w_init` est le point de depart -- zero au niveau le plus grossier, la PROLONGATION du
     /// niveau precedent ensuite. C'est tout ce que le multi-echelle demande a cette fonction.
-    template<class Cell, class PD>
-    bool resout( PD &pd, AaBsp &tr, const TF *X, const TF *Y, const std::vector<TF> &w_init,
+    template<class Cell, class PD, class Tree>
+    bool resout( PD &pd, Tree &tr, const TF *X, const TF *Y, const std::vector<TF> &w_init,
                  TF tol, int maxit, TF cgtol, int cgmax, int th, Split sp, bool pin, bool trace ) {
         std::vector<TF> a, a2, b, d, w2;
         std::vector<Arete> ar, ar2;

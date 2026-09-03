@@ -572,6 +572,8 @@ moins de mou » enleve vraiment de « gardees » -- et c'est la seule chose qui 
 * `AaBspPacked.h` — le même arbre, tout dans une arène, les points collés à leur feuille.
 * `AaBsp4.h` — le même arbre à QUATRE fils par nœud (`bsp4` / `bsp4l`), mesuré et rejeté.
 * `ObBsp.h` — le même arbre à coupes NON ALIGNÉES et boîtes alignées (`obsp`), mesuré et rejeté.
+* `AaBspMemo.h` — l'arbre qui se souvient des coupes de l'itération précédente (`--memo`),
+  mesuré et rejeté.
 * `Newton.h` — le problème de transport RÉSOLU : Newton amorti, laplacien de Laguerre,
   jauge `w_0 = 0`, et le solveur linéaire (AMGCL / Eigen / gradient conjugué maison).
 * `Grid.h` — la grille régulière (tri par comptage, germes groupés par case) et son parcours en
@@ -1374,6 +1376,62 @@ ce cycle qui diverge au niveau fin. Une piste est de ne pas relever à la borne 
 recherche linéaire sur la prolongation elle-même — `w = t · w_prolongé`, `t` divisé par deux tant
 qu'une cellule est vide — puisque `t = 0` (Voronoï) est toujours admissible. Le départ serait alors
 au pire aussi bon que `w = 0`, et jamais inadmissible.
+
+### `--memo` : SE SOUVENIR DE L'ITÉRATION PRÉCÉDENTE, mesuré et REJETÉ
+
+Dans une boucle de Newton le même diagramme est reconstruit une dizaine de fois sur des poids qui
+bougent de moins en moins, et rien n'en était gardé. Deux souvenirs, tous les deux tenus dans des
+entiers, tous les deux valides quoi qu'il arrive :
+
+* **un bit par germe de la feuille** : le bit `b` dit que le `b`-ième germe de la feuille de `k`
+  porte un côté de sa cellule finale. À l'itération suivante on coupe d'abord avec les bits à un ;
+* **l'indice du coupable** : quel germe a vidé la cellule, pour recommencer par lui et sortir à la
+  première coupe.
+
+C'est sûr par construction : une cellule est l'**intersection** de ses demi-plans, donc changer
+l'ordre des coupes ne change pas le polygone, et un souvenir périmé rend simplement une coupe
+`unchanged`. Vérifié : `--check` passe, et les poids de Newton restent à 2.1e-14 de la référence.
+
+| temps de diagramme, 8 fils, `--leaf 10` | lignes n=1e5 | uniforme n=1e5 |
+|---|---|---|
+| sans mémoire | **6.825 s** | **0.350 s** |
+| mémoire complète | 7.594 (+11 %) | 0.395 (+13 %) |
+| bits seuls | 7.801 (+14 %) | 0.378 (+8 %) |
+| coupable seul | 7.033 (+3 %) | 0.357 (+2 %) |
+
+Et le balayage de `--leaf` — 6, 10, 16, 24, 32 — ne renverse rien : la feuille optimale reste 6 à 10
+avec mémoire comme sans, et au-delà tout le monde se dégrade (6.9 → 8.8 s de 6 à 32 sans mémoire).
+
+**Pourquoi les bits ne paient pas.** Le parcours descend **fils le plus proche en premier**, donc la
+toute première feuille qu'il atteint est CELLE DU GERME. Les voisins que le masque désigne allaient
+donc être proposés dans les dix premières coupes de toute façon : le souvenir ne fait que les
+réordonner à l'intérieur de la première feuille. Ce qu'il achète est borné par ce que `--tree hull`
+avait déjà mesuré sur le même mécanisme — partir d'une sur-cellule qui contient DÉJÀ toute la
+réponse vaut **4 %** — et ici on part du domaine avec deux ou trois demi-plans d'avance, donc bien
+moins. Le compteur le confirme : 2.7 coupes rejouées par cellule sur l'uniforme, 2.3 sur les
+lignes, sur six ou sept côtés.
+
+Le rejeu se paie en plus **deux fois** : la coupe est faite, puis le parcours la propose à nouveau
+et s'entend répondre `unchanged` — ce qui n'est pas gratuit, un `unchanged` balaie tous les sommets.
+Garder la liste des germes déjà rejoués pour les sauter (`--no-memo-saut` l'enlève) récupère 1.5 %
+sur les lignes et rien sur l'uniforme : pas de quoi renverser 11 %.
+
+**Pourquoi le coupable ne sert jamais.** Il se déclenche **une fois sur dix mille cellules**
+(0.0001 par cellule sur les lignes, 0.0000 sur l'uniforme). L'hypothèse était qu'un pas refusé l'est
+parce que des cellules se vident — c'est faux : il est refusé parce que le RÉSIDU ne baisse pas
+assez. Le critère de Kitagawa-Mérigot-Thibert impose `min a >= eps` précisément pour que l'itéré ne
+sorte jamais de la région où toutes les cellules sont non vides. **Le mécanisme que le raccourci
+vise est exactement celui que l'amortissement est fait pour éviter.**
+
+**Ce que ça n'infirme pas.** Le souvenir utile n'est pas dans la feuille du germe — le parcours y est
+déjà — mais dans les **boîtes voisines** : quelles autres feuilles ont vraiment fourni une coupe.
+C'est là que la descente dépense ses 42 à 135 tests de boîte, et c'est la seule moitié de l'idée qui
+reste ouverte.
+
+Une note de méthode, parce qu'elle a failli fausser la conclusion : les compteurs de diagnostic sont
+compilés dehors (`AaBspMemo::compte`). Membres non atomiques, ils mettent quand même une ligne de
+cache **partagée** sur le chemin chaud, et huit threads qui s'y incrémentent se la volent — le temps
+de diagramme des lignes passait de 7.69 à 8.34 s, 8 %, sur un compteur qui ne sert à rien.
 
 ## Ce qui reste à essayer
 

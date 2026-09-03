@@ -216,6 +216,11 @@ struct PowerDiagram {
                 }
                 return m;
             } );
+
+        // CE QU'ON RETIENT de la cellule finie. Detecte a la COMPILATION, comme `init_cell` :
+        // l'accelerateur qui n'a pas la methode ne paie pas une instruction.
+        if constexpr ( requires ( const Accel &t, const Cell &cc ) { t.note_cell( cc, k0 ); } )
+            tree.note_cell( c, k0 );
     }
 
     /// Les mesures de tout le nuage.
