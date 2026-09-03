@@ -1542,6 +1542,83 @@ d'ailleurs**, et il y en a deux sources naturelles :
   réglerait du même coup le front maximum de 4508 tuiles du Voronoï groupé — la grille régulière ne
   peut pas suivre des aires qui couvrent quatre ordres de grandeur.
 
+### LE PAVAGE PAR UN DIAGRAMME GROSSIER : `--front-rate R`
+
+La grille régulière échouait sur deux points : pas de certificat d'amorce (96 % des diracs ne
+possèdent aucune tuile) et un front maximum de 4508 tuiles sur le Voronoï groupé. Les deux
+disparaissent si le pavage est le **diagramme de puissance d'un germe sur R**, avec leurs vrais
+poids.
+
+**Le majorant devient gratuit.** Sur la cellule grossière `T_k`, le germe `k` est lui-même un vrai
+dirac, donc `ψ ≤ h_k` partout. Le majorant affine de `T_k` est la parabole de son propre germe : pas
+de requête, pas de rastérisation, rien à stocker que le pavage lui-même.
+
+**Et l'ensemble retenu devient CONNEXE.** Sur `T_k`, `ψ_S` vaut exactement `h_k`, donc le critère
+`min_{T_k}(h_i − h_k) ≤ 0` dit exactement « `T_k` rencontre `E_i` », où `E_i = {x : h_i ≤ ψ_S}` est
+l'**enclos** de `i` contre `S` seul — une cellule de puissance, donc **convexe**. Les cellules
+grossières qu'elle rencontre forment donc un ensemble connexe, qui contient toutes celles que
+rencontre `Lag_i` puisque `Lag_i ⊆ E_i`. Le piège de la grille — plusieurs composantes, on part dans
+la mauvaise — ne peut plus se produire. Et l'adjacence est donnée : `Cell::cid` la porte déjà.
+
+n=1e5, **zéro manque partout** :
+
+| | ρ=4 | ρ=8 | ρ=16 | ρ=32 | ρ=64 |
+|---|---|---|---|---|---|
+| **uniforme** — cellules du front | 5.95 | 5.58 | 5.63 | 5.40 | 5.37 |
+| front maximum | 14 | 12 | 12 | 12 | 11 |
+| candidats | 67.8 | 122.8 | 252.5 | 469.0 | 941.6 |
+| **Voronoï** — front | 5.94 | 5.59 | 5.57 | 5.47 | 5.38 |
+| front maximum | 20 | 18 | 18 | 17 | 17 |
+| candidats | 68.5 | 126.0 | 254.7 | 505.3 | 993.2 |
+| **aires égales** — front | 5.99 | 5.73 | 5.70 | 5.57 | 5.49 |
+| front maximum | 18 | 15 | 13 | 12 | 12 |
+| candidats | 69.5 | 130.0 | 260.7 | 501.5 | 977.5 |
+| amorce gratuite | 0.5 % | 1.0 % | 2.0 % | 3.6 % | 6.4 % |
+| pas de descente | 17.0 | 12.1 | 8.4 | 5.8 | 4.1 |
+
+Sur l'uniforme et le Voronoï, **l'amorce est gratuite dans 100 % des cas** : la cellule grossière qui
+contient `p_i` est déjà retenue, il n'y a rien à chercher.
+
+### Ce que ça vaut, comparé au BSP
+
+À ρ=4, en « unités de travail » (tests de région + coupes tentées) :
+
+| n=1e5 | le BSP | le front sur cellules grossières |
+|---|---|---|
+| uniforme | 42.5 boîtes + 25.3 coupes = **68** | 6.0 cellules + 67.8 candidats = 74 |
+| lignes / Voronoï | 42.2 + 25.8 = **68** | 5.9 + 68.5 = 74 |
+| lignes / aires égales | 135.2 + 60.7 = **196** | 6.0 + 69.5 = **76** |
+
+Deux lectures :
+
+* **le nombre de régions à tester tombe de 42-135 à 6**, et le test est *indépendant de la cellule
+  en cours* — plus d'ordre imposé, donc quelque chose qui se vectorise ;
+* **le total est le même sur les trois nuages**, ~75, là où le BSP passe de 68 à 196. La méthode est
+  insensible à la difficulté du nuage, et c'est exactement ce qu'on lui demandait.
+
+Le front est remarquablement stable : **5.4 à 6.0 cellules par dirac**, sur les trois nuages et à
+tous les ρ, avec un maximum de 11 à 20. La grille régulière montait à 4508.
+
+### Ce qui reste à payer
+
+* **L'amorce sur le cas dur** : 17 pas à ρ=4, 4 pas à ρ=64. C'est encore une marche, et c'est le
+  compromis à régler — grand ρ raccourcit la descente et gonfle les candidats. C'est aussi
+  exactement là que la mémoire d'une itération à l'autre paierait : dans une boucle de Newton, la
+  cellule grossière trouvée au tour précédent est une amorce gratuite et vérifiable en `O(1)`.
+* **Le BSP n'a pas disparu, il a été rétrogradé** : il sert encore à localiser `p_i` dans le
+  diagramme grossier, une requête par dirac sur un arbre ρ fois plus petit.
+* **Le pavage dépend des poids**, donc il est à refaire à chaque itération de Newton : un diagramme
+  de `n/ρ` germes, soit `1/ρ` de passe. À ρ=4 c'est 25 %, à ρ=16 c'est 6 %.
+
+### La tangence, une TROISIÈME fois
+
+Sans marge, 30 arêtes sur 600 000 disparaissaient des listes sur l'uniforme à ρ=4 (434 sur le cas
+dur). Le diagnostic, chiffré : **le pire écart d'un manque vaut 1.7e-18**. Quand `i` et `j` sont
+tous deux des germes grossiers, leur arête *fine* est portée par leur arête *grossière* — le minimum
+de `h_i − h_k` sur la tuile vaut alors exactement zéro, et l'arrondi le rend positif. Une marge de
+`1e-12` sur le critère suffit, et elle est sûre : elle ne fait qu'élargir l'ensemble retenu, donc
+l'implication reste vraie.
+
 ## Ce qui reste à essayer
 
 `CellAoS` pour comparer avec `CellSoA` ; les boîtes de nœud en FP32 (deux nœuds par ligne de

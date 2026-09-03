@@ -21,6 +21,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <numeric>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -54,6 +55,7 @@ struct Args {
     bool baisse      = false;      ///< la parabole ABAISSEE : un enclos par paquet
     bool psigrid     = false;      ///< le critere `min_B h_i > M( B )` sur une grille reguliere
     bool front       = false;      ///< l ETALEMENT sur grille : amorce, front, et ce qu il manque
+    SI   frontrate   = 0;          ///< > 0 : le pavage est le diagramme grossier, un germe sur R
     bool enclos      = false;      ///< mesurer l'ENCLOS par sous-echantillon, au lieu de mesurer
     SI   prerate     = 16;         ///< la pre-passe coupe d'abord contre un germe sur `prerate`
     bool newton      = false;      ///< resoudre le probleme d'aires egales, au lieu de mesurer
@@ -777,6 +779,212 @@ int front_stats( const Args &a, const std::vector<TF> &X, const std::vector<TF> 
                      int( g ), int( nb ), int( orphelines ), sd / n, int( echecs.load() ),
                      int( hors.load() ), sf / n, int( front_max.load() ), int( manques.load() ),
                      1e3 * t_own, 1e3 * t_front );
+    }
+    return 0;
+}
+
+/// LE FRONT SUR LES CELLULES D'UN DIAGRAMME GROSSIER.
+///
+/// Le pavage est le diagramme de puissance d'un germe sur `--front-rate`, avec leurs vrais poids.
+/// Deux proprietes le rendent bien meilleur qu'une grille reguliere, et aucune n'est un reglage :
+///
+/// = LE MAJORANT EST GRATUIT
+///
+/// Sur la cellule grossiere `T_k`, le germe `k` est lui-meme un VRAI dirac, donc `psi <= h_k`
+/// partout. Le majorant affine de `T_k` est donc la parabole de son propre germe : pas de requete,
+/// pas de rasterisation, rien a stocker que le pavage.
+///
+/// = L'ENSEMBLE RETENU EST CONNEXE, donc l'amorce suffit
+///
+/// Sur `T_k`, `psi_S` vaut exactement `h_k`. Le critere `min_{T_k} ( h_i - h_k ) <= 0` dit donc
+/// exactement « `T_k` rencontre `E_i` », ou `E_i = { x : h_i <= psi_S }` est l'ENCLOS de `i` contre
+/// `S` seul -- une cellule de puissance, donc CONVEXE. Les cellules grossieres qu'elle rencontre
+/// forment un ensemble CONNEXE, et il contient toutes celles que rencontre `Lag_i` puisque
+/// `Lag_i` est inclus dans `E_i`. Le piege de la grille reguliere -- plusieurs composantes, on part
+/// dans la mauvaise, 12 a 2101 manques -- ne peut plus se produire.
+///
+/// = Et l'adjacence est donnee
+///
+/// `Cell::cid` porte deja les voisins de chaque cellule grossiere. Le front n'a rien a construire.
+int front_pd_stats( const Args &a, const std::vector<TF> &X, const std::vector<TF> &Y, const TF *W ) {
+    using Cell = CellSoAT<64>;
+    const SI n = a.n;
+    auto poids = [ & ]( SI i ) { return W ? W[ i ] : TF( 0 ); };
+
+    std::printf( "  %-6s %8s %8s   %8s %8s %8s   %8s %8s   %9s %8s\n", "rho", "|S|", "sommets",
+                 "amorce", "descente", "echecs", "front", "front max", "candidats", "manques" );
+
+    for ( SI rho : { SI( 4 ), SI( 8 ), SI( 16 ), SI( 32 ), SI( 64 ) } ) {
+        pre_rate = rho;
+        AaBspSub t;
+        t.build( X.data(), Y.data(), W, n, a.leaf );
+        const SI ns = t.sub.nb_seeds();
+
+        std::vector<SI> cidx( n, -1 );                  // id d'origine -> indice grossier
+        for ( SI k = 0; k < ns; ++k )
+            cidx[ t.sub.seed_id( k ) ] = k;
+
+        // ---- A. LES CELLULES GROSSIERES, contre `S` seul : sommets et voisins.
+        PowerDiagram<Cell, AaBsp, true, false, false> pc{ t.sub };
+        std::vector<SI> coff( ns + 1, 0 );
+        std::vector<TF> cvx, cvy;
+        std::vector<SI> cadj;
+        double som = 0;
+        for ( SI k = 0; k < ns; ++k ) {
+            Cell c;
+            pc.make_cell( c, k );
+            som += c.nb;
+            for ( SI v = 0; v < c.nb; ++v ) {
+                cvx.push_back( c.vx[ v ] );
+                cvy.push_back( c.vy[ v ] );
+                cadj.push_back( c.cid[ v ] < 0 ? SI( -1 ) : cidx[ c.cid[ v ] ] );
+            }
+            coff[ k + 1 ] = SI( cvx.size() );
+        }
+
+        // `min_T ( h_i - h_k )` : la difference de deux paraboles de meme courbure est AFFINE, donc
+        // son minimum sur un convexe est a un SOMMET. `|p_i|^2 - |p_k|^2` en `dx ( px + kx )` et
+        // non litteralement -- developpe il ne rend pas zero quand `i == k`.
+        // LA MARGE DE TANGENCE, et c'est la troisieme fois dans ce banc. Quand `i` et `j` sont
+        // tous deux des germes grossiers, leur arete FINE est portee par leur arete GROSSIERE :
+        // le minimum de `h_i - h_k` sur la tuile vaut alors exactement zero, et l'arrondi le rend
+        // POSITIF -- mesure, 1.7e-18. Le critere rejetait donc une tuile qu'il devait garder, et
+        // 30 aretes sur 600 000 disparaissaient des listes. Elargir le retenu est toujours sur :
+        // c'est un SUR-ENSEMBLE, donc l'implication reste vraie.
+        const TF marge = 1e-12;
+        auto ecart = [ & ]( SI i, SI c ) {
+            const SI k = t.sub.seed_id( c );
+            const TF dx = X[ i ] - X[ k ], dy = Y[ i ] - Y[ k ];
+            const TF e = dx * ( X[ i ] + X[ k ] ) + dy * ( Y[ i ] + Y[ k ] ) - poids( i ) + poids( k );
+            TF m = 1e300;
+            for ( SI v = coff[ c ]; v < coff[ c + 1 ]; ++v )
+                m = std::min( m, e - 2 * ( dx * cvx[ v ] + dy * cvy[ v ] ) );
+            return m;
+        };
+
+        // ---- B. LE FRONT, par dirac fin
+        std::vector<SI> fpos( n + 1, 0 );
+        std::vector<std::vector<SI>> fro( n );
+        std::atomic<SI> amorce_ok{ 0 }, echecs{ 0 }, front_max{ 0 };
+        std::vector<double> lg_desc( n, 0 );
+
+        parallel_for( n, a.threads, Split::blocks, false, [ & ]( SI i, int ) {
+            // L'AMORCE : la cellule grossiere qui contient `p_i`. Elle n'est PAS garantie retenue
+            // -- un germe grossier lourd peut battre `i` en `p_i` -- d'ou la descente sur
+            // `omega_i = h_i - psi_S`, qui est un MAX de fonctions affines donc CONVEXE et nul
+            // exactement sur `E_i`. Sur une cellule grossiere `omega_i` vaut `h_i - h_k` : le
+            // critere lui-meme sert de guide.
+            SI c = cidx[ gagnant( t.sub, X[ i ], Y[ i ] ) ];
+            TF v = ecart( i, c );
+            if ( v <= marge )
+                ++amorce_ok;
+            SI pas = 0;
+            for ( ; v > marge && pas < 4 * ns; ++pas ) {
+                SI best = c;
+                TF bv = v;
+                for ( SI u = coff[ c ]; u < coff[ c + 1 ]; ++u ) {
+                    const SI d = cadj[ u ];
+                    if ( d < 0 )
+                        continue;
+                    const TF w = ecart( i, d );
+                    if ( w < bv ) { bv = w; best = d; }
+                }
+                if ( best == c )
+                    break;
+                c = best;
+                v = bv;
+            }
+            lg_desc[ i ] = pas;
+            if ( v > marge ) { ++echecs; return; }
+
+            // L'ETALEMENT, sur l'adjacence des cellules grossieres. `E_i` etant convexe, l'ensemble
+            // retenu est connexe : rien a craindre d'une seconde composante.
+            std::vector<SI> &f = fro[ i ];
+            f.push_back( c );
+            for ( SI q = 0; q < SI( f.size() ); ++q )
+                for ( SI u = coff[ f[ q ] ]; u < coff[ f[ q ] + 1 ]; ++u ) {
+                    const SI d = cadj[ u ];
+                    if ( d < 0 )
+                        continue;
+                    bool vu = false;
+                    for ( SI z : f )
+                        vu |= z == d;
+                    if ( ! vu && ecart( i, d ) <= marge )
+                        f.push_back( d );
+                }
+            SI fm = front_max.load( std::memory_order_relaxed );
+            while ( SI( f.size() ) > fm && ! front_max.compare_exchange_weak( fm, SI( f.size() ) ) )
+                ;
+        } );
+
+        // ---- C. la relation inverse : par cellule grossiere, les diracs retenus
+        std::vector<SI> loff( ns + 2, 0 );
+        double sf = 0;
+        for ( SI i = 0; i < n; ++i ) {
+            sf += fro[ i ].size();
+            for ( SI c : fro[ i ] )
+                ++loff[ c + 2 ];
+        }
+        for ( SI u = 1; u < ns + 2; ++u )
+            loff[ u ] += loff[ u - 1 ];
+        std::vector<SI> lval( loff[ ns + 1 ] );
+        for ( SI i = 0; i < n; ++i )
+            for ( SI c : fro[ i ] )
+                lval[ loff[ c + 1 ]++ ] = i;
+
+        // ---- D. les candidats, et le controle : les VRAIS voisins doivent tous y etre
+        AaBsp bs;
+        bs.build( X.data(), Y.data(), W, n, a.leaf );
+        PowerDiagram<Cell, AaBsp, true, false, false> pf{ bs };
+        std::atomic<SI> manques{ 0 };
+        std::atomic<long long> scand{ 0 };
+        std::atomic<TF> pire{ -1e300 };
+        parallel_for( n, a.threads, Split::blocks, false, [ & ]( SI k, int ) {
+            const SI i = bs.seed_id( k );
+            std::vector<SI> cand;
+            for ( SI c : fro[ i ] )
+                for ( SI u = loff[ c ]; u < loff[ c + 1 ]; ++u )
+                    cand.push_back( lval[ u ] );
+            std::sort( cand.begin(), cand.end() );
+            cand.erase( std::unique( cand.begin(), cand.end() ), cand.end() );
+            scand += SI( cand.size() );
+
+            Cell c;
+            pf.make_cell( c, k );
+            for ( SI v = 0; v < c.nb; ++v ) {
+                const SI j = c.cid[ v ];
+                if ( j < 0 || std::binary_search( cand.begin(), cand.end(), j ) )
+                    continue;
+                ++manques;
+                // LE DIAGNOSTIC : l'arete partagee avec `j` a un milieu, ce milieu est dans une
+                // cellule grossiere `T`, et `T` devrait etre retenue par `i` ET par `j`. On regarde
+                // laquelle des deux retenues a echoue, et DE COMBIEN -- un ecart de l'ordre de
+                // 1e-16 dit une tangence, un ecart franc dit un defaut de raisonnement.
+                const SI u = v + 1 < c.nb ? v + 1 : 0;
+                const TF mx = ( c.vx[ v ] + c.vx[ u ] ) / 2, my = ( c.vy[ v ] + c.vy[ u ] ) / 2;
+                const SI T = cidx[ gagnant( t.sub, mx, my ) ];
+                const TF ei = ecart( i, T ), ej = ecart( j, T );
+                bool dans = false;
+                for ( SI z : fro[ i ] ) dans |= z == T;
+                TF prec = pire.load( std::memory_order_relaxed );
+                const TF q = std::max( ei, ej );
+                while ( q > prec && ! pire.compare_exchange_weak( prec, q ) )
+                    ;
+                if ( manques.load() <= 3 )
+                    std::printf( "      manque %d->%d : arete %.2e, T=%d dans le front %d,"
+                                 " ecart_i %.3e ecart_j %.3e\n", int( i ), int( j ),
+                                 double( std::hypot( c.vx[ u ] - c.vx[ v ], c.vy[ u ] - c.vy[ v ] ) ),
+                                 int( T ), int( dans ), double( ei ), double( ej ) );
+            }
+        } );
+
+        std::printf( "  %-6d %8d %8.2f   %7.1f%% %8.2f %8d   %8.2f %8d   %9.1f %8d\n",
+                     int( rho ), int( ns ), som / ns, 100.0 * amorce_ok.load() / n,
+                     std::accumulate( lg_desc.begin(), lg_desc.end(), 0.0 ) / n, int( echecs.load() ),
+                     sf / n, int( front_max.load() ), double( scand.load() ) / n,
+                     int( manques.load() ) );
+        if ( manques.load() )
+            std::printf( "      (pire ecart d'un manque : %.3e)\n", double( pire.load() ) );
     }
     return 0;
 }
@@ -1756,6 +1964,7 @@ int main( int argc, char **argv ) {
         else if ( s == "--enclos" )  a.enclos = true;
         else if ( s == "--psigrid" ) a.psigrid = true;
         else if ( s == "--front" )   a.front = true;
+        else if ( s == "--front-rate" ) { a.front = true; a.frontrate = std::atoi( val() ); }
         else if ( s == "--baisse" )  a.baisse = true;
         else if ( s == "--cross" )   a.cross = true;
         else if ( s == "--pre-overlap" ) pre_overlap = true;
@@ -1809,6 +2018,7 @@ int main( int argc, char **argv ) {
                 "                  coupe DEUX FOIS par le meme plan -- le cas degenere, expres\n"
                 "  --psigrid       mesure le critere min_B h_i > M(B) sur une grille reguliere\n"
                 "  --front         l ETALEMENT sur grille : amorce par descente, front, manques\n"
+                "  --front-rate R  ... sur les CELLULES d un diagramme grossier, un germe sur R\n"
                 "  --baisse        la parabole ABAISSEE : un enclos par paquet, et ce qu il reste\n"
                 "  --enclos        mesure l'enclos par sous-echantillon (rayon, mesure, cout)\n"
                 "  --newton        RESOUT le probleme d aires egales (Newton amorti, w_0 = 0)\n"
@@ -1887,7 +2097,8 @@ int main( int argc, char **argv ) {
         return baisse_stats( a, X, Y, Wp );
 
     if ( a.front )
-        return front_stats( a, X, Y, Wp );
+        return a.frontrate > 0 ? front_pd_stats( a, X, Y, Wp )
+                              : front_stats( a, X, Y, Wp );
 
     if ( a.psigrid )
         return psigrid_stats( a, X, Y, Wp );
