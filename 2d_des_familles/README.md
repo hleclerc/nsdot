@@ -574,6 +574,8 @@ moins de mou » enleve vraiment de « gardees » -- et c'est la seule chose qui 
 * `ObBsp.h` — le même arbre à coupes NON ALIGNÉES et boîtes alignées (`obsp`), mesuré et rejeté.
 * `AaBspMemo.h` — l'arbre qui se souvient des coupes de l'itération précédente (`--memo`),
   mesuré et rejeté.
+* `FrontPd.h` — le FRONT sur un diagramme grossier (`--tree front`) : plus de marche dans
+  l'arbre, une liste de candidats par germe. 2.3× sur les cas faciles, 5.6 à 7× sur le dur.
 * `Newton.h` — le problème de transport RÉSOLU : Newton amorti, laplacien de Laguerre,
   jauge `w_0 = 0`, et le solveur linéaire (AMGCL / Eigen / gradient conjugué maison).
 * `Grid.h` — la grille régulière (tri par comptage, germes groupés par case) et son parcours en
@@ -1618,6 +1620,58 @@ tous deux des germes grossiers, leur arête *fine* est portée par leur arête *
 de `h_i − h_k` sur la tuile vaut alors exactement zéro, et l'arrondi le rend positif. Une marge de
 `1e-12` sur le critère suffit, et elle est sûre : elle ne fait qu'élargir l'ensemble retenu, donc
 l'implication reste vraie.
+
+### `--tree front` : LE FRONT CHRONOMÉTRÉ, et il gagne
+
+L'accélérateur complet : l'index porte tout (diagramme grossier, amorce, étalement, inversion,
+listes triées), et la passe ne fait plus que **lire une liste et couper** — plus de pile, plus de
+boîte, plus de test d'éviction. Vérifié contre le balayage complet sur cinq nuages, écart max
+**1.8e-16**.
+
+| n=1e5, `--no-cellbox` | `bsp` | front ρ=2 | ρ=4 | ρ=8 | ρ=16 |
+|---|---|---|---|---|---|
+| **1 fil** uniforme | 0.155 s | **0.068 (2.3×)** | 0.104 | 0.168 | 0.308 |
+| lignes / Voronoï | 0.153 s | **0.067 (2.3×)** | 0.102 | 0.164 | 0.295 |
+| lignes / aires égales | 0.417 s | **0.074 (5.6×)** | 0.111 | 0.177 | 0.311 |
+| **8 fils** uniforme | 0.021 s | **0.009 (2.3×)** | 0.014 | 0.023 | 0.043 |
+| lignes / Voronoï | 0.021 s | **0.009 (2.3×)** | 0.014 | 0.023 | 0.043 |
+| lignes / aires égales | 0.070 s | **0.010 (7.0×)** | 0.015 | 0.025 | 0.045 |
+
+Le résultat qui compte n'est pas le facteur, c'est la **colonne** : à ρ=2 le front met 0.067 à
+0.074 s sur les trois nuages, là où le BSP passe de 0.153 à 0.417. **La méthode ne voit pas la
+difficulté du nuage.** C'est exactement ce qu'on lui demandait — le BSP, lui, paie l'anisotropie et
+les cellules loin de leur germe.
+
+`ρ = 2` est l'optimum, et il ne se discute pas : les candidats croissent linéairement avec ρ
+(37 → 68 → 126 → 255) alors que le front reste à 5.6-6.4 cellules. Doubler ρ double le travail de
+la passe.
+
+### Ce que ça coûte
+
+* **La préparation** : 532 à 1180 ms à un fil, 225 à 516 ms à huit — soit **3.4 à 7.6 passes** à un
+  fil, **22 à 50** à huit. Même régime que `--tree hull` : l'index ne se rembourse que s'il survit à
+  plusieurs itérations. Mais le gain par passe, lui, est bien plus gros (5.6-7× contre 1.7-2.3×).
+* **La mémoire** : 19.1 Mo à ρ=2 pour n=1e5, soit **191 octets par germe** — contre 39 à 53 pour
+  `hull`. C'est le prix de la liste matérialisée.
+
+### Trois choses apprises en route, toutes mesurées
+
+**Matérialiser la liste est obligatoire.** Faire l'union et le tri à chaque cellule, depuis le front
+et la relation inverse, coûte six fois moins de mémoire — et **4837 ns par germe contre 1600 pour le
+BSP**. Le tri de ~144 entrées par cellule coûtait plus que tout le reste.
+
+**Trier par distance est obligatoire.** Sans ordre, le polygone *intermédiaire* enfle : 247 cellules
+débordent 64 sommets sur le nuage à aires égales et la somme des aires part à `1.000000086`. Le BSP
+obtenait cet ordre gratuitement en descendant fils-le-plus-proche d'abord ; ici il faut le payer,
+mais **une fois**.
+
+**Une cellule VIDE n'a pas de front, et sa cellule restait le domaine entier.** Un germe dont la
+cellule est vide a un enclos vide — il perd contre `S` partout — donc aucune cellule grossière ne le
+retient, donc aucun candidat, donc rien ne le coupe : `--check --weights 1.0` sortait un écart de
+**1.000e+00**, une cellule d'aire 1 là où la vraie est vide. Vider une cellule demande jusqu'à trois
+demi-plans (en 2D, une intersection vide de demi-plans en a une sous-famille vide d'au plus trois) et
+rien ne dit lesquels : pour ces germes-là, rares, on repasse par l'arbre. Exact, et ça ne coûte que
+sur eux.
 
 ## Ce qui reste à essayer
 

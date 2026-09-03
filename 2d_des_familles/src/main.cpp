@@ -15,6 +15,7 @@
 #include "AaBspHull.h"
 #include "AaBspPack.h"
 #include "AaBspPre.h"
+#include "FrontPd.h"
 #include "Grid.h"
 #include "Cell.h"
 #include "PowerDiagram.h"
@@ -231,9 +232,11 @@ int check( const Args &a ) {
     AaBspPre    pr;  pr.build( X.data(), Y.data(), Wp, n, a.leaf );
     AaBsp4      b4;  b4.build( X.data(), Y.data(), Wp, n, a.leaf );
     ObBsp       ob;  ob.build( X.data(), Y.data(), Wp, n, a.leaf );
+    front_rate = 2;
+    FrontPd     fr;  fr.build( X.data(), Y.data(), Wp, n, a.leaf );
     AaBsp4L     bl;  bl.build( X.data(), Y.data(), Wp, n, a.leaf );
 
-    std::vector<TF> ref, dfs, pkd, grd, prd, q4d, qld, obd;
+    std::vector<TF> ref, dfs, pkd, grd, prd, q4d, qld, obd, frd;
     PowerDiagram<CellSoA, EverySeed> p_ref{ es };
     PowerDiagram<CellSoA, AaBsp> p_dfs{ bs };
     PowerDiagram<CellSoA, AaBspPacked, false> p_pk{ pk };
@@ -242,6 +245,8 @@ int check( const Args &a ) {
     PowerDiagram<CellSoA, AaBsp4> p_q4{ b4 };
     PowerDiagram<CellSoA, AaBsp4L> p_ql{ bl };
     PowerDiagram<CellSoA, ObBsp>  p_ob{ ob };
+    PowerDiagram<CellSoA, FrontPd, false> p_fr{ fr };
+    p_fr .measures( frd, 1, Split::blocks, false );
     p_q4 .measures( q4d, 1, Split::blocks, false );
     p_ob .measures( obd, 1, Split::blocks, false );
     p_ql .measures( qld, 1, Split::blocks, false );
@@ -258,7 +263,7 @@ int check( const Args &a ) {
     // le balayage complet range ses resultats PAR INDICE D'ORIGINE, comme tous les autres, donc la
     // comparaison est germe par germe et non pas seulement sur la somme -- une cellule fausse d'un
     // cote et fausse a l'envers de l'autre passerait une comparaison de sommes.
-    TF sr = 0, md = 0, mp = 0, mg = 0, mr = 0, m4 = 0, ml = 0, mo = 0;
+    TF sr = 0, md = 0, mp = 0, mg = 0, mr = 0, m4 = 0, ml = 0, mo = 0, mf = 0;
     for ( SI i = 0; i < n; ++i ) {
         sr += ref[ i ];
         md = std::max( md, std::fabs( ref[ i ] - dfs[ i ] ) );
@@ -268,12 +273,14 @@ int check( const Args &a ) {
         m4 = std::max( m4, std::fabs( ref[ i ] - q4d[ i ] ) );
         ml = std::max( ml, std::fabs( ref[ i ] - qld[ i ] ) );
         mo = std::max( mo, std::fabs( ref[ i ] - obd[ i ] ) );
+        mf = std::max( mf, std::fabs( ref[ i ] - frd[ i ] ) );
     }
     std::printf( "  balayage complet : somme %.12f\n", double( sr ) );
     std::printf( "  bsp       vs lui : ecart max %.3e\n", double( md ) );
     std::printf( "  bsp4      vs lui : ecart max %.3e\n", double( m4 ) );
     std::printf( "  bsp4l     vs lui : ecart max %.3e\n", double( ml ) );
     std::printf( "  obsp      vs lui : ecart max %.3e\n", double( mo ) );
+    std::printf( "  front     vs lui : ecart max %.3e\n", double( mf ) );
     std::printf( "  packed    vs lui : ecart max %.3e\n", double( mp ) );
     std::printf( "  grille    vs lui : ecart max %.3e\n", double( mg ) );
     // la pre-passe ne doit RIEN changer : la cellule est l'intersection de tous les demi-plans,
@@ -282,7 +289,7 @@ int check( const Args &a ) {
     std::printf( "  pre-passe vs lui : ecart max %.3e\n", double( mr ) );
 
     const bool ok = std::fabs( double( sr ) - 1 ) < 1e-12 && md < 1e-12
-                 && mp < 1e-12 && mg < 1e-12 && mr < 1e-12 && m4 < 1e-12 && ml < 1e-12 && mo < 1e-12
+                 && mp < 1e-12 && mg < 1e-12 && mr < 1e-12 && m4 < 1e-12 && ml < 1e-12 && mo < 1e-12 && mf < 1e-12
                  && novf == 0;
     std::printf( "  => %s\n", ok ? "OK" : "ECHEC" );
     return ok ? 0 : 1;
@@ -1964,7 +1971,7 @@ int main( int argc, char **argv ) {
         else if ( s == "--enclos" )  a.enclos = true;
         else if ( s == "--psigrid" ) a.psigrid = true;
         else if ( s == "--front" )   a.front = true;
-        else if ( s == "--front-rate" ) { a.front = true; a.frontrate = std::atoi( val() ); }
+        else if ( s == "--front-rate" ) a.frontrate = std::atoi( val() );
         else if ( s == "--baisse" )  a.baisse = true;
         else if ( s == "--cross" )   a.cross = true;
         else if ( s == "--pre-overlap" ) pre_overlap = true;
@@ -1993,7 +2000,8 @@ int main( int argc, char **argv ) {
                 "  --reps R        repetitions chronometrees   (%d)\n"
                 "  --threads T     0 = autant que de coeurs    (%d)\n"
                 "  --leaf L        germes par feuille du BSP   (%d)\n"
-                "  --tree T        bsp | bsp4 | obsp | hull | pack | pre | packed | grid | all   (bsp)\n"
+                "  --tree T        bsp | front | bsp4 | obsp | hull | pack | pre | packed | grid | all\n"
+                "  --tree front    le FRONT sur un diagramme grossier ; --front-rate R\n"
                 "  --tree bsp4     le meme BSP a QUATRE fils par noeud (test des 4 chez le pere)\n"
                 "  --tree bsp4l    ... mais chaque fils teste a SA sortie de pile\n"
                 "  --tree obsp     ... et coupes NON ALIGNEES sur les axes (boites alignees)\n"
@@ -2065,6 +2073,8 @@ int main( int argc, char **argv ) {
 
     pre_rate = a.prerate;
     hull_threads = a.threads;
+    front_threads = a.threads;
+    if ( a.frontrate > 0 ) front_rate = a.frontrate;
 
     if ( a.newton ) {
         // les poids du fichier ne servent PAS de depart -- on part de zero, comme demande -- mais
@@ -2139,6 +2149,8 @@ int main( int argc, char **argv ) {
                 return run<AaBsp4L, Cell, BOX, IN, W>( a, X, Y, Wp );
             if ( a.tree == "obsp" )
                 return run<ObBsp, Cell, BOX, IN, W>( a, X, Y, Wp );
+            if ( a.tree == "front" )
+                return run<FrontPd, Cell, BOX, IN, W>( a, X, Y, Wp );
             if ( a.tree == "pre" )
                 return run<AaBspPre, Cell, BOX, IN, W>( a, X, Y, Wp );
             return run<AaBsp, Cell, BOX, IN, W>( a, X, Y, Wp );
