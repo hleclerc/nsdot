@@ -53,6 +53,7 @@ struct Args {
     bool cross       = false;      ///< comparer les accelerateurs entre eux au `n` demande
     bool baisse      = false;      ///< la parabole ABAISSEE : un enclos par paquet
     bool psigrid     = false;      ///< le critere `min_B h_i > M( B )` sur une grille reguliere
+    bool front       = false;      ///< l ETALEMENT sur grille : amorce, front, et ce qu il manque
     bool enclos      = false;      ///< mesurer l'ENCLOS par sous-echantillon, au lieu de mesurer
     SI   prerate     = 16;         ///< la pre-passe coupe d'abord contre un germe sur `prerate`
     bool newton      = false;      ///< resoudre le probleme d'aires egales, au lieu de mesurer
@@ -574,6 +575,212 @@ int enclos_stats( const Args &a, const std::vector<TF> &X, const std::vector<TF>
 /// ne garantit que la boite de `p_i` soit retenue -- sur le cas dur, un autre dirac gagne en `p_i`,
 /// c'est toute la difficulte du nuage. On construit donc par BOITE et non par dirac, ce qui evite
 /// la question du point de depart et celle de la connexite du domaine retenu.
+/// QUI GAGNE EN `x` : `argmin_j ( |x - p_j|^2 - w_j )`, cherche dans l'arbre. Rend l'indice
+/// D'ORIGINE. C'est la seule chose qu'un pavage ait besoin de stocker pour porter un majorant
+/// AFFINE de `psi` : toutes les paraboles partagent `|x|^2`, donc `psi - |x|^2` est un min de
+/// fonctions affines, donc CONCAVE, et un majorant affine minimal en est un hyperplan d'appui --
+/// c'est-a-dire la partie affine de la parabole d'un dirac qui gagne quelque part dans la tuile.
+/// Stocker le proprietaire EST stocker un majorant affine.
+SI gagnant( const AaBsp &tr, TF x, TF y ) {
+    TF best = 1e300;
+    SI bi = -1;
+    tr.for_each_candidate_at( x, y, -1,
+        [ & ]( TF lox, TF loy, TF hix, TF hiy, const WMaj &wm ) {
+            const TF ex = x < lox ? lox - x : ( x > hix ? x - hix : TF( 0 ) );
+            const TF ey = y < loy ? loy - y : ( y > hiy ? y - hiy : TF( 0 ) );
+            const TF sx = TF( wm.ax ) * lox, tx = TF( wm.ax ) * hix;
+            const TF sy = TF( wm.ay ) * loy, ty = TF( wm.ay ) * hiy;
+            const TF wmax = ( sx > tx ? sx : tx ) + ( sy > ty ? sy : ty ) + wm.b;
+            return ex * ex + ey * ey - wmax < best;
+        },
+        [ & ]( TF px, TF py, TF w, SI id ) {
+            const TF dx = px - x, dy = py - y;
+            const TF h = dx * dx + dy * dy - w;
+            if ( h < best ) { best = h; bi = id; }
+            return true;
+        },
+        [] { return TF( 0 ); } );
+    return bi;
+}
+
+/// LE FRONT SUR UNE GRILLE REGULIERE.
+///
+/// L'objectif : remplacer la marche dans le BSP par un ETALEMENT de proche en proche, tant que la
+/// parabole du dirac peut passer sous le majorant. Trois choses a etablir, et c'est ce que cette
+/// mesure fait :
+///
+///   1. L'AMORCE. Le front est valide depuis n'importe quelle tuile rencontrant `Lag_i` -- celle-ci
+///      etant convexe, les tuiles qu'elle rencontre forment un ensemble CONNEXE, et elles passent
+///      toutes le critere. Mais la tuile de `p_i` n'est PAS garantie retenue : sur le cas dur c'est
+///      un autre dirac qui gagne en `p_i`. On amorce donc par une DESCENTE sur
+///      `phi_i( x ) = h_i( x ) - psi( x )`, qui est un MAX de fonctions affines donc CONVEXE, et
+///      qui vaut zero exactement sur `Lag_i`. Au centre d'une tuile, `psi` vaut exactement
+///      `h_proprietaire`, donc `phi_i` s'y evalue sans rien chercher.
+///
+///   2. LA TAILLE DU FRONT. C'est elle, et non le nombre de candidats, qui remplacera les 42 a 135
+///      tests de boite du BSP.
+///
+///   3. QU'IL NE MANQUE RIEN. On rasterise la VRAIE cellule et on verifie que chacune de ses tuiles
+///      est dans le front.
+int front_stats( const Args &a, const std::vector<TF> &X, const std::vector<TF> &Y, const TF *W ) {
+    using Cell = CellSoAT<64>;
+    AaBsp bs;
+    bs.build( X.data(), Y.data(), W, a.n, a.leaf );
+    PowerDiagram<Cell, AaBsp, true, false, true> pf{ bs };
+    const SI n = a.n;
+    auto poids = [ & ]( SI i ) { return W ? W[ i ] : TF( 0 ); };
+
+    std::printf( "  %-5s %9s %8s   %8s %8s %8s   %8s %8s %9s\n", "g", "tuiles", "orphel.",
+                 "marche", "echecs", "hors", "front", "front max", "manques" );
+
+    for ( SI g : { SI( 64 ), SI( 128 ), SI( 256 ), SI( 512 ) } ) {
+        const SI nb = g * g;
+        const TF hh = TF( 1 ) / g;
+
+        // ---- A. LE PROPRIETAIRE de chaque tuile, par requete. Parallele sans partage, une requete
+        //         par tuile -- et c'est la seule chose pour laquelle le BSP reste necessaire.
+        std::vector<SI> owner( nb, -1 );
+        const double t0 = now();
+        parallel_for( nb, a.threads, Split::blocks, false, [ & ]( SI b, int ) {
+            owner[ b ] = gagnant( bs, ( b % g + TF( 0.5 ) ) * hh, ( b / g + TF( 0.5 ) ) * hh );
+        } );
+        const double t_own = now() - t0;
+
+        SI orphelines = 0;
+        for ( SI b = 0; b < nb; ++b )
+            orphelines += owner[ b ] < 0;
+
+        // `min_B ( h_i - h_r )`, exact : les deux paraboles ont le meme `|x|^2`, donc la difference
+        // est AFFINE et son minimum sur la boite est a un coin. `|p_i|^2 - |p_r|^2` est ecrit
+        // `dx ( px + rx )` et non litteralement : developpe, il ne rend pas zero quand `i == r`
+        // (cf. le meme piege dans `--psigrid`), et le proprietaire s'excluait de sa propre liste.
+        auto ecart = [ & ]( SI i, SI b, bool au_centre ) {
+            const SI r = owner[ b ];
+            const TF dx = X[ i ] - X[ r ], dy = Y[ i ] - Y[ r ];
+            const TF e = dx * ( X[ i ] + X[ r ] ) + dy * ( Y[ i ] + Y[ r ] ) - poids( i ) + poids( r );
+            const TF x0 = ( b % g ) * hh, y0 = ( b / g ) * hh;
+            if ( au_centre )
+                return e - 2 * ( dx * ( x0 + hh / 2 ) + dy * ( y0 + hh / 2 ) );
+            return e - 2 * ( dx > 0 ? dx * ( x0 + hh ) : dx * x0 )
+                     - 2 * ( dy > 0 ? dy * ( y0 + hh ) : dy * y0 );
+        };
+
+        // ---- B. LE FRONT, par dirac
+        std::vector<double> lg_desc( n, 0 ), lg_front( n, 0 );
+        std::atomic<SI> echecs{ 0 }, hors{ 0 }, manques{ 0 }, front_max{ 0 };
+        const int nth = std::max( a.threads, 1 );
+        std::vector<std::vector<SI>> vu( nth, std::vector<SI>( nb, -1 ) );
+        std::vector<std::vector<SI>> pile( nth );
+
+        const double t1 = now();
+        parallel_for( n, a.threads, Split::blocks, false, [ & ]( SI k, int th ) {
+            const SI i = bs.seed_id( k );
+
+            // 1. L'AMORCE. Le front n'est valide que depuis une tuile qui RENCONTRE `Lag_i` -- pas
+            //    seulement une tuile retenue : l'ensemble retenu peut avoir plusieurs composantes,
+            //    et partir de la mauvaise fait manquer la cellule.
+            //
+            //    On descend `phi_i( x ) = h_i( x ) - psi( x )`, qui est un MAX de fonctions affines
+            //    donc CONVEXE, nul exactement sur `Lag_i`. Au centre d'une tuile, `psi` vaut
+            //    exactement `h_proprietaire`, donc `phi_i` s'y evalue sans rien chercher. Le
+            //    CERTIFICAT est `proprietaire == i` : le centre est alors dans `Lag_i`.
+            //
+            //    ESSAYE ET REJETE : suivre la direction de descente `p_i - p_r` (« s'eloigner du
+            //    concurrent »), qui est le vrai gradient de la piece affine courante. C'est une
+            //    marche de visibilite ordinaire, mais elle n'a pas de critere d'arret utilisable :
+            //    quand le dirac ne possede AUCUNE tuile -- 96 % d'entre eux a g=64 -- elle court
+            //    jusqu'a sa borne. Mesure : 480 a 2810 pas contre 7 a 58 pour le glouton.
+            SI b = std::min<SI>( g - 1, SI( Y[ i ] / hh ) ) * g + std::min<SI>( g - 1, SI( X[ i ] / hh ) );
+            SI pas = 0;
+            for ( ; owner[ b ] != i && pas < 4 * g; ++pas ) {
+                const TF cur = ecart( i, b, true );
+                SI best = b;
+                TF bv = cur;
+                const SI bx = b % g, by = b / g;
+                for ( int dy = -1; dy <= 1; ++dy )
+                    for ( int dx = -1; dx <= 1; ++dx ) {
+                        const SI nx = bx + dx, ny = by + dy;
+                        if ( ( dx == 0 && dy == 0 ) || nx < 0 || ny < 0 || nx >= g || ny >= g )
+                            continue;
+                        const TF v = ecart( i, ny * g + nx, true );
+                        if ( v < bv ) { bv = v; best = ny * g + nx; }
+                    }
+                if ( best == b )
+                    break;
+                b = best;
+            }
+            lg_desc[ i ] = pas;
+
+            // `hors` : on n'a PAS le certificat -- soit la cellule est plus petite qu'une tuile et
+            // aucun centre ne lui appartient, soit le glouton a cale. On part quand meme de la
+            // tuile atteinte si elle est retenue, et on compte separement.
+            if ( owner[ b ] != i ) {
+                ++hors;
+                if ( ! ( ecart( i, b, false ) <= 0 ) ) {
+                    ++echecs;
+                    ++manques;                          // sans amorce du tout, la cellule est manquee
+                    return;
+                }
+            }
+
+            // 2. L'ETALEMENT : tant que la parabole peut passer sous le majorant, au sens large.
+            std::vector<SI> &pi = pile[ th ];
+            std::vector<SI> &vi = vu[ th ];
+            pi.clear();
+            pi.push_back( b );
+            vi[ b ] = i;
+            SI nf = 0;
+            for ( SI t = 0; t < SI( pi.size() ); ++t ) {
+                const SI c = pi[ t ];
+                ++nf;
+                const SI cx = c % g, cy = c / g;
+                for ( int dy = -1; dy <= 1; ++dy )
+                    for ( int dx = -1; dx <= 1; ++dx ) {
+                        const SI nx = cx + dx, ny = cy + dy;
+                        if ( nx < 0 || ny < 0 || nx >= g || ny >= g )
+                            continue;
+                        const SI d = ny * g + nx;
+                        if ( vi[ d ] == i )
+                            continue;
+                        if ( ecart( i, d, false ) <= 0 ) { vi[ d ] = i; pi.push_back( d ); }
+                    }
+            }
+            lg_front[ i ] = nf;
+            SI fm = front_max.load( std::memory_order_relaxed );
+            while ( nf > fm && ! front_max.compare_exchange_weak( fm, nf ) )
+                ;
+
+            // 3. LE CONTROLE : la vraie cellule, rasterisee, doit etre entierement dans le front.
+            Cell c;
+            pf.make_cell( c, k );
+            if ( ! c.nb )
+                return;
+            TF lox, loy, hix, hiy;
+            c.bounds( lox, loy, hix, hiy );
+            const SI i0 = std::max<SI>( 0, SI( lox / hh ) ), i1 = std::min<SI>( g - 1, SI( hix / hh ) );
+            const SI j0 = std::max<SI>( 0, SI( loy / hh ) ), j1 = std::min<SI>( g - 1, SI( hiy / hh ) );
+            for ( SI jj = j0; jj <= j1; ++jj )
+                for ( SI ii = i0; ii <= i1; ++ii ) {
+                    const TF qx = ( ii + TF( 0.5 ) ) * hh, qy = ( jj + TF( 0.5 ) ) * hh;
+                    bool in = true;
+                    for ( SI v = 0; v < c.nb && in; ++v )
+                        in = c.cdx[ v ] * qx + c.cdy[ v ] * qy <= c.co[ v ];
+                    if ( in && vu[ th ][ jj * g + ii ] != i )
+                        ++manques;
+                }
+        } );
+        const double t_front = now() - t1;
+
+        double sd = 0, sf = 0;
+        for ( SI i = 0; i < n; ++i ) { sd += lg_desc[ i ]; sf += lg_front[ i ]; }
+        std::printf( "  %-5d %9d %8d   %8.2f %8d %8d   %8.1f %8d %9d   [%.0f ms + %.0f ms]\n",
+                     int( g ), int( nb ), int( orphelines ), sd / n, int( echecs.load() ),
+                     int( hors.load() ), sf / n, int( front_max.load() ), int( manques.load() ),
+                     1e3 * t_own, 1e3 * t_front );
+    }
+    return 0;
+}
+
 int psigrid_stats( const Args &a, const std::vector<TF> &X, const std::vector<TF> &Y, const TF *W ) {
     using Cell = CellSoAT<64>;
     auto quant = []( std::vector<double> &v, double q ) {
@@ -1548,6 +1755,7 @@ int main( int argc, char **argv ) {
         else if ( s == "--majorant" ) a.majorant = true;
         else if ( s == "--enclos" )  a.enclos = true;
         else if ( s == "--psigrid" ) a.psigrid = true;
+        else if ( s == "--front" )   a.front = true;
         else if ( s == "--baisse" )  a.baisse = true;
         else if ( s == "--cross" )   a.cross = true;
         else if ( s == "--pre-overlap" ) pre_overlap = true;
@@ -1600,6 +1808,7 @@ int main( int argc, char **argv ) {
                 "  --pre-overlap   « pre » : recouvre les deux arbres, donc chaque germe de S est\n"
                 "                  coupe DEUX FOIS par le meme plan -- le cas degenere, expres\n"
                 "  --psigrid       mesure le critere min_B h_i > M(B) sur une grille reguliere\n"
+                "  --front         l ETALEMENT sur grille : amorce par descente, front, manques\n"
                 "  --baisse        la parabole ABAISSEE : un enclos par paquet, et ce qu il reste\n"
                 "  --enclos        mesure l'enclos par sous-echantillon (rayon, mesure, cout)\n"
                 "  --newton        RESOUT le probleme d aires egales (Newton amorti, w_0 = 0)\n"
@@ -1676,6 +1885,9 @@ int main( int argc, char **argv ) {
 
     if ( a.baisse )
         return baisse_stats( a, X, Y, Wp );
+
+    if ( a.front )
+        return front_stats( a, X, Y, Wp );
 
     if ( a.psigrid )
         return psigrid_stats( a, X, Y, Wp );

@@ -1470,6 +1470,78 @@ pas ce tri — le pré-tri de la première feuille y a été mesuré perdant et 
 cette marge à récupérer. Et son parcours n'est pas le même : `old_pd` marche de feuille en feuille
 (`RemainingBoxes`), pas en redescendant de la racine.
 
+## LE FRONT SUR GRILLE : `--front`
+
+L'objectif : supprimer la marche dans le BSP au profit d'un **étalement** de proche en proche, tant
+que la parabole du dirac peut passer sous un majorant de ψ — au sens large.
+
+Le majorant est **affine par tuile**, et il n'y a rien à ajuster : toutes les paraboles partagent
+`|x|²`, donc `ψ − |x|²` est un min de fonctions affines, donc **concave**, et un majorant affine
+minimal en est un **hyperplan d'appui** — c'est-à-dire la partie affine de la parabole d'un dirac
+qui gagne quelque part dans la tuile. *Stocker le propriétaire EST stocker un majorant affine*, et
+le test `min_B (h_i − h_r) > 0` est exact, à un coin, parce que la différence est affine.
+
+Trois choses à établir, et `--front` les mesure. n=1e5 :
+
+| | g=64 | g=128 | g=256 | g=512 |
+|---|---|---|---|---|
+| **uniforme** — tuiles du front / cellule | 5.1 | 5.4 | 6.4 | 9.9 |
+| pas de descente | 0.01 | 0.05 | 0.17 | 0.15 |
+| sans certificat | 96 % | 84 % | 41 % | 4 % |
+| **manques** | 0 | 0 | 41 | 6 |
+| **lignes / Voronoï** — front / cellule | 4.8 | 5.3 | 6.0 | 8.5 |
+| front **maximum** | 99 | 332 | 1184 | **4508** |
+| **manques** | 47 | 16 | 16 | 12 |
+| **lignes / aires égales** — front / cellule | 10.9 | 11.4 | 12.8 | 17.1 |
+| pas de descente | 7.2 | 14.5 | 29.2 | **58.0** |
+| sans certificat | 96 % | 85 % | 48 % | 9.5 % |
+| **manques** | 2101 | 1866 | 1323 | 764 |
+
+### Ce qui marche
+
+**Le front est petit** : 5 à 17 tuiles par cellule, contre 42 (uniforme) à 135 (lignes) tests de
+boîte pour le BSP. Et le test est *indépendant de la cellule en cours* — plus d'ordre imposé, plus
+de « tester à la sortie de pile contre la cellule telle qu'elle est ».
+
+**Les majorants se construisent pour rien** : une requête par tuile, parallèle sans partage, 1 à
+255 ms pour toute la grille. À g=256 sur l'uniforme c'est **3 ms** contre 34 ms pour une passe de
+diagramme. C'est le seul endroit où le BSP reste nécessaire — il disparaît bien du parcours.
+
+### Ce qui bloque : l'AMORCE, et c'est le même problème qu'avant
+
+Le front n'est valide que depuis une tuile qui **rencontre** `Lag_i`, pas seulement une tuile
+retenue : l'ensemble retenu peut avoir plusieurs composantes, et partir de la mauvaise fait manquer
+la cellule. Or `Lag_i` est convexe, donc les tuiles qu'elle rencontre forment un ensemble
+**connexe** et toutes passent le critère — une bonne amorce suffit à tout couvrir.
+
+Le seul certificat en `O(1)` qu'une tuile rencontre `Lag_i` est **« son propriétaire est `i` »**.
+Et il est rare : à g=64 il y a 4096 tuiles pour 100 000 diracs, donc **96 % des diracs ne possèdent
+aucune tuile**. Sans certificat on part de là où la descente s'est arrêtée — d'où 12 à 2101 manques.
+
+Pire, sur le cas dur **la descente coûte plus cher que le front** : 7 à 58 pas contre 11 à 17 tuiles.
+C'est la maladie de ce nuage, la même partout dans ce banc — la cellule est loin de son germe, donc
+la *localiser* est le travail, et c'est exactement ce que la marche dans le BSP faisait.
+
+Et raffiner ne sauve pas : de g=64 à g=512, soit 64 fois plus de tuiles, les manques ne tombent que
+de 2101 à 764, pendant que la descente passe de 7 à 58 pas et la construction de 17 à 255 ms.
+
+**ESSAYÉ ET REJETÉ** : suivre la direction de descente `p_i − p_r` (« s'éloigner du concurrent »),
+qui est le vrai gradient de la pièce affine courante — une marche de visibilité ordinaire. Elle n'a
+pas de critère d'arrêt utilisable : quand le dirac ne possède aucune tuile, elle court jusqu'à sa
+borne. Mesure : **480 à 2810 pas** contre 7 à 58 pour le glouton à huit voisins.
+
+### Où ça mène
+
+Le critère et l'étalement sont validés et bon marché. Ce qui manque est une **amorce venue
+d'ailleurs**, et il y en a deux sources naturelles :
+
+* **l'itération précédente de Newton** : n'importe quel sommet de la cellule précédente donne une
+  tuile, et `propriétaire == i` s'y vérifie en `O(1)`. C'est la mémoire de `--memo` qui, ici,
+  paierait — elle ne servait à rien pour réordonner des coupes, elle supprimerait la descente ;
+* **un pavage hiérarchique** (quadtree raffiné jusqu'à ce que chaque dirac possède une tuile), qui
+  réglerait du même coup le front maximum de 4508 tuiles du Voronoï groupé — la grille régulière ne
+  peut pas suivre des aires qui couvrent quatre ordres de grandeur.
+
 ## Ce qui reste à essayer
 
 `CellAoS` pour comparer avec `CellSoA` ; les boîtes de nœud en FP32 (deux nœuds par ligne de
