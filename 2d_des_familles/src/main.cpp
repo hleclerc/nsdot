@@ -70,7 +70,6 @@ struct Args {
     double msmarge   = 0;          ///< ... de combien on releve, en fraction de la cible
     bool memo        = false;      ///< garder d une iteration a l autre les coupes de la feuille
     bool memobits    = true;       ///< ... les coupes de la boite d origine, un bit chacune
-    bool memovides   = true;       ///< ... et le germe qui a vide la cellule
 };
 
 /// Lire un nuage produit par `cases/gen_cases.py` : des lignes `#` de commentaire, `n`, puis `n`
@@ -1384,7 +1383,7 @@ int newton_go( const Args &a, const std::vector<TF> &X, const std::vector<TF> &Y
     std::vector<TF> zero( n, TF( 0 ) );
     const double tb = now();
     tr.build( X.data(), Y.data(), zero.data(), n, a.leaf );
-    if constexpr ( requires ( Tree &t ) { t.bits; } ) { tr.bits = a.memobits; tr.vides = a.memovides; }
+    if constexpr ( requires ( Tree &t ) { t.bits; } ) { tr.bits = a.memobits; }
     const double t_avant = now() - tb;              // hors de `tot`, donc a rajouter a la fin
     double t_arbre = t_avant;
 
@@ -1498,10 +1497,11 @@ int newton_go( const Args &a, const std::vector<TF> &X, const std::vector<TF> &Y
                      nw.nb_ana, nw.nb_iter, double( nw.pire_lin ) );
 
     if constexpr ( requires ( const Tree &t ) { t.nb_rejoue; } )
-        std::printf( "         memo : %.2f coupes rejouees et %.4f sortie immediate par cellule"
-                     " (compteurs NON atomiques : a lire a --threads 1)\n",
-                     double( tr.nb_rejoue ) / ( double( n ) * std::max( nw.nb_diag - 1, 1 ) ),
-                     double( tr.nb_vide ) / ( double( n ) * std::max( nw.nb_diag - 1, 1 ) ) );
+        std::printf( "         memo : %.2f coupes rejouees dans %.2f feuilles, et %.1f boites"
+                     " testees par cellule (compteurs NON atomiques : a lire a --threads 1)\n",
+                     double( tr.nb_rejoue ) / std::max( tr.nb_cell, 1LL ),
+                     double( tr.nb_feuilles ) / std::max( tr.nb_cell, 1LL ),
+                     double( tr.nb_boites ) / std::max( tr.nb_cell, 1LL ) );
 
     const SI novf = pd.nb_overflow.load();
     if ( novf )
@@ -1566,7 +1566,6 @@ int main( int argc, char **argv ) {
         else if ( s == "--ms-marge" ) a.msmarge = std::atof( val() );
         else if ( s == "--memo" )    a.memo = true;
         else if ( s == "--no-memo-bits" ) a.memobits = false;
-        else if ( s == "--no-memo-vides" ) a.memovides = false;
         else if ( s == "--pack-rate" ) pack_rate = std::atoi( val() );
         else if ( s == "--hull-rate" ) hull_rate = std::atoi( val() );
         else if ( s == "--no-hull-init" ) hull_init = false;
@@ -1614,7 +1613,7 @@ int main( int argc, char **argv ) {
                 "  --ms-tol T      ... tolerance des niveaux grossiers            (%.0e)\n"
                 "  --memo          garde d une iteration a l autre les coupes de la feuille\n"
                 "                  (un bit par germe) et le germe qui a vide la cellule\n"
-                "  --no-memo-bits / --no-memo-vides   ... n en garder qu une moitie\n",
+                "  --no-memo-bits  ... la memoire eteinte, pour mesurer ce que le reste coute\n",
                 int( a.n ), a.reps, a.threads, int( a.leaf ), int( a.prerate ), a.maxnv, a.seed,
                 a.ntol, a.nmax, a.cgtol, int( a.msratio ), int( a.msmin ), a.mstol );
             return s == "--help" || s == "-h" ? 0 : 1;

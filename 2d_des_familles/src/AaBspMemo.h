@@ -7,66 +7,82 @@ namespace pd2d {
 
 /// L'ARBRE QUI SE SOUVIENT DE L'ITERATION PRECEDENTE.
 ///
-/// Dans une boucle de Newton, le meme diagramme est reconstruit une dizaine de fois sur des poids
-/// qui bougent de moins en moins. La geometrie de la fin est donc presque celle du debut -- et rien
-/// n'en etait garde. Deux souvenirs, tous les deux tenus dans des entiers, tous les deux VALIDES
-/// QUOI QU'IL ARRIVE :
+/// Dans une boucle de Newton le meme diagramme est reconstruit une dizaine de fois sur des poids qui
+/// bougent de moins en moins, et rien n'en etait garde. On garde donc, par germe, QUELS DIRACS ONT
+/// COUPE -- sous la forme d'une poignee de couples ( feuille, masque ), un bit par dirac de la
+/// feuille. Repris de `old_pd/src/cpp/sdot/PrevCutInfo.h`.
 ///
-/// = LA LISTE DES VOISINS (`vois`), et c'est celui qui compte
+/// = LE MASQUE SERT DEUX FOIS, et c'est tout le mecanisme
 ///
-/// La cellule finale de `k` a six ou sept cotes, et `Cell::cid` porte EXACTEMENT les germes qui les
-/// portent. On les garde tous -- ou qu'ils soient dans l'arbre -- et on recoupe avec eux avant de
-/// descendre. Si le voisinage n'a pas bouge, la cellule est alors DEJA la reponse quand le parcours
-/// commence : chaque test de boite echoue au premier essai au lieu d'etre garde.
+///   1. EN PRE-PASSE, avant de descendre l'arbre : on coupe avec les diracs retenus de TOUTES les
+///      feuilles memorisees. Si le voisinage n'a pas bouge, la cellule est alors deja la reponse ;
+///   2. AU PARCOURS, quand la descente atteint une feuille : on applique le COMPLEMENT de son
+///      masque, donc uniquement les diracs qui n'ont pas ete faits en pre-passe.
 ///
-/// = UN BIT PAR GERME DE LA BOITE D'ORIGINE (`--memo-boite`)
+/// Le second point est ce qui rend le premier gratuit : aucun dirac n'est propose deux fois, et il
+/// n'y a rien a chercher dirac par dirac -- une seule lecture de masque par feuille VISITEE.
 ///
-/// La variante ou l'on ne retient que les voisins de SA PROPRE FEUILLE, un bit chacun. Elle ne peut
-/// pas payer, et c'est demontrable : le parcours descend FILS LE PLUS PROCHE EN PREMIER, donc la
-/// toute premiere feuille atteinte est celle du germe. Ses germes sont donc proposes AVANT le
-/// moindre test de boite exterieure -- une fois la feuille balayee, la cellule est la meme, qu'on
-/// ait rejoue ou non, parce qu'une cellule est l'INTERSECTION de ses demi-plans. Le masque ne
-/// reordonne que l'interieur de la premiere feuille, et ne peut changer AUCUNE reponse de
-/// `may_be_cut`. Il est garde pour que la mesure existe.
+/// = POURQUOI IL FAUT LES AUTRES FEUILLES
 ///
-/// = L'INDICE DU COUPABLE
+/// Un masque limite a la feuille du germe ne peut RIEN gagner, et c'est demontrable : le parcours
+/// descend fils-le-plus-proche en premier, donc la premiere feuille atteinte est celle du germe ;
+/// ses diracs sont proposes avant le moindre test de boite exterieure, et une cellule est
+/// l'INTERSECTION de ses demi-plans, donc elle est la meme une fois la feuille balayee quel que
+/// soit l'ordre. Mesure de cette variante-la : +3 %.
 ///
-/// Une cellule vide coute aujourd'hui un parcours complet avant qu'un germe ne la vide. On garde
-/// donc QUI l'a videe, et on recommence par lui : la coupe rend `empty`, `cut_with` rend `false`,
-/// et la construction s'arrete a la premiere coupe. C'est le pas de recul de l'amortissement qui
-/// paie ca -- il y en a 89 sur le nuage de lignes, et un pas refuse l'est justement parce que des
-/// cellules se sont videes.
+/// Ce sont les coupes venues des AUTRES feuilles qui changent tout : appliquees en pre-passe, elles
+/// retrecissent la cellule AVANT le premier `may_be_cut` -- et c'est `may_be_cut` qui coute, 42
+/// (uniforme) a 135 (lignes) fois par cellule.
 ///
-/// = POURQUOI C'EST SUR
+/// = POURQUOI LE COMPLEMENT N'EST PAS QU'UNE OPTIMISATION
 ///
-/// Une cellule est l'INTERSECTION de tous ses demi-plans. Changer l'ORDRE des coupes ne change donc
-/// pas le polygone -- au bit pres si l'ordre des coupes effectives est le meme, a l'arrondi sinon.
-/// Un souvenir perime ne rend pas un resultat faux : il rend une coupe inutile, qui repond
-/// `unchanged`. Il n'y a rien a invalider.
+/// Une cellule est l'intersection de ses demi-plans, donc l'ordre des coupes ne change pas le
+/// polygone. Mais recouper avec un plan DEJA applique n'est pas neutre : `Cell::cut` n'est pas
+/// idempotente (les sommets d'intersection ne sont pas exactement sur leur plan, `s` y vaut ±1e-17,
+/// et un `+1e-17` fait ajouter un sommet degenere). Mesure sans le complement : 116 305 coupes
+/// debordent 64 sommets et Newton stagne. Le complement garantit qu'un dirac n'est propose qu'une
+/// fois.
+///
+/// Un souvenir PERIME, lui, est inoffensif : il fait couper avec un germe qui n'est plus voisin,
+/// donc une coupe qui ne retire rien, et le parcours fera le reste.
+///
+/// = CE QUE CA DONNE, ET POURQUOI C'EST SI PEU
+///
+/// Le souvenir marche : 5.38 coupes rejouees par cellule dans 2.80 feuilles, sur une cellule qui a
+/// 5.97 cotes -- la pre-passe reconstruit donc bien le voisinage entier. Et pourtant les boites
+/// testees ne tombent que de 50.3 a 48.9, soit 2.8 %.
+///
+/// La raison est structurelle : `may_be_cut` demande « cette boite peut-elle encore atteindre la
+/// cellule ? ». Une boite qui contient un VRAI voisin passe ce test quoi qu'il arrive -- son plan
+/// est tangent a la cellule, par definition. Arriver avec la cellule finale ne rend donc PAS ses
+/// voisins rejetables : les boites qu'il faut visiter sont exactement celles des voisins, plus le
+/// chemin de descente, et c'est deja l'essentiel des cinquante. On ne peut pas elaguer ce qu'on
+/// doit de toute facon regarder.
 struct AaBspMemo {
     AaBsp tr;
 
     std::vector<SI>       pos;      ///< id d'origine -> place dans l'ordre de l'arbre
     std::vector<SI>       lbeg;     ///< place -> debut de SA feuille (l'origine des bits)
-    std::vector<SI>       lend;
-    mutable std::vector<uint32_t> masque;   ///< les voisins de la feuille, un bit chacun
-    mutable std::vector<SI>       coupable; ///< qui a vide la cellule, ou `-1`
 
-    bool bits = true;               ///< le souvenir des coupes de la boite d'origine
-    bool vides = true;              ///< le souvenir du coupable
+    /// Les souvenirs, `max_feuilles` couples par germe. A plat plutot qu'en `vector` de `vector` :
+    /// c'est lu a chaque cellule, donc ca doit tenir dans quelques lignes de cache contigues.
+    mutable std::vector<SI>       fbeg;
+    mutable std::vector<uint32_t> fmsk;
+    mutable std::vector<uint8_t>  fnb;
+
+    bool bits = true;               ///< rejouer les coupes retenues
     mutable bool actif = false;     ///< rien a rejouer tant qu'une passe n'a pas eu lieu
 
-    /// LES COMPTEURS SONT COMPILES DEHORS, et ce n'est pas de la coquetterie : membres non
-    /// atomiques, ils mettent quand meme une ligne de cache PARTAGEE sur le chemin chaud, et huit
-    /// threads qui s'y incrementent se la volent. Mesure de l'instrumentation elle-meme : le temps
-    /// de diagramme du nuage de lignes passait de 7.69 a 8.34 s -- 8 % -- sur un compteur qui ne
-    /// sert a rien. Passer `compte` a `true` et recompiler pour les lire, a `--threads 1`.
+    /// LES COMPTEURS SONT COMPILES DEHORS. Membres non atomiques, ils mettent quand meme une ligne
+    /// de cache PARTAGEE sur le chemin chaud, et huit threads qui s'y incrementent se la volent :
+    /// mesure de l'instrumentation elle-meme, 7.69 -> 8.34 s a huit fils, 8 % sur un compteur qui
+    /// ne sert a rien. Passer `compte` a `true` et recompiler pour les lire, a `--threads 1`.
     static constexpr bool compte = false;
-    mutable long long nb_rejoue = 0;    ///< coupes rejouees
-    mutable long long nb_vide = 0;      ///< fois ou le coupable a vide la cellule tout de suite
+    mutable long long nb_rejoue = 0, nb_feuilles = 0, nb_cell = 0, nb_boites = 0;
 
     static constexpr const char *name = "memo";
-    static constexpr SI max_bits = 32;
+    static constexpr SI max_bits = 32;      ///< un masque est un `uint32_t`
+    static constexpr SI max_feuilles = 8;   ///< 5.97 cotes en moyenne, donc rarement plus de feuilles
 
     TF seed_x( SI k ) const { return tr.px[ k ]; }
     TF seed_y( SI k ) const { return tr.py[ k ]; }
@@ -78,78 +94,71 @@ struct AaBspMemo {
         tr.build( X, Y, W, n, leaf );
         pos.resize( n );
         lbeg.resize( n );
-        lend.resize( n );
         for ( SI k = 0; k < n; ++k )
             pos[ tr.order[ k ] ] = k;
         for ( const AaBsp::Node &nd : tr.nodes )
             if ( nd.right < 0 )
-                for ( SI k = nd.beg; k < nd.end; ++k ) { lbeg[ k ] = nd.beg; lend[ k ] = nd.end; }
-        masque.assign( n, 0 );
-        coupable.assign( n, -1 );
+                for ( SI k = nd.beg; k < nd.end; ++k )
+                    lbeg[ k ] = nd.beg;
+        fbeg.assign( size_t( n ) * max_feuilles, -1 );
+        fmsk.assign( size_t( n ) * max_feuilles, 0 );
+        fnb.assign( n, 0 );
         actif = false;
-        if ( tr.leaf_size > max_bits )                  // le masque ne tiendrait pas
+        if ( tr.leaf_size > max_bits )                  // un masque ne tiendrait pas
             bits = false;
     }
 
     /// Rien n'est rejoue tant qu'une passe complete n'a pas rempli les souvenirs.
     void arme() const { actif = true; }
 
-    /// LE PARCOURS, avec la feuille du germe balayee EN DEUX PASSES.
-    ///
-    /// C'est une copie de celui de `AaBsp` -- meme pile, meme ordre fils-le-plus-proche -- avec une
-    /// seule difference : quand la feuille visitee est CELLE DU GERME, ses diracs sont proposes
-    /// dans l'ordre du masque, ceux a un d'abord. Aucun dirac n'est propose deux fois, il n'y a
-    /// rien a memoriser pendant la construction, et le cout est un decalage et un `et` logique par
-    /// dirac de cette seule feuille.
-    ///
-    /// ESSAYE ET REJETE : rejouer les coupes retenues AVANT de lancer le parcours. C'etait le
-    /// meme souvenir, mais applique au mauvais endroit : le parcours ne sait pas qu'on vient de
-    /// couper, il repropose les memes diracs, et il faut alors tenir une liste des deja-rejoues
-    /// pour ne pas les recouper -- 25 a 60 comparaisons par cellule. Pire, sans cette liste le
-    /// resultat devient FAUX (voir plus bas). Ici la question ne se pose pas : le rejeu n'existe
-    /// pas, seul l'ordre change.
+    /// Le meme parcours que `AaBsp` -- meme pile, meme ordre fils-le-plus-proche -- precede de la
+    /// pre-passe, et dont chaque feuille consulte son masque.
     template<class MayCut, class CutWith, class Reach2>
     void for_each_candidate( SI k0, MayCut &&may_cut, CutWith &&cut_with, Reach2 &&reach2 ) const {
         const TF p0x = tr.px[ k0 ], p0y = tr.py[ k0 ];
         const SI i0 = tr.order[ k0 ];
-        const SI b0 = lbeg[ k0 ];
-        const uint32_t m = ( actif && bits ) ? masque[ k0 ] : 0;
 
-        // le seul germe qu'il faille eventuellement ne pas represente : le coupable, coupe avant
-        // tout le monde parce qu'il vide peut-etre encore la cellule. UN entier, une comparaison.
-        SI saut = -1;
+        // le meme test d'eviction, compte quand on instrumente
+        auto mc = [ & ]( TF lox, TF loy, TF hix, TF hiy, const WMaj &wm ) {
+            if constexpr ( compte ) ++nb_boites;
+            return may_cut( lox, loy, hix, hiy, wm );
+        };
+
+        const SI nf = ( actif && bits ) ? SI( fnb[ k0 ] ) : 0;
+        const SI *fb = &fbeg[ size_t( k0 ) * max_feuilles ];
+        const uint32_t *fm = &fmsk[ size_t( k0 ) * max_feuilles ];
+
+        // RIEN A REJOUER : on rend la main a `AaBsp`, mot pour mot. Ce n'est pas une elegance,
+        // c'est ce qui rend la mesure lisible -- porter une copie du parcours, meme identique,
+        // coute 6 % (deux pointeurs de plus a garder vivants dans la boucle chaude, cf. la note de
+        // `may_be_cut` sur le `this` qui coutait 7 %). La premiere passe, et toute passe sans
+        // souvenir, doivent couter EXACTEMENT ce que coute `bsp`.
+        if ( ! nf ) {
+            if constexpr ( compte ) ++nb_cell;
+            tr.for_each_candidate( k0, mc, cut_with, reach2 );
+            return;
+        }
 
         auto essaie = [ & ]( SI k ) {
             const SI id = tr.order[ k ];
-            if ( id == i0 || id == saut )
-                return true;
-            if ( cut_with( tr.px[ k ], tr.py[ k ], tr.seed_w( k ), id ) )
-                return true;
-            coupable[ k0 ] = id;                        // c'est lui qui a vide la cellule
-            return false;
-        };
-        auto proche = [ & ]( SI h ) {
-            const AaBsp::Node &nd = tr.nodes[ h ];
-            const TF ex = p0x < nd.lo[ 0 ] ? nd.lo[ 0 ] - p0x
-                        : ( p0x > nd.hi[ 0 ] ? p0x - nd.hi[ 0 ] : TF( 0 ) );
-            const TF ey = p0y < nd.lo[ 1 ] ? nd.lo[ 1 ] - p0y
-                        : ( p0y > nd.hi[ 1 ] ? p0y - nd.hi[ 1 ] : TF( 0 ) );
-            return ex * ex + ey * ey;
+            return id == i0 || cut_with( tr.px[ k ], tr.py[ k ], tr.seed_w( k ), id );
         };
 
-        if ( actif && vides ) {
-            const SI j = coupable[ k0 ];
-            if ( j >= 0 && j != i0 ) {
-                const SI p = pos[ j ];
-                if ( ! cut_with( tr.px[ p ], tr.py[ p ], tr.seed_w( p ), j ) ) {
-                    coupable[ k0 ] = j;
-                    if constexpr ( compte ) ++nb_vide;
+        // ---- 1. LA PRE-PASSE : les coupes retenues, de toutes les feuilles memorisees
+        for ( SI i = 0; i < nf; ++i ) {
+            const SI b = fb[ i ];
+            for ( uint32_t m = fm[ i ]; m; m &= m - 1 )
+                if ( ! essaie( b + __builtin_ctz( m ) ) )
                     return;
-                }
-                saut = j;
-            }
+        }
+        if constexpr ( compte ) {
+            ++nb_cell;
+            nb_feuilles += nf;
+            for ( SI i = 0; i < nf; ++i )
+                nb_rejoue += __builtin_popcount( fm[ i ] );
         }
 
+        // ---- 2. LE PARCOURS, chaque feuille n'appliquant que le COMPLEMENT de son masque
         SI stack[ 64 ];
         SI top = 0;
         stack[ top++ ] = 0;
@@ -157,52 +166,80 @@ struct AaBspMemo {
             const SI h = stack[ --top ];
             const AaBsp::Node &nd = tr.nodes[ h ];
 
-            if ( ! may_cut( nd.lo[ 0 ], nd.lo[ 1 ], nd.hi[ 0 ], nd.hi[ 1 ], nd.wm ) )
+            if ( ! mc( nd.lo[ 0 ], nd.lo[ 1 ], nd.hi[ 0 ], nd.hi[ 1 ], nd.wm ) )
                 continue;
 
             if ( nd.right < 0 ) {
-                if ( m && nd.beg == b0 ) {
-                    if constexpr ( compte ) nb_rejoue += __builtin_popcount( m );
+                // le masque de CETTE feuille : une seule recherche par feuille visitee, sur une
+                // poignee d'entrees -- et non une recherche par dirac propose.
+                //
+                // Les DEUX boucles sont ecrites separement, et ce n'est pas de la redondance : une
+                // feuille sans masque -- la majorite -- doit couter exactement ce qu'elle coute
+                // dans `AaBsp`, sans un decalage ni un `et` de plus par dirac. Mesure de ce seul
+                // detail sur le nuage de lignes : 6.90 -> 7.30 s, soit 6 %.
+                uint32_t fait = 0;
+                for ( SI i = 0; i < nf; ++i )
+                    if ( fb[ i ] == nd.beg ) { fait = fm[ i ]; break; }
+                if ( fait ) {
                     for ( SI k = nd.beg; k < nd.end; ++k )
-                        if ( ( m >> ( k - nd.beg ) ) & 1 )
-                            if ( ! essaie( k ) ) return;
-                    for ( SI k = nd.beg; k < nd.end; ++k )
-                        if ( ! ( ( m >> ( k - nd.beg ) ) & 1 ) )
-                            if ( ! essaie( k ) ) return;
+                        if ( ! ( ( fait >> ( k - nd.beg ) ) & 1 ) && ! essaie( k ) )
+                            return;
                 } else {
                     for ( SI k = nd.beg; k < nd.end; ++k )
-                        if ( ! essaie( k ) ) return;
+                        if ( ! essaie( k ) )
+                            return;
                 }
                 continue;
             }
 
             const SI l = h + 1, r = nd.right;           // PREORDRE : le gauche est juste a cote
-            if ( proche( l ) <= proche( r ) ) { stack[ top++ ] = r; stack[ top++ ] = l; }
-            else                              { stack[ top++ ] = l; stack[ top++ ] = r; }
+            if ( loin( l, p0x, p0y ) <= loin( r, p0x, p0y ) ) {
+                stack[ top++ ] = r;
+                stack[ top++ ] = l;
+            } else {
+                stack[ top++ ] = l;
+                stack[ top++ ] = r;
+            }
         }
     }
 
     /// Ce qu'on retient de la cellule finie. `cid` porte deja EXACTEMENT les germes qui ont un cote
-    /// dans la cellule -- c'est l'invariant de `Cell` -- donc il n'y a rien a compter pendant la
-    /// construction : on lit six ou sept entrees a la fin.
+    /// -- c'est l'invariant de `Cell` -- donc il n'y a rien a compter pendant la construction : on
+    /// lit six ou sept entrees a la fin et on les range par feuille.
     template<class Cell>
     void note_cell( const Cell &c, SI k0 ) const {
-        if ( ! c.nb )                                   // cellule vide : le coupable est deja note,
-            return;                                     // et l'ancien masque reste valide
-        coupable[ k0 ] = -1;
-        if ( ! bits )
-            return;
-        const SI b = lbeg[ k0 ], e = lend[ k0 ];
-        uint32_t m = 0;
+        if ( ! bits || ! c.nb )                         // cellule vide : l'ancien souvenir reste
+            return;                                     // valide, il ne fera que des coupes inutiles
+        SI *fb = &fbeg[ size_t( k0 ) * max_feuilles ];
+        uint32_t *fm = &fmsk[ size_t( k0 ) * max_feuilles ];
+        SI nf = 0;
         for ( SI v = 0; v < c.nb; ++v ) {
             const SI id = c.cid[ v ];
-            if ( id < 0 )
+            if ( id < 0 )                               // une arete du DOMAINE, pas un voisin
                 continue;
-            const SI p = pos[ id ];
-            if ( p >= b && p < e )
-                m |= uint32_t( 1 ) << ( p - b );
+            const SI p = pos[ id ], b = lbeg[ p ];
+            SI i = 0;
+            for ( ; i < nf && fb[ i ] != b; ++i )
+                ;
+            if ( i == nf ) {
+                if ( nf == max_feuilles )               // au-dela on oublie : le parcours les
+                    continue;                           // proposera, c'est tout
+                fb[ nf ] = b;
+                fm[ nf ] = 0;
+                ++nf;
+            }
+            fm[ i ] |= uint32_t( 1 ) << ( p - b );
         }
-        masque[ k0 ] = m;
+        fnb[ k0 ] = uint8_t( nf );
+    }
+
+private:
+    /// Carre de la distance du germe a la boite du noeud -- uniquement une cle d'ordre.
+    TF loin( SI h, TF x, TF y ) const {
+        const AaBsp::Node &nd = tr.nodes[ h ];
+        const TF ex = x < nd.lo[ 0 ] ? nd.lo[ 0 ] - x : ( x > nd.hi[ 0 ] ? x - nd.hi[ 0 ] : TF( 0 ) );
+        const TF ey = y < nd.lo[ 1 ] ? nd.lo[ 1 ] - y : ( y > nd.hi[ 1 ] ? y - nd.hi[ 1 ] : TF( 0 ) );
+        return ex * ex + ey * ey;
     }
 };
 

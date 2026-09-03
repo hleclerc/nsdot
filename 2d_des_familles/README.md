@@ -1380,89 +1380,95 @@ au pire aussi bon que `w = 0`, et jamais inadmissible.
 ### `--memo` : SE SOUVENIR DE L'ITÉRATION PRÉCÉDENTE
 
 Dans une boucle de Newton le même diagramme est reconstruit une dizaine de fois sur des poids qui
-bougent de moins en moins, et rien n'en était gardé. **Un seul entier par dirac** : le bit `b` dit
-que le `b`-ième dirac de sa boîte porte un côté de sa cellule finale. À l'itération suivante, quand
-le parcours balaie cette boîte, il la balaie **en deux passes** — les bits à un d'abord, les bits à
-zéro ensuite. Aucun dirac n'est proposé deux fois, il n'y a pas de liste, et le coût est un décalage
-et un `et` logique par dirac de cette seule boîte.
+bougent de moins en moins, et rien n'en était gardé. Le dessin est repris de
+`old_pd/src/cpp/sdot/PrevCutInfo.h` : par germe, une poignée de couples **( feuille, masque )**, un
+bit par dirac de la feuille, disant qu'il porte un côté de la cellule finale.
 
-`--check` passe, et les poids de Newton restent à **9.0e-15** de la référence, avec exactement les
-mêmes 24 itérations et 113 diagrammes que sans mémoire : le réordonnancement ne perturbe rien.
+**Le masque sert deux fois, et c'est tout le mécanisme :**
 
-| temps de diagramme, 8 fils, `--leaf 10`, moyenne de cinq passes | lignes n=1e5 | uniforme n=1e5 |
+1. **en pré-passe**, avant de descendre l'arbre : on coupe avec les diracs retenus de **toutes** les
+   feuilles mémorisées ;
+2. **au parcours**, quand la descente atteint une feuille : on applique le **complément** de son
+   masque, donc uniquement ce qui n'a pas été fait en pré-passe.
+
+Le second point rend le premier gratuit : aucun dirac n'est proposé deux fois, et il n'y a rien à
+chercher dirac par dirac — une lecture de masque par feuille *visitée*.
+
+#### Ça marche, et ça ne rapporte presque rien
+
+| uniforme n=1e5, 1 fil | coupes rejouées | feuilles | **boîtes testées** |
+|---|---|---|---|
+| sans mémoire | 0 | 0 | **50.3** |
+| avec | 5.38 | 2.80 | **48.9** (−2.8 %) |
+
+La cellule a 5.97 côtés : **la pré-passe reconstruit donc le voisinage entier**. Et pourtant les
+tests de boîte ne bougent quasiment pas.
+
+**La raison est structurelle.** `may_be_cut` demande « cette boîte peut-elle encore atteindre la
+cellule ? ». Une boîte qui contient un **vrai voisin** passe ce test quoi qu'il arrive — son plan
+est tangent à la cellule, par définition. Arriver avec la cellule finale ne rend donc pas ses
+voisins rejetables : les boîtes qu'il faut visiter sont exactement celles des voisins, plus le
+chemin de descente, et c'est déjà l'essentiel des cinquante. **On ne peut pas élaguer ce qu'on doit
+de toute façon regarder.**
+
+| ms par diagramme, 8 fils, `--leaf 10`, trois passes | lignes n=1e5 | uniforme n=1e5 |
 |---|---|---|
-| `bsp` | **7.211 s** | **0.349 s** |
-| témoin : le même parcours réécrit, mémoire éteinte | 7.212 s | 0.356 s |
-| avec le réordonnancement | 7.418 s (**+2.9 %**) | 0.368 s (**+5.4 %**) |
+| `bsp` | **63.50** | 35.50 |
+| témoin : `--memo --no-memo-bits` | 65.24 | 35.50 |
+| avec la mémoire | 66.40 | **34.30** |
 
-Le témoin est ce qui rend la mesure lisible : `AaBspMemo` porte sa propre copie du parcours, et il
-fallait vérifier qu'elle ne coûtait rien par elle-même. Sur les lignes elle est gratuite au
-millième près ; sur l'uniforme elle prend 1.9 %, ce qui est de l'ordre du bruit de disposition de
-code que ce banc a déjà documenté. **Le réordonnancement, lui, coûte 3 % des deux côtés.**
+Et sur les lignes il y a pire que le temps par diagramme : l'ordre des coupes change les arrondis,
+donc le chemin de l'amortissement, et la résolution passe de **113 à 140 diagrammes**. Total
+17.3 s contre 14.9 s.
 
-#### Pourquoi ça ne peut pas gagner
+#### Les deux variantes plus faibles, mesurées avant celle-ci
 
-Le parcours descend **fils le plus proche en premier**, et `p0` est dans la boîte de sa propre
-feuille : à chaque niveau le fils qui y mène est à distance 0 et sort de la pile en premier, donc
-**la première feuille balayée est celle du germe**. Tous ses diracs sont donc proposés à la coupe
-*avant le moindre test de boîte extérieure* — et comme une cellule est l'**intersection** de ses
-demi-plans, elle est la même une fois la feuille balayée, quel que soit l'ordre. Le réordonnancement
-ne peut donc changer **aucune** réponse de `may_be_cut`, c'est-à-dire rien de ce qui coûte : les 42
-(uniforme) à 135 (lignes) tests de boîte se font tous après, contre la même cellule.
+* **un masque limité à la feuille du germe** : +3 %. Il ne peut rien gagner, et c'est démontrable —
+  le parcours descend fils-le-plus-proche en premier, donc la première feuille atteinte est celle
+  du germe ; ses diracs sont proposés avant le moindre test de boîte extérieure, et une cellule est
+  l'intersection de ses demi-plans, donc elle est la même une fois la feuille balayée quel que soit
+  l'ordre. Le réordonnancement ne change **aucune** réponse de `may_be_cut`.
+* **l'indice du dirac qui a vidé la cellule**, pour recommencer par lui : il se déclenche **une fois
+  sur dix mille cellules**. Un pas d'amortissement n'est pas refusé parce que des cellules se
+  vident, mais parce que le résidu ne baisse pas assez — le critère de Kitagawa-Mérigot-Thibert
+  impose `min a >= eps` précisément pour que l'itéré ne sorte jamais de la région où toutes les
+  cellules sont non vides.
 
-Ce qu'il peut gagner se réduit aux sept diracs de la boîte qui ne sont PAS voisins : leur coupe
-répond `unchanged` contre un polygone un peu plus petit, donc un peu moins de sommets à balayer. Ce
-qu'il coûte : parcourir la plage de la feuille deux fois au lieu d'une, plus la lecture de deux
-tableaux de plus (`masque`, `lbeg`). Mesuré, le second l'emporte.
+#### `Cell::cut` n'est pas idempotente
 
-#### Le raccourci « cellule vide »
+Une première version rejouait les coupes **sans** appliquer le complément ensuite : le parcours
+reproposait les mêmes diracs, chacun était donc coupé deux fois. Le README affirmait qu'un plan
+appliqué deux fois donne la même **aire** à 2.2e-16 près depuis que le `lerp` est ancré sur le
+sommet dedans. C'est vrai de l'aire, **pas du nombre de sommets** : les deux points d'intersection
+créés par une coupe ne sont pas exactement sur son plan, `s` y vaut ±1e-17, et un `+1e-17` suffit à
+ce que la seconde application trouve `nb_out == 1` et ajoute un sommet dégénéré. Mesure :
+**116 305 coupes débordent 64 sommets**, et Newton stagne à `max|a-nu|/nu = 1.67e+03`. Le
+complément est une **condition de correction**, pas une optimisation.
 
-Garder quel dirac a vidé la cellule pour recommencer par lui, et sortir à la première coupe. Il se
-déclenche **une fois sur dix mille cellules**. L'hypothèse était qu'un pas d'amortissement est
-refusé parce que des cellules se vident : c'est faux, il est refusé parce que le RÉSIDU ne baisse
-pas assez. Le critère de Kitagawa-Mérigot-Thibert impose `min a >= eps` précisément pour que
-l'itéré ne sorte jamais de la région où toutes les cellules sont non vides.
+#### Deux notes de méthode
 
-#### ESSAYÉ ET REJETÉ : rejouer les coupes AVANT le parcours
+* Quand il n'y a rien à rejouer, `AaBspMemo` **rend la main à `AaBsp` mot pour mot**. Porter une
+  copie du parcours, même identique, coûte 3 à 6 % — deux pointeurs de plus à garder vivants dans la
+  boucle chaude, cf. la note de `may_be_cut` sur le `this` qui coûtait 7 %. Sans ça la première
+  passe et le témoin paient une taxe qui masque l'effet mesuré.
+* Les compteurs de diagnostic sont compilés dehors (`AaBspMemo::compte`). Membres non atomiques, ils
+  mettent quand même une ligne de cache **partagée** sur le chemin chaud : 7.69 → 8.34 s à huit
+  fils, 8 % sur un compteur qui ne sert à rien.
 
-Première version, et c'était une erreur d'implémentation, pas de conception : couper avec les
-voisins retenus, puis lancer le parcours. Le parcours ne sait pas qu'on vient de couper, donc il
-repropose les mêmes diracs — chacun est alors présenté **deux fois**, et il faut tenir une liste des
-déjà-rejoués (25 à 60 comparaisons par cellule). Coût mesuré : **+11 %**.
+#### Sur les 3× de `old_pd`, ce qu'on peut et ne peut pas dire
 
-Et sans cette liste, le résultat devient **faux**, ce qui apprend quelque chose sur `Cell` :
+Le dessin y est ; l'implémentation, non. `make_prev_cuts` est déclarée dans `PointTree.h` et
+`PointTreeWithValues.h` et **définie nulle part**, et `PointTreeWithValues.h` est tronqué en plein
+milieu de la classe (y compris dans la version commitée). Le chemin `prev_cuts` de ce dépôt ne
+compile pas en l'état : impossible de reproduire ou de disséquer le facteur 3.
 
-> **`Cell::cut` n'est pas idempotente.** Le README notait qu'un plan appliqué deux fois donne la
-> même AIRE à 2.2e-16 près depuis que le `lerp` est ancré sur le sommet dedans. C'est vrai de
-> l'aire, pas du **nombre de sommets** : les deux points d'intersection créés par une coupe ne sont
-> pas exactement sur son plan, `s` y vaut ±1e-17, et un `+1e-17` suffit à ce que la seconde
-> application trouve `nb_out == 1` et ajoute un sommet dégénéré. Mesure : **116 305 coupes
-> débordent 64 sommets**, les cellules concernées sont laissées trop grandes, et Newton stagne à
-> `max|a-nu|/nu = 1.67e+03` au lieu de converger.
-
-#### ESSAYÉ ET REJETÉ : garder tous les voisins, pas seulement ceux de la boîte
-
-Le compteur disait que **2.3 à 2.7 seulement des ~6 voisins** sont dans la boîte d'origine. Garder
-la liste complète (8 places par germe) et la rejouer donnait **−1.8 %** sur les lignes — mais avec
-le rejeu, donc la liste des déjà-rejoués, dont le balayage reprend une bonne part du gain. Et le
-plafond reste celui que `--tree hull` avait mesuré : partir d'une sur-cellule contenant **déjà toute
-la réponse** vaut **4 %**.
-
-#### Une note de méthode
-
-Les compteurs de diagnostic sont compilés dehors (`AaBspMemo::compte`). Membres non atomiques, ils
-mettent quand même une ligne de cache **partagée** sur le chemin chaud, et huit threads qui s'y
-incrémentent se la volent : le temps de diagramme des lignes passait de 7.69 à 8.34 s — 8 % — sur un
-compteur qui ne sert à rien.
-
-#### Ce qui reste ouvert
-
-Toutes ces variantes ne font qu'*arriver mieux préparé au même parcours*, et c'est le parcours qui
-coûte. Pour gagner il faudrait le **supprimer** : si les voisins mémorisés sont les bons, la cellule
-est déjà la réponse, et tout ce que la descente fait ensuite est de PROUVER qu'il n'y a plus rien à
-couper. Prouver ça sans descendre l'arbre demande un certificat — un rayon de sécurité autour de la
-cellule reconstruite — et c'est exactement ce que `--tree hull` construit, mais par paquet et une
-fois pour toutes.
+Une hypothèse vérifiable en lisant `PowerDiagram.cxx` : dans ce code, le chemin **sans** `prev_cuts`
+fait, pour **chaque feuille visitée**, un `std::sort` des diracs de la feuille par distance au
+germe. Le chemin `prev_cuts` ne le fait pas. Une bonne part du facteur 3 pourrait donc mesurer
+« la mémoire évite un tri par feuille » plutôt que « la mémoire évite du parcours ». Ce banc-ci n'a
+pas ce tri — le pré-tri de la première feuille y a été mesuré perdant et retiré — donc il n'a pas
+cette marge à récupérer. Et son parcours n'est pas le même : `old_pd` marche de feuille en feuille
+(`RemainingBoxes`), pas en redescendant de la racine.
 
 ## Ce qui reste à essayer
 
