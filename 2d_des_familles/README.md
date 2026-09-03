@@ -1380,64 +1380,73 @@ au pire aussi bon que `w = 0`, et jamais inadmissible.
 ### `--memo` : SE SOUVENIR DE L'ITÉRATION PRÉCÉDENTE
 
 Dans une boucle de Newton le même diagramme est reconstruit une dizaine de fois sur des poids qui
-bougent de moins en moins, et rien n'en était gardé. Trois souvenirs ont été essayés.
+bougent de moins en moins, et rien n'en était gardé. **Un seul entier par dirac** : le bit `b` dit
+que le `b`-ième dirac de sa boîte porte un côté de sa cellule finale. À l'itération suivante, quand
+le parcours balaie cette boîte, il la balaie **en deux passes** — les bits à un d'abord, les bits à
+zéro ensuite. Aucun dirac n'est proposé deux fois, il n'y a pas de liste, et le coût est un décalage
+et un `et` logique par dirac de cette seule boîte.
 
-#### Un bit par dirac de la BOÎTE D'ORIGINE — ne peut pas marcher, et c'est démontrable
+`--check` passe, et les poids de Newton restent à **9.0e-15** de la référence, avec exactement les
+mêmes 24 itérations et 113 diagrammes que sans mémoire : le réordonnancement ne perturbe rien.
 
-Un `uint32_t` par germe, le bit `b` disant que le `b`-ième dirac de sa feuille porte un côté de sa
-cellule finale ; à l'itération d'après on coupe avec les bits à un d'abord.
+| temps de diagramme, 8 fils, `--leaf 10`, moyenne de cinq passes | lignes n=1e5 | uniforme n=1e5 |
+|---|---|---|
+| `bsp` | **7.211 s** | **0.349 s** |
+| témoin : le même parcours réécrit, mémoire éteinte | 7.212 s | 0.356 s |
+| avec le réordonnancement | 7.418 s (**+2.9 %**) | 0.368 s (**+5.4 %**) |
+
+Le témoin est ce qui rend la mesure lisible : `AaBspMemo` porte sa propre copie du parcours, et il
+fallait vérifier qu'elle ne coûtait rien par elle-même. Sur les lignes elle est gratuite au
+millième près ; sur l'uniforme elle prend 1.9 %, ce qui est de l'ordre du bruit de disposition de
+code que ce banc a déjà documenté. **Le réordonnancement, lui, coûte 3 % des deux côtés.**
+
+#### Pourquoi ça ne peut pas gagner
 
 Le parcours descend **fils le plus proche en premier**, et `p0` est dans la boîte de sa propre
 feuille : à chaque niveau le fils qui y mène est à distance 0 et sort de la pile en premier, donc
-**la première feuille balayée est celle du germe**. Tous ses diracs sont proposés à la coupe *avant
-le moindre test de boîte extérieure* — et comme une cellule est l'**intersection** de ses
-demi-plans, la cellule est la même une fois la feuille balayée, qu'on ait rejoué ou non. Le masque
-ne peut donc changer **aucune** réponse de `may_be_cut` : il ne réordonne que l'intérieur de la
-première feuille, et il coûte 2 à 3 coupes rejouées.
+**la première feuille balayée est celle du germe**. Tous ses diracs sont donc proposés à la coupe
+*avant le moindre test de boîte extérieure* — et comme une cellule est l'**intersection** de ses
+demi-plans, elle est la même une fois la feuille balayée, quel que soit l'ordre. Le réordonnancement
+ne peut donc changer **aucune** réponse de `may_be_cut`, c'est-à-dire rien de ce qui coûte : les 42
+(uniforme) à 135 (lignes) tests de boîte se font tous après, contre la même cellule.
 
-Mesuré (`--memo-boite`), temps de diagramme à 8 fils : **+8 % sur les lignes, +13 % sur
-l'uniforme**. Le balayage de `--leaf` (6, 10, 16, 24, 32) ne renverse rien.
+Ce qu'il peut gagner se réduit aux sept diracs de la boîte qui ne sont PAS voisins : leur coupe
+répond `unchanged` contre un polygone un peu plus petit, donc un peu moins de sommets à balayer. Ce
+qu'il coûte : parcourir la plage de la feuille deux fois au lieu d'une, plus la lecture de deux
+tableaux de plus (`masque`, `lbeg`). Mesuré, le second l'emporte.
 
-#### La LISTE DES VOISINS, où qu'ils soient — la bonne version, et elle gagne à peine
-
-`Cell::cid` porte exactement les diracs qui portent un côté. On les garde tous (8 places par germe,
-5.97 côtés en moyenne), pas seulement ceux qui partagent la boîte — le compteur disait que **2.3 à
-2.7 seulement sur 6 y étaient**, donc plus de la moitié du voisinage était perdue.
-
-| temps de diagramme, 8 fils, `--leaf 10`, trois passes | lignes n=1e5 | uniforme n=1e5 |
-|---|---|---|
-| sans mémoire | 7.154 / 7.103 / 7.178 | 0.355 / 0.341 / 0.358 |
-| liste des voisins | 7.055 / 6.992 / 7.000 | 0.350 / 0.354 / 0.331 |
-| gain | **−1.8 %** | −1.7 % (dans le bruit) |
-
-Ça passe de « clairement perdant » à « à peine gagnant », et le plafond était annoncé : `--tree
-hull` avait mesuré que partir d'une sur-cellule contenant **déjà toute la réponse** vaut **4 %**.
-On ne peut pas gagner plus en arrivant mieux préparé — le parcours atteint la feuille du germe en
-premier, la cellule rétrécit vite toute seule, et les 42 (uniforme) à 135 (lignes) tests de boîte
-se font ensuite contre une cellule déjà petite dans les deux cas.
-
-#### L'indice du COUPABLE — le mécanisme visé est celui que l'amortissement évite
+#### Le raccourci « cellule vide »
 
 Garder quel dirac a vidé la cellule pour recommencer par lui, et sortir à la première coupe. Il se
-déclenche **une fois sur dix mille cellules** (0.0001 par cellule sur les lignes, 0.0000 sur
-l'uniforme), et coûte +2 à +5 %. L'hypothèse était qu'un pas est refusé parce que des cellules se
-vident : c'est faux, il est refusé parce que le RÉSIDU ne baisse pas assez. Le critère de
-Kitagawa-Mérigot-Thibert impose `min a >= eps` précisément pour que l'itéré ne sorte jamais de la
-région où toutes les cellules sont non vides.
+déclenche **une fois sur dix mille cellules**. L'hypothèse était qu'un pas d'amortissement est
+refusé parce que des cellules se vident : c'est faux, il est refusé parce que le RÉSIDU ne baisse
+pas assez. Le critère de Kitagawa-Mérigot-Thibert impose `min a >= eps` précisément pour que
+l'itéré ne sorte jamais de la région où toutes les cellules sont non vides.
 
-#### `Cell::cut` N'EST PAS IDEMPOTENTE — et ça, il faut le savoir
+#### ESSAYÉ ET REJETÉ : rejouer les coupes AVANT le parcours
 
-Le rejeu propose des diracs que le parcours reproposera. On garde donc la liste de ce qui vient
-d'être rejoué pour ne pas le recouper (`--no-memo-saut` l'enlève). Ce n'était pas censé être
-nécessaire : le README notait qu'un plan appliqué deux fois donne la même aire à 2.2e-16 près
-depuis que le `lerp` est ancré sur le sommet DEDANS.
+Première version, et c'était une erreur d'implémentation, pas de conception : couper avec les
+voisins retenus, puis lancer le parcours. Le parcours ne sait pas qu'on vient de couper, donc il
+repropose les mêmes diracs — chacun est alors présenté **deux fois**, et il faut tenir une liste des
+déjà-rejoués (25 à 60 comparaisons par cellule). Coût mesuré : **+11 %**.
 
-C'est vrai de **l'aire**, pas du **nombre de sommets**. Les deux points d'intersection créés par une
-coupe ne sont pas exactement sur son plan : `s` y vaut ±1e-17. Un `1e-17` positif suffit à ce que
-la seconde application trouve `nb_out == 1` et ajoute un sommet dégénéré. À chaque itération, à
-chaque voisin. Mesure sans la liste : **116 305 coupes débordent 64 sommets**, les cellules
-concernées sont laissées trop grandes, et Newton stagne à `max|a-nu|/nu = 1.67e+03` au lieu de
-converger. **La liste des déjà-rejoués est une condition de correction, pas une optimisation.**
+Et sans cette liste, le résultat devient **faux**, ce qui apprend quelque chose sur `Cell` :
+
+> **`Cell::cut` n'est pas idempotente.** Le README notait qu'un plan appliqué deux fois donne la
+> même AIRE à 2.2e-16 près depuis que le `lerp` est ancré sur le sommet dedans. C'est vrai de
+> l'aire, pas du **nombre de sommets** : les deux points d'intersection créés par une coupe ne sont
+> pas exactement sur son plan, `s` y vaut ±1e-17, et un `+1e-17` suffit à ce que la seconde
+> application trouve `nb_out == 1` et ajoute un sommet dégénéré. Mesure : **116 305 coupes
+> débordent 64 sommets**, les cellules concernées sont laissées trop grandes, et Newton stagne à
+> `max|a-nu|/nu = 1.67e+03` au lieu de converger.
+
+#### ESSAYÉ ET REJETÉ : garder tous les voisins, pas seulement ceux de la boîte
+
+Le compteur disait que **2.3 à 2.7 seulement des ~6 voisins** sont dans la boîte d'origine. Garder
+la liste complète (8 places par germe) et la rejouer donnait **−1.8 %** sur les lignes — mais avec
+le rejeu, donc la liste des déjà-rejoués, dont le balayage reprend une bonne part du gain. Et le
+plafond reste celui que `--tree hull` avait mesuré : partir d'une sur-cellule contenant **déjà toute
+la réponse** vaut **4 %**.
 
 #### Une note de méthode
 
@@ -1448,9 +1457,9 @@ compteur qui ne sert à rien.
 
 #### Ce qui reste ouvert
 
-Le gain plafonne à 4 % parce qu'on ne fait qu'*arriver mieux préparé* au même parcours. Pour aller
-plus loin il faudrait **supprimer le parcours** : si les voisins mémorisés sont les bons, la cellule
-est déjà la réponse, et tout ce que la descente fait ensuite est de prouver qu'il n'y a plus rien à
+Toutes ces variantes ne font qu'*arriver mieux préparé au même parcours*, et c'est le parcours qui
+coûte. Pour gagner il faudrait le **supprimer** : si les voisins mémorisés sont les bons, la cellule
+est déjà la réponse, et tout ce que la descente fait ensuite est de PROUVER qu'il n'y a plus rien à
 couper. Prouver ça sans descendre l'arbre demande un certificat — un rayon de sécurité autour de la
 cellule reconstruite — et c'est exactement ce que `--tree hull` construit, mais par paquet et une
 fois pour toutes.

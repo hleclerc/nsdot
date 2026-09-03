@@ -50,14 +50,10 @@ struct AaBspMemo {
     std::vector<SI>       lbeg;     ///< place -> debut de SA feuille (l'origine des bits)
     std::vector<SI>       lend;
     mutable std::vector<uint32_t> masque;   ///< les voisins de la feuille, un bit chacun
-    mutable std::vector<SI>       vois;     ///< les PLACES des voisins, `max_vois` par germe
-    mutable std::vector<uint8_t>  nvois;    ///< combien sont valides
     mutable std::vector<SI>       coupable; ///< qui a vide la cellule, ou `-1`
 
-    bool liste = true;              ///< le souvenir des VOISINS, ou qu'ils soient
-    bool bits = false;              ///< ... ou seulement ceux de la boite d'origine
+    bool bits = true;               ///< le souvenir des coupes de la boite d'origine
     bool vides = true;              ///< le souvenir du coupable
-    bool saute = true;              ///< ne pas representer a la coupe ce qui vient d etre rejoue
     mutable bool actif = false;     ///< rien a rejouer tant qu'une passe n'a pas eu lieu
 
     /// LES COMPTEURS SONT COMPILES DEHORS, et ce n'est pas de la coquetterie : membres non
@@ -71,7 +67,6 @@ struct AaBspMemo {
 
     static constexpr const char *name = "memo";
     static constexpr SI max_bits = 32;
-    static constexpr SI max_vois = 8;   ///< 5.97 cotes en moyenne, la queue est courte
 
     TF seed_x( SI k ) const { return tr.px[ k ]; }
     TF seed_y( SI k ) const { return tr.py[ k ]; }
@@ -90,8 +85,6 @@ struct AaBspMemo {
             if ( nd.right < 0 )
                 for ( SI k = nd.beg; k < nd.end; ++k ) { lbeg[ k ] = nd.beg; lend[ k ] = nd.end; }
         masque.assign( n, 0 );
-        vois.assign( size_t( n ) * max_vois, -1 );
-        nvois.assign( n, 0 );
         coupable.assign( n, -1 );
         actif = false;
         if ( tr.leaf_size > max_bits )                  // le masque ne tiendrait pas
@@ -101,78 +94,92 @@ struct AaBspMemo {
     /// Rien n'est rejoue tant qu'une passe complete n'a pas rempli les souvenirs.
     void arme() const { actif = true; }
 
+    /// LE PARCOURS, avec la feuille du germe balayee EN DEUX PASSES.
+    ///
+    /// C'est une copie de celui de `AaBsp` -- meme pile, meme ordre fils-le-plus-proche -- avec une
+    /// seule difference : quand la feuille visitee est CELLE DU GERME, ses diracs sont proposes
+    /// dans l'ordre du masque, ceux a un d'abord. Aucun dirac n'est propose deux fois, il n'y a
+    /// rien a memoriser pendant la construction, et le cout est un decalage et un `et` logique par
+    /// dirac de cette seule feuille.
+    ///
+    /// ESSAYE ET REJETE : rejouer les coupes retenues AVANT de lancer le parcours. C'etait le
+    /// meme souvenir, mais applique au mauvais endroit : le parcours ne sait pas qu'on vient de
+    /// couper, il repropose les memes diracs, et il faut alors tenir une liste des deja-rejoues
+    /// pour ne pas les recouper -- 25 a 60 comparaisons par cellule. Pire, sans cette liste le
+    /// resultat devient FAUX (voir plus bas). Ici la question ne se pose pas : le rejeu n'existe
+    /// pas, seul l'ordre change.
     template<class MayCut, class CutWith, class Reach2>
     void for_each_candidate( SI k0, MayCut &&may_cut, CutWith &&cut_with, Reach2 &&reach2 ) const {
+        const TF p0x = tr.px[ k0 ], p0y = tr.py[ k0 ];
         const SI i0 = tr.order[ k0 ];
+        const SI b0 = lbeg[ k0 ];
+        const uint32_t m = ( actif && bits ) ? masque[ k0 ] : 0;
 
-        // CE QUI A DEJA ETE REJOUE. Sans cette liste, le parcours represente les memes germes a la
-        // coupe : chacun est alors PAYE DEUX FOIS, une fois pour de bon et une fois pour s'entendre
-        // repondre `unchanged` -- et un `unchanged` n'est pas gratuit, il balaie tous les sommets.
-        // La liste tient en registres (quatre a six entrees), donc la comparer coute moins que le
-        // balayage qu'elle evite.
-        SI deja[ max_bits + max_vois + 1 ];
-        SI nd = 0;
+        // le seul germe qu'il faille eventuellement ne pas represente : le coupable, coupe avant
+        // tout le monde parce qu'il vide peut-etre encore la cellule. UN entier, une comparaison.
+        SI saut = -1;
 
-        auto cw = [ & ]( TF x, TF y, TF w, SI id ) {
-            if ( cut_with( x, y, w, id ) )
+        auto essaie = [ & ]( SI k ) {
+            const SI id = tr.order[ k ];
+            if ( id == i0 || id == saut )
+                return true;
+            if ( cut_with( tr.px[ k ], tr.py[ k ], tr.seed_w( k ), id ) )
                 return true;
             coupable[ k0 ] = id;                        // c'est lui qui a vide la cellule
             return false;
         };
-        auto cw2 = [ & ]( TF x, TF y, TF w, SI id ) {   // le meme, mais qui saute le deja-vu
-            for ( SI i = 0; i < nd; ++i )
-                if ( deja[ i ] == id )
-                    return true;
-            return cw( x, y, w, id );
+        auto proche = [ & ]( SI h ) {
+            const AaBsp::Node &nd = tr.nodes[ h ];
+            const TF ex = p0x < nd.lo[ 0 ] ? nd.lo[ 0 ] - p0x
+                        : ( p0x > nd.hi[ 0 ] ? p0x - nd.hi[ 0 ] : TF( 0 ) );
+            const TF ey = p0y < nd.lo[ 1 ] ? nd.lo[ 1 ] - p0y
+                        : ( p0y > nd.hi[ 1 ] ? p0y - nd.hi[ 1 ] : TF( 0 ) );
+            return ex * ex + ey * ey;
         };
 
-        if ( actif ) {
-            // ---- le coupable d'abord : s'il vide encore, on sort a la premiere coupe
-            if ( vides ) {
-                const SI j = coupable[ k0 ];
-                if ( j >= 0 && j != i0 ) {
-                    const SI p = pos[ j ];
-                    deja[ nd++ ] = j;
-                    if ( ! cw( tr.px[ p ], tr.py[ p ], tr.seed_w( p ), j ) ) {
-                        if constexpr ( compte ) ++nb_vide;
-                        return;
-                    }
+        if ( actif && vides ) {
+            const SI j = coupable[ k0 ];
+            if ( j >= 0 && j != i0 ) {
+                const SI p = pos[ j ];
+                if ( ! cut_with( tr.px[ p ], tr.py[ p ], tr.seed_w( p ), j ) ) {
+                    coupable[ k0 ] = j;
+                    if constexpr ( compte ) ++nb_vide;
+                    return;
                 }
+                saut = j;
             }
-            // ---- puis les voisins connus, ou qu'ils soient
-            if ( liste ) {
-                const SI *v = &vois[ size_t( k0 ) * max_vois ];
-                const SI nv = nvois[ k0 ];
-                for ( SI i = 0; i < nv; ++i ) {
-                    const SI p = v[ i ];
-                    const SI id = tr.order[ p ];
-                    if ( id == i0 )
-                        continue;
-                    deja[ nd++ ] = id;
-                    if ( ! cw( tr.px[ p ], tr.py[ p ], tr.seed_w( p ), id ) )
-                        return;
-                }
-            }
-            // ---- ou seulement ceux de la boite d'origine
-            if ( bits ) {
-                const SI b = lbeg[ k0 ];
-                for ( uint32_t m = masque[ k0 ]; m; m &= m - 1 ) {
-                    const SI u = b + __builtin_ctz( m );
-                    const SI id = tr.order[ u ];
-                    if ( id == i0 )
-                        continue;
-                    deja[ nd++ ] = id;
-                    if ( ! cw( tr.px[ u ], tr.py[ u ], tr.seed_w( u ), id ) )
-                        return;
-                }
-            }
-            if constexpr ( compte ) nb_rejoue += nd;
         }
 
-        if ( nd && saute )
-            tr.for_each_candidate( k0, may_cut, cw2, reach2 );
-        else
-            tr.for_each_candidate( k0, may_cut, cw, reach2 );
+        SI stack[ 64 ];
+        SI top = 0;
+        stack[ top++ ] = 0;
+        while ( top > 0 ) {
+            const SI h = stack[ --top ];
+            const AaBsp::Node &nd = tr.nodes[ h ];
+
+            if ( ! may_cut( nd.lo[ 0 ], nd.lo[ 1 ], nd.hi[ 0 ], nd.hi[ 1 ], nd.wm ) )
+                continue;
+
+            if ( nd.right < 0 ) {
+                if ( m && nd.beg == b0 ) {
+                    if constexpr ( compte ) nb_rejoue += __builtin_popcount( m );
+                    for ( SI k = nd.beg; k < nd.end; ++k )
+                        if ( ( m >> ( k - nd.beg ) ) & 1 )
+                            if ( ! essaie( k ) ) return;
+                    for ( SI k = nd.beg; k < nd.end; ++k )
+                        if ( ! ( ( m >> ( k - nd.beg ) ) & 1 ) )
+                            if ( ! essaie( k ) ) return;
+                } else {
+                    for ( SI k = nd.beg; k < nd.end; ++k )
+                        if ( ! essaie( k ) ) return;
+                }
+                continue;
+            }
+
+            const SI l = h + 1, r = nd.right;           // PREORDRE : le gauche est juste a cote
+            if ( proche( l ) <= proche( r ) ) { stack[ top++ ] = r; stack[ top++ ] = l; }
+            else                              { stack[ top++ ] = l; stack[ top++ ] = r; }
+        }
     }
 
     /// Ce qu'on retient de la cellule finie. `cid` porte deja EXACTEMENT les germes qui ont un cote
@@ -183,14 +190,6 @@ struct AaBspMemo {
         if ( ! c.nb )                                   // cellule vide : le coupable est deja note,
             return;                                     // et l'ancien masque reste valide
         coupable[ k0 ] = -1;
-        if ( liste ) {
-            SI *v = &vois[ size_t( k0 ) * max_vois ];
-            SI nv = 0;
-            for ( SI i = 0; i < c.nb && nv < max_vois; ++i )
-                if ( c.cid[ i ] >= 0 )
-                    v[ nv++ ] = pos[ c.cid[ i ] ];
-            nvois[ k0 ] = uint8_t( nv );
-        }
         if ( ! bits )
             return;
         const SI b = lbeg[ k0 ], e = lend[ k0 ];
