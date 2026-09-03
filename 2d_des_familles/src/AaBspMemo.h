@@ -12,16 +12,22 @@ namespace pd2d {
 /// n'en etait garde. Deux souvenirs, tous les deux tenus dans des entiers, tous les deux VALIDES
 /// QUOI QU'IL ARRIVE :
 ///
-/// = UN BIT PAR GERME DE LA FEUILLE
+/// = LA LISTE DES VOISINS (`vois`), et c'est celui qui compte
 ///
-/// La cellule finale de `k` a six ou sept cotes, et une bonne partie de ses voisins sont dans SA
-/// PROPRE FEUILLE. On garde donc, par germe, un `uint32_t` : le bit `b` dit que le `b`-ieme germe
-/// de la feuille de `k` porte un cote de sa cellule. A l'iteration suivante on coupe D'ABORD avec
-/// les bits a un, et le reste vient par le parcours ordinaire.
+/// La cellule finale de `k` a six ou sept cotes, et `Cell::cid` porte EXACTEMENT les germes qui les
+/// portent. On les garde tous -- ou qu'ils soient dans l'arbre -- et on recoupe avec eux avant de
+/// descendre. Si le voisinage n'a pas bouge, la cellule est alors DEJA la reponse quand le parcours
+/// commence : chaque test de boite echoue au premier essai au lieu d'etre garde.
 ///
-/// Ce que ca achete : le test d'eviction est fait A LA SORTIE DE PILE, donc contre la cellule telle
-/// qu'elle est. Trois ou quatre coupes gratuites avant meme la premiere boite, et la cellule est
-/// deja petite quand le parcours commence.
+/// = UN BIT PAR GERME DE LA BOITE D'ORIGINE (`--memo-boite`)
+///
+/// La variante ou l'on ne retient que les voisins de SA PROPRE FEUILLE, un bit chacun. Elle ne peut
+/// pas payer, et c'est demontrable : le parcours descend FILS LE PLUS PROCHE EN PREMIER, donc la
+/// toute premiere feuille atteinte est celle du germe. Ses germes sont donc proposes AVANT le
+/// moindre test de boite exterieure -- une fois la feuille balayee, la cellule est la meme, qu'on
+/// ait rejoue ou non, parce qu'une cellule est l'INTERSECTION de ses demi-plans. Le masque ne
+/// reordonne que l'interieur de la premiere feuille, et ne peut changer AUCUNE reponse de
+/// `may_be_cut`. Il est garde pour que la mesure existe.
 ///
 /// = L'INDICE DU COUPABLE
 ///
@@ -44,9 +50,12 @@ struct AaBspMemo {
     std::vector<SI>       lbeg;     ///< place -> debut de SA feuille (l'origine des bits)
     std::vector<SI>       lend;
     mutable std::vector<uint32_t> masque;   ///< les voisins de la feuille, un bit chacun
+    mutable std::vector<SI>       vois;     ///< les PLACES des voisins, `max_vois` par germe
+    mutable std::vector<uint8_t>  nvois;    ///< combien sont valides
     mutable std::vector<SI>       coupable; ///< qui a vide la cellule, ou `-1`
 
-    bool bits = true;               ///< le souvenir des coupes
+    bool liste = true;              ///< le souvenir des VOISINS, ou qu'ils soient
+    bool bits = false;              ///< ... ou seulement ceux de la boite d'origine
     bool vides = true;              ///< le souvenir du coupable
     bool saute = true;              ///< ne pas representer a la coupe ce qui vient d etre rejoue
     mutable bool actif = false;     ///< rien a rejouer tant qu'une passe n'a pas eu lieu
@@ -62,6 +71,7 @@ struct AaBspMemo {
 
     static constexpr const char *name = "memo";
     static constexpr SI max_bits = 32;
+    static constexpr SI max_vois = 8;   ///< 5.97 cotes en moyenne, la queue est courte
 
     TF seed_x( SI k ) const { return tr.px[ k ]; }
     TF seed_y( SI k ) const { return tr.py[ k ]; }
@@ -80,6 +90,8 @@ struct AaBspMemo {
             if ( nd.right < 0 )
                 for ( SI k = nd.beg; k < nd.end; ++k ) { lbeg[ k ] = nd.beg; lend[ k ] = nd.end; }
         masque.assign( n, 0 );
+        vois.assign( size_t( n ) * max_vois, -1 );
+        nvois.assign( n, 0 );
         coupable.assign( n, -1 );
         actif = false;
         if ( tr.leaf_size > max_bits )                  // le masque ne tiendrait pas
@@ -98,7 +110,7 @@ struct AaBspMemo {
         // repondre `unchanged` -- et un `unchanged` n'est pas gratuit, il balaie tous les sommets.
         // La liste tient en registres (quatre a six entrees), donc la comparer coute moins que le
         // balayage qu'elle evite.
-        SI deja[ max_bits + 1 ];
+        SI deja[ max_bits + max_vois + 1 ];
         SI nd = 0;
 
         auto cw = [ & ]( TF x, TF y, TF w, SI id ) {
@@ -127,7 +139,21 @@ struct AaBspMemo {
                     }
                 }
             }
-            // ---- puis les voisins connus de la feuille
+            // ---- puis les voisins connus, ou qu'ils soient
+            if ( liste ) {
+                const SI *v = &vois[ size_t( k0 ) * max_vois ];
+                const SI nv = nvois[ k0 ];
+                for ( SI i = 0; i < nv; ++i ) {
+                    const SI p = v[ i ];
+                    const SI id = tr.order[ p ];
+                    if ( id == i0 )
+                        continue;
+                    deja[ nd++ ] = id;
+                    if ( ! cw( tr.px[ p ], tr.py[ p ], tr.seed_w( p ), id ) )
+                        return;
+                }
+            }
+            // ---- ou seulement ceux de la boite d'origine
             if ( bits ) {
                 const SI b = lbeg[ k0 ];
                 for ( uint32_t m = masque[ k0 ]; m; m &= m - 1 ) {
@@ -157,6 +183,14 @@ struct AaBspMemo {
         if ( ! c.nb )                                   // cellule vide : le coupable est deja note,
             return;                                     // et l'ancien masque reste valide
         coupable[ k0 ] = -1;
+        if ( liste ) {
+            SI *v = &vois[ size_t( k0 ) * max_vois ];
+            SI nv = 0;
+            for ( SI i = 0; i < c.nb && nv < max_vois; ++i )
+                if ( c.cid[ i ] >= 0 )
+                    v[ nv++ ] = pos[ c.cid[ i ] ];
+            nvois[ k0 ] = uint8_t( nv );
+        }
         if ( ! bits )
             return;
         const SI b = lbeg[ k0 ], e = lend[ k0 ];

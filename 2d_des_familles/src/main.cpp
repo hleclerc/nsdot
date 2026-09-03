@@ -69,7 +69,8 @@ struct Args {
     int  mspasses    = 4;          ///< ... passes de rattrapage des cellules vides
     double msmarge   = 0;          ///< ... de combien on releve, en fraction de la cible
     bool memo        = false;      ///< garder d une iteration a l autre les coupes de la feuille
-    bool memobits    = true;       ///< ... le masque des voisins
+    bool memoliste   = true;       ///< ... la liste des voisins, ou qu ils soient
+    bool memobits    = false;      ///< ... ou seulement ceux de la boite d origine
     bool memovides   = true;       ///< ... et le germe qui a vide la cellule
     bool memosaut    = true;       ///< ... et ne pas represente a la coupe ce qui a ete rejoue
 };
@@ -1385,7 +1386,7 @@ int newton_go( const Args &a, const std::vector<TF> &X, const std::vector<TF> &Y
     std::vector<TF> zero( n, TF( 0 ) );
     const double tb = now();
     tr.build( X.data(), Y.data(), zero.data(), n, a.leaf );
-    if constexpr ( requires ( Tree &t ) { t.bits; } ) { tr.bits = a.memobits; tr.vides = a.memovides; tr.saute = a.memosaut; }
+    if constexpr ( requires ( Tree &t ) { t.bits; } ) { tr.liste = a.memoliste; tr.bits = a.memobits; tr.vides = a.memovides; tr.saute = a.memosaut; }
     const double t_avant = now() - tb;              // hors de `tot`, donc a rajouter a la fin
     double t_arbre = t_avant;
 
@@ -1566,7 +1567,8 @@ int main( int argc, char **argv ) {
         else if ( s == "--ms-passes" ) a.mspasses = std::atoi( val() );
         else if ( s == "--ms-marge" ) a.msmarge = std::atof( val() );
         else if ( s == "--memo" )    a.memo = true;
-        else if ( s == "--no-memo-bits" ) a.memobits = false;
+        else if ( s == "--memo-boite" ) { a.memobits = true; a.memoliste = false; }
+        else if ( s == "--no-memo-liste" ) a.memoliste = false;
         else if ( s == "--no-memo-vides" ) a.memovides = false;
         else if ( s == "--no-memo-saut" ) a.memosaut = false;
         else if ( s == "--pack-rate" ) pack_rate = std::atoi( val() );
@@ -1616,7 +1618,8 @@ int main( int argc, char **argv ) {
                 "  --ms-tol T      ... tolerance des niveaux grossiers            (%.0e)\n"
                 "  --memo          garde d une iteration a l autre les coupes de la feuille\n"
                 "                  (un bit par germe) et le germe qui a vide la cellule\n"
-                "  --no-memo-bits / --no-memo-vides   ... n en garder qu une moitie\n",
+                "  --memo-boite    ... la variante a un bit par germe de la boite d origine\n"
+                "  --no-memo-liste / --no-memo-vides   ... n en garder qu une moitie\n",
                 int( a.n ), a.reps, a.threads, int( a.leaf ), int( a.prerate ), a.maxnv, a.seed,
                 a.ntol, a.nmax, a.cgtol, int( a.msratio ), int( a.msmin ), a.mstol );
             return s == "--help" || s == "-h" ? 0 : 1;
