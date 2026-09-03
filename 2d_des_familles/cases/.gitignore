@@ -1,0 +1,2 @@
+# les figures se regenerent : python sub1d_baisse.py, python baisse2d.py, gen_cases.py --plot
+*.png
