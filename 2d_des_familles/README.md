@@ -1316,6 +1316,65 @@ Deux régimes, et ils n'appellent pas le même travail :
   globalement la solution grossière. Le BSP donne la hiérarchie gratuitement (`build_sel` existe
   déjà), et l'erreur restante est purement locale, donc pleinement dans le domaine de Newton.
 
+### LE MULTI-ÉCHELLE : écrit, mesuré, PAS ABOUTI
+
+Les 113 diagrammes des lignes viennent des 89 reculs de l'amortissement depuis `w = 0`. Le remède
+classique (Mérigot) est de partir d'ailleurs : résoudre le même problème sur `n / R` représentants
+portant la masse **agrégée** de leur paquet, puis prolonger. `--ms-ratio R` l'active (défaut **1**,
+c'est-à-dire désactivé — voir plus bas).
+
+Ce qui est en place :
+
+* **la hiérarchie** vient d'un BSP dédié, à feuilles de `--ms-ratio` germes. Les paquets sont ses
+  nœuds, donc des sous-arbres, donc spatialement compacts ;
+* **la cible agrégée** : `ν_k = |paquet| / n` ;
+* **la prolongation par c-transformée** : `w_i = −ψ_grossier(p_i)`, la parabole du germe fin
+  touchant le potentiel grossier en `p_i` ;
+* **le rattrapage** des cellules vides, en relevant leur poids jusqu'à `max_j (w_j − |p_i−p_j|²)`.
+
+**Ce qui marche.** Le niveau grossier converge remarquablement : 512 germes, **4 itérations à pas
+plein**, sur l'uniforme comme sur les lignes. La machinerie est juste.
+
+**Ce qui casse.** Chaque prolongation produit des cellules **vides**, et Newton amorti n'est défini
+que si aucune ne l'est — une cellule vide sort du graphe de Laguerre, le laplacien se disconnecte,
+et sa ligne devient une équation sans rapport avec la géométrie. Sur l'uniforme, n=2e4,
+`--ms-ratio 2`, cellules vides juste après chaque prolongation puis à chaque passe de rattrapage :
+
+| niveau | 512 | 1024 | 2048 | 4096 | 7712 | 11808 | 20000 |
+|---|---|---|---|---|---|---|---|
+| après prolongation | — | 1 | 9 | 59 | 166 | 190 | 752 |
+| après rattrapage | — | 0 | 0 | 0 | 0 | **19** | **1337** (diverge) |
+
+Le rattrapage converge jusqu'à ~10⁴ germes puis décroche. Résultat net : le multi-échelle est
+aujourd'hui **plus cher que Newton depuis `w = 0`** (83 itérations et 548 diagrammes contre 7 et
+10 sur l'uniforme). Il est donc **désactivé par défaut**.
+
+**Trois erreurs trouvées en chemin, et elles valent d'être notées :**
+
+1. **Les paquets ne peuvent pas être des tranches à pas fixe de la permutation.** Le BSP coupe à la
+   médiane, donc un sous-arbre EST une tranche contiguë — mais la réciproque est fausse : les
+   frontières tombent aux médianes (10000, 5000, 2500, 1250, 625, 313…), qui ne sont pas des
+   multiples de `R`. Un bloc sur deux enjambait deux sous-arbres, parfois cousins éloignés, et la
+   prolongation donnait le même poids à deux germes à l'autre bout du carré.
+2. **Les paquets ne peuvent pas descendre sous la feuille du BSP.** Avec `--leaf 10`, aucun paquet
+   ne fait moins de dix germes : quel que soit `--ms-ratio`, la **dernière** prolongation était
+   toujours un saut d'un facteur dix. D'où le second arbre, à feuilles de `--ms-ratio` germes.
+3. **Recopier le poids du représentant est faux dès que le nuage est serré.** Deux germes voisins
+   de paquets différents reçoivent alors des poids séparés par un SAUT, et une cellule est vide dès
+   que ce saut dépasse le carré de la distance qui les sépare. Sur les lignes, des germes à `1e-5`
+   l'un de l'autre recevaient des poids écartés de `1e-3` — `1e8` fois trop. La c-transformée est
+   continue et fait tomber le résidu après prolongation de 121 à 22 fois la cible, mais ne suffit
+   pas.
+4. **Le rattrapage ne doit viser que les cellules VIDES.** Imposer `p_i ∈ Lag_i` à tous les germes
+   (la c-concavité) relevait 3229 germes sur 4096 — 79 % — là où le diagramme n'avait aucune
+   cellule vide, et l'itération de point fixe n'avait pas convergé après quarante passes.
+
+**Ce qu'il faudrait essayer ensuite** : le relèvement d'une cellule vide en vide d'autres, et c'est
+ce cycle qui diverge au niveau fin. Une piste est de ne pas relever à la borne mais de faire une
+recherche linéaire sur la prolongation elle-même — `w = t · w_prolongé`, `t` divisé par deux tant
+qu'une cellule est vide — puisque `t = 0` (Voronoï) est toujours admissible. Le départ serait alors
+au pire aussi bon que `w = 0`, et jamais inadmissible.
+
 ## Ce qui reste à essayer
 
 `CellAoS` pour comparer avec `CellSoA` ; les boîtes de nœud en FP32 (deux nœuds par ligne de

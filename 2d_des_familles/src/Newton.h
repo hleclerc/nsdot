@@ -59,6 +59,100 @@ inline void refresh_weights( AaBsp &tr, const TF *W, int nb_threads, Split split
     } );
 }
 
+/// `psi( x ) = min_k ( |x - p_k|^2 - w_k )`, cherche dans l'arbre plutot que balaye.
+///
+/// C'est LA PROLONGATION du multi-echelle. Recopier le poids du representant sur tout son paquet --
+/// ce que la litterature decrit comme « donner a chaque germe fin le poids de son representant » --
+/// est faux des que le nuage est serre : deux germes voisins de paquets differents recoivent alors
+/// des poids qui different d'un SAUT, et une cellule est vide des que ce saut depasse le carre de
+/// la distance qui les separe. Sur le nuage de lignes, des germes a 1e-5 l'un de l'autre recevaient
+/// des poids ecartes de 1e-3, soit 1e8 fois trop : mesure, chaque prolongation produisait des
+/// cellules vides et un residu PIRE que le niveau qu'elle venait de resoudre (121 fois la cible
+/// apres un niveau grossier converge a 1e-3).
+///
+/// La bonne prolongation est la C-TRANSFORMEE : on demande a la parabole du germe fin de TOUCHER le
+/// potentiel grossier en `p_i`, donc `-w_i = psi_grossier( p_i )`, soit
+///
+///     w_i = w_k - |p_i - p_k|^2   ou `k` est la cellule grossiere qui contient `p_i`
+///
+/// Elle vaut `w_k` exactement sur le germe grossier, elle est CONTINUE en `p_i` -- les deux
+/// expressions coincident sur la bissectrice de puissance -- donc deux germes fins voisins recoivent
+/// des poids voisins, et le saut disparait.
+///
+/// L'elagage : sur une boite, `w` est majore par son majorant affine, donc `|x - p|^2 - w` est
+/// minore par `dist^2( x, boite ) - max_boite( w )`. C'est le meme argument que `may_be_cut`, en
+/// beaucoup plus simple parce qu'il n'y a pas de cellule, juste un point.
+inline TF psi_min( const AaBsp &tr, TF x, TF y, SI hors = -1 ) {
+    TF best = 1e300;
+    tr.for_each_candidate_at( x, y, hors,
+        [ & ]( TF lox, TF loy, TF hix, TF hiy, const WMaj &wm ) {
+            const TF ex = x < lox ? lox - x : ( x > hix ? x - hix : TF( 0 ) );
+            const TF ey = y < loy ? loy - y : ( y > hiy ? y - hiy : TF( 0 ) );
+            const TF sx = TF( wm.ax ) * lox, tx = TF( wm.ax ) * hix;
+            const TF sy = TF( wm.ay ) * loy, ty = TF( wm.ay ) * hiy;
+            const TF wmax = ( sx > tx ? sx : tx ) + ( sy > ty ? sy : ty ) + wm.b;
+            return ex * ex + ey * ey - wmax < best;
+        },
+        [ & ]( TF px, TF py, TF w, SI ) {
+            const TF dx = px - x, dy = py - y;
+            const TF h = dx * dx + dy * dy - w;
+            if ( h < best )
+                best = h;
+            return true;
+        },
+        [] { return TF( 0 ); } );
+    return best;
+}
+
+/// LE RATTRAPAGE DES CELLULES VIDES, et c'est ce qui rend le multi-echelle utilisable.
+///
+/// Newton amorti n'est defini que tant qu'AUCUNE cellule n'est vide : une cellule vide sort du
+/// graphe de Laguerre, le laplacien se disconnecte, et sa ligne devient une equation sans rapport
+/// avec la geometrie. Or aucune prolongation ne le garantit -- mesure sur l'uniforme, de niveau en
+/// niveau : 0, 1, 9, 59, 166, 180 puis 758 cellules vides sur 20000. Trois pour cent, et Newton
+/// stagne des sa premiere iteration.
+///
+/// Relever `w_i` jusqu'a `max_{j != i} ( w_j - |p_i - p_j|^2 )` met le germe DANS sa cellule, donc
+/// la rend non vide. Le membre de droite est exactement `-psi( p_i )` calcule sans `i`.
+///
+/// ESSAYE ET REJETE : imposer cette borne a TOUS les germes. C'est la condition de c-concavite, et
+/// elle est bien trop forte : sur l'uniforme a 4096 germes elle relevait 3229 germes sur 4096 --
+/// 79 % -- alors que le diagramme n'avait aucune cellule vide, et l'iteration de point fixe n'avait
+/// pas converge apres quarante passes. Ce qu'on veut n'est pas « chaque germe dans sa cellule »,
+/// c'est « aucune cellule vide » : on ne releve donc que les fautives, qu'on trouve en mesurant.
+template<class PD>
+SI rattrape_vides( PD &pd, AaBsp &tr, const TF *X, const TF *Y, SI m, std::vector<TF> &w,
+                   TF marge, int passes, int th, Split sp, bool pin, bool trace ) {
+    std::vector<TF> a;
+    SI nv = 0;
+    for ( int p = 0; p < passes; ++p ) {
+        refresh_weights( tr, w.data(), th, sp, pin );
+        pd.measures( a, th, sp, pin );
+        nv = 0;
+        for ( SI i = 0; i < m; ++i )
+            nv += ! ( a[ i ] > 0 );
+        if ( trace )
+            std::printf( "%s %d", p ? "" : "       cellules vides :", int( nv ) );
+        if ( ! nv )
+            break;
+        std::vector<TF> w2( w );
+        parallel_for( m, th, sp, pin, [ & ]( SI i, int ) {
+            if ( a[ i ] > 0 )
+                return;
+            // `marge` a la dimension d'une AIRE, comme un poids : elle donne a la cellule relevee
+            // un rayon de l'ordre de celui qu'elle doit finir par avoir, au lieu de la laisser
+            // exactement sur la frontiere.
+            w2[ i ] = -psi_min( tr, X[ i ], Y[ i ], i ) + marge;
+        } );
+        w.swap( w2 );
+    }
+    if ( trace ) {
+        std::printf( "\n" );
+        std::fflush( stdout );
+    }
+    return nv;
+}
+
 /// LE TRANSPORT SEMI-DISCRET, RESOLU. Jusqu'ici le banc ne mesurait qu'UNE construction de
 /// diagramme, sur des poids donnes d'avance. Ici on resout vraiment
 ///
@@ -119,8 +213,9 @@ struct Newton {
         }
     };
 
-    SI              n  = 0;
-    TF              nu = 0;         ///< la mesure cible, la meme pour tous
+    SI              n  = 0;         ///< les germes DU NIVEAU
+    std::vector<TF> nu;             ///< la mesure cible, par germe -- au niveau grossier un germe
+                                    ///< porte la masse AGREGEE de tout son paquet
     TF              eps = 0;        ///< le plancher d'aire de l'amortissement
     std::vector<TF> w;              ///< les poids courants, `w[ 0 ] == 0`
 
@@ -417,40 +512,49 @@ struct Newton {
     /// LA BOUCLE. Rend `true` si le critere d'arret a ete atteint.
     ///
     /// Une iteration coute UN diagramme par pas essaye, et rien de plus : le pas accepte livre a la
-    /// fois les aires (pour le residu) et les aretes (pour la hessienne suivante). La version
-    /// precedente refaisait un diagramme au debut de chaque iteration juste pour les aretes, ce qui
-    /// coutait 17 diagrammes la ou 9 suffisent.
+    /// fois les aires (pour le residu) et les aretes (pour la hessienne suivante).
+    ///
+    /// `w_init` est le point de depart -- zero au niveau le plus grossier, la PROLONGATION du
+    /// niveau precedent ensuite. C'est tout ce que le multi-echelle demande a cette fonction.
     template<class Cell, class PD>
-    bool resout( PD &pd, AaBsp &tr, const TF *X, const TF *Y, TF tol, int maxit, TF cgtol,
-                 int cgmax, int th, Split sp, bool pin, bool trace ) {
+    bool resout( PD &pd, AaBsp &tr, const TF *X, const TF *Y, const std::vector<TF> &w_init,
+                 TF tol, int maxit, TF cgtol, int cgmax, int th, Split sp, bool pin, bool trace ) {
         std::vector<TF> a, a2, b, d, w2;
         std::vector<Arete> ar, ar2;
         Systeme S;
 
-        w.assign( n, TF( 0 ) );
-        nu = TF( 1 ) / n;
+        w = w_init;
+        const TF g = w[ 0 ];
+        for ( SI i = 0; i < n; ++i )                    // la jauge : `w_0 = 0`, imposee ici et
+            w[ i ] -= g;                                // maintenue par `d[ 0 ] = 0` ensuite
         aires_et_aretes<Cell>( pd, tr, X, Y, w.data(), a, ar, th, sp, pin );
 
-        for ( nb_iter = 0; nb_iter < maxit; ++nb_iter ) {
-            TF amin = a[ 0 ], pire = 0;
-            b.assign( n, TF( 0 ) );
+        for ( int it = 0; it < maxit; ++it ) {
+            TF plancher = a[ 0 ] / nu[ 0 ], pire = 0;
+            SI nvide = 0;                               // combien de cellules VIDES : c'est la
+            b.assign( n, TF( 0 ) );                     // seule chose qui sorte Newton de son domaine
             for ( SI i = 0; i < n; ++i ) {
-                amin = std::min( amin, a[ i ] );
-                b[ i ] = nu - a[ i ];                   // `-r`, le second membre de Newton
-                pire = std::max( pire, std::fabs( b[ i ] ) );
+                nvide += ! ( a[ i ] > 0 );
+                plancher = std::min( plancher, a[ i ] / nu[ i ] );
+                b[ i ] = nu[ i ] - a[ i ];              // `-r`, le second membre de Newton
+                pire = std::max( pire, std::fabs( b[ i ] ) / nu[ i ] );
             }
-            if ( nb_iter == 0 )
-                eps = TF( 0.5 ) * std::min( nu, amin );
+            if ( it == 0 ) {
+                TF am = a[ 0 ], nm = nu[ 0 ];
+                for ( SI i = 0; i < n; ++i ) { am = std::min( am, a[ i ] ); nm = std::min( nm, nu[ i ] ); }
+                eps = TF( 0.5 ) * std::min( nm, am );
+            }
             const TF nr = norme2( b );
-            reste = pire / nu;
+            reste = pire;
 
-            if ( pire <= tol * nu ) {
+            if ( pire <= tol ) {
                 if ( trace )
                     std::printf( "    it %2d  |r|_2 %.3e  max|a-nu|/nu %.3e  CONVERGE\n",
-                                 nb_iter, double( nr ), double( reste ) );
+                                 it, double( nr ), double( reste ) );
                 fin = "CONVERGE";
                 return true;
             }
+            ++nb_iter;
             const double d0 = t_diag, c0 = t_cg, s0 = t_syst, m0 = t_maj;
             const int    g0 = nb_diag;
 
@@ -479,10 +583,10 @@ struct Newton {
                 for ( SI i = 0; i < n; ++i ) w2[ i ] = w[ i ] + t * d[ i ];
                 w2[ 0 ] = 0;                            // la jauge, imposee et non esperee
                 aires_et_aretes<Cell>( pd, tr, X, Y, w2.data(), a2, ar2, th, sp, pin );
-                TF m2 = a2[ 0 ], n2 = 0;
+                TF m2 = a2[ 0 ], n2 = 0;      // le plancher `eps` est une aire ABSOLUE
                 for ( SI i = 0; i < n; ++i ) {
                     m2 = std::min( m2, a2[ i ] );
-                    const TF e = nu - a2[ i ];
+                    const TF e = nu[ i ] - a2[ i ];
                     n2 += e * e;
                 }
                 const TF n2r = std::sqrt( n2 );
@@ -498,9 +602,9 @@ struct Newton {
                     break;
             }
             if ( trace ) {
-                std::printf( "    it %2d  |r|_2 %.3e  max|a-nu|/nu %.3e  min a/nu %.3e"
+                std::printf( "    it %2d  |r|_2 %.3e  max|a-nu|/nu %.3e  %d vides"
                              "  pas %.2e  %d diag  [diag %.2f  maj %.2f  asm %.2f  sol %.2f]\n",
-                             nb_iter, double( nr ), double( reste ), double( amin / nu ),
+                             it, double( nr ), double( reste ), int( nvide ),
                              double( t ), nb_diag - g0, t_diag - d0, t_maj - m0, t_syst - s0,
                              t_cg - c0 );
                 std::fflush( stdout );

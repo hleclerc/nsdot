@@ -62,6 +62,12 @@ struct Args {
     int  cgmax       = 20000;
     std::string solver = "amg";    ///< amg (AMGCL) | chol (Eigen) | cg (maison)
     int  amgvar      = 0;          ///< 0 = SA+spai0, 1 = SA+Gauss-Seidel, 2 = Ruge-Stuben+GS
+    SI   msratio     = 1;          ///< multi-echelle : germes par paquet d un niveau au suivant
+                                   ///< 1 = AUCUN (defaut : la piste n aboutit pas encore)
+    SI   msmin       = 500;        ///< ... taille du niveau le plus grossier
+    double mstol     = 1e-2;       ///< ... tolerance des niveaux grossiers
+    int  mspasses    = 4;          ///< ... passes de rattrapage des cellules vides
+    double msmarge   = 0;          ///< ... de combien on releve, en fraction de la cible
 };
 
 /// Lire un nuage produit par `cases/gen_cases.py` : des lignes `#` de commentaire, `n`, puis `n`
@@ -1265,12 +1271,6 @@ int baisse_stats( const Args &a, const std::vector<TF> &X, const std::vector<TF>
     return 0;
 }
 
-/// LA BASELINE : un probleme de transport resolu de bout en bout, chronometre par poste.
-///
-/// Ce qu'on veut en lire n'est pas le temps total mais sa REPARTITION. Un accelerateur qui doit
-/// survivre d'une iteration a l'autre ne se juge que la : s'il faut douze diagrammes pour
-/// converger, un index qui coute une passe et en fait gagner un quart se rembourse -- alors qu'il
-/// est une perte seche sur une passe isolee.
 /// Le nombre d iterations de CG, ou rien du tout quand on a factorise.
 inline const char *cg_txt( int nb ) {
     static char buf[ 64 ];
@@ -1279,53 +1279,220 @@ inline const char *cg_txt( int nb ) {
     return buf;
 }
 
+/// UN NIVEAU de la hierarchie multi-echelle : un nuage grossier, et la masse cible de chaque germe
+/// grossier -- qui est celle de TOUT SON PAQUET.
+struct Niveau {
+    SI              R = 1, m = 0;
+    std::vector<SI> cl;                 ///< place dans `order` -> paquet
+    std::vector<SI> beg, end;           ///< la tranche de chaque paquet
+    std::vector<TF> X, Y, nu;           ///< le nuage grossier
+};
+
+/// LES PAQUETS SONT DES NOEUDS DU BSP, pas des tranches a pas fixe de sa permutation.
+///
+/// ESSAYE ET REJETE : decouper `order` en blocs de `R` positions consecutives. C'etait tentant --
+/// le BSP coupe a la MEDIANE, donc un sous-arbre EST une tranche contigue -- mais la reciproque est
+/// fausse : les frontieres de sous-arbres tombent aux medianes (10000, 5000, 2500, 1250, 625,
+/// 313...), qui ne sont pas des multiples de `R`. Un bloc sur deux enjambait donc deux sous-arbres,
+/// parfois cousins eloignes, et la prolongation donnait LE MEME POIDS a deux germes a l'autre bout
+/// du carre. Mesure : le niveau grossier convergeait en 3 iterations a pas plein, et le niveau
+/// suivant demarrait avec des cellules VIDES et un residu de 67 fois la cible -- pire que depuis
+/// `w = 0`.
+///
+/// Ici on descend l'arbre et on coupe des qu'un sous-arbre ne depasse plus `R` germes : les paquets
+/// sont alors compacts par construction, et restent des tranches contigues de `order`.
+Niveau faire_niveau( const AaBsp &tr, const std::vector<TF> &X, const std::vector<TF> &Y, SI R ) {
+    const SI n = SI( tr.order.size() );
+    Niveau L;
+    L.R = R;
+    L.cl.assign( n, -1 );
+
+    std::vector<SI> pile{ 0 };
+    while ( ! pile.empty() ) {
+        const SI h = pile.back();
+        pile.pop_back();
+        const AaBsp::Node &nd = tr.nodes[ h ];
+        if ( nd.end - nd.beg <= R || nd.right < 0 ) {
+            for ( SI k = nd.beg; k < nd.end; ++k )
+                L.cl[ k ] = L.m;
+            L.beg.push_back( nd.beg );
+            L.end.push_back( nd.end );
+            ++L.m;
+        } else {
+            pile.push_back( h + 1 );                    // PREORDRE : le fils gauche est juste a cote
+            pile.push_back( nd.right );
+        }
+    }
+
+    // le representant est le germe le plus proche du barycentre du paquet -- pas le premier venu :
+    // la prolongation donne son poids a tout le paquet, donc il doit en etre au centre.
+    L.X.resize( L.m ); L.Y.resize( L.m ); L.nu.resize( L.m );
+    for ( SI c = 0; c < L.m; ++c ) {
+        const SI b = L.beg[ c ], e = L.end[ c ];
+        TF cx = 0, cy = 0;
+        for ( SI k = b; k < e; ++k ) { cx += X[ tr.order[ k ] ]; cy += Y[ tr.order[ k ] ]; }
+        cx /= ( e - b ); cy /= ( e - b );
+        SI best = b;
+        TF bd = -1;
+        for ( SI k = b; k < e; ++k ) {
+            const TF dx = X[ tr.order[ k ] ] - cx, dy = Y[ tr.order[ k ] ] - cy;
+            const TF d = dx * dx + dy * dy;
+            if ( bd < 0 || d < bd ) { bd = d; best = k; }
+        }
+        L.X[ c ] = X[ tr.order[ best ] ];
+        L.Y[ c ] = Y[ tr.order[ best ] ];
+        L.nu[ c ] = TF( e - b ) / n;                    // la masse AGREGEE du paquet
+    }
+    return L;
+}
+
+/// LA BASELINE : un probleme de transport resolu de bout en bout, chronometre par poste.
+///
+/// Ce qu'on veut en lire n'est pas le temps total mais sa REPARTITION. Un accelerateur qui doit
+/// survivre d'une iteration a l'autre ne se juge que la : s'il faut douze diagrammes pour
+/// converger, un index qui coute une passe et en fait gagner un quart se rembourse -- alors qu'il
+/// est une perte seche sur une passe isolee.
+///
+/// = LE MULTI-ECHELLE, et ce qu'il repare
+///
+/// Depuis `w = 0` sur un nuage tres non uniforme, l'amortissement rampe : les cellules de Voronoi
+/// s'etalent sur six ordres de grandeur, la direction de Newton est enorme devant la region ou
+/// toutes les cellules restent non vides, et le pas tombe a 1/256. Mesure sur le nuage de lignes :
+/// SEIZE iterations a ramper avant six iterations quadratiques.
+///
+/// Le remede n'est pas de mieux amortir, c'est de PARTIR D'AILLEURS. On resout d'abord le meme
+/// probleme sur `n / R` representants portant la masse agregee de leur paquet -- moins cher, et
+/// surtout bien mieux conditionne, puisque les masses cibles y sont comparables par construction.
+/// Puis on PROLONGE : chaque germe fin recoit le poids de son representant.
+///
+/// Pourquoi cette prolongation est la bonne : tous les germes d'un paquet portant alors LE MEME
+/// poids, la bissectrice de puissance entre deux d'entre eux est la mediatrice ordinaire. Le
+/// diagramme fin est donc, a l'interieur d'un paquet, un VORONOI -- et globalement la solution
+/// grossiere. L'erreur restante est purement LOCALE, et c'est exactement le regime ou Newton prend
+/// des pas pleins.
 template<class Cell, bool BOX, bool IN>
 int newton_go( const Args &a, const std::vector<TF> &X, const std::vector<TF> &Y, const TF *Wref ) {
     const SI n = a.n;
 
-    // l'arbre est bati UNE FOIS, sur des poids nuls, et ne sera plus que rafraichi : les positions
-    // ne bougent pas d'une iteration de Newton a l'autre.
+    // l'arbre du niveau FIN est bati une fois pour toutes, sur des poids nuls, et ne sera plus que
+    // rafraichi : les positions ne bougent pas d'une iteration de Newton a l'autre. Sa permutation
+    // sert AUSSI a decouper les paquets de tous les niveaux grossiers.
     AaBsp tr;
     std::vector<TF> zero( n, TF( 0 ) );
     const double tb = now();
     tr.build( X.data(), Y.data(), zero.data(), n, a.leaf );
-    const double t_build = now() - tb;
+    const double t_avant = now() - tb;              // hors de `tot`, donc a rajouter a la fin
+    double t_arbre = t_avant;
 
 #ifdef _OPENMP
-    // AMGCL est parallelise en OpenMP, le diagramme en `std::thread` : sans ca les deux
-    // moities du chronometre ne tourneraient pas sur le meme nombre de coeurs.
+    // AMGCL est parallelise en OpenMP, le diagramme en `std::thread` : sans ca les deux moities du
+    // chronometre ne tourneraient pas sur le meme nombre de coeurs.
     omp_set_num_threads( a.threads );
 #endif
-    PowerDiagram<Cell, AaBsp, BOX, IN, false, true> pd{ tr };
     Newton nw;
-    nw.n = n;
     nw.quel = a.solver == "chol" ? 1 : ( a.solver == "cg" ? 2 : 0 );
     nw.variante = a.amgvar;
 
     const double t0 = now();
-    const bool ok = nw.resout<Cell>( pd, tr, X.data(), Y.data(), TF( a.ntol ), a.nmax,
+
+    // ---- les niveaux, du plus fin au plus grossier.
+    //
+    // ESSAYE ET REJETE : decouper les paquets dans l'arbre du DIAGRAMME. Ses feuilles portent
+    // `--leaf` germes (dix), donc aucun paquet ne peut etre plus petit que dix : quel que soit
+    // `--ms-ratio`, la DERNIERE prolongation etait toujours un saut d'un facteur dix. Mesure : les
+    // niveaux grossiers convergeaient tous en quatre a cinq iterations a pas plein, et le niveau
+    // fin stagnait des sa premiere iteration. On batit donc un second arbre, a feuilles de
+    // `--ms-ratio` germes, qui ne sert qu'a decouper -- et qu'on relache aussitot les niveaux
+    // construits, parce qu'il pese deux fois plus de noeuds que celui du diagramme.
+    std::vector<Niveau> niv;
+    if ( a.msratio > 1 ) {
+        AaBsp hier;
+        const double th0 = now();
+        hier.build( X.data(), Y.data(), zero.data(), n, a.msratio );
+        t_arbre += now() - th0;
+        for ( SI R = a.msratio; ; R *= a.msratio ) {
+            Niveau L = faire_niveau( hier, X, Y, R );
+            if ( L.m < a.msmin )
+                break;
+            if ( ! niv.empty() && L.m == niv.back().m )
+                continue;
+            niv.push_back( std::move( L ) );
+        }
+    }
+
+    // LA PROLONGATION, par c-transformee : `w_i = -psi_grossier( p_i )`. Voir `psi_min`.
+    std::vector<TF> wp;                                 // la solution du niveau precedent
+    AaBsp tsup;                                         // et son arbre, pour l'interroger
+    auto prolonge = [ & ]( AaBsp &tc, const std::vector<TF> &wc, const TF *Xf, const TF *Yf,
+                           SI mf, std::vector<TF> &wf ) {
+        refresh_weights( tc, wc.data(), a.threads, a.split, a.pin );
+        wf.assign( mf, TF( 0 ) );
+        parallel_for( mf, a.threads, a.split, a.pin, [ & ]( SI i, int ) {
+            wf[ i ] = -psi_min( tc, Xf[ i ], Yf[ i ] );
+        } );
+    };
+
+    for ( int li = int( niv.size() ) - 1; li >= 0; --li ) {
+        const Niveau &L = niv[ li ];
+        std::vector<TF> w0( L.m, TF( 0 ) );
+        if ( li + 1 < int( niv.size() ) )
+            prolonge( tsup, wp, L.X.data(), L.Y.data(), L.m, w0 );
+
+        AaBsp tl;
+        const double tl0 = now();
+        tl.build( L.X.data(), L.Y.data(), w0.data(), L.m, a.leaf );
+        t_arbre += now() - tl0;
+        PowerDiagram<Cell, AaBsp, BOX, IN, false, true> pl{ tl };
+        if ( li + 1 < int( niv.size() ) )
+            rattrape_vides( pl, tl, L.X.data(), L.Y.data(), L.m, w0, TF( a.msmarge ) / L.m, a.mspasses,
+                            a.threads, a.split, a.pin, true );
+        nw.n = L.m;
+        nw.nu = L.nu;
+        std::printf( "    -- niveau R=%d, %d germes\n", int( L.R ), int( L.m ) );
+        nw.resout<Cell>( pl, tl, L.X.data(), L.Y.data(), w0, TF( a.mstol ), a.nmax,
+                         TF( a.cgtol ), a.cgmax, a.threads, a.split, a.pin, true );
+        wp = nw.w;
+        tsup = std::move( tl );
+    }
+
+    // ---- le niveau FIN : chaque germe recoit le poids du paquet auquel il appartient.
+    std::vector<TF> w0( n, TF( 0 ) );
+    if ( ! niv.empty() ) {
+        prolonge( tsup, wp, X.data(), Y.data(), n, w0 );
+    }
+
+    PowerDiagram<Cell, AaBsp, BOX, IN, false, true> pd{ tr };
+    if ( ! niv.empty() )
+        rattrape_vides( pd, tr, X.data(), Y.data(), n, w0, TF( a.msmarge ) / n, a.mspasses, a.threads,
+                        a.split, a.pin, true );
+    nw.n = n;
+    nw.nu.assign( n, TF( 1 ) / n );
+    if ( ! niv.empty() )
+        std::printf( "    -- niveau R=1, %d germes\n", int( n ) );
+    const bool ok = nw.resout<Cell>( pd, tr, X.data(), Y.data(), w0, TF( a.ntol ), a.nmax,
                                      TF( a.cgtol ), a.cgmax, a.threads, a.split, a.pin, true );
     const double tot = now() - t0;
 
-    const double autre = tot - nw.t_diag - nw.t_maj - nw.t_syst - nw.t_cg;
+    const double total = tot + t_avant;
+    const double autre = total - t_arbre - nw.t_diag - nw.t_maj - nw.t_syst - nw.t_cg;
     std::printf( "  newton %s (max|a-nu|/nu = %.2e) : n=%d threads=%d nv=%d box=%d  %d iterations,"
                  " %d diagrammes (%d reculs), solveur %s%s\n",
                  nw.fin, double( nw.reste ), int( n ), a.threads, Cell::max_nb_vertices, int( BOX ),
                  nw.nb_iter, nw.nb_diag, nw.nb_recul,
                  nw.quel == 0 ? "AMGCL" : ( nw.quel == 1 ? "Cholesky creux" : "gradient conjugue" ),
                  cg_txt( nw.nb_cg ) );
-    std::printf( "         arbre %.3f | diagrammes %.3f | majorants %.3f | assemblage %.3f"
+    std::printf( "         arbres %.3f | diagrammes %.3f | majorants %.3f | assemblage %.3f"
                  " | resolution %.3f | reste %.3f | TOTAL %.3f s\n",
-                 t_build, nw.t_diag, nw.t_maj, nw.t_syst, nw.t_cg, autre, tot + t_build );
+                 t_arbre, nw.t_diag, nw.t_maj, nw.t_syst, nw.t_cg, autre, total );
     std::printf( "         soit %.0f %% de diagramme, %.3f s par diagramme, %.1f us/germe en tout\n",
-                 100 * nw.t_diag / ( tot + t_build ), nw.t_diag / std::max( nw.nb_diag, 1 ),
-                 1e6 * ( tot + t_build ) / n );
-
-    std::printf( "         resolution en detail : mise en forme %.3f | hierarchie/analyse %.3f | resolution %.3f | descente %.3f\n",
+                 100 * nw.t_diag / total, nw.t_diag / std::max( nw.nb_diag, 1 ), 1e6 * total / n );
+    std::printf( "         resolution en detail : mise en forme %.3f | hierarchie/analyse %.3f"
+                 " | resolution %.3f | descente %.3f\n",
                  nw.t_tri, nw.t_ana, nw.t_fac, nw.t_sol );
     if ( nw.nb_ana )
         std::printf( "         (%d montages pour %d iterations, pire residu lineaire %.2e)\n",
                      nw.nb_ana, nw.nb_iter, double( nw.pire_lin ) );
+
     const SI novf = pd.nb_overflow.load();
     if ( novf )
         std::printf( "  ATTENTION : %d coupes ont DEBORDE %d sommets pendant la resolution.\n",
@@ -1382,6 +1549,11 @@ int main( int argc, char **argv ) {
         else if ( s == "--cg-max" )  a.cgmax = std::atoi( val() );
         else if ( s == "--solver" )  a.solver = val();
         else if ( s == "--amg-var" ) a.amgvar = std::atoi( val() );
+        else if ( s == "--ms-ratio" ) a.msratio = std::atoi( val() );
+        else if ( s == "--ms-min" ) a.msmin = std::atoi( val() );
+        else if ( s == "--ms-tol" ) a.mstol = std::atof( val() );
+        else if ( s == "--ms-passes" ) a.mspasses = std::atoi( val() );
+        else if ( s == "--ms-marge" ) a.msmarge = std::atof( val() );
         else if ( s == "--pack-rate" ) pack_rate = std::atoi( val() );
         else if ( s == "--hull-rate" ) hull_rate = std::atoi( val() );
         else if ( s == "--no-hull-init" ) hull_init = false;
@@ -1423,9 +1595,12 @@ int main( int argc, char **argv ) {
                 "  --newton-max K  ... iterations au maximum                  (%d)\n"
                 "  --cg-tol T      ... arret du gradient conjugue, relatif    (%.0e)\n"
                 "  --solver S      ... amg (AMGCL, defaut) | chol (Eigen) | cg (maison)\n"
-                "  --amg-var V     ... 0 = agregation+spai0 | 1 = agregation+GS | 2 = Ruge-Stuben+GS\n",
+                "  --amg-var V     ... 0 = agregation+spai0 | 1 = agregation+GS | 2 = Ruge-Stuben+GS\n"
+                "  --ms-ratio R    ... MULTI-ECHELLE : rapport entre deux niveaux, 1 = aucun (%d)\n"
+                "  --ms-min M      ... taille du niveau le plus grossier          (%d)\n"
+                "  --ms-tol T      ... tolerance des niveaux grossiers            (%.0e)\n",
                 int( a.n ), a.reps, a.threads, int( a.leaf ), int( a.prerate ), a.maxnv, a.seed,
-                a.ntol, a.nmax, a.cgtol );
+                a.ntol, a.nmax, a.cgtol, int( a.msratio ), int( a.msmin ), a.mstol );
             return s == "--help" || s == "-h" ? 0 : 1;
         }
     }
