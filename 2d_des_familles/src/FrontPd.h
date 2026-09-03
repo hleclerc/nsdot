@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <chrono>
 #include <vector>
 
 namespace pd2d {
@@ -117,8 +118,26 @@ struct FrontPd {
         }
     }
 
+    /// Les postes de la preparation, pour savoir ou elle passe -- c'est elle qui decide si l'index
+    /// se rembourse dans une boucle de Newton.
+    mutable double t_arbres = 0, t_gros = 0, t_front = 0, t_listes = 0;
+    mutable int nb_prep = 0;
+
+    /// LES POIDS CHANGENT, PAS LES POSITIONS. Les deux arbres gardent leur permutation et leurs
+    /// boites ; seuls les majorants bougent. Tout le reste -- cellules grossieres, fronts, listes --
+    /// depend des poids et se refait.
+    void reprepare( const TF *W ) {
+        const int th = front_threads > 0 ? front_threads : 1;
+        const double t0 = now_();
+        refresh_maj( full, W );
+        refresh_maj( sub, W );
+        t_arbres += now_() - t0;
+        prepare( nullptr, nullptr, W, full.nb_seeds(), th );
+    }
+
     void build( const TF *X, const TF *Y, const TF *W, SI n, SI leaf ) {
         const int th = front_threads > 0 ? front_threads : 1;
+        const double tb = now_();
         full.build( X, Y, W, n, leaf );
 
         const SI r = front_rate < 1 ? SI( 1 ) : front_rate;
@@ -127,6 +146,7 @@ struct FrontPd {
         for ( SI k = 0; k < n; k += r )
             in.push_back( full.order[ k ] );
         sub.build_sel( X, Y, W, in.data(), SI( in.size() ), leaf );
+        t_arbres += now_() - tb;
         const SI ns = sub.nb_seeds();
 
         cidx.assign( n, -1 );
@@ -139,29 +159,82 @@ struct FrontPd {
             cidx_seed[ c ] = pos[ sub.seed_id( c ) ];   // la place du germe grossier dans `full`
         }
 
-        // ---- les cellules grossieres : sommets et voisins
+        prepare( X, Y, W, n, th );
+    }
+
+private:
+    static double now_() {
+        using namespace std::chrono;
+        return duration<double>( steady_clock::now().time_since_epoch() ).count();
+    }
+
+    /// Les majorants de poids d'un arbre, refaits sans toucher a sa structure.
+    static void refresh_maj( AaBsp &tr, const TF *W ) {
+        const SI m = SI( tr.order.size() );
+        if ( ! W )
+            return;
+        if ( SI( tr.pw.size() ) != m )
+            tr.pw.resize( m );
+        for ( SI k = 0; k < m; ++k )
+            tr.pw[ k ] = W[ tr.order[ k ] ];
+        for ( AaBsp::Node &nd : tr.nodes )
+            nd.wm = weight_majorant( nd.beg, nd.end, [ & ]( SI k, TF &x, TF &y, TF &w ) {
+                x = tr.px[ k ]; y = tr.py[ k ]; w = tr.pw[ k ];
+            } );
+    }
+
+    /// TOUT CE QUI DEPEND DES POIDS. Appele par `build` et par `reprepare`.
+    void prepare( const TF *X, const TF *Y, const TF *W, SI n, int th ) {
+        ( void ) X; ( void ) Y; ( void ) W;
+        const SI ns = sub.nb_seeds();
+        ++nb_prep;
+        double t0 = now_();
+
+        // ---- les cellules grossieres : sommets et voisins. En PARALLELE, tampons par thread
+        //      recolles ensuite -- `Split::blocks` donne a chaque thread une plage contigue.
         {
             PowerDiagram<CellSoAT<64>, AaBsp, true, false, false> pc{ sub };
-            coff.assign( ns + 1, 0 );
-            cvx.clear(); cvy.clear(); cadj.clear();
-            for ( SI c = 0; c < ns; ++c ) {
+            std::vector<std::vector<TF>> tx( th ), ty( th );
+            std::vector<std::vector<SI>> ta( th );
+            std::vector<SI> nbv( ns, 0 );
+            parallel_for( ns, th, Split::blocks, false, [ & ]( SI c, int t ) {
                 CellSoAT<64> cl;
                 pc.make_cell( cl, c );
+                nbv[ c ] = cl.nb;
                 for ( SI v = 0; v < cl.nb; ++v ) {
-                    cvx.push_back( cl.vx[ v ] );
-                    cvy.push_back( cl.vy[ v ] );
-                    cadj.push_back( cl.cid[ v ] < 0 ? SI( -1 ) : cidx[ cl.cid[ v ] ] );
+                    tx[ t ].push_back( cl.vx[ v ] );
+                    ty[ t ].push_back( cl.vy[ v ] );
+                    ta[ t ].push_back( cl.cid[ v ] < 0 ? SI( -1 ) : cidx[ cl.cid[ v ] ] );
                 }
-                coff[ c + 1 ] = SI( cvx.size() );
+            } );
+            coff.assign( ns + 1, 0 );
+            for ( SI c = 0; c < ns; ++c )
+                coff[ c + 1 ] = coff[ c ] + nbv[ c ];
+            cvx.resize( coff[ ns ] ); cvy.resize( coff[ ns ] ); cadj.resize( coff[ ns ] );
+            SI at = 0;
+            for ( int t = 0; t < th; ++t ) {
+                std::copy( tx[ t ].begin(), tx[ t ].end(), cvx.begin() + at );
+                std::copy( ty[ t ].begin(), ty[ t ].end(), cvy.begin() + at );
+                std::copy( ta[ t ].begin(), ta[ t ].end(), cadj.begin() + at );
+                at += SI( tx[ t ].size() );
             }
         }
+        t_gros += now_() - t0;
+        t0 = now_();
 
+        amorce.resize( n, -1 );
         // ---- le front de chaque germe : amorce, descente, etalement
+        //
+        // L'AMORCE REPREND CELLE DU TOUR PRECEDENT quand il y en a une : dans une boucle de Newton
+        // les poids bougent de moins en moins, donc la cellule grossiere retenue la derniere fois
+        // est presque toujours encore bonne, et la descente tombe a zero pas. Sinon on localise
+        // `p_i` dans le diagramme grossier -- l'unique endroit ou un arbre est encore parcouru.
+        const bool encore = SI( amorce.size() ) == n;
         std::vector<std::vector<SI>> fro( n );
         parallel_for( n, th, Split::blocks, false, [ & ]( SI k, int ) {
             const TF px = full.px[ k ], py = full.py[ k ], pw = full.seed_w( k );
 
-            SI c = cidx[ localise( px, py ) ];
+            SI c = encore && amorce[ k ] >= 0 ? amorce[ k ] : cidx[ localise( px, py ) ];
             TF v = ecart( px, py, pw, c );
             for ( SI pas = 0; v > marge && pas < 4 * ns; ++pas ) {
                 SI best = c;
@@ -178,8 +251,11 @@ struct FrontPd {
                 c = best;
                 v = bv;
             }
-            if ( v > marge )                            // pas d'amorce : on ne peut rien affirmer
+            if ( v > marge ) {                          // pas d'amorce : cellule vide, on ne peut
+                amorce[ k ] = -1;                       // rien affirmer, l'arbre reprendra la main
                 return;
+            }
+            amorce[ k ] = c;
 
             std::vector<SI> &f = fro[ k ];
             f.push_back( c );
@@ -195,6 +271,9 @@ struct FrontPd {
                         f.push_back( d );
                 }
         } );
+
+        t_front += now_() - t0;
+        t0 = now_();
 
         foff.assign( n + 1, 0 );
         for ( SI k = 0; k < n; ++k )
@@ -215,33 +294,60 @@ struct FrontPd {
                 lval[ loff[ fval[ u ] + 1 ]++ ] = k;
 
         // ---- les listes de candidats, dedoublonnees et triees par distance
-        std::vector<std::vector<SI>> qq( n );
-        parallel_for( n, th, Split::blocks, false, [ & ]( SI k, int ) {
-            std::vector<SI> &q = qq[ k ];
+        //
+        // ESSAYE ET REMPLACE : un `std::sort` + `unique` par germe pour dedoublonner, et un
+        // `vector` par germe pour les recevoir. Les deux coutaient : 0.516 s sur 0.83 s d'index a
+        // n=2e4, soit 70 %. Le tri de ~74 entrees vaut ~460 comparaisons la ou une MARQUE en vaut
+        // 74, et `n` petits `vector` valent `n` allocations. Ici, une marque par thread et un
+        // tampon plat par thread -- `Split::blocks` donne a chaque thread une plage CONTIGUE de
+        // germes, donc les tampons se recollent sans rien trier.
+        std::vector<std::vector<SI>> vu( th, std::vector<SI>( n, -1 ) );
+        std::vector<std::vector<SI>> tamp( th );
+        std::vector<SI> cnt( n, 0 );
+        parallel_for( n, th, Split::blocks, false, [ & ]( SI k, int t ) {
+            std::vector<SI> &q = tamp[ t ];
+            std::vector<SI> &m = vu[ t ];
+            const SI deb = SI( q.size() );
             for ( SI u = foff[ k ]; u < foff[ k + 1 ]; ++u ) {
                 const SI c = fval[ u ];
-                q.insert( q.end(), lval.begin() + loff[ c ], lval.begin() + loff[ c + 1 ] );
+                for ( SI v = loff[ c ]; v < loff[ c + 1 ]; ++v ) {
+                    const SI p = lval[ v ];
+                    if ( m[ p ] == k )
+                        continue;
+                    m[ p ] = k;
+                    q.push_back( p );
+                }
             }
-            std::sort( q.begin(), q.end() );
-            q.erase( std::unique( q.begin(), q.end() ), q.end() );
+            // TRIER PAR DISTANCE, et ce n'est pas cosmetique : sans ordre le polygone INTERMEDIAIRE
+            // enfle -- 247 cellules debordent 64 sommets sur le cas dur et la somme des aires part
+            // a 1.000000086. Le BSP obtenait cet ordre gratuitement en descendant
+            // fils-le-plus-proche d'abord ; ici on le paie, mais UNE fois.
             const TF px = full.px[ k ], py = full.py[ k ];
-            std::sort( q.begin(), q.end(), [ & ]( SI a, SI b ) {
+            std::sort( q.begin() + deb, q.end(), [ & ]( SI a, SI b ) {
                 const TF ax = full.px[ a ] - px, ay = full.py[ a ] - py;
                 const TF bx = full.px[ b ] - px, by = full.py[ b ] - py;
                 return ax * ax + ay * ay < bx * bx + by * by;
             } );
+            cnt[ k ] = SI( q.size() ) - deb;
         } );
         qoff.assign( n + 1, 0 );
         for ( SI k = 0; k < n; ++k )
-            qoff[ k + 1 ] = qoff[ k ] + SI( qq[ k ].size() );
+            qoff[ k + 1 ] = qoff[ k ] + cnt[ k ];
         qval.resize( qoff[ n ] );
-        for ( SI k = 0; k < n; ++k )
-            std::copy( qq[ k ].begin(), qq[ k ].end(), qval.begin() + qoff[ k ] );
+        {
+            SI at = 0;
+            for ( int t = 0; t < th; ++t ) {
+                std::copy( tamp[ t ].begin(), tamp[ t ].end(), qval.begin() + at );
+                at += SI( tamp[ t ].size() );
+            }
+        }
+
+        t_listes += now_() - t0;
 
         if ( std::getenv( "PD2D_FRONT_INFO" ) )
             std::printf( "  front: rho=%d, %d cellules grossieres, front moyen %.2f,"
                          " %.1f candidats, index %.1f Mo\n",
-                         int( r ), int( ns ), double( foff[ n ] ) / n, double( qoff[ n ] ) / n,
+                         int( front_rate ), int( ns ), double( foff[ n ] ) / n, double( qoff[ n ] ) / n,
                          ( sizeof( SI ) * ( qoff[ n ] + foff[ n ] + lval.size() ) ) / 1048576.0 );
     }
 
@@ -270,9 +376,11 @@ struct FrontPd {
         return bi;
     }
 
+public:
     std::vector<SI> foff, fval;     ///< le front de chaque germe (places dans `full`)
     std::vector<SI> qoff, qval;     ///< les CANDIDATS de chaque germe, tries par distance
     std::vector<SI> cidx_seed;      ///< indice grossier -> place du germe grossier dans `full`
+    std::vector<SI> amorce;         ///< la cellule grossiere retenue au tour precedent
 };
 
 } // namespace pd2d

@@ -1673,6 +1673,57 @@ demi-plans (en 2D, une intersection vide de demi-plans en a une sous-famille vid
 rien ne dit lesquels : pour ces germes-là, rares, on repasse par l'arbre. Exact, et ça ne coûte que
 sur eux.
 
+### LE FRONT DANS LA BOUCLE DE NEWTON : 2 à 4× sur le diagramme, et une perte de 21 à 46 % au total
+
+`--newton --tree front` mesure l'affaire de bout en bout. L'index est refait à **chaque** évaluation
+de diagramme, y compris les pas refusés de l'amortissement.
+
+| n=1e5 | `bsp` | front ρ=2 |
+|---|---|---|
+| **1 fil, uniforme** — diagrammes (10) | 1.980 s | **0.807 (2.5×)** |
+| index | 0.070 s | 3.227 s |
+| TOTAL | **6.233 s** | 8.725 s (+40 %) |
+| **1 fil, aires égales** — diagrammes (113) | 41.362 s | **9.668 (4.3×)** |
+| index | 0.832 s | 47.900 s |
+| TOTAL | **69.519 s** | 84.413 s (+21 %) |
+| **8 fils, uniforme** — diagrammes | 0.338 s | **0.161 (2.1×)** |
+| TOTAL | **1.461 s** | 2.116 s (+45 %) |
+| **8 fils, aires égales** — diagrammes | 6.916 s | **1.916 (3.6×)** |
+| index | 0.301 s | 11.989 s |
+| TOTAL | **14.695 s** | 21.406 s (+46 %) |
+
+Le diagramme lui-même est **2.1 à 4.3× plus rapide**, sur les deux nuages et aux deux niveaux de
+parallélisme. Et le total est **perdant de 21 à 46 %**, uniquement parce que l'index est reconstruit
+113 fois. Une reconstruction coûte 0.42 s là où un diagramme en coûte 0.086 : **cinq diagrammes**.
+
+La préparation a été optimisée avant de conclure, sans quoi le chiffre aurait menti :
+
+* les listes de candidats dédoublonnées par un `std::sort` + `unique` par germe, et reçues dans `n`
+  petits `vector` : **0.516 s sur 0.83 s d'index**. Une MARQUE par thread (74 tests au lieu de ~460
+  comparaisons) et un tampon plat par thread — `Split::blocks` donne à chaque thread une plage
+  contiguë, donc les tampons se recollent sans rien trier — ramènent à **0.248 s** ;
+* le diagramme grossier était construit en série ; parallélisé de la même façon.
+
+### Ce qui rendrait l'index réutilisable, et c'est exact
+
+L'index n'a pas besoin d'être *serré*, seulement **valide**, et `ψ ≤ h_k` ne dépend ni du pavage ni
+des poids. Il reste donc à borner la dérive. Avec `h_i(x) = |x − p_i|² − w_i`, un changement de
+poids `w → w + Δ` donne
+
+```
+h_i^neuf − h_k^neuf  =  ( h_i^vieux − h_k^vieux ) − Δ_i + Δ_k  ≥  ( h_i^vieux − h_k^vieux ) − 2ε
+```
+
+avec `ε = max |Δ|`. Donc **un index construit avec une marge `2ε` reste valide pour tout changement
+de poids borné par `ε`** : retenir toute tuile telle que `min_T (h_i^vieux − h_k^vieux) ≤ 2ε`, c'est
+retenir un sur-ensemble de ce que le critère neuf retiendrait. Rien à reconstruire — ni le pavage,
+ni les fronts, ni les listes — tant que les poids restent dans la boule.
+
+C'est le *shielding* de Schmitzer, écrit dans ce cadre-ci, et c'est la pièce que ce banc identifie
+comme manquante depuis `--tree hull`. Ce qu'il reste à mesurer : de combien la marge gonfle les
+listes, et combien d'itérations un index survit — sachant que dans une boucle de Newton amortie les
+poids bougent de moins en moins, donc `ε` décroît d'itération en itération.
+
 ## Ce qui reste à essayer
 
 `CellAoS` pour comparer avec `CellSoA` ; les boîtes de nœud en FP32 (deux nœuds par ligne de

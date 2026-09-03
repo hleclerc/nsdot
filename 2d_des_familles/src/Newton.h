@@ -2,6 +2,7 @@
 
 #include "AaBsp.h"
 #include "AaBspMemo.h"
+#include "FrontPd.h"
 #include "PowerDiagram.h"
 #include "parallel.h"
 #include <algorithm>
@@ -66,10 +67,18 @@ inline void refresh_weights( AaBspMemo &t, const TF *W, int nb_threads, Split sp
     refresh_weights( t.tr, W, nb_threads, split, pin );
 }
 
+/// L'index du FRONT : les positions ne bougent pas, donc les deux arbres gardent leur permutation
+/// et leurs boites -- mais TOUT le reste depend des poids (les cellules grossieres, les fronts, les
+/// listes) et se refait. C'est le prix a mesurer dans une boucle de Newton.
+inline void refresh_weights( FrontPd &t, const TF *W, int, Split, bool ) {
+    t.reprepare( W );
+}
+
 /// L'arbre nu, derriere l'accelerateur qui l'enveloppe : `psi_min` marche sur des boites et des
 /// germes, pas sur des souvenirs.
 inline const AaBsp &base( const AaBsp &t ) { return t; }
 inline const AaBsp &base( const AaBspMemo &t ) { return t.tr; }
+inline const AaBsp &base( const FrontPd &t ) { return t.full; }
 
 /// `psi( x ) = min_k ( |x - p_k|^2 - w_k )`, cherche dans l'arbre plutot que balaye.
 ///

@@ -1918,6 +1918,11 @@ int newton_go( const Args &a, const std::vector<TF> &X, const std::vector<TF> &Y
         std::printf( "         (%d montages pour %d iterations, pire residu lineaire %.2e)\n",
                      nw.nb_ana, nw.nb_iter, double( nw.pire_lin ) );
 
+    if constexpr ( requires ( const Tree &t ) { t.t_gros; } )
+        std::printf( "         index du front, %d preparations : arbres %.3f | diagramme grossier"
+                     " %.3f | fronts %.3f | listes %.3f\n",
+                     tr.nb_prep, tr.t_arbres, tr.t_gros, tr.t_front, tr.t_listes );
+
     if constexpr ( requires ( const Tree &t ) { t.nb_rejoue; } )
         std::printf( "         memo : %.2f coupes rejouees dans %.2f feuilles, et %.1f boites"
                      " testees par cellule (compteurs NON atomiques : a lire a --threads 1)\n",
@@ -2089,6 +2094,7 @@ int main( int argc, char **argv ) {
                 if ( ! a.cellbox && ! a.skipin ) return newton_go<Cell, false, false, Tree>( a, X, Y, ref );
                 return newton_go<Cell, false, true, Tree>( a, X, Y, ref );
             };
+            if ( a.tree == "front" ) return avec( FrontPd{} );
             return a.memo ? avec( AaBspMemo{} ) : avec( AaBsp{} );
         };
         switch ( a.maxnv ) {
