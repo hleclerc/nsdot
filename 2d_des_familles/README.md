@@ -572,6 +572,8 @@ moins de mou » enleve vraiment de « gardees » -- et c'est la seule chose qui 
 * `AaBspPacked.h` — le même arbre, tout dans une arène, les points collés à leur feuille.
 * `AaBsp4.h` — le même arbre à QUATRE fils par nœud (`bsp4` / `bsp4l`), mesuré et rejeté.
 * `ObBsp.h` — le même arbre à coupes NON ALIGNÉES et boîtes alignées (`obsp`), mesuré et rejeté.
+* `Newton.h` — le problème de transport RÉSOLU : Newton amorti, laplacien de Laguerre,
+  jauge `w_0 = 0`, et le solveur linéaire (AMGCL / Eigen / gradient conjugué maison).
 * `Grid.h` — la grille régulière (tri par comptage, germes groupés par case) et son parcours en
   deux temps, décrit plus haut.
 * `parallel.h` — `parallel_for` avec découpe `blocks` ou `strided` et épinglage. Mesuré : aucune
@@ -1213,6 +1215,106 @@ donc s'intersectent en mesure nulle, et l'arrondi les sépare.
 Corrigé en **un** endroit plutôt qu'en deux tolérances de comparaison : `δ += 1e-9`, ce qui ne peut
 qu'agrandir `I_u` et reste donc un certificat. C'est la troisième fois que le même défaut se
 présente, après l'interpolation de `Cell::cut` et le `|p_i|² − |p_r|²` du critère de la grille.
+
+## `--newton` : LE PROBLÈME RÉSOLU, et où va vraiment le temps
+
+Jusqu'ici le banc mesurait **une** construction de diagramme, sur des poids donnés d'avance. Or le
+seul régime dans lequel un accélérateur servira est une dizaine de diagrammes enchaînés, sur des
+poids qui bougent de moins en moins. `--newton` résout donc vraiment `|Lag_i(w)| = ν_i`, par Newton
+amorti (Kitagawa–Mérigot–Thibert) sur le dual de Kantorovich.
+
+* la hessienne est le **laplacien du graphe de Laguerre**, `c_ij = |arête| / (2 |p_i − p_j|)`,
+  assemblé depuis les arêtes que `Cell::cid` porte déjà ;
+* son noyau est exactement les constantes (ajouter la même constante à tous les poids ne change
+  aucune cellule), donc on **fixe `w_0 = 0`** et on raye la ligne et la colonne 0 ;
+* on part de `w = 0`, donc du diagramme de **Voronoï**, dont aucune cellule n'est vide : le départ
+  est toujours admissible ;
+* `refresh_weights` refait les majorants sans reconstruire l'arbre — dans une boucle de Newton les
+  positions ne bougent pas.
+
+**Vérification.** Les poids obtenus depuis `w = 0` collent à ceux du fichier `_equal`, calculés par
+L-BFGS dans `gen_cases.py` par un tout autre chemin, à **4e-15 près sur une amplitude de 0.128**.
+
+### Deux défauts trouvés par la trace, et c'est pour ça qu'elle existe
+
+**Un pas nul accepté.** Le test d'amortissement `|r(w+tδ)| ≤ (1 − t/2)·|r(w)|` devient
+`|r| ≤ |r|` quand `t → 0` : **vrai par égalité**. Arrivé au plancher numérique, la boucle acceptait
+`t = 2⁻⁵⁴`, ne bougeait pas, et repartait — à 54 diagrammes et 4 s par itération, indéfiniment.
+Corrigé par une décroissance **stricte** plus un plancher sur `t` ; la boucle sort maintenant en
+`STAGNATION` en annonçant le résidu atteint.
+
+**Un diagramme sur deux inutile.** La boucle recalculait l'itéré accepté au début de l'itération
+suivante, juste pour en tirer les arêtes. Le pas essayé livre désormais les aires ET les arêtes :
+**17 → 10 diagrammes** sur l'uniforme.
+
+### Le solveur linéaire : AMGCL contre Cholesky
+
+Le solveur linéaire n'est pas l'objet de l'étude et il ne faut pas qu'il le devienne. Le banc prend
+donc **AMGCL** s'il est là (en-têtes seuls, `-DAMGCL_NO_BOOST` — c'est `boost::property_tree` qui
+manque, pas AMGCL), sinon **Eigen** `SimplicialLDLT`, sinon un gradient conjugué maison.
+`omp_set_num_threads` suit `--threads`, sans quoi les deux moitiés du chronomètre ne tourneraient
+pas sur le même nombre de cœurs.
+
+| 8 fils, résolution / TOTAL | AMGCL | Cholesky (Eigen) |
+|---|---|---|
+| uniforme n=1e5 | 0.98 / **1.52 s** | 1.95 / 2.59 s |
+| uniforme n=1e6 | 13.2 / **18.5 s** | 84.7 / 90.3 s |
+| lignes n=1e5 | 5.8 / 13.4 s | 3.8 / **12.0 s** |
+
+**À 1e6 c'est 4.9× sur le total**, et la raison est structurelle : le `SimplicialLDLT` d'Eigen est
+scalaire et séquentiel (84.7 s à 8 fils contre 99.0 à 1 fil : il ne monte pas), alors qu'AMGCL
+monte à 7.2× et que son coût reste en `O(n)`. Le gradient conjugué maison, lui, est 5× plus lent
+que Cholesky : il est resté comme filet de sécurité, pas comme option.
+
+Mais **sur le nuage de lignes, Cholesky gagne encore**, et c'est instructif : les `c_ij` y
+s'étalent sur plusieurs ordres de grandeur, ce qui est exactement l'hypothèse que l'agrégation
+lissée fait et que ce nuage viole.
+
+| lignes n=1e5, 8 fils | itérations de CG | hiérarchie | résolution |
+|---|---|---|---|
+| agrégation lissée + `spai0` | 1462 | 1.95 s | 4.31 s |
+| agrégation lissée + Gauss-Seidel | 1245 | 3.33 s | 4.30 s |
+| **Ruge-Stüben + Gauss-Seidel** | **524** | 3.56 s | **1.95 s** |
+
+Ruge-Stüben, qui choisit ses nœuds grossiers arête par arête, divise les itérations par trois — et
+paie la moitié du gain dans la construction de sa hiérarchie. `--amg-var` les expose toutes les
+trois.
+
+### L'assemblage : un tri qui coûtait plus cher que le diagramme
+
+Le laplacien était assemblé en triant les arêtes par `(i, j)` pour apparier les deux mesures d'une
+même arête et les moyenner. Défendable — un gradient conjugué veut une matrice vraiment symétrique
+— mais à n=1e6 le tri de douze millions d'enregistrements coûtait **4.2 s, soit plus que le
+diagramme lui-même** (3.9 s). Et il ne servait à rien : les deux mesures ne diffèrent qu'à 1e-16
+relatif, cinq ordres de grandeur sous la tolérance du solveur. En gardant la valeur mesurée par la
+ligne, un comptage et une somme préfixe suffisent — et chaque ligne somme alors **exactement** à
+zéro, donc les constantes restent exactement dans le noyau. Mesure : **0.36 → 0.04 s** à n=1e5,
+**4.2 → 0.67 s** à n=1e6.
+
+### Où va le temps maintenant
+
+| 8 fils | uniforme 1e5 | uniforme 1e6 | lignes 1e5 |
+|---|---|---|---|
+| itérations de Newton | 7 | 6 | **23** |
+| diagrammes | 10 | 11 | **113** (89 reculs) |
+| **diagrammes** | 0.42 s (27 %) | 3.65 s (20 %) | 7.62 s (**63 %**) |
+| **résolution** | 0.98 s (65 %) | 13.19 s (71 %) | 3.84 s (32 %) |
+| assemblage | 0.04 s | 0.67 s | 0.13 s |
+| arbre + majorants | 0.07 s | 0.92 s | 0.40 s |
+| TOTAL | **1.52 s** | **18.50 s** | **12.03 s** |
+
+Deux régimes, et ils n'appellent pas le même travail :
+
+* sur l'**uniforme**, même avec AMGCL, l'algèbre linéaire pèse les deux tiers. Gagner sur le
+  diagramme ne se verrait pas dans le total.
+* sur les **lignes**, le diagramme pèse 63 % — c'est là qu'une accélération se mesure. Et les 113
+  diagrammes pour 23 itérations n'y sont pas une fatalité : depuis `w = 0` l'amortissement rampe à
+  des pas de 1/256 pendant 16 itérations avant 6 itérations quadratiques. C'est le régime où il
+  faut du **multi-échelle** (Mérigot) : résoudre sur un sous-échantillon avec les masses cibles
+  agrégées, puis prolonger en donnant à chaque germe fin le poids de son représentant — tous les
+  germes d'un paquet portant alors le même poids, le diagramme fin est localement un **Voronoï** et
+  globalement la solution grossière. Le BSP donne la hiérarchie gratuitement (`build_sel` existe
+  déjà), et l'erreur restante est purement locale, donc pleinement dans le domaine de Newton.
 
 ## Ce qui reste à essayer
 

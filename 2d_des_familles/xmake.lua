@@ -26,4 +26,12 @@ target( "pd2d" )
         add_defines( "NDEBUG" )
     end
 
+    -- AMGCL est en-tetes seuls, mais il veut soit `boost::property_tree` pour ses parametres,
+    -- soit qu'on lui dise de s'en passer. Et son backend « builtin » est parallelise en OpenMP :
+    -- sans le drapeau il compile quand meme, en sequentiel. Aucun des deux ne touche la
+    -- geometrie -- il n'y a pas une pragma OpenMP dans le banc.
+    add_defines( "AMGCL_NO_BOOST" )
+    add_cxflags( "-fopenmp" )
+    add_ldflags( "-fopenmp" )
+
     add_syslinks( "pthread" )

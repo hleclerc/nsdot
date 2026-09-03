@@ -5,6 +5,7 @@
 #include "parallel.h"
 #include <algorithm>
 #include <chrono>
+#include <type_traits>
 #include <cmath>
 #include <cstdio>
 #include <vector>
@@ -18,6 +19,24 @@
 #  define PD2D_EIGEN 1
 #  include <eigen3/Eigen/SparseCholesky>
 #  include <eigen3/Eigen/SparseCore>
+#endif
+
+/// AMGCL : un multigrille ALGEBRIQUE. C'est le bon outil pour ce systeme et pas un luxe -- la
+/// hessienne est le laplacien d'un graphe presque planaire, exactement l'objet pour lequel
+/// l'agregation lissee est faite. Contre une factorisation, ce qu'on echange : le cout ne croit
+/// plus qu'en `O( n )` au lieu du remplissage de Cholesky, et la hierarchie se construit en
+/// parallele.
+#if __has_include( <amgcl/make_solver.hpp> )
+#  define PD2D_AMGCL 1
+#  include <amgcl/adapter/crs_tuple.hpp>
+#  include <amgcl/amg.hpp>
+#  include <amgcl/backend/builtin.hpp>
+#  include <amgcl/coarsening/smoothed_aggregation.hpp>
+#  include <amgcl/make_solver.hpp>
+#  include <amgcl/coarsening/ruge_stuben.hpp>
+#  include <amgcl/relaxation/gauss_seidel.hpp>
+#  include <amgcl/relaxation/spai0.hpp>
+#  include <amgcl/solver/cg.hpp>
 #endif
 
 namespace pd2d {
@@ -70,12 +89,12 @@ inline void refresh_weights( AaBsp &tr, const TF *W, int nb_threads, Split split
 /// part de `w = 0`, donc du diagramme de VORONOI, dont aucune cellule n'est vide par construction :
 /// le depart est toujours admissible.
 struct Newton {
-    /// Une arete du graphe de Laguerre, `i < j`. Chaque paire est vue DEUX FOIS, une par cellule,
-    /// et c'est ce qui sert a symetriser.
+    /// Une arete du graphe de Laguerre, vue DEPUIS la cellule `i` : c'est elle qui en a mesure la
+    /// longueur. Chaque paire est donc vue deux fois, une par cellule, et les deux valeurs ne
+    /// different qu'a l'arrondi.
     struct Arete {
         SI i, j;
         TF c;
-        bool operator<( const Arete &o ) const { return i != o.i ? i < o.i : j < o.j; }
     };
 
     /// Le laplacien en CSR, diagonale a part -- elle est la somme des hors-diagonaux, donc la
@@ -107,9 +126,12 @@ struct Newton {
 
     bool        direct = true;      ///< factoriser plutot qu iterer, si Eigen est la
     const char *fin = "?";          ///< pourquoi la boucle s est arretee
+    int         quel = 0;           ///< 0 = AMG, 1 = Cholesky, 2 = gradient conjugue
+    int         variante = 0;       ///< AMG : 0 = SA+spai0, 1 = SA+Gauss-Seidel, 2 = RS+GS
     TF          reste = 0;          ///< le `max_i |a_i - nu| / nu` atteint
     double t_tri = 0, t_ana = 0, t_fac = 0, t_sol = 0;  ///< le detail de la factorisation
     int    nb_iter = 0, nb_diag = 0, nb_cg = 0, nb_recul = 0, nb_ana = 0;
+    TF     pire_lin = 0;            ///< le pire residu relatif rendu par le solveur lineaire
     double t_diag = 0, t_maj = 0, t_syst = 0, t_cg = 0;
 
     static double now() {
@@ -147,7 +169,7 @@ struct Newton {
                 if ( ! ( d2 > 0 ) )
                     continue;
                 const TF cc = std::sqrt( ( ex * ex + ey * ey ) / d2 ) / 2;
-                par[ t ].push_back( i < j ? Arete{ i, j, cc } : Arete{ j, i, cc } );
+                par[ t ].push_back( Arete{ i, j, cc } );
             }
         } );
         ar.clear();
@@ -157,38 +179,33 @@ struct Newton {
         ++nb_diag;
     }
 
-    /// Le laplacien. Les doublons sont MOYENNES : les deux cellules d'une meme arete en mesurent
-    /// la longueur chacune de son cote, et les deux valeurs ne different qu'a l'arrondi -- mais un
-    /// gradient conjugue veut une matrice VRAIMENT symetrique.
-    void assemble( std::vector<Arete> &ar, Systeme &S ) const {
-        std::sort( ar.begin(), ar.end() );
+    /// LE LAPLACIEN, SANS UN SEUL TRI. Chaque arete sait a quelle LIGNE elle appartient, donc un
+    /// comptage puis une somme prefixe suffisent a placer tout le monde -- deux passes lineaires.
+    ///
+    /// ESSAYE ET REJETE : trier les aretes par `( i, j )` pour apparier les deux mesures d'une meme
+    /// arete et les moyenner. C'etait defendable -- un gradient conjugue veut une matrice vraiment
+    /// symetrique -- mais le tri de douze millions d'enregistrements coutait 4.2 s a n=1e6, soit
+    /// PLUS que le diagramme lui-meme (3.9 s). Et il ne servait a rien : les deux mesures ne
+    /// different qu'a 1e-16 relatif, cinq ordres de grandeur sous la tolerance du solveur lineaire.
+    /// En prenant la valeur de la ligne, chaque ligne somme en outre EXACTEMENT a zero, donc les
+    /// constantes restent exactement dans le noyau.
+    void assemble( const std::vector<Arete> &ar, Systeme &S ) const {
         S.n = n;
-        S.dia.assign( n, TF( 0 ) );
-        std::vector<SI> deg( n, 0 );
-        std::vector<Arete> uniq;
-        uniq.reserve( ar.size() / 2 + 1 );
-        for ( size_t k = 0; k < ar.size(); ) {
-            size_t e = k;
-            TF s = 0;
-            while ( e < ar.size() && ar[ e ].i == ar[ k ].i && ar[ e ].j == ar[ k ].j )
-                s += ar[ e++ ].c;
-            const TF c = s / TF( e - k );
-            uniq.push_back( Arete{ ar[ k ].i, ar[ k ].j, c } );
-            ++deg[ ar[ k ].i ]; ++deg[ ar[ k ].j ];
-            S.dia[ ar[ k ].i ] += c;
-            S.dia[ ar[ k ].j ] += c;
-            k = e;
-        }
-
         S.row.assign( n + 1, 0 );
+        for ( const Arete &e : ar )
+            ++S.row[ e.i + 1 ];
         for ( SI i = 0; i < n; ++i )
-            S.row[ i + 1 ] = S.row[ i ] + deg[ i ];
-        S.col.assign( S.row[ n ], 0 );
-        S.c.assign( S.row[ n ], TF( 0 ) );
+            S.row[ i + 1 ] += S.row[ i ];
+
+        S.col.resize( S.row[ n ] );
+        S.c.resize( S.row[ n ] );
+        S.dia.assign( n, TF( 0 ) );
         std::vector<SI> at( S.row.begin(), S.row.end() - 1 );
-        for ( const Arete &e : uniq ) {
-            S.col[ at[ e.i ] ] = e.j;  S.c[ at[ e.i ]++ ] = e.c;
-            S.col[ at[ e.j ] ] = e.i;  S.c[ at[ e.j ]++ ] = e.c;
+        for ( const Arete &e : ar ) {
+            const SI p = at[ e.i ]++;
+            S.col[ p ] = e.j;
+            S.c[ p ] = e.c;
+            S.dia[ e.i ] += e.c;
         }
         // une cellule sans voisin ne peut pas arriver tant qu'aucune n'est vide, mais une ligne
         // nulle rendrait le systeme singulier SANS LE DIRE : on la neutralise.
@@ -298,6 +315,99 @@ struct Newton {
     }
 #endif
 
+    /// LE SYSTEME REDUIT EN CRS, colonnes TRIEES. Le germe 0 est raye -- pas neutralise : une
+    /// ligne identite laissee dans la matrice donnerait a l'agregation un noeud isole a traiter,
+    /// et ce n'est pas ce qu'on veut lui montrer.
+    void crs( const Systeme &S, std::vector<int> &ptr, std::vector<int> &col,
+              std::vector<double> &val ) const {
+        const SI m = n - 1;
+        ptr.assign( m + 1, 0 );
+        for ( SI i = 1; i < n; ++i ) {
+            int k = 1;                                  // la diagonale, toujours presente
+            for ( SI e = S.row[ i ]; e < S.row[ i + 1 ]; ++e )
+                k += S.col[ e ] >= 1;
+            ptr[ i ] = k;
+        }
+        for ( SI i = 0; i < m; ++i )
+            ptr[ i + 1 ] += ptr[ i ];
+        col.resize( ptr[ m ] );
+        val.resize( ptr[ m ] );
+        for ( SI i = 1; i < n; ++i ) {
+            int k = ptr[ i - 1 ];
+            col[ k ] = int( i - 1 );  val[ k ] = double( S.dia[ i ] );  ++k;
+            for ( SI e = S.row[ i ]; e < S.row[ i + 1 ]; ++e )
+                if ( S.col[ e ] >= 1 ) {
+                    col[ k ] = int( S.col[ e ] - 1 );  val[ k ] = -double( S.c[ e ] );  ++k;
+                }
+            // par insertion : sept entrees par ligne, et AMGCL veut des colonnes croissantes
+            for ( int u = ptr[ i - 1 ] + 1; u < k; ++u ) {
+                const int c = col[ u ];
+                const double v = val[ u ];
+                int j = u;
+                for ( ; j > ptr[ i - 1 ] && col[ j - 1 ] > c; --j ) {
+                    col[ j ] = col[ j - 1 ]; val[ j ] = val[ j - 1 ];
+                }
+                col[ j ] = c; val[ j ] = v;
+            }
+        }
+    }
+
+#ifdef PD2D_AMGCL
+    using AmgBack = amgcl::backend::builtin<double>;
+    template<template<class> class Coarse, template<class> class Relax>
+    using AmgOf = amgcl::make_solver<amgcl::amg<AmgBack, Coarse, Relax>, amgcl::solver::cg<AmgBack>>;
+
+    /// LE MULTIGRILLE ALGEBRIQUE. `smoothed_aggregation` + `spai0` : l'agregation lissee suppose
+    /// que le noyau local est la CONSTANTE, ce qui est exactement vrai d'un laplacien de graphe,
+    /// et `spai0` est un lisseur diagonal donc parallelisable sans coloration.
+    bool amg( const Systeme &S, const std::vector<TF> &b, std::vector<TF> &x, TF tol, int maxit ) {
+        const SI m = n - 1;
+        double t0 = now();
+        std::vector<int> ptr, col;
+        std::vector<double> val;
+        crs( S, ptr, col, val );
+        double t1 = now();
+        t_tri += t1 - t0;
+
+        std::vector<double> rb( m ), sol( m, 0.0 );
+        for ( SI i = 1; i < n; ++i )
+            rb[ i - 1 ] = double( b[ i ] );
+        int it = 0;
+        double err = 0;
+
+        // Trois hierarchies, parce que le nuage decide. L'agregation lissee suppose que le noyau
+        // local est la CONSTANTE -- vrai d'un laplacien de graphe -- mais elle suppose aussi que
+        // les poids d'aretes sont comparables, et sur un nuage de lignes les `c_ij` s'etalent sur
+        // plusieurs ordres de grandeur. Ruge-Stuben, qui choisit ses noeuds grossiers arete par
+        // arete, n'a pas cette hypothese.
+        auto lance = [ & ]( auto tag ) {
+            using Solv = typename decltype( tag )::type;
+            typename Solv::params prm;
+            prm.solver.tol = double( tol );
+            prm.solver.maxiter = maxit;
+            Solv so( std::tie( m, ptr, col, val ), prm );
+            const double ta = now();
+            t_ana += ta - t1;                           // la CONSTRUCTION de la hierarchie
+            ++nb_ana;
+            std::tie( it, err ) = so( rb, sol );
+            t_fac += now() - ta;
+        };
+        using SaSpai = AmgOf<amgcl::coarsening::smoothed_aggregation, amgcl::relaxation::spai0>;
+        using SaGs   = AmgOf<amgcl::coarsening::smoothed_aggregation, amgcl::relaxation::gauss_seidel>;
+        using RsGs   = AmgOf<amgcl::coarsening::ruge_stuben, amgcl::relaxation::gauss_seidel>;
+        if ( variante == 1 )      lance( std::type_identity<SaGs>{} );
+        else if ( variante == 2 ) lance( std::type_identity<RsGs>{} );
+        else                      lance( std::type_identity<SaSpai>{} );
+        nb_cg += it;
+        pire_lin = std::max( pire_lin, TF( err ) );
+
+        x.assign( n, TF( 0 ) );
+        for ( SI i = 1; i < n; ++i )
+            x[ i ] = TF( sol[ i - 1 ] );
+        return err < 1;                                 // `1` : le solveur n'a rien fait du tout
+    }
+#endif
+
     static TF norme2( const std::vector<TF> &v ) {
         TF s = 0;
         for ( TF x : v ) s += x * x;
@@ -349,8 +459,12 @@ struct Newton {
             t_syst += now() - t0;
             t0 = now();
             bool fait = false;
+#ifdef PD2D_AMGCL
+            if ( quel == 0 )
+                fait = amg( S, b, d, cgtol, cgmax );
+#endif
 #ifdef PD2D_EIGEN
-            if ( direct )
+            if ( ! fait && quel <= 1 )
                 fait = chol( S, b, d );
 #endif
             if ( ! fait )

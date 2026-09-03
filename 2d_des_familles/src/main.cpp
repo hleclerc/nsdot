@@ -8,6 +8,9 @@
 #include "AaBsp4.h"
 #include "ObBsp.h"
 #include "Newton.h"
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 #include "AaBspPacked.h"
 #include "AaBspHull.h"
 #include "AaBspPack.h"
@@ -57,7 +60,8 @@ struct Args {
     int  nmax        = 100;        ///< iterations de Newton au maximum
     double cgtol     = 1e-10;      ///< arret du gradient conjugue, en residu RELATIF
     int  cgmax       = 20000;
-    bool direct      = true;       ///< factoriser (Eigen) plutot que le gradient conjugue
+    std::string solver = "amg";    ///< amg (AMGCL) | chol (Eigen) | cg (maison)
+    int  amgvar      = 0;          ///< 0 = SA+spai0, 1 = SA+Gauss-Seidel, 2 = Ruge-Stuben+GS
 };
 
 /// Lire un nuage produit par `cases/gen_cases.py` : des lignes `#` de commentaire, `n`, puis `n`
@@ -1287,10 +1291,16 @@ int newton_go( const Args &a, const std::vector<TF> &X, const std::vector<TF> &Y
     tr.build( X.data(), Y.data(), zero.data(), n, a.leaf );
     const double t_build = now() - tb;
 
+#ifdef _OPENMP
+    // AMGCL est parallelise en OpenMP, le diagramme en `std::thread` : sans ca les deux
+    // moities du chronometre ne tourneraient pas sur le meme nombre de coeurs.
+    omp_set_num_threads( a.threads );
+#endif
     PowerDiagram<Cell, AaBsp, BOX, IN, false, true> pd{ tr };
     Newton nw;
     nw.n = n;
-    nw.direct = a.direct;
+    nw.quel = a.solver == "chol" ? 1 : ( a.solver == "cg" ? 2 : 0 );
+    nw.variante = a.amgvar;
 
     const double t0 = now();
     const bool ok = nw.resout<Cell>( pd, tr, X.data(), Y.data(), TF( a.ntol ), a.nmax,
@@ -1302,7 +1312,8 @@ int newton_go( const Args &a, const std::vector<TF> &X, const std::vector<TF> &Y
                  " %d diagrammes (%d reculs), solveur %s%s\n",
                  nw.fin, double( nw.reste ), int( n ), a.threads, Cell::max_nb_vertices, int( BOX ),
                  nw.nb_iter, nw.nb_diag, nw.nb_recul,
-                 nw.nb_cg ? "gradient conjugue" : "Cholesky creux", cg_txt( nw.nb_cg ) );
+                 nw.quel == 0 ? "AMGCL" : ( nw.quel == 1 ? "Cholesky creux" : "gradient conjugue" ),
+                 cg_txt( nw.nb_cg ) );
     std::printf( "         arbre %.3f | diagrammes %.3f | majorants %.3f | assemblage %.3f"
                  " | resolution %.3f | reste %.3f | TOTAL %.3f s\n",
                  t_build, nw.t_diag, nw.t_maj, nw.t_syst, nw.t_cg, autre, tot + t_build );
@@ -1310,11 +1321,11 @@ int newton_go( const Args &a, const std::vector<TF> &X, const std::vector<TF> &Y
                  100 * nw.t_diag / ( tot + t_build ), nw.t_diag / std::max( nw.nb_diag, 1 ),
                  1e6 * ( tot + t_build ) / n );
 
-    std::printf( "         resolution en detail : triplets %.3f | analyse %.3f | factorisation %.3f | descente %.3f\n",
+    std::printf( "         resolution en detail : mise en forme %.3f | hierarchie/analyse %.3f | resolution %.3f | descente %.3f\n",
                  nw.t_tri, nw.t_ana, nw.t_fac, nw.t_sol );
     if ( nw.nb_ana )
-        std::printf( "         (%d analyses symboliques pour %d factorisations)\n",
-                     nw.nb_ana, nw.nb_iter );
+        std::printf( "         (%d montages pour %d iterations, pire residu lineaire %.2e)\n",
+                     nw.nb_ana, nw.nb_iter, double( nw.pire_lin ) );
     const SI novf = pd.nb_overflow.load();
     if ( novf )
         std::printf( "  ATTENTION : %d coupes ont DEBORDE %d sommets pendant la resolution.\n",
@@ -1369,7 +1380,8 @@ int main( int argc, char **argv ) {
         else if ( s == "--newton-max" ) a.nmax = std::atoi( val() );
         else if ( s == "--cg-tol" )  a.cgtol = std::atof( val() );
         else if ( s == "--cg-max" )  a.cgmax = std::atoi( val() );
-        else if ( s == "--solver" )  a.direct = std::string( val() ) != "cg";
+        else if ( s == "--solver" )  a.solver = val();
+        else if ( s == "--amg-var" ) a.amgvar = std::atoi( val() );
         else if ( s == "--pack-rate" ) pack_rate = std::atoi( val() );
         else if ( s == "--hull-rate" ) hull_rate = std::atoi( val() );
         else if ( s == "--no-hull-init" ) hull_init = false;
@@ -1410,7 +1422,8 @@ int main( int argc, char **argv ) {
                 "  --newton-tol T  ... arret sur max|a_i - nu| / nu           (%.0e)\n"
                 "  --newton-max K  ... iterations au maximum                  (%d)\n"
                 "  --cg-tol T      ... arret du gradient conjugue, relatif    (%.0e)\n"
-                "  --solver S      ... chol (Eigen, defaut) | cg (maison)\n",
+                "  --solver S      ... amg (AMGCL, defaut) | chol (Eigen) | cg (maison)\n"
+                "  --amg-var V     ... 0 = agregation+spai0 | 1 = agregation+GS | 2 = Ruge-Stuben+GS\n",
                 int( a.n ), a.reps, a.threads, int( a.leaf ), int( a.prerate ), a.maxnv, a.seed,
                 a.ntol, a.nmax, a.cgtol );
             return s == "--help" || s == "-h" ? 0 : 1;
