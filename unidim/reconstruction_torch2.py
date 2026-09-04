@@ -1,14 +1,30 @@
 import torch
-from torch import optim
+import time
 import tqdm
 import nvidia_smi
-
 from unidim.plots import plot_final_points
+
+from torch.profiler import profile, schedule, tensorboard_trace_handler, ProfilerActivity
+
+profiling = True
+start_total = time.perf_counter()
 
 import mlflow
 mlflow.set_tracking_uri("sqlite:///mlflow.db")
 mlflow.set_experiment("reconstruction_tomo")
 
+if profiling:
+    tracing_schedule = schedule(skip_first=5, wait=5, warmup=2, active=2, repeat=1)
+    trace_handler = tensorboard_trace_handler(dir_name='profiler') #, use_gzip=True)
+    prof = profile(
+        activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+        schedule=tracing_schedule,
+        on_trace_ready=trace_handler,
+        profile_memory=True,
+        record_shapes=True,
+        with_stack=True
+    )
+    prof.start()
 # Initialisation de NVIDIA SMI
 nvidia_smi.nvmlInit()
 handle = nvidia_smi.nvmlDeviceGetHandleByIndex(0)
@@ -84,6 +100,8 @@ def loss(points, normals, bin_edges, bin_mass, mem_budget_bytes=-1):
         chunk_normals = normals[i:i + batch_size]
         chunk_bin_mass = bin_mass[i:i + batch_size]
         costs = torch.vmap(angle_cost)(chunk_normals, chunk_bin_mass)
+        if profiling:
+            prof.step()
         total_cost += costs.sum()
 
     return total_cost.to(ext_dtype)
@@ -102,7 +120,7 @@ def optimize(points, sino, max_iter=15):
     points = points.clone().detach().requires_grad_(True)
 
     # Initialisation de l'optimiseur L-BFGS
-    optimizer = optim.LBFGS([points], lr=1.0, max_iter=max_iter)
+    optimizer = torch.optim.LBFGS([points], lr=1.0, max_iter=max_iter)
 
     # Calcul du budget mémoire
     device = torch.cuda.current_device()
@@ -204,5 +222,11 @@ if __name__ == "__main__":
 
         plot_final_points(points, 'final_points.png')
         mlflow.log_artifact('final_points.png')
+        total_time = time.perf_counter() - start_total
+        print(f"Temps total : {total_time:.2f} s")
+
+        if profiling:
+            prof.stop()
+
 
 
