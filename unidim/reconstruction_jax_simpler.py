@@ -2,6 +2,7 @@ import jax
 import jax.numpy as jnp
 import optax
 from functools import partial
+# TODO from jax.tree_util import Partial
 import tqdm
 
 from unidim.plots import plot_final_points
@@ -22,8 +23,8 @@ SAFETY_FRACTION = 0.5  # leave headroom for everything else alive on the device
 FALLBACK_BYTES = 512 * 1024 * 1024  # no CUDA visible -- a conservative default chunk budget
 # linesearch = optax.scale_by_zoom_linesearch(... args
 MAX_ITER=15
-MAX_LINESEARCH_STEPS=8
-INITIAL_GUESS_STRATEGY="one"
+MAX_LINESEARCH_STEPS=8 # TODO 4
+INITIAL_GUESS_STRATEGY="one" # TODO "quadratic"  # ou "backtracking"
 # multiscale_optimize, gestion des point
 NB_POINTS_INIT=200
 FACTOR=4
@@ -52,11 +53,34 @@ def _w2_1d(proj, bin_mass, bin_edges):
     target_second_moment = jnp.sum(bin_mass * bin_center * bin_center) + dw * dw / 12
     wasserstein2 = w * jnp.sum(s * s) - 2 * w * jnp.sum(s * bary) + target_second_moment
     return wasserstein2
-def compute_percent_in_ring(points):
-    distances = jnp.sqrt(points[:, 0] ** 2 + points[:, 1] ** 2)
-    in_ring = (distances >= INNER_RADIUS) & (distances <= OUTER_RADIUS)
-    percent_in_ring = jnp.mean(in_ring) * 100.  # Moyenne = proportion de True
-    return float(percent_in_ring)
+
+# def _w2_1d(proj, bin_mass, bin_edges):
+#     n = proj.shape[0]
+#     w = 1.0 / n
+#     dw = bin_edges[1] - bin_edges[0]
+#     bin_center = bin_edges[:-1] + dw / 2
+#     cum = jnp.cumsum(bin_mass)
+#     cum_start = cum - bin_mass
+#     prefix_M = jnp.cumsum(bin_mass * bin_center) - bin_mass * bin_center
+#
+#     s = jnp.sort(proj).astype(ext_dtype)
+#     q = jnp.arange(n, dtype=ext_dtype) * w
+#
+#     # Pré-calculer j et f pour q et q + w
+#     j0 = jnp.clip(jnp.searchsorted(cum, q, side="right"), 0, bin_mass.shape[0] - 1)
+#     j1 = jnp.clip(jnp.searchsorted(cum, q + w, side="right"), 0, bin_mass.shape[0] - 1)
+#     f0 = jnp.where(bin_mass[j0] > 0, (q - cum_start[j0]) / bin_mass[j0], 0.0)
+#     f1 = jnp.where(bin_mass[j1] > 0, (q + w - cum_start[j1]) / bin_mass[j1], 0.0)
+#
+#     # Calculer M0 et M1 en une seule passe
+#     M0 = prefix_M[j0] + bin_mass[j0] * (bin_edges[j0] * f0 + dw * f0 * f0 / 2)
+#     M1 = prefix_M[j1] + bin_mass[j1] * (bin_edges[j1] * f1 + dw * f1 * f1 / 2)
+#     bary = (M1 - M0) / w
+#
+#     # Calculer target_second_moment une seule fois
+#     target_second_moment = jnp.sum(bin_mass * bin_center * bin_center) + dw * dw / 12
+#     wasserstein2 = w * jnp.sum(s * s) - 2 * w * jnp.sum(s * bary) + target_second_moment
+#     return wasserstein2
 
 def _get_chunk_size(nb_points, nb_angles, mem_budget_bytes):
     if mem_budget_bytes is None:
@@ -76,6 +100,10 @@ def loss(points, normals, bin_edges, bin_mass, mem_budget_bytes=-1):
     n, A = points.shape[0], normals.shape[0]
     batch_size = _get_chunk_size(n, A, mem_budget_bytes)
     costs = jax.lax.map(jax.checkpoint(angle_cost), (normals, bin_mass), batch_size=batch_size)
+    # costs = jax.vmap(angle_cost)((normals, bin_mass))
+    # jax.checkpoint (gradient checkpointing) est utile pour économiser de la mémoire, mais ralentit l'exécution si mal utilisé.
+#     Pourquoi ? vmap est plus rapide que lax.map car il fusionne les opérations.
+# Attention : vmap consomme plus de mémoire. Utilisez-le seulement si batch_size est grand et que la mémoire est disponible.
 
     return costs.sum().astype(ext_dtype)
 
@@ -86,6 +114,8 @@ def optimize(points, sino, max_iter=15, max_linesearch_steps=8, initial_guess_st
             fun = partial(loss, normals=normals, bin_edges=bin_edges, bin_mass=bin_mass,
                           mem_budget_bytes=mem_budget_bytes)
             value_and_grad = optax.value_and_grad_from_state(fun)
+            # grad = jax.grad(fun)(p) désactive les fonctionnalités avancées d'optax (comme le linesearch
+            # updates = -0.01 * grad  # Remplacer par un pas fixe ou un optimiseur simple
             value, grad = value_and_grad(p, state=state)
             updates, state = solver.update(grad, state, p, value=value, grad=grad, value_fn=fun)
             p = optax.apply_updates(p, updates)
@@ -101,14 +131,14 @@ def optimize(points, sino, max_iter=15, max_linesearch_steps=8, initial_guess_st
     bin_mass = bin_mass / bin_mass.sum(axis=1, keepdims=True)
 
 
-    linesearch = optax.scale_by_zoom_linesearch(max_linesearch_steps=max_linesearch_steps, initial_guess_strategy=initial_guess_strategy)
+    linesearch = optax.scale_by_zoom_linesearch(max_linesearch_steps=max_linesearch_steps,
+                                                initial_guess_strategy=initial_guess_strategy)
     solver = optax.lbfgs(linesearch=linesearch)
     state = solver.init(points)
 
     device = jax.devices()[0]
     stats = device.memory_stats()
     # Récupère les informations de mémoire
-    nvidia_mem = nvidia_smi.nvmlDeviceGetMemoryInfo(handle)
 
     if not stats or "bytes_limit" not in stats:
         mem_budget_bytes = FALLBACK_BYTES
@@ -125,11 +155,13 @@ def optimize(points, sino, max_iter=15, max_linesearch_steps=8, initial_guess_st
     for i in (pbar:= tqdm.tqdm(range(max_iter))):
 
         points, state, value = step(points, state, normals, bin_edges, bin_mass)
+        nvidia_mem = nvidia_smi.nvmlDeviceGetMemoryInfo(handle)
+
         pbar.set_description(
         f"for n = {points.shape[0]} Step: {i}| mem_budget_bytes: {mem_budget_bytes / 1024 ** 3:.2f} GiB, "
         f"VRAM jax: {bytes_in_use / 1024 ** 3:.2f}/{bytes_limit / 1024 ** 3:.2f} GiB, "
         f"VRAM nvidia: {nvidia_mem.used / 1024 ** 3:.2f}/{nvidia_mem.total / 1024 ** 3:.2f} GiB, "
-        f" Chunk size: {chunk_size},  in ring {compute_percent_in_ring(points):.1f} %")
+        f" Chunk size: {chunk_size}") #,  in ring {compute_percent_in_ring(points):.1f} %")
     return points
 
 def multiscale_optimize(sino,
@@ -180,3 +212,11 @@ if __name__ == '__main__':
                                  initial_guess_strategy=INITIAL_GUESS_STRATEGY)
 
     plot_final_points(points, 'final_points.png')
+
+
+
+# def compute_percent_in_ring(points):
+#     distances = jnp.sqrt(points[:, 0] ** 2 + points[:, 1] ** 2)
+#     in_ring = (distances >= INNER_RADIUS) & (distances <= OUTER_RADIUS)
+#     percent_in_ring = jnp.mean(in_ring) * 100.  # Moyenne = proportion de True
+#     return float(percent_in_ring)

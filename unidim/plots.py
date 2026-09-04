@@ -18,7 +18,9 @@ def plot_sinogram(sino,save_file):
     plt.savefig(save_file)
 
 def plot_final_points(points, save_file):
+
     plt.figure(figsize=(7, 7))
+    points = points.cpu()
     plt.scatter(points[:, 0],points[:, 1],s=2)
     plt.xlabel("x")
     plt.ylabel("y")
