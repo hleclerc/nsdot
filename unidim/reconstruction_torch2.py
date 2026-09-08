@@ -99,7 +99,7 @@ def loss(points, normals, bin_edges, bin_mass, mem_budget_bytes=-1):
     for i in range(0, A, batch_size):
         chunk_normals = normals[i:i + batch_size]
         chunk_bin_mass = bin_mass[i:i + batch_size]
-        costs = torch.vmap(angle_cost)(chunk_normals, chunk_bin_mass)
+        costs = torch.vmap(angle_cost)(chunk_normals, chunk_bin_mass) # chunk_size
         if profiling:
             prof.step()
         total_cost += costs.sum()
@@ -120,7 +120,7 @@ def optimize(points, sino, max_iter=15):
     points = points.clone().detach().requires_grad_(True)
 
     # Initialisation de l'optimiseur L-BFGS
-    optimizer = torch.optim.LBFGS([points], lr=1.0, max_iter=max_iter)
+    optimizer = torch.optim.LBFGS([points], lr=1.0, max_iter=max_iter) # line_search_fn=None or strong_wolfe
 
     # Calcul du budget mémoire
     device = torch.cuda.current_device()

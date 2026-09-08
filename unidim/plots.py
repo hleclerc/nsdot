@@ -2,6 +2,7 @@ import matplotlib
 matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 import math
+import os
 
 def plot_sinogram(sino,save_file):
     g = sino.geometry
@@ -27,3 +28,14 @@ def plot_final_points(points, save_file):
     plt.title(f"Reconstruction finale — {points.shape[0]} points")
     plt.axis("equal")
     plt.savefig(save_file)
+
+def  plot_points(points, step , exp_dir):
+    os.makedirs(exp_dir, exist_ok=True)
+    plt.figure(figsize=(10, 8))
+    plt.scatter(points[:, 0], points[:, 1], s=1, alpha=0.5, color='blue')
+    plt.title(f"Scatterplot step = {step}")
+    plt.xlabel("x")
+    plt.ylabel("y")
+    plt.grid(True, linestyle='--', alpha=0.7)
+    plt.savefig(f'{exp_dir}/scatterplot_points_step_{step}.png', dpi=150, bbox_inches='tight')
+    plt.close()  # Fermer la figure pour libérer la mémoire

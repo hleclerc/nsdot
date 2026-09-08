@@ -25,7 +25,7 @@ FALLBACK_BYTES = 512 * 1024 * 1024  # no CUDA visible -- a conservative default 
 MAX_ITER=15
 MAX_LINESEARCH_STEPS=8 # TODO 4
 INITIAL_GUESS_STRATEGY="one" # TODO "quadratic"  # ou "backtracking"
-# multiscale_optimize, gestion des point
+# multiscale_optimize, gestion des point . depend de la géométrie
 NB_POINTS_INIT=200
 FACTOR=4
 SEED=0
@@ -99,7 +99,7 @@ def loss(points, normals, bin_edges, bin_mass, mem_budget_bytes=-1):
 
     n, A = points.shape[0], normals.shape[0]
     batch_size = _get_chunk_size(n, A, mem_budget_bytes)
-    costs = jax.lax.map(jax.checkpoint(angle_cost), (normals, bin_mass), batch_size=batch_size)
+    costs = jax.lax.map(jax.checkpoint(angle_cost), (normals, bin_mass), batch_size=batch_size) # enelever le bathsize
     # costs = jax.vmap(angle_cost)((normals, bin_mass))
     # jax.checkpoint (gradient checkpointing) est utile pour économiser de la mémoire, mais ralentit l'exécution si mal utilisé.
 #     Pourquoi ? vmap est plus rapide que lax.map car il fusionne les opérations.
@@ -137,7 +137,7 @@ def optimize(points, sino, max_iter=15, max_linesearch_steps=8, initial_guess_st
     state = solver.init(points)
 
     device = jax.devices()[0]
-    stats = device.memory_stats()
+    stats = device.memory_stats() # TODO à quoi correspond la VRAM n
     # Récupère les informations de mémoire
 
     if not stats or "bytes_limit" not in stats:
@@ -220,3 +220,14 @@ if __name__ == '__main__':
 #     in_ring = (distances >= INNER_RADIUS) & (distances <= OUTER_RADIUS)
 #     percent_in_ring = jnp.mean(in_ring) * 100.  # Moyenne = proportion de True
 #     return float(percent_in_ring)
+
+
+# les points x la normale : en faisant AX.t matriciellement plus vite
+
+# cas d'usage pour optim
+# pas de lax.map si > chunksize
+# n_donnée 100 000
+# angles augementent proportionnellement
+# cout de transport, ? surtout important wasserstein2,
+#
+# comparer par rapport à cuda
