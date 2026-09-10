@@ -188,6 +188,56 @@ inline int excursion( __m256 &vx, __m256 &vy, __m256i &cid, Fourn *f, Atl *a, Lo
     }
 }
 
+/// LE MOTEUR, EN REPARTANT D'UNE CELLULE DEJA FAITE au lieu du carre unite.
+///
+/// C'est ce que la phase 2 des sur-cellules demande : la phase 1 a coupe chaque cellule contre son
+/// agregat et l'anneau 1, on la garde, et le second tour ne fait qu'ajouter les plans que la table
+/// designe. Rien de neuf dans le moteur -- `excursion` recharge deja trois registres depuis
+/// l'atelier et redispatche quand la cellule redescend sous huit sommets ; on ne fait qu'exposer
+/// ce chemin.
+///
+/// L'atelier doit porter la cellule de depart : `a->nb` sommets dans `a->vx / vy / cid`.
+template<class Fourn, class Atl>
+void moteur_depuis( Fourn *f, Atl *a ) {
+    int nb = a->nb;
+    if ( nb <= 0 )
+        return;                                          // deja vide : rien a reprendre
+
+    __m256  vx = _mm256_setzero_ps(), vy = _mm256_setzero_ps();
+    __m256i cid = _mm256_setzero_si256();
+    if ( nb <= 8 ) {
+        vx  = _mm256_load_ps( a->vx );
+        vy  = _mm256_load_ps( a->vy );
+        cid = _mm256_load_si256( (const __m256i *) a->cid );
+    }
+
+    Local<Fourn> loc{};
+    bool change = true;
+
+    for ( ;; ) {
+        int r;
+        switch ( nb ) {
+            case 3:  r = etape<3>( vx, vy, cid, f, a, loc, change ); break;
+            case 4:  r = etape<4>( vx, vy, cid, f, a, loc, change ); break;
+            case 5:  r = etape<5>( vx, vy, cid, f, a, loc, change ); break;
+            case 6:  r = etape<6>( vx, vy, cid, f, a, loc, change ); break;
+            case 7:  r = etape<7>( vx, vy, cid, f, a, loc, change ); break;
+            case 8:  r = etape<8>( vx, vy, cid, f, a, loc, change ); break;
+            default: r = excursion( vx, vy, cid, f, a, loc ); break;
+        }
+        if ( r == FINI ) {
+            a->nb = nb;
+            _mm256_store_ps( a->vx, vx );
+            _mm256_store_ps( a->vy, vy );
+            _mm256_store_si256( (__m256i *) a->cid, cid );
+            return;
+        }
+        if ( r == VIDE ) { if ( nb <= 8 ) a->nb = 0; return; }
+        if ( r == DEBORDE ) { nb = 9; continue; }
+        nb = r;
+    }
+}
+
 /// LE MOTEUR. Une boucle, un `switch`, et la cellule en locales.
 template<class Fourn, class Atl>
 void moteur( Fourn *f, Atl *a ) {

@@ -175,4 +175,39 @@ template<int MaxNb>
 }
 
 
+/// RECONSTRUIRE UNE CELLULE DEPUIS SES SEULS `cid`.
+///
+/// C'est l'affirmation de l'en-tete du noyau prise au mot : l'ordre porte la connectivite, donc la
+/// geometrie est redondante. Le plan de la coupe `i` se refabrique depuis `cid[ i ]`, et
+/// l'invariant « la coupe `i` porte l'arete [ v_i, v_i+1 ] » dit que le sommet `i` est
+/// l'intersection des coupes `i-1` et `i`. Un systeme 2x2 par sommet.
+///
+/// Ce qu'on y gagne : une cellule se STOCKE en `nb` entiers, pas en `nb` points. Pour la phase 2
+/// des sur-cellules -- ou il faut garder toutes les cellules entre les deux passes -- c'est la
+/// difference entre garder la connectivite et garder la geometrie.
+///
+/// `plan_de` doit rendre le demi-plan d'un identifiant : `plan_de( id, dx, dy, off )`.
+template<int MaxNb, class PlanDe>
+void reconstruit( float *vx, float *vy, const int *cid, int nb, PlanDe &&plan_de ) {
+    float dx[ MaxNb ], dy[ MaxNb ], of[ MaxNb ];
+    for ( int i = 0; i < nb; ++i )
+        plan_de( cid[ i ], dx[ i ], dy[ i ], of[ i ] );
+    for ( int i = 0, j = nb - 1; i < nb; j = i++ ) {
+        const float a1 = dx[ j ], b1 = dy[ j ], f1 = of[ j ];
+        const float a2 = dx[ i ], b2 = dy[ i ], f2 = of[ i ];
+        const float det = a1 * b2 - b1 * a2;             // nul seulement pour deux coupes
+        vx[ i ] = ( f1 * b2 - b1 * f2 ) / det;           // consecutives PARALLELES, ce qu'un
+        vy[ i ] = ( a1 * f2 - f1 * a2 ) / det;           // convexe non degenere n'a pas
+    }
+}
+
+/// les quatre cotes du carre unite, tels que `carre_unite` les numerote.
+inline void plan_domaine( int id, float &dx, float &dy, float &off ) {
+    static const float cx[ 4 ] = {  0,  1,  0, -1 };
+    static const float cy[ 4 ] = { -1,  0,  1,  0 };
+    static const float cf[ 4 ] = {  0,  1,  1,  0 };
+    const int s = -id - 1;
+    dx = cx[ s ]; dy = cy[ s ]; off = cf[ s ];
+}
+
 } // namespace noyau2d

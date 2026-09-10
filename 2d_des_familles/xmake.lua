@@ -64,6 +64,9 @@ local bancs = {
     n50    = "src/mains/main_n50.cpp",
     etats  = "src/mains/main_etats.cpp",
     bspf   = "src/mains/main_bspf.cpp",
+    par    = "src/mains/main_par.cpp",
+    sc1    = "src/mains/main_sc1.cpp",
+    sc2    = "src/mains/main_sc2.cpp",
 }
 
 -- LE BANC PORTABLE est a part : il demande highway, qui n'est pas toujours la. La cible
