@@ -17,13 +17,20 @@ class AaBsp( SpatialAccelerator ):
     poignée de germes.
 
     L'arbre est bâti par coupes médianes sur l'axe le plus long, jusqu'à ce qu'une feuille
-    n'ait plus que `max_seeds_per_leaf` germes -- une trentaine est l'équilibre mesuré : plus
-    petit, l'arbre coûte plus en descentes qu'il ne fait gagner en coupes évitées ; plus grand,
-    on paie des bissectrices dont on savait déjà qu'elles ne serviraient à rien.
+    n'ait plus que `max_seeds_per_leaf` germes : plus petit, l'arbre coûte plus en descentes qu'il
+    ne fait gagner en coupes évitées ; plus grand, on paie des bissectrices dont on savait déjà
+    qu'elles ne serviraient à rien.
+
+    L'équilibre est DIX, et il est mesuré (Xeon W-2145 + RTX 2080 Ti, 1e6 germes en 2D) : le
+    plateau va de 6 à 12, et 30 -- l'ancien défaut, mesuré sur un autre processeur -- y coûte 15 %.
+    C'est un réglage qui suit la MACHINE et pas le problème : il arbitre entre le coût d'une coupe
+    et celui d'une éviction de boîte, et les deux ne bougent pas ensemble d'un processeur à
+    l'autre. À rouvrir dès que l'un des deux change (voir le banc `pd accelerated`, qui le balaie :
+    `./run bench "test_PowerDiagram::pd accelerated" --leaf-size=6,10,16,30`).
 
     = Ce que chaque nœud porte, et pourquoi
 
-    La BOÎTE (`node_lo` / `node_hi`) contient tous les germes du sous-arbre, et un MAJORANT
+    La BOÎTE (`node_box`, `lo` puis `hi`) contient tous les germes du sous-arbre, et un MAJORANT
     AFFINE de leurs poids : `w( y ) <= node_wa . y + node_wb` pour tout germe `y` du sous-arbre.
     Les deux ensemble suffisent à répondre « rien là-dedans ne peut couper cette cellule », et le
     majorant affine est ce qui rend la réponse fine : la borne classique est un majorant CONSTANT
@@ -66,8 +73,15 @@ class AaBsp( SpatialAccelerator ):
     La boucle sur les niveaux reste côté hôte, ainsi que l'arithmétique d'indices entre deux
     niveaux : des tableaux de la taille d'un niveau, jamais du nuage. C'est ce qui empêche encore
     cette construction de passer sous un `jit` -- mais un `AaBsp` est une CONSTANTE du trace (voir
-    plus bas), donc ce n'est pas ce qu'on lui demande. `_build` garde la même construction en
-    numpy, et un test vérifie que les deux rendent le même arbre.
+    plus bas), donc ce n'est pas ce qu'on lui demande.
+
+    Le NUAGE, lui, ne redescend jamais : `positions` / `weights` sont passés au kernel tels qu'ils
+    arrivent, sans `np.asarray`. Des germes qui vivent sur le GPU y restent -- ce qui compte pour
+    celui qui reconstruit l'arbre à chaque pas de Newton, où un aller-retour hôte coûterait deux
+    fois le nuage par pas et ne servirait à rien. Ce qui redescend est de la taille d'un NIVEAU
+    (les boîtes, les `mid`), plus la permutation finale : mesuré, 0.11 s sur les 4.5 s d'un arbre
+    à 1e6 germes, le reste étant les kernels eux-mêmes -- et pour l'essentiel les tout premiers
+    niveaux, où deux ou quatre work-items balaient tout le nuage.
 
     = La DÉRIVATION, et pourquoi il n'y en a pas
 
@@ -86,61 +100,72 @@ class AaBsp( SpatialAccelerator ):
     # l'arbre, numeroté EN TAS : le nœud `k` a ses enfants en `2k+1` / `2k+2`, la racine est 0, et
     # le niveau `L` occupe `[ 2^L - 1, 2^(L+1) - 1 )`. `node_left < 0` DIT feuille, et n'arrive
     # qu'au DERNIER niveau -- un nœud qui n'a plus rien à couper passe sa tranche entière à son fils
-    # gauche et rien au droit (voir `_build`), de sorte qu'un fils VIDE (`begin == end`) est la
+    # gauche et rien au droit (voir `_build_in_kernel`), de sorte qu'un fils VIDE (`begin == end`)
+    # est la
     # seule autre chose à distinguer, ce que `for_each_candidate` fait en deux lectures d'entier.
     node_left    : IntTensor[ "num_bsp_node" ]
     node_right   : IntTensor[ "num_bsp_node" ]
     node_begin   : IntTensor[ "num_bsp_node" ]
     node_end     : IntTensor[ "num_bsp_node" ]
 
-    # la boîte englobante du sous-arbre, et le majorant affine de ses poids (voir la docstring).
-    node_lo      : RealTensor[ "num_bsp_node", "dim" ]
-    node_hi      : RealTensor[ "num_bsp_node", "dim" ]
+    # la boîte englobante du sous-arbre -- `lo` PUIS `hi`, DANS LE MÊME TABLEAU, et c'est le point :
+    # la marche est du pointer-chasing, donc ce qui coûte n'est pas le nombre d'octets lus mais le
+    # nombre de LIGNES DE CACHE touchées. Deux tableaux séparés, ce sont deux lignes à deux endroits
+    # de la mémoire pour une seule boîte ; entrelacés, la boîte d'un nœud tient dans une lecture
+    # contiguë (32 octets en 2D FP64).
+    #
+    # Ça compte parce que l'arbre ne tient dans aucun cache : ~16 Mo à 1e6 germes, contre 1 Mo de L2
+    # par cœur et 11 Mo de L3 pour tous. Mesuré : les défauts L2 PAR CELLULE passent de 15 à un
+    # thread à 163 à huit, à localité par cœur pourtant identique -- le L3 de Skylake-SP est un
+    # cache de VICTIMES non inclusif, donc à huit cœurs chacun n'a plus qu'un huitième du
+    # rattrapage. Diviser le nombre de lignes touchées est la seule prise là-dessus.
+    node_box     : RealTensor[ "num_bsp_node", "num_lohi", "dim" ]
     node_wa      : RealTensor[ "num_bsp_node", "dim" ]
     node_wb      : RealTensor[ "num_bsp_node" ]
 
     num_bsp_seed : Axis[ "nb_bsp_seeds" ]
     num_bsp_node : Axis[ "nb_bsp_nodes" ]
+    num_lohi     : Axis[ "nb_lohi" ]
     dim          : Axis[ "nb_dims" ]
 
     nb_bsp_seeds : ShapeVar
     nb_bsp_nodes : ShapeVar
+    nb_lohi      : CtShapeVar
     nb_dims      : CtShapeVar
 
 
-    def __init__( self, positions, weights = None, max_seeds_per_leaf = 30, in_kernel = True ):
+    def __init__( self, positions, weights = None, max_seeds_per_leaf = 10 ):
         """`positions` : `[ n, d ]`. `weights` : `[ n ]`, ou rien (le cas euclidien).
 
         `max_seeds_per_leaf` est le grain de l'arbre -- voir la docstring de la classe.
 
-        `in_kernel` dit QUI construit l'arbre : le kernel (`_build_in_kernel`, un appel par niveau)
-        ou numpy (`_build`, une boucle Python par nœud). Les deux rendent le MÊME arbre -- même
-        forme, mêmes tranches, mêmes boîtes -- et c'est ce qu'un test vérifie ; `False` n'est là que
-        pour lui, et pour pouvoir bâtir un arbre sans rien compiler.
+        Le nuage n'est PAS converti en numpy : il part au kernel tel qu'il arrive (`Tensor.set`
+        lit sa forme sans toucher ses données), donc des germes qui vivent sur le GPU y restent.
+        Seule une FORME est lue ici, et une forme n'est pas une donnée.
         """
-        try:
-            pos = np.asarray( positions, dtype = float )
-        except Exception as e:
-            # sous un `jit`, `positions` est un tracer et il n'y a rien à mesurer dessus. Le dire
-            # ici plutôt que de laisser remonter l'erreur du backend : ce n'est pas un accident,
-            # c'est la limite assumée de la construction côté hôte (voir la docstring de la classe).
+        pos = positions if hasattr( positions, "shape" ) else np.asarray( positions, dtype = float )
+        # sous un `jit`, `positions` est un tracer : sa forme se lit, mais la boucle par niveau
+        # relit les `mid` côté hôte et n'a rien à lire sur un tracer. Le dire ICI plutôt que de
+        # laisser remonter l'erreur du backend quinze lignes plus loin : ce n'est pas un accident,
+        # c'est la limite assumée de la construction côté hôte (voir la docstring de la classe).
+        if driver.is_traced( pos ):
             raise TypeError( "`AaBsp` is built on the HOST, from concrete positions: it cannot be "
                              "built from a traced array (inside a `jit`). Build it outside, and "
                              "pass it in -- the tree is a constant of the trace, which is also what "
-                             "makes it invisible to the gradients." ) from e
-        if pos.ndim != 2:
-            raise ValueError( f"`positions` has to be [ n, d ] ( got { pos.shape } )" )
-        w = None if weights is None else np.asarray( weights, dtype = float ).reshape( -1 )
-        if w is not None and w.size != len( pos ):
+                             "makes it invisible to the gradients." )
+        if len( pos.shape ) != 2:
+            raise ValueError( f"`positions` has to be [ n, d ] ( got { tuple( pos.shape ) } )" )
+        w = None if weights is None else ( weights if hasattr( weights, "shape" ) else np.asarray( weights, dtype = float ) )
+        if w is not None and int( np.prod( w.shape ) ) != int( pos.shape[ 0 ] ):
             raise ValueError( "`weights` has to hold one weight per position" )
-        if len( pos ) == 0:
+        if int( pos.shape[ 0 ] ) == 0:
             raise ValueError( "an accelerator over no seed at all has nothing to accelerate" )
 
-        build = _build_in_kernel if in_kernel else _build
-        tree = build( pos, w, int( max_seeds_per_leaf ) )
+        tree = _build_in_kernel( pos, w, int( max_seeds_per_leaf ) )
 
         # la profondeur, qui est EXACTEMENT `max_depth_for( n, leaf )` : l'arbre a désormais la
-        # forme fixe que ce majorant décrivait (voir `_build`). C'est elle qui dimensionne la pile
+        # forme fixe que ce majorant décrivait (voir `_build_in_kernel`). C'est elle qui dimensionne
+        # la pile
         # de la descente, et une pile trop courte serait une marche qui saute des germes.
         self.max_depth = tree[ "max_depth" ]
         self.max_seeds_per_leaf = int( max_seeds_per_leaf )
@@ -152,8 +177,7 @@ class AaBsp( SpatialAccelerator ):
             node_right   = tree[ "node_right"   ],
             node_begin   = tree[ "node_begin"   ],
             node_end     = tree[ "node_end"     ],
-            node_lo      = tree[ "node_lo"      ],
-            node_hi      = tree[ "node_hi"      ],
+            node_box     = tree[ "node_box"     ],
         )
         # pas de poids -> on ne NOMME pas les deux tenseurs du majorant : les laisser `Unbound`
         # (jamais alloués, `NoneTensor` côté C++) supprime le terme du kernel, là où des zéros
@@ -163,11 +187,11 @@ class AaBsp( SpatialAccelerator ):
             kwargs[ "node_wa" ] = tree[ "node_wa" ]
             kwargs[ "node_wb" ] = tree[ "node_wb" ]
 
-        self.__base_init__( nb_dims = pos.shape[ 1 ], **kwargs )
+        self.__base_init__( nb_dims = int( pos.shape[ 1 ] ), nb_lohi = 2, **kwargs )
 
 
     @staticmethod
-    def max_depth_for( nb_seeds, max_seeds_per_leaf = 30 ):
+    def max_depth_for( nb_seeds, max_seeds_per_leaf = 10 ):
         """Un MAJORANT de la profondeur, SANS voir les points -- et il est ATTEINT dès que les
         germes sont distincts : la coupe est médiane, donc l'arbre est équilibré et sa forme ne
         dépend que de `n`. Un nuage dégénéré (des germes confondus) ferme des feuilles plus tôt,
@@ -178,23 +202,26 @@ class AaBsp( SpatialAccelerator ):
         return 1 if n <= leaf else math.ceil( math.log2( n / leaf ) ) + 1
 
     @staticmethod
-    def max_nb_nodes_for( nb_seeds, max_seeds_per_leaf = 30 ):
+    def max_nb_nodes_for( nb_seeds, max_seeds_per_leaf = 10 ):
         """Un majorant du nombre de nœuds, `n` seul -- voir `max_depth_for`. Un arbre binaire dont
         toutes les feuilles sont au même niveau en a `2 * feuilles - 1`, et les feuilles sont au
         plus `2 ** ( profondeur - 1 )`."""
         return 2 * 2 ** ( AaBsp.max_depth_for( nb_seeds, max_seeds_per_leaf ) - 1 ) - 1
 
     @classmethod
-    def of( cls, power_diagram, max_seeds_per_leaf = 30 ):
+    def of( cls, power_diagram, max_seeds_per_leaf = 10 ):
         """L'accélérateur des germes de `power_diagram` -- ses positions ET ses poids.
 
         Le raccourci qu'on veut presque toujours : un BSP construit sur d'autres poids que ceux
         du diagramme resterait CORRECT (le majorant ne servirait qu'à élaguer moins bien) mais
         n'aurait aucune raison d'être bon.
         """
-        d = int( power_diagram.nb_dims.value )
-        pos = np.asarray( power_diagram.positions ).reshape( -1, d )
-        w = np.asarray( power_diagram.weights ).reshape( -1 ) if power_diagram.weights.is_defined else None
+        # les TAMPONS du diagramme, pas leur copie hôte : `Tensor.raw` est le tableau du backend, et
+        # `__init__` le passe au kernel sans y toucher. Un diagramme dont les germes sont sur le GPU
+        # y bâtit donc son arbre sans que le nuage ne redescende -- et il redescendait deux fois,
+        # une par `np.asarray` et une par le ré-upload.
+        pos = power_diagram.positions.raw
+        w = power_diagram.weights.raw if power_diagram.weights.is_defined else None
         return cls( pos, w, max_seeds_per_leaf = max_seeds_per_leaf )
 
 
@@ -259,133 +286,15 @@ def _weight_majorant( pos, w ):
     b = float( ( w - pos @ a ).max() )
 
     # une MARGE d'arrondi sur la constante, et sur elle seule. La boîte, elle, n'en a pas besoin :
-    # `float32( min( y ) ) == min( float32( y ) )` (un arrondi est monotone), donc `node_lo` /
-    # `node_hi` restent exacts une fois convertis. `b`, au contraire, est le seul terme que l'hôte
+    # `float32( min( y ) ) == min( float32( y ) )` (un arrondi est monotone), donc `node_box`
+    # reste exact une fois converti. `b`, au contraire, est le seul terme que l'hôte
     # et le kernel calculent DIFFÉREMMENT -- ici `w - a . y` en double, là-bas en `TF` -- et un `b`
     # arrondi vers le bas cesserait de majorer. Grossir `b` ne peut qu'élaguer moins, jamais mentir.
     scale = abs( b ) + float( w.max() - w.min() ) + float( np.abs( pos @ a ).max() )
     return a, b + 1e-6 * scale
 
 
-def _build( pos, w, leaf_size ):
-    """L'arbre, a plat, dans un tableau de la taille d'un arbre binaire PARFAIT de profondeur
-    `max_depth_for( n, leaf_size )` : le noeud `k` a ses enfants en `2k+1` / `2k+2`, la racine est 0,
-    et le niveau `L` occupe `[ 2^L - 1, 2^(L+1) - 1 )`.
-
-    = Pourquoi une forme FIXE plutot que les noeuds reellement produits
-
-    Parce que la forme n'a jamais depend des donnees (coupe MEDIANE, voir `max_depth_for`), et que
-    la seule chose qui l'empechait de s'ecrire ainsi etait la facon dont l'HOTE la construisait, en
-    ajoutant les noeuds au fur et a mesure. Numerotee en tas, la place de chaque noeud est connue
-    AVANT de le calculer : un niveau entier se remplit sans se demander ou, ce qui est exactement ce
-    qu'il faut pour qu'un kernel ecrive le niveau `L` en parallele sur ses noeuds (voir
-    `bsp_build_level.h`). Rien ici ne se reserve, rien ne se compte.
-
-    = Un noeud « fini » ne s'arrete pas, il se PROPAGE
-
-    Un noeud dont la tranche tient deja dans une feuille (ou qu'aucune coupe ne separerait, tous ses
-    germes etant confondus) ne peut pas simplement cesser : sa tranche doit continuer d'occuper un
-    emplacement aux niveaux suivants, sinon ses germes ne seraient plus couverts par aucun noeud et
-    le niveau suivant ne saurait plus les ecrire. Il passe donc TOUT a son fils gauche et rien a son
-    fils droit, jusqu'au dernier niveau -- ou tout le monde est feuille (`node_left < 0`).
-
-    Ca ne change ni les feuilles ni leur taille : un noeud de 31 germes avec `leaf_size = 30` se
-    coupait deja en 15 et 16. Ca ajoute seulement, pour une feuille qui se ferme tot, une chaine de
-    noeuds a un seul fils que la marche traverse -- un `pop` de plus par niveau saute, et un fils
-    droit VIDE que `for_each_candidate` reconnait a `begin == end` et saute sans rien tester.
-
-    = Ce qui reste du profil d'avant
-
-    Un noeud n'est pas une liste d'indices mais une TRANCHE `[ begin, end )` d'une permutation
-    rearrangee en place, les positions (et les poids) tenues permutees en parallele. Un noeud lit
-    donc ses points par une VUE, et `seed_indices` EST la permutation a la fin -- rien a recoller
-    feuille par feuille, et un kernel lit une feuille d'un seul tenant.
-    """
-    n, d = pos.shape
-
-    depth = AaBsp.max_depth_for( n, leaf_size )
-    nb_nodes = 2 ** depth - 1
-
-    order = np.arange( n, dtype = np.int64 )
-    # une COPIE, toujours : on permute ce tableau en place, et `pos` appartient a l'appelant (et
-    # peut tres bien etre en lecture seule). `ascontiguousarray` ne copierait pas si l'entree est
-    # deja contigue -- et permuter les positions du diagramme sous ses pieds ne se voit pas tout
-    # de suite, ca se voit aux mesures.
-    P = np.array( pos, dtype = float )
-    W = None if w is None else np.array( w, dtype = float )
-
-    node_left  = np.full( nb_nodes, -1, dtype = np.int64 )
-    node_right = np.full( nb_nodes, -1, dtype = np.int64 )
-    node_begin = np.zeros( nb_nodes, dtype = np.int64 )
-    node_end   = np.zeros( nb_nodes, dtype = np.int64 )
-    node_lo    = np.zeros( ( nb_nodes, d ) )
-    node_hi    = np.zeros( ( nb_nodes, d ) )
-    node_wa    = np.zeros( ( nb_nodes, d ) )
-    node_wb    = np.zeros( nb_nodes )
-
-    node_end[ 0 ] = n
-
-    for level in range( depth ):
-        first, last = 2 ** level - 1, 2 ** ( level + 1 ) - 1
-        is_last = level == depth - 1
-
-        for k in range( first, last ):
-            b, e = int( node_begin[ k ] ), int( node_end[ k ] )
-
-            split, ax = False, 0
-            if e > b:
-                p = P[ b:e ]
-                lo = p.min( axis = 0 )
-                hi = p.max( axis = 0 )
-                node_lo[ k ], node_hi[ k ] = lo, hi
-                if W is not None:
-                    node_wa[ k ], node_wb[ k ] = _weight_majorant( p, W[ b:e ] )
-                ax = int( np.argmax( hi - lo ) )
-                # `hi[ ax ] <= lo[ ax ]` : tous les germes au meme endroit. Aucune coupe ne les
-                # separerait, et insister ferait une descente sans fin -- le noeud se propage,
-                # quitte a finir en une feuille plus grosse que `leaf_size`.
-                split = e - b > leaf_size and hi[ ax ] > lo[ ax ]
-
-            if is_last:
-                continue
-
-            node_left[ k ], node_right[ k ] = 2 * k + 1, 2 * k + 2
-            if split:
-                # la MEDIANE, pas le milieu de la boite : c'est ce qui borne la profondeur par
-                # `log2( n / leaf_size )` quelle que soit la distribution -- un nuage tres
-                # inhomogene ferait degenerer une coupe geometrique en une chaine.
-                h = ( e - b ) // 2
-                part = np.argpartition( P[ b:e, ax ], h )
-
-                # la permutation, appliquee EN PLACE a la tranche : les deux enfants sont alors ses
-                # deux moities, et il n'y a plus rien a transporter en descendant.
-                order[ b:e ] = order[ b:e ][ part ]
-                P[ b:e ] = P[ b:e ][ part ]
-                if W is not None:
-                    W[ b:e ] = W[ b:e ][ part ]
-                mid = b + h
-            else:
-                mid = e
-
-            node_begin[ 2 * k + 1 ], node_end[ 2 * k + 1 ] = b, mid
-            node_begin[ 2 * k + 2 ], node_end[ 2 * k + 2 ] = mid, e
-
-    return dict(
-        seed_indices = order,
-        node_left    = node_left,
-        node_right   = node_right,
-        node_begin   = node_begin,
-        node_end     = node_end,
-        node_lo      = node_lo,
-        node_hi      = node_hi,
-        node_wa      = node_wa,
-        node_wb      = node_wb,
-        max_depth    = depth,
-        nb_leaves    = int( ( ( node_left < 0 ) & ( node_end > node_begin ) ).sum() ),
-    )
-
-
-# -- la construction EN KERNEL ---------------------------------------------------------------------
+# -- la construction, NIVEAU PAR NIVEAU ---------------------------------------------------------
 
 
 class _BspCloud( Aggregate ):
@@ -421,20 +330,55 @@ class _BspLevel( Aggregate ):
     `begin` / `end` sont l'ENTRÉE (la tranche du nœud, décidée par le niveau d'au-dessus) ; tout le
     reste est la sortie. `mid` dit où couper : le fils gauche reçoit `[ begin, mid )`, le droit
     `[ mid, end )`, et `mid == end` est un nœud qui n'avait plus rien à couper et propage tout à
-    gauche (voir `_build`).
+    gauche (voir `bsp_build_level.h`).
     """
 
     begin : IntTensor
     end   : IntTensor
     mid   : IntTensor
 
-    lo    : RealTensor[ "dim" ]
-    hi    : RealTensor[ "dim" ]
+    box   : RealTensor[ "num_lohi", "dim" ]
     wa    : RealTensor[ "dim" ]
     wb    : RealTensor
 
-    dim     : Axis[ "nb_dims" ]
-    nb_dims : CtShapeVar
+    num_lohi : Axis[ "nb_lohi" ]
+    dim      : Axis[ "nb_dims" ]
+    nb_lohi  : CtShapeVar
+    nb_dims  : CtShapeVar
+
+
+def _preorder_of_heap( depth ):
+    """`p[ i ]` = ou le noeud de rang-tas `i` atterrit en PREORDRE (DFS).
+
+    = Pourquoi changer la numerotation
+
+    En TAS, les fils du noeud `i` sont en `2i+1` / `2i+2` : un chemin racine -> feuille saute vers
+    des adresses qui DIVERGENT exponentiellement, et le pire est en bas de l'arbre, la ou les
+    niveaux sont les plus gros -- a 1e6 germes, le niveau 17 fait 65 536 noeuds, donc les fils d'un
+    noeud profond sont a deux megaoctets de lui. Or c'est un chemin racine -> feuille que la marche
+    parcourt POUR CHAQUE CELLULE.
+
+    En PREORDRE, le fils gauche est en `i+1` et le droit en `i + 2^(h-1)`, ou `h` est la hauteur du
+    sous-arbre : les sauts RETRECISSENT en descendant, et les derniers niveaux -- les plus nombreux
+    et les plus visites -- tiennent a quelques noeuds les uns des autres. La propriete genante est
+    exactement inversee.
+
+    = Ce que ca ne change pas
+
+    Ni la forme de l'arbre, ni les tranches, ni la marche : c'est une PERMUTATION des memes noeuds.
+    Ce qui change est l'adresse a laquelle chacun est ecrit -- et c'est mesure comme etant ce qui
+    compte : a instructions egales (17 500 par cellule contre 26 950 pour pysdot, donc MOINS), on
+    generait 199 defauts de cache par cellule a huit coeurs la ou pysdot -- un quadtree en ordre Z,
+    donc a sous-arbres contigus -- en genere 5.9.
+    """
+    nb_nodes = 2 ** depth - 1
+    pre = np.zeros( nb_nodes, dtype = np.int64 )
+    for level in range( depth - 1 ):
+        h = depth - level                       # hauteur du sous-arbre d'un noeud de ce niveau
+        idx = np.arange( 2 ** level - 1, 2 ** ( level + 1 ) - 1 )
+        pre[ 2 * idx + 1 ] = pre[ idx ] + 1
+        pre[ 2 * idx + 2 ] = pre[ idx ] + 2 ** ( h - 1 )
+    return pre
 
 
 def _build_in_kernel( pos, w, leaf_size ):
@@ -475,7 +419,7 @@ def _build_in_kernel( pos, w, leaf_size ):
     beg = np.zeros( 1, dtype = np.int64 )
     end = np.full( 1, n, dtype = np.int64 )
 
-    begs, ends, los, his, was, wbs = [], [], [], [], [], []
+    begs, ends, boxes, was, wbs = [], [], [], [], []
 
     for level in range( depth ):
         # le nuage de sortie PARTAGE l'axe des points (donc son compte) avec l'entrée : c'est la
@@ -483,7 +427,7 @@ def _build_in_kernel( pos, w, leaf_size ):
         dst = _BspCloud( nb_dims = d, num_point = src.num_point )
 
         num_node = new_batch_axis( 2 ** level, prefix = "bspnode" )
-        lvl = _BspLevel( nb_dims = d, batch_axes = [ num_node ], begin = beg, end = end )
+        lvl = _BspLevel( nb_dims = d, nb_lohi = 2, batch_axes = [ num_node ], begin = beg, end = end )
 
         perm = IntTensor[ src.num_point ]()
         leaf = IntTensor[ num_param ]()
@@ -499,7 +443,7 @@ def _build_in_kernel( pos, w, leaf_size ):
                 includes = [ "sdot/bsp_build_level.h" ],
                 fwd_code = "bsp_build_level( src, dst, perm, "
                            "lvl.begin( batch_index ), lvl.end( batch_index ), "
-                           "lvl.lo( batch_index ), lvl.hi( batch_index ), "
+                           "lvl.box( batch_index ), "
                            "lvl.wa( batch_index ), lvl.wb( batch_index ), lvl.mid( batch_index ), "
                            "SI( leaf_size( 0 ) ) );" ),
             output_attributes = [ "dst", "lvl", "perm" ],
@@ -517,8 +461,7 @@ def _build_in_kernel( pos, w, leaf_size ):
         mid = np.asarray( lvl.mid ).reshape( -1 )
         begs.append( beg )
         ends.append( end )
-        los.append( np.asarray( lvl.lo ).reshape( -1, d ).copy() )
-        his.append( np.asarray( lvl.hi ).reshape( -1, d ).copy() )
+        boxes.append( np.asarray( lvl.box ).reshape( -1, 2, d ).copy() )
         if w is not None:
             was.append( np.asarray( lvl.wa ).reshape( -1, d ).copy() )
             wbs.append( np.asarray( lvl.wb ).reshape( -1 ).copy() )
@@ -540,27 +483,41 @@ def _build_in_kernel( pos, w, leaf_size ):
 
     nb_nodes = 2 ** depth - 1
 
-    # la numérotation EN TAS : le nœud global `g` a ses enfants en `2g+1` / `2g+2`, et le nœud `k`
-    # du niveau `L` est le global `2^L - 1 + k` -- ce qui fait tomber les enfants exactement sur les
-    # nœuds `2k` et `2k+1` du niveau suivant. Rien à renuméroter, donc rien à recoller : les
-    # niveaux se concatènent dans l'ordre.
-    node_left = np.arange( nb_nodes, dtype = np.int64 ) * 2 + 1
-    node_left[ 2 ** ( depth - 1 ) - 1: ] = -1               # le dernier niveau : QUE des feuilles
-    node_right = np.where( node_left < 0, -1, node_left + 1 )
-
+    # les niveaux se concatènent dans l'ordre, ce qui donne la numérotation EN TAS : le nœud `k` du
+    # niveau `L` est le global `2^L - 1 + k`. C'est la forme dans laquelle ils SORTENT du kernel.
     node_begin = np.concatenate( begs )
     node_end   = np.concatenate( ends )
+    node_box   = np.concatenate( boxes )
+    node_wa    = np.concatenate( was ) if w is not None else np.zeros( ( nb_nodes, d ) )
+    node_wb    = np.concatenate( wbs ) if w is not None else np.zeros( nb_nodes )
+
+    is_leaf = np.zeros( nb_nodes, dtype = bool )
+    is_leaf[ 2 ** ( depth - 1 ) - 1: ] = True              # le dernier niveau : QUE des feuilles
+
+    # ... puis on les RANGE en préordre, ce qui est une pure permutation : même arbre, mêmes
+    # tranches, même marche, seules les ADRESSES changent (voir `_preorder_of_heap`).
+    pre = _preorder_of_heap( depth )
+    def in_preorder( a ):
+        r = np.empty_like( a )
+        r[ pre ] = a
+        return r
+
+    heap = np.arange( nb_nodes, dtype = np.int64 )
+    node_left = np.where( is_leaf, -1, pre[ np.where( is_leaf, 0, 2 * heap + 1 ) ] )
+    node_right = np.where( is_leaf, -1, pre[ np.where( is_leaf, 0, 2 * heap + 2 ) ] )
+
+    node_end_pre = in_preorder( node_end )
+    node_begin_pre = in_preorder( node_begin )
 
     return dict(
         seed_indices = order,
-        node_left    = node_left,
-        node_right   = node_right,
-        node_begin   = node_begin,
-        node_end     = node_end,
-        node_lo      = np.concatenate( los ),
-        node_hi      = np.concatenate( his ),
-        node_wa      = np.concatenate( was ) if w is not None else np.zeros( ( nb_nodes, d ) ),
-        node_wb      = np.concatenate( wbs ) if w is not None else np.zeros( nb_nodes ),
+        node_left    = in_preorder( node_left ),
+        node_right   = in_preorder( node_right ),
+        node_begin   = node_begin_pre,
+        node_end     = node_end_pre,
+        node_box     = in_preorder( node_box ),
+        node_wa      = in_preorder( node_wa ),
+        node_wb      = in_preorder( node_wb ),
         max_depth    = depth,
-        nb_leaves    = int( ( ( node_left < 0 ) & ( node_end > node_begin ) ).sum() ),
+        nb_leaves    = int( ( in_preorder( is_leaf ) & ( node_end_pre > node_begin_pre ) ).sum() ),
     )

@@ -80,7 +80,27 @@ struct Cell {
     // l'interroger SANS entrer dans le corps du clip : mesure, le seul fait d'y entrer pour en
     // ressortir aussitot coute +26 % a leaf=12 et +47 % a leaf=30 -- le clip est enorme, il est
     // inline deux fois par `PowerDiagram::cut_by`, et le chemin rejete payait son cadre.
+    //
+    // = Ce qu'on a essaye de PARTAGER avec `cut_in_place`, et pourquoi on ne le fait pas
+    //
+    // Ce balayage-ci et celui de `cut_in_place` calculent les memes produits scalaires : sur le
+    // chemin qui coupe VRAIMENT, la meme arithmetique est faite deux fois. Deux facons de la
+    // partager ont ete essayees et MESUREES (Xeon W-2145, 16 threads, FP64, 1e6 germes en 2D,
+    // reference `-O2` : 2.174 / 2.204 / 2.349 s a leaf = 10 / 16 / 30) :
+    //
+    //   * garder les produits scalaires dans un `TF s[ 64 ]` sur la pile de l'appelant, relu par
+    //     `cut_in_place` : 2.278 / 2.372 / 2.605 -- de +5 % a +11 %.
+    //   * ne garder que `i1` (le debut de la plage exterieure), en registre, sans un octet de
+    //     memoire : 2.191 / 2.247 / 2.476 -- de +1 % a +5 %.
+    //
+    // Les deux PERDENT, et pour la meme raison : le chemin de REJET est le majoritaire, de tres
+    // loin (une feuille propose une dizaine de germes, six seulement coupent), donc tout ce qu'on
+    // ajoute ICI est paye a chaque candidat, tandis que ce qu'on economise ne l'est que sur les
+    // rares qui coupent. Un balayage qui ne fait QUE compter, et qui ne touche pas la memoire,
+    // est ce qui va le moins mal. A ne pas re-essayer sans changer ce rapport-la d'abord.
     SI nb_vertices_outside      ( const auto &direction, TF offset ) const;
+
+
 
     // LA COUPE EN PLACE : elle modifie CETTE cellule, sans second tampon.
     //

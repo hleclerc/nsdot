@@ -583,44 +583,6 @@ if test( "the_tree_shape_does_not_depend_on_the_data" ):
                     assert nb <= AaBsp.max_nb_nodes_for( n, leaf ), ( n, leaf, d, kind, nb )
 
 
-if test( "the_kernel_build_gives_the_same_tree" ):
-    # `AaBsp` a DEUX constructions : `bsp_build_level.h` (un appel par niveau, celle qui sert) et
-    # la boucle numpy par nœud (`_build`). Elles doivent rendre le MÊME arbre, sans quoi tout ce
-    # qui est vérifié ici sur l'une ne dit rien de l'autre.
-    #
-    # « Le même » se lit au niveau des NŒUDS et pas du tableau `seed_indices` : à l'intérieur d'une
-    # tranche, l'ordre est celui que la sélection a laissé, et `argpartition` ne laisse pas le même
-    # que le quickselect du kernel. Ce n'est pas un écart, c'est la partie du résultat dont
-    # personne ne dépend -- ce qui compte est QUI est dans quelle tranche.
-    def _slices( bsp ):
-        left  = numpy.asarray( bsp.node_left ).reshape( -1 )
-        beg   = numpy.asarray( bsp.node_begin ).reshape( -1 )
-        end   = numpy.asarray( bsp.node_end ).reshape( -1 )
-        order = numpy.asarray( bsp.seed_indices ).reshape( -1 )
-        return [ frozenset( order[ int( beg[ k ] ) : int( end[ k ] ) ].tolist() ) for k in range( len( left ) ) ]
-
-    for d, n, leaf, with_w in ( ( 2, 200, 30, False ), ( 3, 137, 8, False ), ( 2, 1, 30, False ),
-                                ( 4, 40, 1, False ), ( 2, 400, 12, True ), ( 3, 300, 7, True ) ):
-        rng = numpy.random.default_rng( 450 + n )
-        pos = rng.uniform( 0, 1, size = ( n, d ) )
-        # des poids TENDANCIELS : c'est le régime où le majorant affine est retenu, donc celui où
-        # les moindres carrés du kernel (équations normales) et ceux de l'hôte (une SVD) pourraient
-        # diverger. Sur du bruit pur les deux se tairaient, et le test ne dirait rien.
-        w = ( 0.5 * pos[ :, 0 ] - 0.3 * pos[ :, 1 ] + 0.01 * rng.normal( size = n ) ) if with_w else None
-
-        fast = AaBsp( pos, w, max_seeds_per_leaf = leaf )
-        slow = AaBsp( pos, w, max_seeds_per_leaf = leaf, in_kernel = False )
-
-        assert fast.max_depth == slow.max_depth, ( d, n, leaf, with_w )
-        assert _slices( fast ) == _slices( slow ), ( d, n, leaf, with_w )
-        for name in ( "node_left", "node_right", "node_begin", "node_end", "node_lo", "node_hi" ):
-            a, b = numpy.asarray( getattr( slow, name ) ), numpy.asarray( getattr( fast, name ) )
-            assert numpy.array_equal( a, b ) if a.dtype.kind == "i" else numpy.allclose( a, b ), ( name, d, n )
-        if with_w:
-            assert numpy.allclose( numpy.asarray( slow.node_wa ), numpy.asarray( fast.node_wa ), atol = 1e-9 )
-            assert numpy.allclose( numpy.asarray( slow.node_wb ), numpy.asarray( fast.node_wb ), atol = 1e-9 )
-
-
 if test( "a_bsp_node_contains_its_subtree" ):
     # la boîte d'un nœud doit contenir TOUS les germes du sous-arbre, pas seulement ceux de ses
     # feuilles directes : c'est elle que la marche teste avant de refuser de descendre.
@@ -632,8 +594,8 @@ if test( "a_bsp_node_contains_its_subtree" ):
     right = numpy.asarray( bsp.node_right ).reshape( -1 )
     beg = numpy.asarray( bsp.node_begin ).reshape( -1 )
     end = numpy.asarray( bsp.node_end ).reshape( -1 )
-    lo = numpy.asarray( bsp.node_lo )
-    hi = numpy.asarray( bsp.node_hi )
+    box = numpy.asarray( bsp.node_box ).reshape( -1, 2, 3 )
+    lo, hi = box[ :, 0 ], box[ :, 1 ]
     order = numpy.asarray( bsp.seed_indices ).reshape( -1 )
 
     def seeds_of( k ):
@@ -677,7 +639,7 @@ if test( "the_weight_majorant_majorates" ):
         for k in range( len( left ) ):
             sub = seeds_of( k )
             # un emplacement VIDE : le fils droit d'un nœud qui a tout passé à gauche (voir
-            # `AaBsp.py::_build`). Il ne majore rien, il n'y a rien à majorer.
+            # `AaBsp.py`). Il ne majore rien, il n'y a rien à majorer.
             if not sub:
                 continue
             nb_nodes += 1
@@ -881,7 +843,7 @@ if test( "an_accelerated_diagram_draws_the_same_cells" ):
 if p := bench( "pd accelerated",
                nb_points = Param( 32000, help = "nombre de germes" ),
                nb_dims   = Param( 2, help = "dimension" ),
-               leaf_size = Param( 30, help = "germes par feuille du BSP" ),
+               leaf_size = Param( 10, help = "germes par feuille du BSP" ),
                weights   = Param( 0, help = "1 pour un diagramme de puissance" ),
                plain     = Param( 1, help = "0 pour ne PAS chronométrer le balayage complet" ),
                reps      = Param( 3, help = "répétitions chronométrées (on garde le minimum)" ),

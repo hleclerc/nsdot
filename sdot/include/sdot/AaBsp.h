@@ -19,7 +19,7 @@ struct AaBsp {
     SDOT_ATTRIBUTES_OF_AaBsp
 
     static constexpr int ct_dim = DECAYED_TYPE_OF( nb_dims )::value;
-    using TF = DECAYED_TYPE_OF( node_lo )::TF;
+    using TF = DECAYED_TYPE_OF( node_box )::TF;
 
     // A DEPTH-FIRST walk, nearest child first, over an explicit stack (`scratch`): no recursion in
     // a SYCL kernel, and -- the reason this beats the priority queue the same walk usually gets --

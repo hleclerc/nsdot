@@ -1,0 +1,599 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>Sur-cellule : l'union des U</title>
+<!--
+  CE QU'ON REGARDE
+
+  Un agregat est represente par un POLYGONE PLEIN `P` ( 5 sommets deplacables ), et le reste du
+  monde par 5 germes `A_j` ( deplacables aussi ). Les poids du polygone sont nuls, donc
+
+      h_P( x ) = dist( x, P )^2        h_j( x ) = | x - A_j |^2 - w_j
+
+  Le germe `A_j` coupe le point `x` a l'agregat si `h_j( x ) < h_P( x )`. La ZONE GRISE de `A_j`
+  est ce qu'il coupe au minimum ; sa frontiere est le « U ». La SUR-CELLULE est ce qui survit a
+  tous les `A_j`, c'est a dire le complementaire de la reunion des zones grises.
+
+  POURQUOI PAS D'ECHANTILLONNAGE. La proposition etait de faire un `&=` sur les images de coupe
+  de `A_j` contre plein de points `p` du polygone. C'est exactement
+
+      { min_p ( | x - A_j |^2 - w_j - | x - p |^2 ) < 0 }  =  { | x - A_j |^2 - w_j < dist( x, P )^2 }
+
+  donc l'intersection sur `p` a une forme close : la distance au polygone. On la calcule par pixel,
+  ce qui donne le meme resultat sans le risque de rater le bon `p`.
+
+  LES TROIS REGIMES du bord du U, selon l'element de `P` le plus proche :
+    * un SOMMET  -> bissectrice de puissance ordinaire, une DROITE
+    * une ARETE  -> PARABOLE de foyer `A_j` et de directrice la droite de l'arete
+    * l'INTERIEUR ( `dist = 0` ) -> CERCLE `| x - A_j |^2 = w_j`, visible seulement si `w_j > 0`
+  C'est ce que la vue « regimes » colorie. Les U s'enchainent : la frontiere de la sur-cellule est
+  faite de morceaux de U, pris chez des `A_j` differents.
+
+  LE « U CARRE » ( case a cocher ). Le minorant `dist( x, P )^2 >= min_v ( | x - v |^2 - w_v )`,
+  avec `w_v = max( aretes adjacentes )^2 / 4` sur les sommets de l'enveloppe convexe, remplace le U
+  rond par l'INTERSECTION de 5 demi-plans -- un U carre, inscrit dans le rond, donc qui coupe moins,
+  donc sur-cellule plus grosse mais toujours valide. La preuve tient en une ligne : pour `p` sur
+  l'arete `[ v, v' ]` de longueur `L`, `l_p - l_v = s^2 - ( s - t )^2 <= s^2` et symetriquement
+  `l_p - l_v' <= ( L - s )^2`, et `min( s^2, ( L - s )^2 ) <= L^2 / 4`.
+
+  MAIS SEULEMENT A L'EXTERIEUR DE L'ENVELOPPE. Cette preuve ne parle que des `p` du BORD, alors que
+  `Phi_K( x ) = max_{ p in K } ( 2 p . x - | p |^2 )` est atteint en `proj_K( x )`, qui est un point
+  INTERIEUR des que `x` est dans `K` -- `l_p` est concave en `p`, pas lineaire. Mesure a l'appui :
+  sur un pentagone regulier de rayon 0.2, le minorant colle a `dist^2` a 8e-08 pres dehors, et le
+  depasse de 0.026 au centre. L'enveloppe est donc TOUJOURS gardee, en plus des demi-plans : c'est
+  le `K` de `S_A = K u ( u_v Lag( v, ... ) )`, et non une precaution decorative.
+
+  Le tracer en pointilles montre ce que le pas suivant -- ne garder qu'un demi-plan par voisin --
+  couperait EN PLUS : les cotes des U carres ne se rejoignent pas toujours.
+
+  MOLETTE sur un `A_j` : change son poids `w_j`. Positif, il fait apparaitre le regime CERCLE.
+-->
+<style>
+  :root { --ink:#1a1a1a; --ink2:#5a6068; --trait:#d7dce1; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.5 ui-sans-serif,system-ui,"Segoe UI",Helvetica,Arial,sans-serif;
+         color:var(--ink); background:#fff; display:flex; gap:22px; padding:22px; align-items:flex-start; }
+  canvas { border:1px solid var(--trait); cursor:crosshair; display:block; }
+  aside { width:310px; }
+  h1 { font-size:15px; margin:0 0 2px; font-weight:600; }
+  p.sous { margin:0 0 16px; color:var(--ink2); font-size:12.5px; }
+  fieldset { border:0; border-top:1px solid var(--trait); margin:0 0 14px; padding:10px 0 0; }
+  legend { font-size:11px; text-transform:uppercase; letter-spacing:.07em; color:var(--ink2); padding:0; }
+  label { display:flex; align-items:center; gap:7px; margin:3px 0; cursor:pointer; }
+  input[type=checkbox] { margin:0; }
+  kbd { font:11px ui-monospace,monospace; background:#f2f4f6; border:1px solid var(--trait);
+        border-radius:3px; padding:0 4px; }
+  table.leg { border-collapse:collapse; font-size:12.5px; width:100%; }
+  table.leg td { padding:2px 0; }
+  td.pastille { width:26px; }
+  span.pt { display:inline-block; width:13px; height:13px; border-radius:50%; vertical-align:-2px; }
+  span.bar { display:inline-block; width:20px; height:3px; vertical-align:3px; }
+  table.mes { border-collapse:collapse; font:12.5px ui-monospace,monospace; width:100%; }
+  table.mes td { padding:2px 0; }
+  table.mes td.v { text-align:right; }
+  button { font:inherit; padding:4px 10px; border:1px solid var(--trait); background:#fff;
+           border-radius:4px; cursor:pointer; }
+  button:hover { background:#f2f4f6; }
+</style>
+</head>
+<body>
+
+<canvas id="cv" width="620" height="620"></canvas>
+
+<aside>
+  <h1>Sur-cellule : l'union des U</h1>
+  <p class="sous">Glissez les sommets du polygone et les germes&nbsp;<i>A</i>. Molette sur un
+  germe&nbsp;: son poids.</p>
+
+  <fieldset>
+    <legend>affichage</legend>
+    <label><input type="checkbox" id="cbU" checked> tous les U (et pas seulement la sur-cellule)</label>
+    <label><input type="checkbox" id="cbR"> colorier les U par régime</label>
+    <label><input type="checkbox" id="cbC"> U carrés (minorant par plans)</label>
+    <label><input type="checkbox" id="cbZ" checked> teinter les zones grises</label>
+    <label style="margin-top:6px">sites par arête
+      <input type="range" id="sd" min="1" max="6" value="1" style="flex:1">
+      <span id="sdv" style="font:12px ui-monospace,monospace;width:1.2em">1</span></label>
+  </fieldset>
+
+  <fieldset>
+    <legend>légende</legend>
+    <table class="leg" id="legende"></table>
+  </fieldset>
+
+  <fieldset>
+    <legend>mesures</legend>
+    <table class="mes" id="mesures"></table>
+  </fieldset>
+
+  <fieldset>
+    <legend>clavier</legend>
+    <p style="margin:2px 0 12px;color:var(--ink2);font-size:12.5px">
+      <kbd>u</kbd> <kbd>r</kbd> <kbd>c</kbd> <kbd>z</kbd> les cases ci-dessus, <kbd>0</kbd> remet
+      les poids à zéro.</p>
+    <button id="raz">tout réinitialiser</button>
+  </fieldset>
+</aside>
+
+<script>
+"use strict";
+
+// ---------------------------------------------------------------- constantes
+const RES  = 620;                                   // le canvas est en 1:1 avec la grille
+const COL  = [ "#0072B2", "#009E73", "#D55E00", "#CC79A7", "#E69F00" ];
+const CRGB = COL.map( h => [ parseInt( h.slice( 1, 3 ), 16 ),
+                             parseInt( h.slice( 3, 5 ), 16 ),
+                             parseInt( h.slice( 5, 7 ), 16 ) ] );
+// les trois regimes : droite ( sommet ), parabole ( arete ), cercle ( interieur )
+const RCOL = [ "#0072B2", "#D55E00", "#009E73" ];
+const RRGB = RCOL.map( h => [ parseInt( h.slice( 1, 3 ), 16 ),
+                              parseInt( h.slice( 3, 5 ), 16 ),
+                              parseInt( h.slice( 5, 7 ), 16 ) ] );
+const RNOM = [ "droite (sommet)", "parabole (arête)", "cercle (intérieur)" ];
+
+// le domaine dessine est [ 0, 1 ]^2 ; pixel ( ix, iy ) -> ( x, y )
+const px2x = ix => ( ix + 0.5 ) / RES;
+const px2y = iy => 1 - ( iy + 0.5 ) / RES;
+const x2px = x  => x * RES;
+const y2px = y  => ( 1 - y ) * RES;
+
+// ---------------------------------------------------------------- etat
+let P, A;                                           // polygone, germes { p, w }
+
+function initial() {
+    P = [];
+    for ( let i = 0; i < 5; ++i ) {
+        const t = Math.PI / 2 + 2 * Math.PI * i / 5;
+        P.push( [ 0.5 + 0.155 * Math.cos( t ), 0.5 + 0.185 * Math.sin( t ) ] );
+    }
+    A = [];
+    for ( let j = 0; j < 5; ++j ) {
+        const t = Math.PI / 2 + 0.62 + 2 * Math.PI * j / 5;
+        A.push( { p : [ 0.5 + 0.38 * Math.cos( t ), 0.5 + 0.38 * Math.sin( t ) ], w : 0 } );
+    }
+}
+initial();
+
+const cv  = document.getElementById( "cv" );
+const ctx = cv.getContext( "2d" );
+const img = ctx.createImageData( RES, RES );
+
+const d2   = new Float32Array( RES * RES );         // dist( x, P )^2
+const feat = new Int16Array(   RES * RES );         // -1 interieur, 1+e arete, 100+v sommet
+const msk  = new Uint8Array(   RES * RES );         // bit `j` : `A_j` coupe
+const own  = new Int8Array(    RES * RES );         // le `j` qui coupe le plus fort, -1 sinon
+const mskC = new Uint8Array(   RES * RES );         // idem, version U carres
+const etiq = new Int32Array(   RES * RES );         // ( j, regime ) sur le bord de la sur-cellule
+
+let besoinP = true;                                 // le champ `d2` depend du polygone seul
+
+// ---------------------------------------------------------------- champ du polygone
+// `dist( x, P )^2` et l'element le plus proche, par pixel. Le test d'interieur est un compte de
+// croisements, donc valide meme si l'utilisateur rend le pentagone non convexe.
+function champP() {
+    const n = P.length;
+    for ( let iy = 0; iy < RES; ++iy ) {
+        const y = px2y( iy );
+        for ( let ix = 0; ix < RES; ++ix ) {
+            const x = px2x( ix );
+            let best = 1e30, bf = 0, dedans = false;
+            for ( let e = 0; e < n; ++e ) {
+                const a = P[ e ], b = P[ ( e + 1 ) % n ];
+                if ( ( a[ 1 ] > y ) !== ( b[ 1 ] > y ) ) {
+                    const xi = a[ 0 ] + ( y - a[ 1 ] ) * ( b[ 0 ] - a[ 0 ] ) / ( b[ 1 ] - a[ 1 ] );
+                    if ( x < xi ) dedans = ! dedans;
+                }
+                const ex = b[ 0 ] - a[ 0 ], ey = b[ 1 ] - a[ 1 ];
+                const dx = x - a[ 0 ],      dy = y - a[ 1 ];
+                const L2 = ex * ex + ey * ey;
+                let t = L2 > 0 ? ( dx * ex + dy * ey ) / L2 : 0, f;
+                if      ( t <= 0 ) { t = 0; f = 100 + e; }
+                else if ( t >= 1 ) { t = 1; f = 100 + ( e + 1 ) % n; }
+                else               {        f = 1 + e; }
+                const qx = dx - t * ex, qy = dy - t * ey;
+                const dd = qx * qx + qy * qy;
+                if ( dd < best ) { best = dd; bf = f; }
+            }
+            const k = iy * RES + ix;
+            if ( dedans ) { d2[ k ] = 0;    feat[ k ] = -1; }
+            else          { d2[ k ] = best; feat[ k ] = bf; }
+        }
+    }
+}
+
+// ---------------------------------------------------------------- champ des germes
+function champA() {
+    const ax = A.map( a => a.p[ 0 ] ), ay = A.map( a => a.p[ 1 ] ), aw = A.map( a => a.w );
+    for ( let iy = 0; iy < RES; ++iy ) {
+        const y = px2y( iy );
+        for ( let ix = 0; ix < RES; ++ix ) {
+            const x = px2x( ix ), k = iy * RES + ix, d = d2[ k ];
+            let mask = 0, be = 1e30, m = -1;
+            for ( let j = 0; j < 5; ++j ) {
+                const dx = x - ax[ j ], dy = y - ay[ j ];
+                const e = dx * dx + dy * dy - aw[ j ];
+                if ( e < d ) mask |= 1 << j;
+                if ( e < be ) { be = e; m = j; }
+            }
+            msk[ k ] = mask;
+            own[ k ] = mask ? m : -1;
+        }
+    }
+}
+
+// ---------------------------------------------------------------- U carres
+// L'enveloppe convexe des sommets du polygone, et le cran `w_v` par sommet.
+function enveloppe() {
+    const Q = P.map( ( p, i ) => [ p[ 0 ], p[ 1 ], i ] )
+               .sort( ( u, v ) => u[ 0 ] - v[ 0 ] || u[ 1 ] - v[ 1 ] );
+    const cr = ( o, a, b ) => ( a[ 0 ] - o[ 0 ] ) * ( b[ 1 ] - o[ 1 ] )
+                            - ( a[ 1 ] - o[ 1 ] ) * ( b[ 0 ] - o[ 0 ] );
+    const bas = [], haut = [];
+    for ( const q of Q ) { while ( bas.length  >= 2 && cr( bas[ bas.length - 2 ],  bas[ bas.length - 1 ],  q ) <= 0 ) bas.pop();  bas.push( q ); }
+    for ( let i = Q.length - 1; i >= 0; --i ) { const q = Q[ i ];
+                          while ( haut.length >= 2 && cr( haut[ haut.length - 2 ], haut[ haut.length - 1 ], q ) <= 0 ) haut.pop(); haut.push( q ); }
+    bas.pop(); haut.pop();
+    const H = bas.concat( haut );
+    const n = H.length;
+    if ( n < 2 ) return H.map( q => [ q[ 0 ], q[ 1 ] ] );
+    let V = H.map( q => [ q[ 0 ], q[ 1 ] ] );
+    // orientation CCW garantie -- le test d'interieur plus bas en depend
+    let s2 = 0;
+    for ( let i = 0; i < n; ++i ) { const a = V[ i ], b = V[ ( i + 1 ) % n ];
+                                    s2 += a[ 0 ] * b[ 1 ] - b[ 0 ] * a[ 1 ]; }
+    if ( s2 < 0 ) V = V.slice().reverse();
+    return V;
+}
+
+// Les PSEUDO-SITES : `N` par arete de l'enveloppe, bornes comprises. Le cran d'un site est
+// `max( sous-cordes adjacentes )^2 / 4` -- il doit couvrir les DEUX cordes qui l'encadrent, donc
+// un site ne peut pas porter deux crans differents et le max est force. Diviser une arete par `N`
+// divise son cran par `N^2` : c'est le seul levier sur `omega`, et il est quadratique.
+function pseudoSites( V, N ) {
+    const n = V.length, Q = [];
+    if ( n < 2 ) return { Q : V.slice(), om : V.map( () => 0 ) };
+    for ( let e = 0; e < n; ++e ) {
+        const a = V[ e ], b = V[ ( e + 1 ) % n ];
+        for ( let k = 0; k < N; ++k )
+            Q.push( [ a[ 0 ] + ( b[ 0 ] - a[ 0 ] ) * k / N,
+                      a[ 1 ] + ( b[ 1 ] - a[ 1 ] ) * k / N ] );
+    }
+    const m = Q.length, d = [];
+    for ( let i = 0; i < m; ++i ) {
+        const a = Q[ i ], b = Q[ ( i + 1 ) % m ];
+        d.push( Math.hypot( b[ 0 ] - a[ 0 ], b[ 1 ] - a[ 1 ] ) );
+    }
+    const om = [];
+    for ( let i = 0; i < m; ++i ) om.push( Math.max( d[ i ], d[ ( i + m - 1 ) % m ] ) ** 2 / 4 );
+    return { Q, om };
+}
+
+// Les demi-plans du U carre de `A_j` : `n . x <= c`, un par sommet de l'enveloppe.
+function plansCarres( j, ps ) {
+    const a = A[ j ].p, wj = A[ j ].w, out = [];
+    for ( let i = 0; i < ps.Q.length; ++i ) {
+        const v = ps.Q[ i ];
+        out.push( { nx : 2 * ( v[ 0 ] - a[ 0 ] ),
+                    ny : 2 * ( v[ 1 ] - a[ 1 ] ),
+                    c  : v[ 0 ] * v[ 0 ] + v[ 1 ] * v[ 1 ] - ps.om[ i ]
+                       - a[ 0 ] * a[ 0 ] - a[ 1 ] * a[ 1 ] + wj } );
+    }
+    return out;
+}
+
+function champCarres( ps, V ) {
+    const HP = [ 0, 1, 2, 3, 4 ].map( j => plansCarres( j, ps ) );
+    for ( let iy = 0; iy < RES; ++iy ) {
+        const y = px2y( iy );
+        for ( let ix = 0; ix < RES; ++ix ) {
+            const x = px2x( ix );
+            // l'enveloppe elle-meme n'est jamais coupee : le minorant par plans n'y vaut pas
+            let dedans = true;
+            for ( let i = 0; i < V.length; ++i ) {
+                const a = V[ i ], b = V[ ( i + 1 ) % V.length ];
+                if ( ( b[ 0 ] - a[ 0 ] ) * ( y - a[ 1 ] )
+                   - ( b[ 1 ] - a[ 1 ] ) * ( x - a[ 0 ] ) < 0 ) { dedans = false; break; }
+            }
+            if ( dedans ) { mskC[ iy * RES + ix ] = 0; continue; }
+            let mask = 0;
+            for ( let j = 0; j < 5; ++j ) {
+                let tous = true;
+                for ( const h of HP[ j ] )
+                    if ( h.nx * x + h.ny * y >= h.c ) { tous = false; break; }
+                if ( tous ) mask |= 1 << j;
+            }
+            mskC[ iy * RES + ix ] = mask;
+        }
+    }
+    return HP;
+}
+
+// Sutherland - Hodgman : la boite de vue coupee par les demi-plans.
+function polygoneCarre( hp ) {
+    let poly = [ [ -0.6, -0.6 ], [ 1.6, -0.6 ], [ 1.6, 1.6 ], [ -0.6, 1.6 ] ];
+    for ( const h of hp ) {
+        const s = poly.map( p => h.c - h.nx * p[ 0 ] - h.ny * p[ 1 ] );
+        const out = [];
+        for ( let i = 0; i < poly.length; ++i ) {
+            const jj = ( i + 1 ) % poly.length;
+            if ( s[ i ] >= 0 ) out.push( poly[ i ] );
+            if ( ( s[ i ] >= 0 ) !== ( s[ jj ] >= 0 ) ) {
+                const t = s[ i ] / ( s[ i ] - s[ jj ] );   // ancre sur le sommet INTERIEUR
+                out.push( [ poly[ i ][ 0 ] + t * ( poly[ jj ][ 0 ] - poly[ i ][ 0 ] ),
+                            poly[ i ][ 1 ] + t * ( poly[ jj ][ 1 ] - poly[ i ][ 1 ] ) ] );
+            }
+        }
+        poly = out;
+        if ( poly.length === 0 ) break;
+    }
+    return poly;
+}
+
+// ---------------------------------------------------------------- arcs du bord
+const regime = f => f === -1 ? 2 : ( f >= 100 ? 0 : 1 );
+
+// Le bord de la sur-cellule, etiquete par ( germe, regime ), puis compte des composantes
+// connexes : c'est le nombre d'ARCS, au sens du journal ( compte sur la grille ).
+function arcs() {
+    etiq.fill( -1 );
+    const pile = [];
+    for ( let iy = 0; iy < RES; ++iy )
+        for ( let ix = 0; ix < RES; ++ix ) {
+            const k = iy * RES + ix;
+            if ( msk[ k ] ) continue;
+            let lab = -1;
+            if ( ix > 0       && msk[ k - 1   ] ) lab = own[ k - 1   ] * 3 + regime( feat[ k - 1   ] );
+            else if ( ix < RES - 1 && msk[ k + 1   ] ) lab = own[ k + 1   ] * 3 + regime( feat[ k + 1   ] );
+            else if ( iy > 0       && msk[ k - RES ] ) lab = own[ k - RES ] * 3 + regime( feat[ k - RES ] );
+            else if ( iy < RES - 1 && msk[ k + RES ] ) lab = own[ k + RES ] * 3 + regime( feat[ k + RES ] );
+            etiq[ k ] = lab;
+        }
+    const vu = new Uint8Array( RES * RES );
+    let n = 0;
+    const germes = new Set(), regs = new Set();
+    for ( let k0 = 0; k0 < RES * RES; ++k0 ) {
+        if ( etiq[ k0 ] < 0 || vu[ k0 ] ) continue;
+        ++n; germes.add( ( etiq[ k0 ] / 3 ) | 0 ); regs.add( etiq[ k0 ] % 3 );
+        pile.length = 0; pile.push( k0 ); vu[ k0 ] = 1;
+        while ( pile.length ) {
+            const k = pile.pop(), ix = k % RES, iy = ( k / RES ) | 0;
+            // 8-CONNEXITE : le bord est une courbe d'un pixel de large, et un morceau a 45 degres
+            // n'avance qu'en diagonale. En 4-connexite chacun de ses pixels serait un arc.
+            const vs = [];
+            for ( let dy = -1; dy <= 1; ++dy )
+                for ( let dx = -1; dx <= 1; ++dx ) {
+                    if ( ! dx && ! dy ) continue;
+                    const jx = ix + dx, jy = iy + dy;
+                    if ( jx >= 0 && jx < RES && jy >= 0 && jy < RES ) vs.push( jy * RES + jx );
+                }
+            for ( const kk of vs )
+                if ( ! vu[ kk ] && etiq[ kk ] === etiq[ k0 ] ) { vu[ kk ] = 1; pile.push( kk ); }
+        }
+    }
+    return { n, germes : germes.size, regs : [ ...regs ].sort() };
+}
+
+// ---------------------------------------------------------------- dessin
+function dessine() {
+    const opt = { U : cbU.checked, R : cbR.checked, C : cbC.checked, Z : cbZ.checked };
+    if ( besoinP ) { champP(); besoinP = false; }
+    champA();
+    const V   = enveloppe();
+    const ps  = pseudoSites( V, +sd.value );
+    const HP  = opt.C ? champCarres( ps, V ) : null;
+
+    const D = img.data;
+    let aire = 0, aireC = 0;
+
+    for ( let k = 0; k < RES * RES; ++k ) {
+        const m = msk[ k ];
+        let r = 255, g = 255, b = 255;
+        if ( m === 0 ) { ++aire; r = 247; g = 249; b = 251; }
+        else if ( opt.Z ) {
+            const c = CRGB[ own[ k ] ];
+            r = ( 255 * 0.86 + c[ 0 ] * 0.14 ) | 0;
+            g = ( 255 * 0.86 + c[ 1 ] * 0.14 ) | 0;
+            b = ( 255 * 0.86 + c[ 2 ] * 0.14 ) | 0;
+        }
+        if ( opt.C && mskC[ k ] === 0 ) ++aireC;
+        const o = k << 2;
+        D[ o ] = r; D[ o + 1 ] = g; D[ o + 2 ] = b; D[ o + 3 ] = 255;
+    }
+
+    // les U : bord de chaque zone grise, y compris a l'interieur d'une autre -- c'est la qu'on
+    // voit les U s'enchainer et se manger les uns les autres.
+    if ( opt.U ) {
+        for ( let iy = 0; iy < RES; ++iy )
+            for ( let ix = 0; ix < RES; ++ix ) {
+                const k = iy * RES + ix, m = msk[ k ];
+                if ( ! m ) continue;
+                const mg = ix > 0       ? msk[ k - 1   ] : 0;
+                const md = ix < RES - 1 ? msk[ k + 1   ] : 0;
+                const mh = iy > 0       ? msk[ k - RES ] : 0;
+                const mb = iy < RES - 1 ? msk[ k + RES ] : 0;
+                const nu = m & ~( mg & md & mh & mb );   // les `j` qui s'arretent ici
+                if ( ! nu ) continue;
+                let j = 0; while ( ! ( nu & ( 1 << j ) ) ) ++j;
+                const c = opt.R ? RRGB[ regime( feat[ k ] ) ] : CRGB[ j ];
+                const o = k << 2;
+                D[ o ] = ( D[ o ] * 0.25 + c[ 0 ] * 0.75 ) | 0;
+                D[ o + 1 ] = ( D[ o + 1 ] * 0.25 + c[ 1 ] * 0.75 ) | 0;
+                D[ o + 2 ] = ( D[ o + 2 ] * 0.25 + c[ 2 ] * 0.75 ) | 0;
+            }
+    }
+
+    // le bord de la sur-cellule, par dessus tout
+    for ( let iy = 0; iy < RES; ++iy )
+        for ( let ix = 0; ix < RES; ++ix ) {
+            const k = iy * RES + ix;
+            if ( msk[ k ] ) continue;
+            const b1 = ix > 0       && msk[ k - 1   ];
+            const b2 = ix < RES - 1 && msk[ k + 1   ];
+            const b3 = iy > 0       && msk[ k - RES ];
+            const b4 = iy < RES - 1 && msk[ k + RES ];
+            if ( ! ( b1 || b2 || b3 || b4 ) ) continue;
+            const o = k << 2;
+            let c = [ 26, 26, 26 ];
+            if ( opt.R ) {
+                const kk = b1 ? k - 1 : b2 ? k + 1 : b3 ? k - RES : k + RES;
+                c = RRGB[ regime( feat[ kk ] ) ];
+            }
+            D[ o ] = c[ 0 ]; D[ o + 1 ] = c[ 1 ]; D[ o + 2 ] = c[ 2 ];
+        }
+
+    ctx.putImageData( img, 0, 0 );
+
+    // ---- les traces vectoriels
+    ctx.lineJoin = "round";
+
+    // le polygone
+    ctx.beginPath();
+    P.forEach( ( p, i ) => i ? ctx.lineTo( x2px( p[ 0 ] ), y2px( p[ 1 ] ) )
+                             : ctx.moveTo( x2px( p[ 0 ] ), y2px( p[ 1 ] ) ) );
+    ctx.closePath();
+    ctx.fillStyle = "rgba(26,26,26,0.07)"; ctx.fill();
+    ctx.strokeStyle = "#1a1a1a"; ctx.lineWidth = 1.6; ctx.stroke();
+
+    // les U carres
+    if ( opt.C ) {
+        ctx.setLineDash( [ 5, 4 ] ); ctx.lineWidth = 1.6;
+        for ( let j = 0; j < 5; ++j ) {
+            const poly = polygoneCarre( HP[ j ] );
+            if ( poly.length < 2 ) continue;
+            ctx.beginPath();
+            poly.forEach( ( p, i ) => i ? ctx.lineTo( x2px( p[ 0 ] ), y2px( p[ 1 ] ) )
+                                        : ctx.moveTo( x2px( p[ 0 ] ), y2px( p[ 1 ] ) ) );
+            ctx.closePath();
+            ctx.strokeStyle = COL[ j ]; ctx.stroke();
+        }
+        ctx.setLineDash( [] );
+    }
+
+    // les poignees
+    ctx.lineWidth = 1.5;
+    for ( const p of P ) {
+        const X = x2px( p[ 0 ] ), Y = y2px( p[ 1 ] );
+        ctx.fillStyle = "#fff"; ctx.strokeStyle = "#1a1a1a";
+        ctx.beginPath(); ctx.rect( X - 4, Y - 4, 8, 8 ); ctx.fill(); ctx.stroke();
+    }
+    ctx.font = "600 12px ui-sans-serif,system-ui,sans-serif";
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    for ( let j = 0; j < 5; ++j ) {
+        const X = x2px( A[ j ].p[ 0 ] ), Y = y2px( A[ j ].p[ 1 ] );
+        if ( A[ j ].w > 0 ) {
+            ctx.setLineDash( [ 3, 3 ] ); ctx.strokeStyle = COL[ j ]; ctx.lineWidth = 1;
+            ctx.beginPath(); ctx.arc( X, Y, Math.sqrt( A[ j ].w ) * RES, 0, 2 * Math.PI );
+            ctx.stroke(); ctx.setLineDash( [] );
+        }
+        ctx.beginPath(); ctx.arc( X, Y, 6.5, 0, 2 * Math.PI );
+        ctx.fillStyle = COL[ j ]; ctx.fill();
+        ctx.strokeStyle = "#fff"; ctx.lineWidth = 2; ctx.stroke();
+        ctx.fillStyle = "#1a1a1a";
+        ctx.fillText( "A" + ( j + 1 ), X, Y - 15 );
+    }
+
+    // ---- les mesures
+    const a  = arcs();
+    const ap = P.reduce( ( s, p, i ) => {                       // aire du polygone
+        const q = P[ ( i + 1 ) % P.length ];
+        return s + p[ 0 ] * q[ 1 ] - q[ 0 ] * p[ 1 ]; }, 0 ) / 2;
+    const li = [
+        [ "aire sur-cellule",  ( aire / ( RES * RES ) ).toFixed( 4 ) ],
+        [ "aire polygone",     Math.abs( ap ).toFixed( 4 ) ],
+        [ "rapport",           ( aire / ( RES * RES ) / Math.max( Math.abs( ap ), 1e-9 ) ).toFixed( 2 ) ],
+        [ "arcs du bord",      String( a.n ) ],
+        [ "germes actifs",     a.germes + " / 5" ],
+        [ "régimes présents",  a.regs.map( r => [ "dr", "par", "cer" ][ r ] ).join( " " ) || "—" ] ];
+    if ( opt.C )
+        li.push( [ "plans par U",    String( ps.Q.length ) ],
+                 [ "√ω max",         Math.sqrt( Math.max( ...ps.om ) ).toFixed( 4 ) ],
+                 [ "aire U carrés",  ( aireC / ( RES * RES ) ).toFixed( 4 ) ],
+                 [ "sur-estimation", ( aireC / Math.max( aire, 1 ) ).toFixed( 3 ) + " ×" ] );
+    mesures.innerHTML = li.map( ( [ k, v ] ) =>
+        `<tr><td>${ k }</td><td class="v">${ v }</td></tr>` ).join( "" );
+
+    legende.innerHTML = opt.R
+        ? RNOM.map( ( n, i ) =>
+            `<tr><td class="pastille"><span class="bar" style="background:${ RCOL[ i ] }"></span></td>`
+          + `<td>${ n }</td></tr>` ).join( "" )
+        : COL.map( ( c, j ) =>
+            `<tr><td class="pastille"><span class="pt" style="background:${ c }"></span></td>`
+          + `<td>A${ j + 1 } &nbsp; <span style="color:#5a6068">w = ${ A[ j ].w.toFixed( 4 ) }</span>`
+          + `</td></tr>` ).join( "" );
+}
+
+// ---------------------------------------------------------------- interaction
+let attrape = null, aFaire = false;
+
+function planifie() {
+    if ( aFaire ) return;
+    aFaire = true;
+    requestAnimationFrame( () => { aFaire = false; dessine(); } );
+}
+
+function souris( ev ) {
+    const r = cv.getBoundingClientRect();
+    return [ ( ev.clientX - r.left ) / r.width, 1 - ( ev.clientY - r.top ) / r.height ];
+}
+
+function proche( m ) {
+    const seuil = ( 14 / RES ) ** 2;
+    let best = seuil, res = null;
+    for ( let j = 0; j < 5; ++j ) {                 // les germes d'abord : ils sont dessus
+        const d = ( m[ 0 ] - A[ j ].p[ 0 ] ) ** 2 + ( m[ 1 ] - A[ j ].p[ 1 ] ) ** 2;
+        if ( d < best ) { best = d; res = { t : "A", i : j }; }
+    }
+    for ( let i = 0; i < P.length; ++i ) {
+        const d = ( m[ 0 ] - P[ i ][ 0 ] ) ** 2 + ( m[ 1 ] - P[ i ][ 1 ] ) ** 2;
+        if ( d < best ) { best = d; res = { t : "P", i }; }
+    }
+    return res;
+}
+
+cv.addEventListener( "pointerdown", ev => {
+    attrape = proche( souris( ev ) );
+    if ( attrape ) cv.setPointerCapture( ev.pointerId );
+} );
+cv.addEventListener( "pointermove", ev => {
+    const m = souris( ev );
+    if ( ! attrape ) { cv.style.cursor = proche( m ) ? "grab" : "crosshair"; return; }
+    cv.style.cursor = "grabbing";
+    const c = v => Math.min( 1, Math.max( 0, v ) );
+    if ( attrape.t === "P" ) { P[ attrape.i ] = [ c( m[ 0 ] ), c( m[ 1 ] ) ]; besoinP = true; }
+    else                       A[ attrape.i ].p = [ c( m[ 0 ] ), c( m[ 1 ] ) ];
+    planifie();
+} );
+cv.addEventListener( "pointerup", () => { attrape = null; cv.style.cursor = "crosshair"; } );
+
+cv.addEventListener( "wheel", ev => {
+    const t = proche( souris( ev ) );
+    if ( ! t || t.t !== "A" ) return;
+    ev.preventDefault();
+    const a = A[ t.i ];
+    a.w = Math.min( 0.09, Math.max( -0.03, a.w - Math.sign( ev.deltaY ) * 0.0012 ) );
+    planifie();
+}, { passive : false } );
+
+const cbU = document.getElementById( "cbU" ), cbR = document.getElementById( "cbR" );
+const cbC = document.getElementById( "cbC" ), cbZ = document.getElementById( "cbZ" );
+const mesures = document.getElementById( "mesures" ), legende = document.getElementById( "legende" );
+const sd = document.getElementById( "sd" ), sdv = document.getElementById( "sdv" );
+for ( const cb of [ cbU, cbR, cbC, cbZ ] ) cb.addEventListener( "change", planifie );
+sd.addEventListener( "input", () => { sdv.textContent = sd.value; cbC.checked = true; planifie(); } );
+sdv.textContent = sd.value;
+
+document.getElementById( "raz" ).addEventListener( "click", () => {
+    initial(); besoinP = true; planifie();
+} );
+
+addEventListener( "keydown", ev => {
+    const m = { u : cbU, r : cbR, c : cbC, z : cbZ }[ ev.key ];
+    if ( m ) { m.checked = ! m.checked; planifie(); }
+    else if ( ev.key === "0" ) { A.forEach( a => a.w = 0 ); planifie(); }
+} );
+
+dessine();
+</script>
+</body>
+</html>

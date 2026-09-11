@@ -1,4 +1,4 @@
-import timeit
+import time
 
 import numpy as np
 from pysdot import PowerDiagram
@@ -11,10 +11,10 @@ domain.add_box( [ 0, 0 ], [ 1, 1 ] )
 # diracs
 pd = PowerDiagram( positions, domain = domain )
 
-start = timeit.timeit()
+start = time.time()
 for d in range( 10 ):
     i = pd.integrals()
-end = timeit.timeit()
+end = time.time()
 
 
 print( sum( i ), ( end - start ) / 10 )

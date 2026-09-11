@@ -12,8 +12,8 @@ namespace sdot {
 UTP auto DTP::nearness( const auto &from, SI n ) const {
     TF res = 0;
     for ( PI d = 0; d < ct_dim; ++d ) {
-        const TF lo = TF( node_lo( n, d ) );
-        const TF hi = TF( node_hi( n, d ) );
+        const TF lo = TF( node_box( n, 0, d ) );
+        const TF hi = TF( node_box( n, 1, d ) );
         const TF p  = from[ d ];
         const TF e  = p < lo ? lo - p : ( p > hi ? p - hi : TF( 0 ) );
         res += e * e;
@@ -22,11 +22,27 @@ UTP auto DTP::nearness( const auto &from, SI n ) const {
 }
 
 UTP void DTP::for_each_candidate( const auto &from, SI i0, auto &&scratch, auto &&may_cut, auto &&cut_with ) const {
+    // Les noeuds sont ranges en PREORDRE (voir `AaBsp.py::_preorder_of_heap`) : le fils gauche est
+    // JUSTE A COTE (`n+1`) et le droit a `2^(h-1)` noeuds, ou `h` est la hauteur du sous-arbre.
+    // Les sauts retrecissent donc en descendant, la ou la numerotation en tas les faisait doubler
+    // -- et c'est le bas de l'arbre qui est le plus visite et le plus gros.
+    //
+    // `h` voyage SUR LA PILE, empaquete avec l'indice : la pile est deja la, elle est en L1, et
+    // c'est six bits (la profondeur est un `ceil( log2( n / leaf ) ) + 1`, jamais 64). La lire
+    // ailleurs aurait voulu dire un tableau de plus par noeud -- exactement ce qu'on cherche a
+    // supprimer.
+    const SI nb_nodes = SI( node_begin.shape( 0 ) );
+    SI depth = 0;
+    for ( SI m = nb_nodes; m; m >>= 1 )         // `nb_nodes == 2^depth - 1`
+        ++depth;
+
     SI top = 0;
-    scratch( top++ ) = 0;                       // the root -- the nodes are numbered in a HEAP
+    scratch( top++ ) = depth;                   // la racine : indice 0, hauteur `depth`
 
     while ( top > 0 ) {
-        const SI n = SI( scratch( --top ) );
+        const SI e = SI( scratch( --top ) );
+        const SI n = e >> 6;
+        const SI h = e & 63;
 
         // an EMPTY slot: the right child of a node that had nothing left to split and passed its
         // whole slice to the left one (see `AaBsp.py::_build`). Two integer loads answer it, where
@@ -36,8 +52,10 @@ UTP void DTP::for_each_candidate( const auto &from, SI i0, auto &&scratch, auto 
         if ( beg >= end )
             continue;
 
-        const auto lo = Vector<TF,ct_dim>::with_func( [&]( PI d ) { return TF( node_lo( n, d ) ); } );
-        const auto hi = Vector<TF,ct_dim>::with_func( [&]( PI d ) { return TF( node_hi( n, d ) ); } );
+        // une seule lecture CONTIGUE pour la boite : `lo` et `hi` sont voisins en memoire (voir
+        // `AaBsp.py::node_box`), donc une ligne de cache la porte entiere en 2D.
+        const auto lo = Vector<TF,ct_dim>::with_func( [&]( PI d ) { return TF( node_box( n, 0, d ) ); } );
+        const auto hi = Vector<TF,ct_dim>::with_func( [&]( PI d ) { return TF( node_box( n, 1, d ) ); } );
 
         // no weights at all -> no majorant to read: the two tensors are `NoneTensor`, the branch
         // goes at COMPILE time, and the caller's test degenerates to the plain distance one.
@@ -54,8 +72,11 @@ UTP void DTP::for_each_candidate( const auto &from, SI i0, auto &&scratch, auto 
         if ( ! may_cut( lo, hi, wa, wb ) )
             continue;
 
-        const SI l = SI( node_left( n ) );
-        if ( l < 0 ) {                          // a leaf: `node_left < 0` says so (see `AaBsp.py`)
+        // les fils sont DEDUITS, pas lus : l'arbre est binaire PARFAIT, donc leur place se calcule
+        // (voir plus haut), et « suis-je une feuille » se lit sur la hauteur. Deux tableaux de
+        // moins a lire par noeud visite.
+        const SI l = n + 1;
+        if ( h <= 1 ) {                             // une feuille : plus rien en dessous
             // Le candidat est rendu par son indice ET par son RANG dans le regroupement. Le rang
             // est ce qui permet a l'appelant de lire la position dans une copie triee CONTIGUE
             // (voir `PowerDiagram::sorted_positions`) : les germes d'une feuille sont voisins ici,
@@ -71,13 +92,14 @@ UTP void DTP::for_each_candidate( const auto &from, SI i0, auto &&scratch, auto 
         }
 
         // the nearer child is pushed LAST, so it is popped FIRST.
-        const SI r = SI( node_right( n ) );
+        const SI r = n + ( SI( 1 ) << ( h - 1 ) );
+        const SI hc = h - 1;
         if ( nearness( from, l ) <= nearness( from, r ) ) {
-            scratch( top++ ) = r;
-            scratch( top++ ) = l;
+            scratch( top++ ) = ( r << 6 ) | hc;
+            scratch( top++ ) = ( l << 6 ) | hc;
         } else {
-            scratch( top++ ) = l;
-            scratch( top++ ) = r;
+            scratch( top++ ) = ( l << 6 ) | hc;
+            scratch( top++ ) = ( r << 6 ) | hc;
         }
     }
 }

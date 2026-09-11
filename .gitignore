@@ -18,6 +18,7 @@ tmp/
 .qwen/
 old_sdot/
 very_old_sdot/
+old_od/
 
 otrec/src/otrec/benchmarks/results/*.png
 graphify-out/

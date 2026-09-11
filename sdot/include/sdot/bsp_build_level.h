@@ -5,7 +5,8 @@
 
 namespace sdot {
 
-// UN NIVEAU de la construction du BSP, pour UN noeud : `AaBsp.py::_build`, mis dans un kernel.
+// UN NIVEAU de la construction du BSP, pour UN noeud -- voir `AaBsp.py` pour ce qu'un noeud
+// porte, et pourquoi la forme de l'arbre ne depend pas des donnees.
 //
 // = Pourquoi un niveau et pas l'arbre entier
 //
@@ -20,7 +21,7 @@ namespace sdot {
 // = Ce qu'un work-item fait, et ce qui rend l'ecriture disjointe
 //
 // Un work-item par noeud du niveau. Les tranches `[ begin, end )` d'un niveau PARTITIONNENT
-// `[ 0, n )` -- c'est la raison d'etre de la propagation decrite dans `AaBsp.py::_build` -- donc
+// `[ 0, n )` -- c'est la raison d'etre de la propagation decrite plus bas (`mid = end`) -- donc
 // deux work-items n'ecrivent jamais la meme case, ni dans le nuage de sortie ni dans le scratch de
 // permutation. Aucun atomique, aucune barriere.
 //
@@ -193,11 +194,11 @@ void bsp_weight_majorant( const auto &pos, const auto &w, SI b, SI e, auto &&wa_
 //
 // `mid_out` dit ou couper : le fils gauche recoit `[ beg, mid )` et le droit `[ mid, end )`. Un
 // noeud qui n'a plus rien a couper rend `mid = end`, donc passe tout a gauche -- c'est la
-// PROPAGATION de `AaBsp.py::_build`, ce qui garde la partition de `[ 0, n )` d'un niveau au
+// PROPAGATION decrite dans `AaBsp.py`, ce qui garde la partition de `[ 0, n )` d'un niveau au
 // suivant, donc l'ecriture disjointe.
 void bsp_build_level( const auto &src, auto &&dst, auto &&perm,
                       const auto &beg_in, const auto &end_in,
-                      auto &&lo_out, auto &&hi_out, auto &&wa_out, auto &&wb_out, auto &&mid_out,
+                      auto &&box_out, auto &&wa_out, auto &&wb_out, auto &&mid_out,
                       SI leaf_size ) {
     // la dimension est un compte COMPILE-TIME (`nb_dims : CtShapeVar`), et c'est LUI qui la porte :
     // la forme d'un tenseur, elle, traverse en entiers d'execution. C'est la raison pour laquelle
@@ -221,8 +222,8 @@ void bsp_build_level( const auto &src, auto &&dst, auto &&perm,
     mid_out = e;
     if ( e <= b ) {
         for ( int d = 0; d < ct_dim; ++d ) {
-            lo_out( d ) = 0;
-            hi_out( d ) = 0;
+            box_out( 0, d ) = 0;
+            box_out( 1, d ) = 0;
         }
         if constexpr ( CT_VALUE( wa_out.is_valid() ) ) {
             for ( int d = 0; d < ct_dim; ++d )
@@ -241,9 +242,10 @@ void bsp_build_level( const auto &src, auto &&dst, auto &&perm,
             lo[ d ] = v < lo[ d ] ? v : lo[ d ];
             hi[ d ] = v > hi[ d ] ? v : hi[ d ];
         }
+    // `lo` PUIS `hi`, dans le meme tableau : une boite = une lecture contigue cote marche.
     for ( int d = 0; d < ct_dim; ++d ) {
-        lo_out( d ) = lo[ d ];
-        hi_out( d ) = hi[ d ];
+        box_out( 0, d ) = lo[ d ];
+        box_out( 1, d ) = hi[ d ];
     }
 
     // ---- le majorant des poids. Pas de poids -> les deux tenseurs sont des `NoneTensor` et tout
