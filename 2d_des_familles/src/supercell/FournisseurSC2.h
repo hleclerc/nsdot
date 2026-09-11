@@ -13,18 +13,44 @@
 // De l'agregat `A` on retient deux choses, calculees une fois :
 //
 //     E_A   la boite de tous les sommets des cellules de phase 1 de ses membres
-//     R_A^2 le plus grand `|v - p_i|^2` sur ces memes sommets, `p_i` etant le germe du membre
+//     R_A   le plus grand `|v - p_i|^2 - w_i` sur ces memes sommets, `p_i` etant le germe du membre
 //
-// Un germe `q` d'une boite `B` ne peut couper aucune cellule de `A` si
+// Un germe `q` d'un noeud `B`, de poids majore par `w( q ) <= a . q + b`, ne peut couper aucune
+// cellule de `A` si
 //
-//     dist^2( E_A, B )  >=  R_A^2
+//     min_{ v in E_A, q in B } ( |v - q|^2 - a . q - b )  >=  R_A
 //
 // -- c'est le critere du fournisseur BSP, transpose de la cellule a son enceinte. Il se teste une
 // fois par agregat et sert a ses ~8 membres : c'est TOUTE l'amortisation de l'affaire.
 //
+// LE TERME DE POIDS N'EST PAS FACULTATIF. La premiere version comparait `dist^2( E_A, B )` a
+// `max |v - p_i|^2` sans rien de plus : en Laguerre avec `w ~ U[ 0, 4 h^2 ]` le majorant des poids
+// est du MEME ORDRE que le rayon carre, et 18 cellules sur 200000 perdaient une coupe. La somme
+// des aires ne le disait pas -- elle valait 1.0000018 -- il a fallu comparer cellule par cellule
+// au fournisseur BSP pour le voir.
+//
+// La minimisation reste SEPARABLE PAR AXE, et par axe elle est convexe : `t( q )^2` est la
+// distance carree a un intervalle, donc convexe, et `- a q` est lineaire. Son minimum libre est
+// en `q = ( a > 0 ? eh : el ) + a / 2`, et un `clamp` sur la boite de `B` donne la reponse EXACTE.
+//
 // = POURQUOI LA TABLE NE GARDE QUE L'ANNEAU 2 ET AU-DELA
 //
 // L'anneau 1 est deja dans la cellule de phase 1. Le repasser serait un no-op paye plein tarif.
+//
+// = LE GARDE-FOU, ET POURQUOI IL EST INDISPENSABLE
+//
+// L'amortissement suppose que l'enceinte enveloppe QUELQUE CHOSE. Mesure : en Voronoi, 0.1 % des
+// agregats ont une cellule de phase 1 qui couvre presque tout le carre -- l'agregat et son anneau 1
+// ne la bornent pas -- et ces 25 agregats sur 25000 font A EUX SEULS la moitie de la table. En
+// Laguerre a `4 h^2`, c'est 1 % des agregats dont la ligne contient TOUS les autres.
+//
+// Aucune forme d'enceinte ne rattrape cela. On les SORT : des que la ligne depasse un plafond
+// ( 48, le plat d'une courbe tres plate entre 24 et 96 ), elle est abandonnee et les membres de
+// l'agregat sont calcules par le fournisseur BSP, depuis le carre. Le pire cas est ainsi borne par
+// une RESSOURCE et non par un seuil geometrique, ce qui vaut mieux sur des nuages anisotropes.
+//
+// Effet mesure, Laguerre `4 h^2`, n = 200000 : total 1.406 s -> 0.256 s, et 4 % des cellules
+// passent par le BSP.
 //
 // = CE QUE LE FOURNISSEUR FAIT
 //
@@ -40,24 +66,30 @@
 
 #include "supercell/Agregats.h"
 #include "supercell/Contrat2D.h"
-
-#include <immintrin.h>
+#include "supercell/Elagage.h"
 
 namespace noyau2d {
 
-/// L'enceinte d'un agregat : la boite de ses cellules de phase 1, et le rayon.
+/// L'enceinte d'un agregat : la boite de ses cellules de phase 1, et la PORTEE.
+///
+/// `r2` est `max_{i, v} ( |v - p_i|^2 - w_i )` : le poids du membre en fait partie, sans quoi le
+/// critere de la table ne dit rien en Laguerre. Sans poids c'est le rayon carre habituel.
 struct Enceinte { float lo[ 2 ], hi[ 2 ], r2; };
 
 /// LA TABLE : pour chaque agregat, les agregats de l'anneau 2 et au-dela qui peuvent encore le
 /// manger. En CSR, comme tout le reste ici.
 ///
-/// Elle porte aussi la BOITE DES GERMES de chaque agregat et le majorant de leurs poids. La table
-/// est partagee par les ~8 membres, donc grossiere par construction : c'est le filtre par CELLULE
-/// ci-dessous qui la resserre, et il coute une operation SIMD par agregat de la ligne.
+/// Elle porte aussi la BOITE DES GERMES de chaque agregat et le majorant AFFINE de leurs poids. La
+/// table est partagee par les ~8 membres, donc grossiere par construction : c'est le filtre par
+/// CELLULE ci-dessous qui la resserre, et il coute une operation SIMD par agregat de la ligne.
+///
+/// LE MAJORANT EST AFFINE, `w( q ) <= a . q + b`, comme dans l'arbre BSP et pour la meme raison :
+/// un majorant constant traite l'agregat comme si son germe le plus lourd etait partout, et en
+/// transport semi-discret les poids sont un potentiel, donc ils varient regulierement dans
+/// l'espace. Il ne coute rien de plus a tester -- le minimum reste separable par axe.
 struct TableSC {
-    std::vector<int>   deb, ag;
-    std::vector<float> lo0, lo1, hi0, hi1;               ///< boite des germes, par agregat
-    std::vector<float> wmax;                             ///< majorant CONSTANT des poids
+    std::vector<int> deb, ag;
+    const BoitesAgregats *bo = nullptr;                  ///< boite + majorant, par agregat
 };
 
 template<int D, bool POIDS = false>
@@ -80,42 +112,12 @@ struct FournisseurSC2 {
           x0( (float) G->Ppp[ 0 ][ i0 ] ), y0( (float) G->Ppp[ 1 ][ i0 ] ),
           w0( POIDS ? (float) G->Wp[ i0 ] : 0.f ) {}
 
-    /// LE FILTRE PAR CELLULE, exact et vectoriel -- le meme argument que pour le BSP : si un germe
-    /// `q` de la boite `B` coupe la cellule, il en retranche au moins un SOMMET, et ce sommet
-    /// verifie `|v - q|^2 - w_q < |v - p0|^2 - w0`. Donc rejeter `B` des que TOUS les sommets ont
-    /// `dist^2( v, B ) >= |v - p0|^2 - w0 + wmax_B`.
-    ///
-    /// C'est ce qui manquait a la premiere version : la table donne 37 agregats par ligne, soit
-    /// ~300 germes proposes par cellule, la ou 26 suffisent. La table est partagee, donc lache ;
-    /// le filtre la resserre contre CETTE cellule pour une operation SIMD par agregat.
+    /// LE FILTRE PAR CELLULE. La table est PARTAGEE par les ~8 membres de l'agregat, donc lache
+    /// par construction ; ce test la resserre contre CETTE cellule pour une operation SIMD par
+    /// agregat de la ligne. Le critere et son exactitude sont dans `Elagage.h`.
     template<class Etat>
     bool peut_couper( int b, const Etat &e ) const {
-        const float marge = POIDS ? T->wmax[ b ] - w0 : 0.f;
-        if constexpr ( requires { e.vx + e.vx; } ) {
-            const __m256 z = _mm256_setzero_ps();
-            const __m256 l0 = _mm256_set1_ps( T->lo0[ b ] ), h0 = _mm256_set1_ps( T->hi0[ b ] );
-            const __m256 l1 = _mm256_set1_ps( T->lo1[ b ] ), h1 = _mm256_set1_ps( T->hi1[ b ] );
-            const __m256 ex = _mm256_max_ps( _mm256_max_ps( _mm256_sub_ps( l0, e.vx ),
-                                                            _mm256_sub_ps( e.vx, h0 ) ), z );
-            const __m256 ey = _mm256_max_ps( _mm256_max_ps( _mm256_sub_ps( l1, e.vy ),
-                                                            _mm256_sub_ps( e.vy, h1 ) ), z );
-            const __m256 d2 = _mm256_fmadd_ps( ex, ex, _mm256_mul_ps( ey, ey ) );
-            const __m256 rx = _mm256_sub_ps( e.vx, _mm256_set1_ps( x0 ) );
-            const __m256 ry = _mm256_sub_ps( e.vy, _mm256_set1_ps( y0 ) );
-            __m256 r2 = _mm256_fmadd_ps( rx, rx, _mm256_mul_ps( ry, ry ) );
-            if constexpr ( POIDS ) r2 = _mm256_add_ps( r2, _mm256_set1_ps( marge ) );
-            return ( _mm256_cmp_ps_mask( d2, r2, _CMP_LT_OQ )
-                     & ( ( 1u << Etat::nb ) - 1 ) ) != 0;
-        } else {
-            for ( int i = 0; i < e.nb; ++i ) {
-                const float vx = e.vx[ i ], vy = e.vy[ i ];
-                const float tx = vx < T->lo0[b] ? T->lo0[b] - vx : ( vx > T->hi0[b] ? vx - T->hi0[b] : 0.f );
-                const float ty = vy < T->lo1[b] ? T->lo1[b] - vy : ( vy > T->hi1[b] ? vy - T->hi1[b] : 0.f );
-                const float rx = vx - x0, ry = vy - y0;
-                if ( tx * tx + ty * ty < rx * rx + ry * ry + marge ) return true;
-            }
-            return false;
-        }
+        return peut_couper_boite<POIDS>( e, x0, y0, w0, ( *T->bo )[ b ] );
     }
 
     template<class Etat>

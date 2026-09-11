@@ -35,6 +35,7 @@
 
 #include "supercell/Agregats.h"
 #include "supercell/Contrat2D.h"
+#include "supercell/Elagage.h"
 
 #include <algorithm>
 
@@ -57,6 +58,7 @@ struct FournisseurSC1 {
     };
 
     const pd::supercell::Gros<D> *G;
+    const BoitesAgregats *bo;                            ///< `nullptr` = aucun filtre
     int   i0;                                            ///< le germe, indice PERMUTE
     int   a0;                                            ///< son agregat
     float x0, y0, w0 = 0;
@@ -65,8 +67,8 @@ struct FournisseurSC1 {
     /// permutation, `i0` est un indice PERMUTE et `lab[ i0 ]` designe autre chose. L'appelant
     /// parcourt de toute facon agregat par agregat -- c'est ce que fait l'etape 4 -- donc il l'a
     /// sous la main.
-    FournisseurSC1( const pd::supercell::Gros<D> *G, int a0, int i0 )
-        : G( G ), i0( i0 ), a0( a0 ),
+    FournisseurSC1( const pd::supercell::Gros<D> *G, const BoitesAgregats *bo, int a0, int i0 )
+        : G( G ), bo( bo ), i0( i0 ), a0( a0 ),
           x0( (float) G->Ppp[ 0 ][ i0 ] ), y0( (float) G->Ppp[ 1 ][ i0 ] ),
           w0( POIDS ? (float) G->Wp[ i0 ] : 0.f ) {}
 
@@ -101,7 +103,7 @@ struct FournisseurSC1 {
     }
 
     template<class Etat>
-    bool suivant( const Etat &, Local &l, Plan &p ) {
+    bool suivant( const Etat &e, Local &l, Plan &p ) {
         if ( ! l.amorce ) prepare( l );
 
         // ---- l'agregat, en S'ECARTANT de `i0` : approximativement du plus proche au plus loin
@@ -121,6 +123,15 @@ struct FournisseurSC1 {
             if ( l.k < l.fin ) { plan_vers( l.k++, p ); return true; }
             if ( l.ia >= l.na ) return false;
             const int b = l.ann[ l.ia++ ];
+            // L'ANNEAU 1 EST FILTRE, AGREGAT PAR AGREGAT. Sans filtre la phase 1 propose ses ~8
+            // membres plus les ~48 germes de l'anneau 1 et n'en retient qu'une poignee. Rejeter un
+            // agregat entier coute une operation SIMD ; le test est celui d'`Elagage.h`, donc la
+            // cellule obtenue est la MEME -- on n'ecarte que des plans qui ne coupaient rien.
+            //
+            // La phase 2 reste juste : elle saute l'anneau 1 en le supposant « deja dans la
+            // cellule », et un agregat ecarte ici ne coupait deja pas une cellule qui n'a fait que
+            // retrecir depuis.
+            if ( bo && ! peut_couper_boite<POIDS>( e, x0, y0, w0, ( *bo )[ b ] ) ) continue;
             l.k = (int) G->mdeb[ b ]; l.fin = (int) G->mdeb[ b + 1 ];
         }
     }

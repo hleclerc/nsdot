@@ -44,6 +44,7 @@
 // =====================================================================================
 
 #include "spatial_accel/AaBsp.h"
+#include "supercell/Elagage.h"
 #include "supercell/Fournisseurs.h"
 
 #include <immintrin.h>
@@ -92,64 +93,16 @@ struct FournisseurBsp {
     /// Le SIMD est a la charge du fournisseur, et c'est ici qu'il sert : `dist^2( v, B )` est
     /// separable par axe, donc deux `max`, deux `fmadd`, un `vcmpps`. Rien n'est mis en cache, donc
     /// ce fournisseur ne demande meme pas `Etat::change`.
-    /// AVEC POIDS, le meme critere devient : un germe `q` de `B`, de poids `w( q )`, coupe si
-    ///
-    ///     |v - q|^2 - w( q )  <  |v - p0|^2 - w0        pour un sommet v
-    ///
-    /// et `w( q ) <= a . q + b` ( le majorant AFFINE du sous-arbre ). Minorer le membre gauche
-    /// demande donc de minimiser `|v - q|^2 - a . q` sur la boite : c'est separable par axe, le
-    /// minimum libre est en `q = v + a / 2`, et un `clamp` par axe donne la reponse EXACTE.
-    ///
-    /// `<= 0` et non `< 0` : un plan qui passe exactement par un sommet n'enleve rien, donc
-    /// l'admettre coute une coupe inutile la ou le refuser sur un arrondi perdrait une coupe VRAIE.
+    /// AVEC POIDS, `w( q ) <= a . q + b` ( le majorant AFFINE du sous-arbre ) entre dans le meme
+    /// test. Tout est dans `Elagage.h` : les trois fournisseurs posent la meme question.
     template<class Etat>
     bool peut_couper( const typename Arbre::Node &nd, const Etat &e ) const {
-        const float a0 = POIDS ? (float) nd.wm.a[ 0 ] : 0.f;
-        const float a1 = POIDS ? (float) nd.wm.a[ 1 ] : 0.f;
-        const float cb = POIDS ? float( w0 - nd.wm.b ) : 0.f;
-
-        if constexpr ( requires { e.vx + e.vx; } ) {
-            const __m256 lo0 = _mm256_set1_ps( (float) nd.lo[ 0 ] ), hi0 = _mm256_set1_ps( (float) nd.hi[ 0 ] );
-            const __m256 lo1 = _mm256_set1_ps( (float) nd.lo[ 1 ] ), hi1 = _mm256_set1_ps( (float) nd.hi[ 1 ] );
-
-            // le point de la boite le plus proche du sommet, DECALE d'une demi-pente
-            __m256 y0v = e.vx, y1v = e.vy;
-            if constexpr ( POIDS ) {
-                y0v = _mm256_add_ps( y0v, _mm256_set1_ps( 0.5f * a0 ) );
-                y1v = _mm256_add_ps( y1v, _mm256_set1_ps( 0.5f * a1 ) );
-            }
-            y0v = _mm256_min_ps( _mm256_max_ps( y0v, lo0 ), hi0 );
-            y1v = _mm256_min_ps( _mm256_max_ps( y1v, lo1 ), hi1 );
-
-            const __m256 e0 = _mm256_sub_ps( y0v, e.vx ), f0 = _mm256_sub_ps( e.vx, _mm256_set1_ps( x0 ) );
-            const __m256 e1 = _mm256_sub_ps( y1v, e.vy ), f1 = _mm256_sub_ps( e.vy, _mm256_set1_ps( y0 ) );
-            __m256 s = _mm256_fmadd_ps( e0, e0, _mm256_mul_ps( e1, e1 ) );
-            s = _mm256_sub_ps( s, _mm256_fmadd_ps( f0, f0, _mm256_mul_ps( f1, f1 ) ) );
-            if constexpr ( POIDS ) {
-                s = _mm256_fnmadd_ps( _mm256_set1_ps( a0 ), y0v, s );
-                s = _mm256_fnmadd_ps( _mm256_set1_ps( a1 ), y1v, s );
-                s = _mm256_add_ps( s, _mm256_set1_ps( cb ) );
-            }
-            return ( _mm256_cmp_ps_mask( s, _mm256_setzero_ps(), _CMP_LE_OQ )
-                     & ( ( 1u << Etat::nb ) - 1 ) ) != 0;
-        } else {                                         // excursion : l'etat est en memoire
-            const float a[ 2 ] = { a0, a1 };
-            for ( int i = 0; i < e.nb; ++i ) {
-                const float pv[ 2 ] = { e.vx[ i ], e.vy[ i ] };
-                const float p0v[ 2 ] = { x0, y0 };
-                float s = POIDS ? cb : 0.f;
-                for ( int d = 0; d < D; ++d ) {
-                    float y = pv[ d ] + ( POIDS ? 0.5f * a[ d ] : 0.f );
-                    const float lo = (float) nd.lo[ d ], hi = (float) nd.hi[ d ];
-                    y = y < lo ? lo : ( y > hi ? hi : y );
-                    const float u = y - pv[ d ], f = pv[ d ] - p0v[ d ];
-                    s += u * u - f * f;
-                    if constexpr ( POIDS ) s -= a[ d ] * y;
-                }
-                if ( s <= 0 ) return true;
-            }
-            return false;
+        Boite B;
+        for ( int d = 0; d < D; ++d ) { B.lo[ d ] = (float) nd.lo[ d ]; B.hi[ d ] = (float) nd.hi[ d ]; }
+        if constexpr ( POIDS ) {
+            B.a[ 0 ] = (float) nd.wm.a[ 0 ]; B.a[ 1 ] = (float) nd.wm.a[ 1 ]; B.b = (float) nd.wm.b;
         }
+        return peut_couper_boite<POIDS>( e, x0, y0, w0, B );
     }
 
     /// le noeud le plus proche du GERME est visite en premier : les coupes qui mordent le plus

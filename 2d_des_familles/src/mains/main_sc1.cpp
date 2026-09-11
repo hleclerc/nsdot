@@ -123,7 +123,7 @@ template<int D, bool POIDS>
 struct FournisseurSC1Brut {
     struct Local { bool amorce = false; int k = 0, fin = 0, ia = 0, na = 0; int ann[ 24 ]; };
     const Gros<D> *G; int i0, a0; float x0, y0, w0 = 0;
-    FournisseurSC1Brut( const Gros<D> *G, int a0, int i0 )
+    FournisseurSC1Brut( const Gros<D> *G, const void *, int a0, int i0 )
         : G( G ), i0( i0 ), a0( a0 ),
           x0( (float) G->Ppp[0][i0] ), y0( (float) G->Ppp[1][i0] ),
           w0( POIDS ? (float) G->Wp[i0] : 0.f ) {}
@@ -167,7 +167,7 @@ static void passe( const Gros<2> &G, int n, const char *nom, int reps ) {
         for ( SI ag = 0; ag < G.ns; ++ag )
         for ( SI i = G.mdeb[ ag ]; i < G.mdeb[ ag + 1 ]; ++i ) {
             noyau2d::Atelier<MAXNB> at;
-            Espion<Fourn> f{ Fourn( &G, (int) ag, (int) i ), &pi, &nc, &nh, &snb };
+            Espion<Fourn> f{ Fourn( &G, nullptr, (int) ag, (int) i ), &pi, &nc, &nh, &snb };
             noyau2d::etats::moteur( &f, &at );
             if ( at.nb <= 0 ) continue;
             if ( at.nb > 8 ) ++e;
@@ -201,7 +201,7 @@ static void verifie_csr( const Gros<2> &G, int n ) {
     for ( SI ag = 0; ag < G.ns; ++ag )
     for ( SI i = G.mdeb[ ag ]; i < G.mdeb[ ag + 1 ]; ++i ) {
         noyau2d::Atelier<MAXNB> at;
-        noyau2d::FournisseurSC1<2,POIDS> f( &G, (int) ag, (int) i );
+        noyau2d::FournisseurSC1<2,POIDS> f( &G, nullptr, (int) ag, (int) i );
         noyau2d::etats::moteur( &f, &at );
         nb0[ i ] = at.nb;
         if ( at.nb > 0 && at.nb <= 16 )

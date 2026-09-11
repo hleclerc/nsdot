@@ -124,3 +124,21 @@ target( "pd_hwy" )
         add_cxflags( "-O3", "-march=native", "-fno-math-errno", { force = true } )
         add_defines( "NDEBUG" )
     end
+
+-- LE TEMOIN EXTERIEUR. `cgal-dev` n'est pas une dependance du projet : la cible n'existe que si
+-- l'en-tete et les deux bibliotheques exactes sont la, et un `xmake` nu ne la construit pas.
+option( "cgal" )
+    add_cxxincludes( "CGAL/Regular_triangulation_2.h" )
+    add_links( "gmp", "mpfr" )
+option_end()
+
+target( "pd_cgal" )
+    set_kind( "binary" )
+    set_default( false )
+    add_files( "src/mains/main_cgal.cpp" )
+    add_options( "cgal" )
+    set_warnings( "all" )
+    if is_mode( "release" ) then
+        add_cxflags( "-O3", "-march=native", "-fno-math-errno", { force = true } )
+        add_defines( "NDEBUG" )
+    end
