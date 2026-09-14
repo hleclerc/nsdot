@@ -76,11 +76,14 @@ def _array_tag( name, arr, offset, nb_components = 1 ):
              f'format="appended" offset="{ offset }"/>' )
 
 
-def _write_vtu( path, coords, extra, cells, colors, extra_names ):
+def _write_vtu( path, coords, extra, cells, colors, extra_names, radii ):
     """Un fichier `.vtu`.
 
     `coords` : `[n, 3]` la géométrie. `extra` : `[n, k]` les coordonnées au-delà de la 3D, nommées
     par `extra_names`. `cells` : `( types [m], connectivity, offsets )`. `colors` : `[m, 4]` uint8.
+    `radii` : `[m]` le rayon MONDE de chaque cellule -- celui des points (`add_points( radius )`),
+    0 pour tout le reste : de quoi faire un `Glyph` de sphères à leur vraie taille dans ParaView
+    (`Scale Array = radius`, facteur 1), là où la page HTML a son curseur.
     """
     types, conn, offs = cells
     app = _Appended()
@@ -89,6 +92,7 @@ def _write_vtu( path, coords, extra, cells, colors, extra_names ):
     o_offs = app.add( offs.astype( np.int64 ) )
     o_type = app.add( types.astype( np.uint8 ) )
     o_col  = app.add( colors.astype( np.uint8 ) )
+    o_rad  = app.add( radii.astype( np.float32 ) )
     o_extra = [ app.add( np.ascontiguousarray( extra[ :, k ], np.float32 ) )
                 for k in range( extra.shape[ 1 ] ) ]
 
@@ -108,6 +112,7 @@ def _write_vtu( path, coords, extra, cells, colors, extra_names ):
         '      </Cells>',
         '      <CellData Scalars="RGBA">',
         '        ' + _array_tag( "RGBA", colors.astype( np.uint8 ), o_col, 4 ),
+        '        ' + _array_tag( "radius", radii.astype( np.float32 ), o_rad ),
         '      </CellData>',
     ]
     if extra_names:
@@ -128,10 +133,11 @@ def _write_vtu( path, coords, extra, cells, colors, extra_names ):
 
 
 def _frame_mesh( viz, index, axes ):
-    """L'image `index`, mise à plat : sommets, cellules VTK, couleurs.
+    """L'image `index`, mise à plat : sommets, cellules VTK, couleurs, rayons.
 
     Les sommets sont RENUMÉROTÉS : le vivier porte toute la scène, un fichier ne doit contenir que
-    ce que son image utilise.
+    ce que son image utilise. Les POINTS ne passent par aucune boucle Python : une image d'une
+    reconstruction en porte des centaines de milliers, et il y en a une par pas.
     """
     fr   = viz.frame( index )
     pool = viz.positions
@@ -158,9 +164,10 @@ def _frame_mesh( viz, index, axes ):
     for ( a, b ), ci in zip( edges, fr[ "edge_colors" ] ):
         cells.append( ( VTK_LINE, [ remap[ int( a ) ], remap[ int( b ) ] ] ) )
         rgba.append( colors[ int( ci ) ] )
-    for v, ci in zip( pts, fr[ "point_colors" ] ):
-        cells.append( ( VTK_VERTEX, [ remap[ int( v ) ] ] ) )
-        rgba.append( colors[ int( ci ) ] )
+    # les points, vectorisés : `used` est trié, donc le rang d'un sommet s'y cherche par dichotomie
+    pnt_ids = np.searchsorted( used, pts.astype( np.int64 ) ) if len( pts ) else np.zeros( 0, np.int64 )
+    pnt_rgba = colors[ np.asarray( fr[ "point_colors" ], np.int64 ) ].reshape( -1, 4 )
+    pnt_radii = np.asarray( fr[ "point_radii" ], np.float32 ).reshape( -1 )
 
     # polytopes : ils n'ont pas de sommets, on les énumère (la boîte de la scène les borne, sans
     # quoi un polytope ouvert n'aurait rien à montrer).
@@ -181,7 +188,17 @@ def _frame_mesh( viz, index, axes ):
             rgba.append( np.array( [ 0.72 * col[ 0 ], 0.72 * col[ 1 ], 0.72 * col[ 2 ], 1.0 ] ) )
 
     allv = np.concatenate( verts, axis = 0 ) if verts else np.zeros( ( 0, d ) )
-    return allv, cells, ( np.array( rgba ).reshape( -1, 4 ) * 255 ).astype( np.uint8 )
+
+    # les cellules à connectivité libre ( polygones, arêtes ), puis les points en bloc
+    conn  = np.array( [ i for _, ids in cells for i in ids ], np.int64 )
+    sizes = np.array( [ len( ids ) for _, ids in cells ], np.int64 )
+    types = np.array( [ t for t, _ in cells ], np.uint8 )
+    conn  = np.concatenate( [ conn, pnt_ids ] )
+    offs  = np.cumsum( np.concatenate( [ sizes, np.ones( len( pnt_ids ), np.int64 ) ] ), dtype = np.int64 )
+    types = np.concatenate( [ types, np.full( len( pnt_ids ), VTK_VERTEX, np.uint8 ) ] )
+    rgba  = np.concatenate( [ np.array( rgba, np.float64 ).reshape( -1, 4 ), pnt_rgba ], axis = 0 )
+    radii = np.concatenate( [ np.zeros( len( sizes ), np.float32 ), pnt_radii ] )
+    return allv, ( types, conn, offs ), ( rgba * 255 ).astype( np.uint8 ), radii
 
 
 def write_vtk( viz, filename, axes = ( 0, 1, 2 ) ):
@@ -196,16 +213,12 @@ def write_vtk( viz, filename, axes = ( 0, 1, 2 ) ):
     extra_names = [ f"x{ k }" for k in rest ]
 
     def one( index, out ):
-        allv, cells, rgba = _frame_mesh( viz, index, axes )
+        allv, cells, rgba, radii = _frame_mesh( viz, index, axes )
         coords = np.zeros( ( len( allv ), 3 ), np.float32 )
         for j, a in enumerate( axes ):
             coords[ :, j ] = allv[ :, a ]
         extra = ( allv[ :, rest ] if rest else np.zeros( ( len( allv ), 0 ) ) ).astype( np.float32 )
-
-        conn = np.array( [ i for _, ids in cells for i in ids ], np.int64 )
-        offs = np.cumsum( [ len( ids ) for _, ids in cells ], dtype = np.int64 )
-        types = np.array( [ t for t, _ in cells ], np.uint8 )
-        return _write_vtu( out, coords, extra, ( types, conn, offs ), rgba, extra_names )
+        return _write_vtu( out, coords, extra, cells, rgba, extra_names, radii )
 
     if viz.nb_frames == 1:
         return one( 0, path.with_suffix( ".vtu" ) )

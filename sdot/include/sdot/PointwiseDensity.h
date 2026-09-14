@@ -183,6 +183,23 @@ struct PointwiseDensity {
         return res;
     }
 
+    /// les moments d'ordre 0, 1, 2 de la densité sur le simplexe, ACCUMULÉS dans `m` / `mx` / `m2`
+    /// -- la même règle, sur les mêmes feuilles, chaque noeud pesant `vol / ( d + 1 ) * rho( x )`.
+    void integrate_moments_over_simplex( const auto &pts, TF &m, auto &mx, TF &m2 ) const {
+        for_each_leaf( pts, [&]( const Bary &b, TF ) {
+            const auto P = points_of( b, pts );
+            const TF det = edge_matrix( P ).determinant();
+            const TF w = ( det < 0 ? -det : det ) / factorial() / ( ct_dim + 1 );
+            for ( SI q = 0; q <= ct_dim; ++q ) {
+                const auto x = node( P, q );
+                const TF r = w * dens.value_at( x );
+                m += r;
+                mx += r * x;
+                m2 += r * norm_2_p2( x );
+            }
+        } );
+    }
+
     void integrate_over_simplex_bwd( const auto &pts, TF g, auto &&grad_pts, auto &&grad_dist ) const {
         for_each_leaf( pts, [&]( const Bary &b, TF /*v*/ ) {
             auto gl = Vector<Vector<TF,ct_dim>,ct_dim+1>( Function(), []( PI ) {

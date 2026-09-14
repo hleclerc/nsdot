@@ -14,6 +14,10 @@ struct Image {
     SCInt  ct_dim       = DECAYED_TYPE_OF( nb_dims )::value;
     using  TF           = DECAYED_TYPE_OF( values )::TF;
 
+    /// cette distribution DECOUPE la cellule en morceaux ( un par pave ) : l'integrateur lui
+    /// reserve une cellule de rechange dans le scratch ( `PowerDiagram::nb_work_cells` )
+    static constexpr bool cuts_pieces = true;
+
     // build a FULLY-POPULATED image -- each of `origin` / `frame` / `knots` that is unbound
     // (a `NoneTensor`) replaced by its documented default -- and hand it to `cont`. Lets the
     // methods below be written ONCE against a complete image instead of gating on `is_valid()`.

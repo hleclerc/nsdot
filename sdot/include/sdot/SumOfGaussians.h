@@ -68,6 +68,12 @@ struct SumOfGaussians {
     // sliver rasant).
     static constexpr bool is_constant = false;
 
+    /// les moments ( `diagram::integrate_moments_into` ) : la réduction exacte ne les donne pas, c'est
+    /// la quadrature adaptative de `PointwiseDensity` qui les accumule, en 2D comme ailleurs.
+    void integrate_moments_over_simplex( const auto &pts, TF &m, auto &mx, TF &m2 ) const {
+        PointwiseDensity{ *this }.integrate_moments_over_simplex( pts, m, mx, m2 );
+    }
+
     static constexpr TF  tail_cut   = 8;    ///< `exp( -t^2/2 ) < 1e-14` au-delà : la queue est exacte
     static constexpr int nb_panels  = 4;    ///< panneaux de Gauss-Legendre sur le coeur
 

@@ -1,62 +1,56 @@
 #pragma once
 
 #include <loom/support/common_macros.h>
+#include "cell/Ids.h"
 
 namespace sdot {
 
-// De quoi DÉCOUPER une cellule en morceaux : deux cellules de rechange entre lesquelles faire la
-// navette, et la table de compaction que leurs coupes demandent au-delà de 2D.
+// De quoi DECOUPER une cellule en morceaux : UNE cellule de rechange, dans la forme locale, posee
+// sur le scratch du work-item par l'appelant ( `PowerDiagram::measures` ). C'est le seul « scratch »
+// que le contrat d'une distribution prevoit ( voir `distributions/Distribution.py` ).
 //
-// C'est le seul « scratch » que le contrat d'une distribution prévoit (voir
-// `distributions/Distribution.py`), et il est fourni par l'APPELANT -- `PowerDiagram::measures`,
-// qui l'alloue par work-item comme tout le reste. Une distribution ne demande donc pas de la
-// mémoire : elle dit seulement, DEPUIS PYTHON, combien de coupes de plus qu'une cellule un de ses
-// morceaux peut porter (`extra_cuts_per_piece`), et ces deux cellules-là sont dimensionnées en
-// conséquence.
+// La cellule SOURCE n'est jamais touchee : `start` la recopie dans `piece` et coupe, les coupes
+// suivantes coupent `piece` en place. C'est ce qui permet d'ouvrir un morceau apres l'autre a
+// partir de la meme cellule.
 //
-// La cellule SOURCE n'est jamais touchée : `start` la lit et écrit dans `a`, les coupes suivantes
-// font la navette `a <-> b`. C'est ce qui permet d'ouvrir un morceau après l'autre à partir de la
-// même cellule sans jamais la copier.
-//
-// `a` et `b` ont chacun leur PROPRE paramètre de template, et non un seul pour les deux : deux
-// instances Python distinctes d'un même agrégat peuvent très bien arriver ici avec des types C++
-// distincts. C'est aussi pourquoi on n'expose pas de `current()` (il n'y aurait pas de type de
-// retour commun) mais `with_current( func )`, qui branche sur la parité et appelle en place.
-template<class TA,class TB,class TR>
+// Les plans de decoupe portent `cell_ids::PIECE` : « pas un germe », et c'est exactement ce que
+// l'adjoint lit pour savoir que leur part ne va nulle part ( `PowerDiagram::scatter_cell_grad` ).
+template<class Local>
 struct PieceWorkspace {
-    TA   a;
-    TB   b;
-    TR   corr;
-    bool in_a = true;   ///< la parité de la navette ; `start` la remet à zéro
+    using TK = typename Local::TKernel;
+    static constexpr int D = Local::ct_dim;
 
-    /// Ouvre un morceau : `src` (qui ne bouge pas) coupé par `direction . x <= offset`, dans `a`.
-    /// Rend `false` si le résultat n'a pas tenu (voir `Cell::cut` : rien n'est écrit, la capacité
-    /// manquante est enregistrée, l'hôte relance avec le double).
-    bool start( const auto &src, const auto &direction, auto offset, SI cut_id ) {
-        in_a = true;
-        return _cut( src, a, direction, offset, cut_id );
+    Local &piece;
+    bool  overflow = false;   ///< une coupe n'a pas tenu : l'appelant le signale, le resultat sera jete
+
+    /// ouvre un morceau : `src` coupe par `direction . x <= offset`. Rend `false` s'il n'a pas tenu.
+    bool start( const Local &src, const auto &direction, auto offset ) {
+        if ( ! piece.copy_from( src ) ) {
+            overflow = true;
+            return false;
+        }
+        return cut( direction, offset );
     }
 
-    /// Une coupe de plus sur le morceau en cours.
-    bool cut( const auto &direction, auto offset, SI cut_id ) {
-        if ( in_a ) { in_a = false; return _cut( a, b, direction, offset, cut_id ); }
-        in_a = true;  return _cut( b, a, direction, offset, cut_id );
+    /// une coupe de plus sur le morceau en cours
+    bool cut( const auto &direction, auto offset ) {
+        typename Local::PlaneT p;
+        for ( int d = 0; d < D; ++d )
+            p.dir[ d ] = TK( direction[ d ] );
+        p.off = TK( offset );
+        p.id  = cell_ids::PIECE;
+        if ( piece.cut( p ) == CutStatus::OVERFLOW ) {
+            overflow = true;
+            return false;
+        }
+        return true;
     }
 
-    /// Le morceau courant, passé à `func` (pas rendu : `a` et `b` n'ont pas le même type).
-    void with_current( auto &&func ) const { if ( in_a ) func( a ); else func( b ); }
+    /// le morceau courant
+    void with_current( auto &&func ) const { func( piece ); }
 
-    /// 0 = le morceau est vide (le pavé ne rencontre pas la cellule) -- pas une anomalie.
-    SI nb_vertices() const { return in_a ? SI( a.nb_vertices ) : SI( b.nb_vertices ); }
-
-    bool _cut( const auto &src, auto &dst, const auto &direction, auto offset, SI cut_id ) {
-        // les deux régimes de `Cell::cut` : au-delà de 2D le clip réécrit le treillis de faces et
-        // le COMPACTE, d'où `corr` ; en deçà, un seul passage cyclique et rien à tabuler.
-        if constexpr ( DECAYED_TYPE_OF( src )::ct_dim > 2 )
-            return src.cut( dst, direction, offset, cut_id, corr );
-        else
-            return src.cut( dst, direction, offset, cut_id );
-    }
+    /// 0 = le morceau est vide ( le pave ne rencontre pas la cellule ) -- pas une anomalie
+    SI nb_vertices() const { return piece.nb_vertices(); }
 };
 
 } // namespace sdot

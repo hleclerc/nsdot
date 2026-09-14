@@ -102,7 +102,7 @@ class AaBsp( SpatialAccelerator ):
     # qu'au DERNIER niveau -- un nœud qui n'a plus rien à couper passe sa tranche entière à son fils
     # gauche et rien au droit (voir `_build_in_kernel`), de sorte qu'un fils VIDE (`begin == end`)
     # est la
-    # seule autre chose à distinguer, ce que `for_each_candidate` fait en deux lectures d'entier.
+    # seule autre chose à distinguer, ce que `FournisseurBsp::suivant` fait en deux lectures d'entier.
     node_left    : IntTensor[ "num_bsp_node" ]
     node_right   : IntTensor[ "num_bsp_node" ]
     node_begin   : IntTensor[ "num_bsp_node" ]
@@ -161,7 +161,12 @@ class AaBsp( SpatialAccelerator ):
         if int( pos.shape[ 0 ] ) == 0:
             raise ValueError( "an accelerator over no seed at all has nothing to accelerate" )
 
-        tree = _build_in_kernel( pos, w, int( max_seeds_per_leaf ) )
+        # des poids TRACÉS, en revanche, passent : ils n'entrent que dans le majorant, et la FORME de
+        # l'arbre ne dépend que des positions. L'arbre est donc bâti sans eux ( ses `mid` restent
+        # lisibles côté hôte, même sous un `jit` ), et le majorant est refait ensuite, en un kernel
+        # qui accepte les traceurs ( `refresh_weight_majorants` )
+        traced_w = w is not None and driver.is_traced( w )
+        tree = _build_in_kernel( pos, None if traced_w else w, int( max_seeds_per_leaf ) )
 
         # la profondeur, qui est EXACTEMENT `max_depth_for( n, leaf )` : l'arbre a désormais la
         # forme fixe que ce majorant décrivait (voir `_build_in_kernel`). C'est elle qui dimensionne
@@ -188,6 +193,10 @@ class AaBsp( SpatialAccelerator ):
             kwargs[ "node_wb" ] = tree[ "node_wb" ]
 
         self.__base_init__( nb_dims = int( pos.shape[ 1 ] ), nb_lohi = 2, **kwargs )
+
+        if traced_w:
+            order = tree[ "seed_indices" ]
+            self.refresh_weight_majorants( getattr( pos, "raw", pos )[ order ], w[ order ] )
 
 
     @staticmethod
@@ -221,7 +230,8 @@ class AaBsp( SpatialAccelerator ):
         # y bâtit donc son arbre sans que le nuage ne redescende -- et il redescendait deux fois,
         # une par `np.asarray` et une par le ré-upload.
         pos = power_diagram.positions.raw
-        w = power_diagram.weights.raw if power_diagram.weights.is_defined else None
+        w = power_diagram.weights
+        w = w.raw if w.is_defined else None
         return cls( pos, w, max_seeds_per_leaf = max_seeds_per_leaf )
 
 
@@ -230,19 +240,52 @@ class AaBsp( SpatialAccelerator ):
     def nb_seeds( self ):
         return int( self.nb_bsp_seeds.value )
 
-    def thread_scratch( self, num_thread ):
-        """La pile de la descente : un entier par niveau de l'arbre, par work-item.
+    def rank_of_seeds( self ):
+        """l'inverse de `seed_indices` : le RANG ( dans l'ordre de l'arbre ) du germe `i`"""
+        order = np.asarray( self.seed_indices ).reshape( -1 ).astype( np.int64 )
+        rank = np.empty_like( order )
+        rank[ order ] = np.arange( len( order ) )
+        return rank
 
-        `max_depth + 2` et pas `max_depth` : on dépile un nœud pour en empiler deux, donc la pile
-        gagne un cran par niveau descendu, et il faut la place de la racine plus celle du dernier
-        frère empilé. C'est une borne EXACTE -- rien à doubler ici. Et elle ne demande même pas
-        d'avoir vu les points : `max_depth` vaut toujours `max_depth_for( n, leaf_size )`.
+    # -- ce qui se refait sans rebâtir --------------------------------------------------------------
+
+    def refresh_weight_majorants( self, sorted_positions, sorted_weights ):
+        """Le majorant affine des poids de CHAQUE nœud, refait sur des poids neufs -- les germes
+        étant donnés DANS L'ORDRE DE L'ARBRE ( ce que `PowerDiagram_Bsp` stocke ), une tranche par
+        nœud. Un kernel, un work-item par nœud ( `AaBsp.h::refresh_majorant` ).
+
+        C'est ce qui rend un arbre RÉUTILISABLE quand seuls les poids changent ( un pas de `OtPlan`,
+        où les positions sont les constantes du problème ) : la forme de l'arbre ne dépend que des
+        positions, et la seule chose qui parle des poids est ce majorant. Il accepte des poids
+        TRACÉS ( les nœuds sortent alors tracés eux aussi ) et coupe le gradient : le majorant est
+        un objet de l'ÉLAGAGE, qui ne change pas le résultat -- sa dérivée juste est zéro.
         """
-        num_slot = Axis( ShapeVar( self.max_depth + 2 ), name = "num_bsp_stack" )
-        return IntTensor[ num_thread, num_slot ]()
+        nb_nodes = int( self.nb_bsp_nodes.value )
+        num_node = new_batch_axis( nb_nodes, prefix = "bspnode" )
+        maj = _NodeMajorant( nb_dims = int( self.nb_dims.value ), batch_axes = [ num_node ] )
 
-    def bytes_per_thread( self ):
-        return 8 * ( self.max_depth + 2 )
+        # le gradient est coupé À L'ENTRÉE : un kernel sans adjoint sous `driver.grad` est une
+        # erreur, et celui-ci n'a rien à propager ( voir ci-dessus )
+        cloud = _BspCloud( nb_dims = int( self.nb_dims.value ),
+                           positions = driver.stop_gradient( getattr( sorted_positions, "raw", sorted_positions ) ),
+                           weights = driver.stop_gradient( getattr( sorted_weights, "raw", sorted_weights ) ) )
+
+        # l'arbre n'est PAS un argument : ses majorants courants sont ce qu'on remplace, et sous
+        # une trace ils peuvent être des traceurs d'une trace close ( voir `OtPlan` ). Seules les
+        # tranches entrent.
+        driver.call(
+            FfiCodeParallel( name = "bsp_refresh_majorants",
+                includes = [ "sdot/bsp_build_level.h" ],
+                fwd_code = "bsp_refresh_majorant( cloud, node_begin( batch_index ), node_end( batch_index ), "
+                           "maj.wa( batch_index ), maj.wb( batch_index ) );" ),
+            output_attributes = [ "maj" ],
+            has_dynamic_capacity = False,
+            cloud = cloud, maj = maj,
+            node_begin = IntTensor[ num_node ]( np.asarray( self.node_begin ).reshape( -1 ) ),
+            node_end   = IntTensor[ num_node ]( np.asarray( self.node_end ).reshape( -1 ) ),
+        )
+        self.node_wa = maj.wa.raw
+        self.node_wb = maj.wb.raw
 
 
 def _weight_majorant( pos, w ):
@@ -321,6 +364,17 @@ class _BspCloud( Aggregate ):
 
     nb_points : ShapeVar
     nb_dims   : CtShapeVar
+
+
+class _NodeMajorant( Aggregate ):
+    """le majorant affine des poids d'UN nœud, `w( y ) <= wa . y + wb` -- batché sur les nœuds
+    quand on les refait tous ( `AaBsp.refresh_weight_majorants` )"""
+
+    wa    : RealTensor[ "dim" ]
+    wb    : RealTensor
+
+    dim      : Axis[ "nb_dims" ]
+    nb_dims  : CtShapeVar
 
 
 class _BspLevel( Aggregate ):

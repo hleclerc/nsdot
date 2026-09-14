@@ -5,7 +5,7 @@
 #include <loom/support/containers/Vector.h>           // Vector<TF,d>::zeros()          -- default `origin`
 #include <loom/support/containers/Matrix.h>
 #include <loom/support/atomic_add.h>
-#include "Cell/CellBoundary.h"
+#include "cell/Ids.h"
 #include "ConstantDensity.h"
 #include "CstUdPiece.h"
 #include "Image.h"
@@ -102,7 +102,7 @@ UTP void DTP::_for_each_piece( const auto &cell, auto &&ws, auto &&func ) const 
     constexpr int d = ct_dim;
     static_assert( d >= 1 );
 
-    if ( SI( cell.nb_vertices ) == 0 )
+    if ( cell.nb_vertices() == 0 )
         return;
 
     // ---- les plans de la grille, en coordonnées PHYSIQUES.
@@ -126,7 +126,7 @@ UTP void DTP::_for_each_piece( const auto &cell, auto &&ws, auto &&func ) const 
     // JUSTE (l'image est à support compact, donc l'intégrale est finie même sur une cellule
     // infinie) et se paie en temps seulement -- un domaine (`box = ...`) supprime le cas.
     Vector<SI,d> k0, k1;
-    const bool bounded = bool( cell.is_fully_bounded );
+    const bool bounded = cell.bounded();
     for ( PI a = 0; a < d; ++a ) {
         const SI nb = SI( values.shape( a ) );
         if ( nb <= 0 )
@@ -137,12 +137,12 @@ UTP void DTP::_for_each_piece( const auto &cell, auto &&ws, auto &&func ) const 
             continue;
         }
 
-        const SI nv = cell.nb_vertices;
+        const SI nv = cell.nb_vertices();
         TF t_min = 0, t_max = 0;
         for ( SI v = 0; v < nv; ++v ) {
             TF t = - shift[ a ];
             for ( PI c = 0; c < d; ++c )
-                t += nrm[ a ][ c ] * TF( cell.vertex_positions( v, c ) );
+                t += nrm[ a ][ c ] * TF( cell.coord( int( v ), int( c ) ) );
             if ( v == 0 || t < t_min ) t_min = t;
             if ( v == 0 || t > t_max ) t_max = t;
         }
@@ -173,15 +173,15 @@ UTP void DTP::_for_each_piece( const auto &cell, auto &&ws, auto &&func ) const 
             const TF lo = TF( knots( a, k[ a ] ) ) + shift[ a ];
             const TF hi = TF( knots( a, k[ a ] + 1 ) ) + shift[ a ];
 
-            // `cut_id = BOUNDARY` : ces plans-là ne font face à aucun germe, et c'est exactement ce
+            // ces plans-là portent `PIECE` : ils ne font face à aucun germe, et c'est exactement ce
             // que l'adjoint lit pour savoir que leur part ne va nulle part (voir
             // `PowerDiagram::scatter_cell_grad`).
-            fitted = ( a == 0 ) ? ws.start( cell, nrm[ a ], hi, CellBoundary::BOUNDARY )
-                                : ws.cut  (       nrm[ a ], hi, CellBoundary::BOUNDARY );
+            fitted = ( a == 0 ) ? ws.start( cell, nrm[ a ], hi )
+                                : ws.cut  (       nrm[ a ], hi );
             if ( ! fitted ) break;
             if ( ws.nb_vertices() == 0 ) { alive = false; break; }
 
-            fitted = ws.cut( - nrm[ a ], - lo, CellBoundary::BOUNDARY );
+            fitted = ws.cut( - nrm[ a ], - lo );
             if ( ! fitted ) break;
             if ( ws.nb_vertices() == 0 ) { alive = false; break; }
         }

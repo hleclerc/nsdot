@@ -3,7 +3,13 @@ import numpy
 from loom import driver
 from loom.testing import bench, check_grad, test, experiment, Param
 
-from sdot import AaBsp, Image, PowerDiagram, SumOfGaussians, Visualizer, Voronoi, box_half_spaces
+from sdot import AaBsp, Image, PowerDiagram, SumOfGaussians, Visualizer, Voronoi, box_half_spaces, set_kernel_dtype
+
+# La géométrie se coupe en FP32 par défaut ( voir `Cell.py` ), ce qui suffit à un transport optimal
+# mais pas à comparer une somme de mesures à 1e-10 ni une jacobienne à 1e-9 : les tests de
+# JUSTESSE tournent avec le noyau en double, et le noyau `float` a ses tests à lui plus bas
+# ( « the_float_kernel_* » ), aux tolérances qui sont les siennes.
+set_kernel_dtype( "FP64" )
 
 
 def _measures( v ):
@@ -134,15 +140,15 @@ if test( "more_seeds_than_work_items" ):
     assert abs( float( m.sum() ) - 1 ) < 1e-9
 
 if test( "a_capacity_too_small_is_grown_and_retried" ):
-    # `max_nb_cuts` n'est qu'une supposition. Trop petite, le kernel enregistre ce qu'il aurait
+    # `scratch_capacity` n'est qu'une supposition. Trop petite, le kernel enregistre ce qu'il aurait
     # fallu et n'écrit rien de faux ; la plateforme réserve le double et relance (`driver.call`).
     # Le résultat doit être le MÊME que celui obtenu d'emblée avec de la place.
     d, n = 3, 30
     rng = numpy.random.default_rng( 8 )
     pos = rng.uniform( 0.1, 0.9, size = ( n, d ) )
     box = ( numpy.zeros( d ), numpy.ones( d ) )
-    tight = _measures( Voronoi( pos, boundaries = box_half_spaces( *box ), max_nb_cuts = 5 ) )
-    roomy = _measures( Voronoi( pos, boundaries = box_half_spaces( *box ), max_nb_cuts = 64 ) )
+    tight = _measures( Voronoi( pos, boundaries = box_half_spaces( *box ), scratch_capacity = 4 ) )
+    roomy = _measures( Voronoi( pos, boundaries = box_half_spaces( *box ), scratch_capacity = 128 ) )
     assert numpy.allclose( tight, roomy )
     assert abs( float( tight.sum() ) - 1 ) < 1e-10
 
@@ -314,18 +320,18 @@ def _facets_2d( pd, n ):
     """
     cs = pd.cells
     nvs = numpy.asarray( cs.nb_vertices.value ).reshape( -1 )
-    vps = numpy.asarray( cs.vertex_positions )
-    cis = numpy.asarray( cs.cut_ids )
+    cis = numpy.asarray( cs.cut_ids.raw )
 
     length = numpy.zeros( ( n, n ) )
     middle = numpy.zeros( ( n, n, 2 ) )
     for i in range( n ):
         nv = int( nvs[ i ] )
+        vp = cs.vertices( i )
         for c in range( nv ):
             j = int( cis[ i, c ] )
             if j < 0:                       # le domaine : une constante, sans part de gradient
                 continue
-            a, b = vps[ i, c ], vps[ i, ( c + 1 ) % nv ]
+            a, b = vp[ c ], vp[ ( c + 1 ) % nv ]
             length[ i, j ] = float( numpy.linalg.norm( b - a ) )
             middle[ i, j ] = ( a + b ) / 2
     return length, middle
@@ -457,15 +463,14 @@ if test( "cells_are_the_cells" ):
 
         cs = v.cells
         nvs = numpy.asarray( cs.nb_vertices.value )
-        vps = numpy.asarray( cs.vertex_positions )
         for i in range( len( pos ) ):
             ref = v.cell( i )
             nv = int( ref.nb_vertices.value )
             assert nvs[ i ] == nv, ( d, i, nvs[ i ], nv )
             # en ORDRE quelconque : les deux chemins n'appliquent pas les coupes dans le même
             # ordre, donc la numérotation des sommets n'a aucune raison de coïncider.
-            a = numpy.sort( numpy.asarray( ref.vertex_positions )[ : nv ].round( 9 ), axis = 0 )
-            b = numpy.sort( vps[ i, : nv ].round( 9 ), axis = 0 )
+            a = numpy.sort( ref.vertices().round( 9 ), axis = 0 )
+            b = numpy.sort( cs.vertices( i ).round( 9 ), axis = 0 )
             assert numpy.allclose( a, b ), ( d, i )
 
 if test( "cells_measure_like_measures" ):
@@ -485,7 +490,7 @@ if test( "cells_of_an_unbounded_diagram" ):
     # et c'est l'affichage qui sait quoi en faire (cf. `Cell.add_to_viz`). Ce qui doit tenir ici
     # est que le drapeau dise vrai -- une cellule intérieure est bornée, une du bord ne l'est pas.
     pos = numpy.array( [ [ x, y ] for x in ( 0.25, 0.5, 0.75 ) for y in ( 0.25, 0.5, 0.75 ) ] )
-    bounded = numpy.asarray( Voronoi( pos ).cells.is_fully_bounded ).reshape( -1 )
+    bounded = numpy.asarray( Voronoi( pos ).cells.is_bounded ).reshape( -1 )
     assert bounded[ 4 ] == 1                    # celle du centre, entourée
     assert bounded.sum() == 1                   # les huit autres partent à l'infini
 
@@ -521,14 +526,14 @@ def _cut_sets( pd ):
     """
     cs = pd.cells
     nbc = numpy.asarray( cs.nb_cuts.value ).reshape( -1 )
-    ids = numpy.asarray( cs.cut_ids )
+    ids = numpy.asarray( cs.cut_ids.raw )
     return [ frozenset( int( j ) for j in ids[ i, : int( nbc[ i ] ) ] if j >= 0 )
              for i in range( len( nbc ) ) ]
 
 
 def _both_ways( pos, weights = None, boundaries = None, **kwargs ):
     """Le même diagramme, une fois en balayage complet et une fois accéléré."""
-    plain = PowerDiagram( pos, weights = weights, boundaries = boundaries )
+    plain = PowerDiagram( pos, weights = weights, boundaries = boundaries, accelerator = "plain" )
     acc = AaBsp.of( plain, **kwargs )
     return plain, PowerDiagram( pos, weights = weights, boundaries = boundaries, accelerator = acc )
 
@@ -748,7 +753,7 @@ if test( "an_unbounded_diagram_falls_back_to_the_full_sweep" ):
     # exprès (voir `cell_may_be_cut`).
     rng = numpy.random.default_rng( 460 )
     pos = rng.uniform( 0, 1, size = ( 30, 2 ) )
-    plain = PowerDiagram( pos )
+    plain = PowerDiagram( pos, accelerator = "plain" )
     fast = PowerDiagram( pos, accelerator = AaBsp.of( plain ) )
     a, b = _measures( plain ), _measures( fast )
     # `Cell::measure` dit « infinie » par `TF::max`, comme partout ailleurs
@@ -764,30 +769,41 @@ if test( "a_domain_that_is_not_a_box_is_accelerated_too" ):
     rng = numpy.random.default_rng( 470 )
     pos = rng.uniform( 0.05, 0.4, size = ( 50, 2 ) )
     bnd = ( numpy.array( [ [ -1.0, 0 ], [ 0, -1.0 ], [ 1.0, 1.0 ] ] ), numpy.array( [ 0.0, 0.0, 1.0 ] ) )
-    plain = PowerDiagram( pos, boundaries = bnd )
+    plain = PowerDiagram( pos, boundaries = bnd, accelerator = "plain" )
     fast = PowerDiagram( pos, boundaries = bnd, accelerator = AaBsp.of( plain ) )
     assert numpy.allclose( _measures( plain ), _measures( fast ), atol = 1e-9 )
     assert abs( float( _measures( fast ).sum() ) - 0.5 ) < 1e-9
 
 
 if test( "an_accelerator_built_on_other_weights_is_still_right" ):
-    # le majorant n'est qu'une BORNE : le construire sur d'autres poids que ceux du diagramme
-    # élague moins bien mais ne peut pas mentir... à condition qu'il majore encore. Ici on
-    # accélère un diagramme AVEC poids par un arbre construit SANS -- donc un majorant nul, qui
-    # ne majore plus rien -- et par un arbre construit sur des poids plus grands, qui majore.
+    # un arbre venu de l'extérieur a pu être bâti sur d'autres poids, ou sans : le diagramme refait
+    # son majorant sur SES poids ( `PowerDiagram_Bsp._init_seeds` ), et c'est ce qui le rend juste
+    # -- un majorant nul, ou trop bas, tairait des coupes. Un arbre bâti SANS poids porte donc un
+    # diagramme AVEC, et un arbre bâti sur d'autres poids aussi.
     rng = numpy.random.default_rng( 480 )
     pos = rng.uniform( 0.02, 0.98, size = ( 70, 2 ) )
     w = rng.uniform( -0.03, 0.03, 70 )
     box = ( [ 0, 0 ], [ 1, 1 ] )
-    ref = _measures( PowerDiagram( pos, weights = w, boundaries = box_half_spaces( *box )) )
+    ref = _measures( PowerDiagram( pos, weights = w, boundaries = box_half_spaces( *box ), accelerator = "plain" ) )
 
-    generous = PowerDiagram( pos, weights = w, boundaries = box_half_spaces( *box ),
-                             accelerator = AaBsp( pos, w + 0.05 ) )     # majore : correct
-    assert numpy.allclose( ref, _measures( generous ), atol = 1e-9 )
+    bare = AaBsp( pos )
+    assert bare.node_wa.is_undefined                       # sans poids, pas de majorant du tout
+    no_w = PowerDiagram( pos, weights = w, boundaries = box_half_spaces( *box ), accelerator = bare )
+    assert bare.node_wa.is_defined                         # ... jusqu'à ce qu'un diagramme en ait besoin
+    assert numpy.allclose( ref, _measures( no_w ), atol = 1e-9 )
 
-    # et l'arbre sans poids, lui, n'est PAS un majorant valide : on ne le teste que pour dire
-    # qu'il ne l'est pas -- c'est pour cela que `AaBsp.of` existe.
-    assert AaBsp( pos ).node_wa.is_undefined
+    other = PowerDiagram( pos, weights = w, boundaries = box_half_spaces( *box ),
+                          accelerator = AaBsp( pos, w - 0.05 ) )     # bâti trop bas : refait
+    assert numpy.allclose( ref, _measures( other ), atol = 1e-9 )
+
+    # et poser des poids neufs sur un diagramme existant refait le majorant sans rebâtir l'arbre
+    tree = other.tree
+    other.weights = w[ ::-1 ].copy()
+    assert other.tree is tree
+    ref2 = _measures( PowerDiagram( pos, weights = w[ ::-1 ], boundaries = box_half_spaces( *box ), accelerator = "plain" ) )
+    assert numpy.allclose( ref2, _measures( other ), atol = 1e-9 )
+    assert numpy.allclose( numpy.asarray( other.weights ).reshape( -1 ), w[ ::-1 ] )
+    assert numpy.allclose( numpy.asarray( other.positions ).reshape( -1, 2 ), pos )
 
 
 if test( "the_accelerator_changes_nothing_to_the_derivatives" ):
@@ -847,7 +863,8 @@ if p := bench( "pd accelerated",
                weights   = Param( 0, help = "1 pour un diagramme de puissance" ),
                plain     = Param( 1, help = "0 pour ne PAS chronométrer le balayage complet" ),
                reps      = Param( 3, help = "répétitions chronométrées (on garde le minimum)" ),
-               seed      = Param( 0, help = "graine du tirage" ) ):
+               seed      = Param( 0, help = "graine du tirage" ),
+               kernel    = Param( "FP32", help = "le flottant du noyau ( FP32 ou FP64 )" ) ):
     # Une vraie boucle, et le MINIMUM : les noms d'axes de batch sont empruntés à une réserve
     # (`loom.tensor.batch`), donc deux appels identiques produisent la même source C++ et le second
     # touche le cache de compilation. Le premier appel de chaque variante compile encore -- d'où
@@ -876,9 +893,18 @@ if p := bench( "pd accelerated",
     t_build = time.perf_counter() - t
 
     def run( acc ):
+        # le diagramme est bâti UNE fois ( ranger les germes dans l'ordre de l'arbre, refaire le
+        # majorant : `t_ctor` ) ; ce qu'on chronomètre est ce qu'un pas d'ajustement paie, poser
+        # les poids et mesurer -- sans poids, mesurer seulement.
+        t = time.perf_counter()
+        pd = PowerDiagram( pos, weights = w, boundaries = box_half_spaces( *box ), accelerator = acc,
+                           kernel_dtype = p.kernel )
+        p.results[ f"t_ctor_{ acc if isinstance( acc, str ) else 'bsp' }" ] = time.perf_counter() - t
         def once():
             t = time.perf_counter()
-            m = numpy.asarray( PowerDiagram( pos, weights = w, boundaries = box_half_spaces( *box ), accelerator = acc ).measures.tensor )
+            if w is not None:
+                pd.weights = w
+            m = numpy.asarray( pd.measures.tensor )
             return time.perf_counter() - t, m.reshape( -1 )
         once()                                          # chauffe : c'est celui-là qui compile
         best, m = once()
@@ -898,7 +924,7 @@ if p := bench( "pd accelerated",
     p.results[ "ns_per_seed" ] = t_acc / n * 1e9
 
     if p.plain:
-        t_plain, m_plain = run( None )
+        t_plain, m_plain = run( "plain" )
         p.results[ "t_plain" ] = t_plain
         p.results[ "speedup" ] = t_plain / t_acc
         p.results[ "max_abs_diff" ] = float( numpy.abs( m_plain - m_acc ).max() )
@@ -1280,8 +1306,8 @@ if test( "the_support_of_a_distribution_bounds_the_cells" ):
     # les cellules elles-mêmes sont bornées, ce qui est ce qu'un accélérateur demande pour élaguer
     # (`cell_may_be_cut` n'a rien à mordre sur une cellule infinie) -- et ce que le découpage
     # demande pour avoir une boîte englobante à lire.
-    assert numpy.asarray( free.cells.is_fully_bounded ).reshape( -1 ).all()
-    assert not numpy.asarray( PowerDiagram( pos ).cells.is_fully_bounded ).reshape( -1 ).all()
+    assert numpy.asarray( free.cells.is_bounded ).reshape( -1 ).all()
+    assert not numpy.asarray( PowerDiagram( pos ).cells.is_bounded ).reshape( -1 ).all()
 
 
 if test( "the_support_intersects_a_given_domain" ):
@@ -1447,10 +1473,9 @@ def _brute_force_cell_integrals( pd, centers, sigmas, weights, depth = 5 ):
     même des deux côtés."""
     cs = pd.cells
     nvs = numpy.asarray( cs.nb_vertices.value ).reshape( -1 )
-    vps = numpy.asarray( cs.vertex_positions )
     res = numpy.zeros( len( nvs ) )
     for i in range( len( nvs ) ):
-        v = vps[ i, : int( nvs[ i ] ) ]
+        v = cs.vertices( i )
         for k in range( 1, len( v ) - 1 ):      # éventail depuis le sommet 0, comme le kernel
             res[ i ] += _fine_triangle_integral( v[ 0 ], v[ k ], v[ k + 1 ],
                                                  centers, sigmas, weights, depth )
@@ -1620,3 +1645,46 @@ if test( "the_subdivided_quadrature_derives_right" ):
         check_grad( lambda c, s, q: PowerDiagram( pos, boundaries = box_half_spaces( mi, ma ),
                         distribution = SumOfGaussians( positions = c, sigmas = s, weights = q ) ).measures,
                     centers, sigmas, weights, **_tol( by_dist ) )
+
+
+# -- le noyau `float`, qui est le défaut --------------------------------------------------------
+# La géométrie se coupe en FP32 ( `kernel_dtype`, voir `Cell.py` ) et ce qu'on en tire se calcule
+# dans le flottant des positions. Ce que ça vaut, et ce que ça ne vaut pas, se mesure ici : le
+# pavage tient à 1e-6, le gradient à quelques 1e-4 -- assez pour un transport optimal, pas pour
+# les témoins à 1e-10 des autres tests, qui demandent le noyau en double.
+
+if test( "the_float_kernel_tiles_the_domain" ):
+    for d, n in ( ( 2, 300 ), ( 3, 120 ) ):
+        rng = numpy.random.default_rng( 900 + d )
+        pos = rng.uniform( 0.02, 0.98, size = ( n, d ) )
+        w = rng.uniform( -0.01, 0.01, n )
+        for kd in ( "FP32", None ):
+            pd = PowerDiagram( pos, weights = w, boundaries = box_half_spaces( [ 0 ] * d, [ 1 ] * d ), kernel_dtype = kd )
+            m = _measures( pd )
+            assert abs( float( m.sum() ) - 1 ) < 1e-6, ( d, kd, m.sum() )
+            # la mesure elle-même est dans le flottant des positions, pas dans celui du noyau
+            assert numpy.asarray( pd.measures.tensor ).dtype == numpy.float64
+            ref = _measures( PowerDiagram( pos, weights = w, boundaries = box_half_spaces( [ 0 ] * d, [ 1 ] * d ), kernel_dtype = "FP64" ) )
+            assert numpy.abs( m - ref ).max() < 2e-6, ( d, kd )
+
+if test( "the_float_kernel_is_accelerated_the_same" ):
+    # l'élagage se fait dans le flottant du noyau ( `cell/Elagage.h` ) : il ne doit taire aucune
+    # coupe utile pour autant
+    d, n = 2, 400
+    rng = numpy.random.default_rng( 910 )
+    pos = rng.uniform( 0.02, 0.98, size = ( n, d ) )
+    plain = PowerDiagram( pos, boundaries = box_half_spaces( [ 0 ] * d, [ 1 ] * d ), kernel_dtype = "FP32",
+                          accelerator = "plain" )
+    fast = PowerDiagram( pos, boundaries = box_half_spaces( [ 0 ] * d, [ 1 ] * d ), kernel_dtype = "FP32",
+                         accelerator = AaBsp.of( plain, max_seeds_per_leaf = 8 ) )
+    assert numpy.abs( _measures( plain ) - _measures( fast ) ).max() < 1e-6
+    assert _cut_sets( plain ) == _cut_sets( fast )
+
+if test( "the_float_kernel_derives_well_enough" ):
+    d, n = 2, 12
+    rng = numpy.random.default_rng( 920 )
+    pos = rng.uniform( 0.1, 0.9, size = ( n, d ) )
+    w = rng.uniform( -0.01, 0.01, n )
+    box = box_half_spaces( [ 0 ] * d, [ 1 ] * d )
+    check_grad( lambda p, q: PowerDiagram( p, q, boundaries = box, kernel_dtype = "FP32" ).measures,
+                driver.array( pos ), driver.array( w ), rtol = 1e-2, atol = 1e-3, seed = 3 )

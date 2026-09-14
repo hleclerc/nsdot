@@ -2,7 +2,7 @@ import numpy
 
 from loom.testing import test, experiment, Param
 
-from sdot import OtPlan, SumOfDiracs, SumOfGaussians, Visualizer, box_half_spaces, write_convergence_html
+from sdot import Image, OtPlan, PowerDiagram, SumOfDiracs, SumOfGaussians, Visualizer, box_half_spaces, write_convergence_html
 
 
 # le domaine déborde LARGEMENT `[ 0, 1 ]^d`, où vivent diracs et gaussiennes : la marge (plusieurs
@@ -98,6 +98,184 @@ if test( "no_cell_dies_even_with_scattered_targets" ):
     got    = numpy.asarray( plan.cell_masses ).reshape( -1 )
     target = numpy.asarray( src.normalized_version().weights ).reshape( -1 )
     assert numpy.allclose( got, target, atol = 1e-3 ), numpy.abs( got - target ).max()
+
+
+if test( "the_dual_objective_matches_the_target_masses_too" ):
+    # `objective = "dual"` : la fonctionnelle de Kantorovich, dont le gradient est le résidu lui-même
+    # ( voir `OtPlan.__init__` ). Même promesse que la moindre-carrés -- les masses cibles -- sur les
+    # deux cas, le doux et le DUR ( `_scattered_target`, où des diracs tombent dans des déserts de
+    # densité : ni barrière ni plancher ici, une cellule vide a pour gradient sa masse cible ).
+    # La précision atteinte est celle de la VALEUR de la fonctionnelle : la descente s'arrête là où
+    # elle cesse de décroître. Sur une image ( des morceaux à densité constante, des moments EXACTS )
+    # c'est la précision du noyau -- FP64 ici ; sur des gaussiennes, la quadrature ADAPTATIVE
+    # ( `PointwiseDensity` ) rend la valeur discontinue à `rtol` ( 1e-5 ) près -- un saut que la
+    # décroissance ne franchit plus dès que le gradient tombe sous ~1e-3 dans le cas dur. C'est la
+    # limite CONNUE de cet objectif sur une densité lisse ( voir `OtPlan.__init__` ) : la
+    # moindre-carrés, elle, a ses mesures exactes ( la réduction 2D de `SumOfGaussians` ).
+    rng = numpy.random.default_rng( 7 )
+    img = Image( values = rng.uniform( 0.2, 1, size = ( 12, 12 ) ), origin = [ -0.5, -0.5 ],
+                 frame = [ [ 2 / 12, 0 ], [ 0, 2 / 12 ] ] )
+    for seed, target, n, atol in ( ( 3, _overlapping_target( 2, 2, seed = 3 ), 20, 2e-4 ),
+                                   ( 5, _scattered_target( 2, 4, seed = 6 ), 40, 5e-3 ),
+                                   ( 7, img, 30, 1e-6 ) ):
+        rng = numpy.random.default_rng( seed )
+        pos = rng.uniform( 0.1, 0.9, size = ( n, 2 ) )
+        src = SumOfDiracs( pos )
+        plan = OtPlan( src, target, boundaries = box_half_spaces( *_BOX ), objective = "dual",
+                       max_iter = 400, mass_tol = 1e-8, kernel_dtype = "FP64" )
+        got    = numpy.asarray( plan.cell_masses ).reshape( -1 )
+        want   = numpy.asarray( src.normalized_version().weights ).reshape( -1 )
+        assert numpy.allclose( got, want, atol = atol ), ( seed, numpy.abs( got - want ).max(), len( plan.history ) )
+        # la fonctionnelle décroît à chaque pas accepté ( Armijo )
+        losses = [ h[ "loss" ] for h in plan.history ]
+        assert all( b <= a + 1e-12 for a, b in zip( losses, losses[ 1: ] ) )
+
+
+if test( "the_hessian_rows_are_the_jacobian_of_the_measures" ):
+    # `PowerDiagram.hessian_rows` contre la différence finie des mesures par rapport aux poids,
+    # sur une image ( des facettes plates à densité constante ) : symétrique, lignes de somme nulle
+    rng = numpy.random.default_rng( 31 )
+    n = 25
+    pos = rng.uniform( 0.1, 0.9, size = ( n, 2 ) )
+    img = Image( values = rng.uniform( 0.2, 1, size = ( 10, 10 ) ), origin = [ 0.0, 0.0 ],
+                 frame = [ [ 0.1, 0 ], [ 0, 0.1 ] ] )
+    w0 = rng.uniform( -0.01, 0.01, n )
+    pd = PowerDiagram( pos, w0, distribution = img, kernel_dtype = "FP64" )
+    counts, ids, vals = pd.hessian_rows()
+    H = numpy.zeros( ( n, n ) )
+    for i in range( n ):
+        for q in range( counts[ i ] ):
+            if ids[ i, q ] >= 0:
+                H[ i, ids[ i, q ] ] -= vals[ i, q ]
+                H[ i, i ] += vals[ i, q ]
+    assert numpy.abs( H - H.T ).max() < 1e-12
+    assert numpy.abs( H.sum( axis = 1 ) ).max() < 1e-12
+    h = 1e-6
+    for j in ( 0, 8, 24 ):
+        e = numpy.zeros( n ); e[ j ] = h
+        pd.weights = w0 + e; mp = numpy.asarray( pd.measures ).reshape( -1 )
+        pd.weights = w0 - e; mm = numpy.asarray( pd.measures ).reshape( -1 )
+        assert numpy.abs( ( mp - mm ) / ( 2 * h ) - H[ :, j ] ).max() < 1e-7
+
+
+if test( "the_hessian_rows_hold_in_3d_too" ):
+    # en 3D la facette est une FACE, dont l'aire vient de l'accumulation de `LocalN::measure_3d`
+    # ( `for_each_facet` ) : même vérification par différence finie, sans distribution ( Lebesgue )
+    rng = numpy.random.default_rng( 32 )
+    n = 14
+    pos = rng.uniform( 0.1, 0.9, size = ( n, 3 ) )
+    w0 = rng.uniform( -0.01, 0.01, n )
+    pd = PowerDiagram( pos, w0, boundaries = box_half_spaces( [ 0 ] * 3, [ 1 ] * 3 ), kernel_dtype = "FP64" )
+    counts, ids, vals = pd.hessian_rows()
+    H = numpy.zeros( ( n, n ) )
+    for i in range( n ):
+        for q in range( counts[ i ] ):
+            if ids[ i, q ] >= 0:
+                H[ i, ids[ i, q ] ] -= vals[ i, q ]
+                H[ i, i ] += vals[ i, q ]
+    assert numpy.abs( H - H.T ).max() < 1e-12
+    h = 1e-6
+    for j in ( 0, 5, 13 ):
+        e = numpy.zeros( n ); e[ j ] = h
+        pd.weights = w0 + e; mp = numpy.asarray( pd.measures ).reshape( -1 )
+        pd.weights = w0 - e; mm = numpy.asarray( pd.measures ).reshape( -1 )
+        assert numpy.abs( ( mp - mm ) / ( 2 * h ) - H[ :, j ] ).max() < 1e-7
+
+
+if test( "newton_converges_quadratically_on_an_image" ):
+    # `objective = "newton"` : sur une image, quelques pas suffisent, le résidu chute
+    # quadratiquement à la fin, et un départ chaud ( les poids d'un nuage voisin ) n'en demande
+    # que deux ou trois -- ce dont vit une reconstruction ( `otrec.models.ProjectedDiracModel` )
+    rng = numpy.random.default_rng( 41 )
+    n = 300
+    pos = rng.uniform( 0.05, 0.95, size = ( n, 2 ) )
+    img = Image( values = 1 + 0.5 * rng.random( ( 24, 24 ) ), origin = [ 0.0, 0.0 ],
+                 frame = [ [ 1 / 24, 0 ], [ 0, 1 / 24 ] ] )
+    plan = OtPlan( SumOfDiracs( pos ), img, objective = "newton", max_iter = 60, mass_tol = 1e-10 / n,
+                   kernel_dtype = "FP64" )
+    res = [ h[ "max_abs_residual" ] * n for h in plan.history ]
+    assert res[ -1 ] < 1e-9 and len( res ) < 30, ( res[ -1 ], len( res ) )
+    # les deux derniers pas : au moins un ordre de grandeur chacun ( la phase quadratique )
+    assert res[ -1 ] < 0.1 * res[ -2 ] < 0.01 * res[ -3 ]
+    got  = numpy.asarray( plan.cell_masses ).reshape( -1 )
+    want = numpy.asarray( SumOfDiracs( pos ).normalized_version().weights ).reshape( -1 )
+    assert numpy.allclose( got, want, atol = 1e-11 )
+
+    warm = OtPlan( SumOfDiracs( pos + 1e-4 * rng.normal( size = pos.shape ) ), img, objective = "newton",
+                   max_iter = 60, mass_tol = 1e-10 / n, kernel_dtype = "FP64", weights0 = plan.weights )
+    assert len( warm.history ) <= 6, len( warm.history )
+
+    # un départ chaud qui VIDE une cellule ( des poids qui n'ont plus rien à voir avec le nuage )
+    # est abandonné pour le Voronoï, et on converge quand même
+    bad = OtPlan( SumOfDiracs( pos ), img, objective = "newton", max_iter = 60, mass_tol = 1e-10 / n,
+                  kernel_dtype = "FP64", weights0 = rng.uniform( -1, 1, n ) )
+    assert bad.history[ -1 ][ "max_abs_residual" ] * n < 1e-9
+    assert numpy.all( bad.history[ 0 ][ "weights" ] == 0 )
+
+
+# -- les moments, et ce qu'un coût de transport en tire ---------------------------------------
+
+if test( "moments_are_the_closed_forms" ):
+    # UN dirac dans le carré unité : sa cellule est le carré, dont les moments sont connus --
+    # masse 1, barycentre ( 1/2, 1/2 ), `int |x|^2 = 2/3`. Et sur une image à UN pixel allumé, le
+    # barycentre est le centre de ce pixel : c'est aussi ce qui vérifie l'orientation de la grille
+    # ( `values[ i, j ]` <-> `origin + i frame[ 0 ] + j frame[ 1 ]` ).
+    pd = PowerDiagram( numpy.array( [ [ 0.3, 0.6 ] ] ), boundaries = box_half_spaces( [ 0, 0 ], [ 1, 1 ] ),
+                       kernel_dtype = "FP64" )
+    mass, first, second = pd.moments
+    assert abs( float( numpy.asarray( mass ).reshape( -1 )[ 0 ] ) - 1 ) < 1e-12
+    assert numpy.allclose( numpy.asarray( first ).reshape( -1 ), [ 0.5, 0.5 ], atol = 1e-12 )
+    assert abs( float( numpy.asarray( second ).reshape( -1 )[ 0 ] ) - 2 / 3 ) < 1e-12
+
+    values = numpy.zeros( ( 4, 3 ) )
+    values[ 3, 1 ] = 1.0
+    img = Image( values = values, origin = [ 0.0, 0.0 ], frame = [ [ 0.5, 0.0 ], [ 0.0, 0.25 ] ] )
+    pd = PowerDiagram( numpy.array( [ [ 0.3, 0.6 ] ] ), distribution = img, kernel_dtype = "FP64" )
+    mass, first, second = pd.moments
+    m = float( numpy.asarray( mass ).reshape( -1 )[ 0 ] )
+    bary = numpy.asarray( first ).reshape( -1 ) / m
+    assert abs( m - 1 ) < 1e-12, m                                    # normalisée
+    assert numpy.allclose( bary, [ 3.5 * 0.5, 1.5 * 0.25 ], atol = 1e-12 ), bary
+
+    # plusieurs diracs : les moments d'ordre 0 sont les mesures, et les barycentres restent dans
+    # le carré, leur moyenne pondérée étant le centre de masse du domaine
+    rng = numpy.random.default_rng( 11 )
+    pos = rng.uniform( 0.1, 0.9, size = ( 15, 2 ) )
+    pd = PowerDiagram( pos, boundaries = box_half_spaces( [ 0, 0 ], [ 1, 1 ] ), kernel_dtype = "FP64" )
+    mass, first, second = pd.moments
+    m = numpy.asarray( mass ).reshape( -1 )
+    mx = numpy.asarray( first ).reshape( -1, 2 )
+    assert numpy.allclose( m, numpy.asarray( pd.measures ).reshape( -1 ), atol = 1e-12 )
+    assert numpy.allclose( mx.sum( axis = 0 ), [ 0.5, 0.5 ], atol = 1e-12 )
+    assert abs( float( numpy.asarray( second ).reshape( -1 ).sum() ) - 2 / 3 ) < 1e-12
+
+
+if test( "the_transport_cost_derives_by_the_envelope_theorem" ):
+    # `cost_and_position_grad` : la dérivée du coût par rapport aux positions des diracs, aux
+    # poids ajustés, contre la différence finie du coût lui-même ( chaque évaluation réajustant
+    # ses poids, en repartant des précédents ). La tolérance est celle de l'ajustement.
+    rng = numpy.random.default_rng( 21 )
+    pos = rng.uniform( 0.2, 0.8, size = ( 8, 2 ) )
+    dst = _overlapping_target( 2, 2, seed = 4 )
+
+    def plan_at( p, w0 = None ):
+        return OtPlan( SumOfDiracs( p ), dst, boundaries = box_half_spaces( *_BOX ), weights0 = w0,
+                       max_iter = 300, ftol = 1e-16, kernel_dtype = "FP64" )
+
+    plan = plan_at( pos )
+    cost, grad = plan.cost_and_position_grad()
+    assert cost > 0 and numpy.isfinite( grad ).all()
+
+    # le coût est bien `W_2^2` : la même chose que `sum_i m_i |p_i - b_i|^2 + sum_i var_i` -- on
+    # vérifie au moins la borne `cost >= sum_i m_i |p_i - b_i|^2`
+    _, bary, m = plan.transport()
+    assert cost >= float( ( m * ( ( pos - bary ) ** 2 ).sum( axis = 1 ) ).sum() ) - 1e-12
+
+    h = 1e-4
+    for i, c in ( ( 0, 0 ), ( 3, 1 ), ( 7, 0 ) ):
+        dp = numpy.zeros_like( pos ); dp[ i, c ] = h
+        fd = ( plan_at( pos + dp, plan.weights ).cost - plan_at( pos - dp, plan.weights ).cost ) / ( 2 * h )
+        assert abs( fd - grad[ i, c ] ) < 2e-3 * max( 1.0, abs( fd ) ), ( i, c, fd, grad[ i, c ] )
 
 
 # -- ce qu'on REGARDE ------------------------------------------------------------------------

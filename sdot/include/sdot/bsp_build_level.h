@@ -189,6 +189,21 @@ void bsp_weight_majorant( const auto &pos, const auto &w, SI b, SI e, auto &&wa_
     wb_out = bb + TF( 1e-6 ) * ( sycl::fabs( bb ) + spread + amax );
 }
 
+/// le majorant d'UN noeud, refait sur des poids neufs ( `AaBsp.refresh_weight_majorants` ) : la
+/// tranche `[ b, e )` du nuage `src` -- les germes DANS L'ORDRE DE L'ARBRE. Ne prend que ce dont il
+/// a besoin, et surtout PAS l'arbre entier : ses majorants courants sont ce qu'on remplace.
+void bsp_refresh_majorant( const auto &src, const auto &beg, const auto &end, auto &&wa_out, auto &&wb_out ) {
+    constexpr int ct_dim = CT_VALUE( src.nb_dims );
+    const SI b = SI( beg ), e = SI( end );
+    if ( e <= b ) {
+        for ( int d = 0; d < ct_dim; ++d )
+            wa_out( d ) = 0;
+        wb_out = 0;
+        return;
+    }
+    bsp_weight_majorant<ct_dim>( src.positions, src.weights, b, e, wa_out, wb_out );
+}
+
 
 // Le corps du niveau, pour le noeud dont la tranche est `[ beg_in, end_in )`.
 //
