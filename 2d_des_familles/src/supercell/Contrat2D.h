@@ -51,6 +51,18 @@ template<class F> consteval bool veut_changement() {
     else return false;
 }
 
+/// TROISIEME CHOSE QUE LE FOURNISSEUR PEUT DEMANDER, et la seule qui ne serve qu'a mesurer :
+/// `compte( nb_out, nb )` est appele a chaque coupe EFFECTIVE, avec le nombre de sommets que le
+/// plan retranche et la taille de la cellule avant la coupe. Une coupe sans effet -- le cas le plus
+/// frequent -- n'appelle rien.
+///
+/// Comme les deux autres, elle est detectee sur le fournisseur et n'existe pas pour qui ne la
+/// declare pas : aucun banc de production n'en paie le prix, et le compteur n'a pas a traverser le
+/// noyau sous forme de pointeur ou de drapeau.
+template<class F> consteval bool veut_comptage() {
+    return requires ( F *f ) { f->compte( 0, 0 ); };
+}
+
 /// LE DEMI-PLAN, tel qu'un fournisseur le rend : `dx * x + dy * y <= off`. `id` est ce qui ira
 /// dans `cid` -- l'IDENTITE de la coupe, dont la geometrie ne depend pas. C'est elle qui porte
 /// la connectivite, et c'est depuis elle qu'on refabrique le plan quand on en a besoin.
@@ -115,12 +127,16 @@ struct Atelier {
 /// le banc scalaire, n = 50 : 17.1 ns par coupe en une passe, 13.2 en deux.
 template<int MaxNb>
 [[gnu::always_inline]] inline int coupe_large( float *__restrict vx, float *__restrict vy, int *__restrict cid,
-                 int nb, const Plan &p, float *__restrict s ) {
+                 int nb, const Plan &p, float *__restrict s, int *compte = nullptr ) {
     int nb_out = 0;
     for ( int i = 0; i < nb; ++i ) {                     // reduction pure : le vectoriseur la prend
         s[ i ] = p.dx * vx[ i ] + p.dy * vy[ i ] - p.off;
         nb_out += s[ i ] > 0;
     }
+    // `nb_out` NE SE DEDUIT PAS DE LA TAILLE RENDUE : une coupe qui retranche deux sommets en
+    // rend deux, donc la cellule garde sa taille et la deduction la confond avec une coupe sans
+    // effet. Le banc `pd_hist` lisait ainsi 0 % de `nb_out = 2` au-dela de huit sommets.
+    if ( compte ) *compte = nb_out;
     if ( nb_out == 0 )
         return nb;
     if ( nb_out == nb )

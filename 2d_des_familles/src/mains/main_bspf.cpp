@@ -22,6 +22,12 @@
 using namespace pd;
 static double now() { using namespace std::chrono;
     return duration<double>( steady_clock::now().time_since_epoch() ).count(); }
+// L'ORDRE DES TESTS DU NOYAU, en deux binaires comme pour `pd_n50` : deux instanciations dans le
+// meme executable se genent dans le cache d'instructions, et la comparaison ne veut plus rien dire.
+#ifndef ORDRE_NOYAU
+#define ORDRE_NOYAU 0
+#endif
+
 static constexpr int M = 64;
 
 /// tous les germes, aucun elagage : la reference.
@@ -49,6 +55,10 @@ int main( int argc, char **argv ) {
     const int n = argc>1 ? atoi(argv[1]) : 20000;
     const double frac = argc>2 ? atof(argv[2]) : 1.0;    // poids en fraction de h^2
     const int leaf = 10;
+    // LE BALAYAGE COMPLET EST EN O( n^2 ) : un troisieme argument non nul le saute, ce qui rend le
+    // banc utilisable pour comparer deux binaires entre eux ( l'ordre des tests du noyau ) sans
+    // repayer une reference qui ne changera pas.
+    const bool temoin = argc > 3 ? atoi( argv[ 3 ] ) != 0 : true;
 
     std::mt19937 gen( 12345 );
     std::uniform_real_distribution<double> u( 0, 1 );
@@ -67,6 +77,7 @@ int main( int argc, char **argv ) {
     double aire_b=0, aire_a=0, t_b=1e30, t_a=1e30;
     long long cand_a=0;
 
+    if ( temoin )
     for ( int r=0;r<3;++r ){ double a=0; const double t0=now();
         for ( int k=0;k<n;++k ){
             noyau2d::Atelier<M> at;
@@ -82,7 +93,7 @@ int main( int argc, char **argv ) {
         for ( int k=0;k<n;++k ){
             noyau2d::Atelier<M> at;
             noyau2d::FournisseurBsp<AaBspT<2>,true> f( &arbre, px[k], py[k], pw[k], ids[k] );
-            noyau2d::etats::moteur( &f, &at );
+            noyau2d::etats::moteur<ORDRE_NOYAU>( &f, &at );
             nb_a[k]=at.nb; if ( at.nb<=0 ) continue;
             c += at.nb;
             for ( int v=0;v<at.nb;++v ) id_a[(size_t)k*M+v]=at.cid[v];
@@ -91,6 +102,7 @@ int main( int argc, char **argv ) {
         const double dt=now()-t0; if ( dt<t_a ){ t_a=dt; aire_a=0.5*a; cand_a=c; } }
 
     std::vector<int> nb_c(n); std::vector<int> id_c((size_t)n*M);
+    if ( temoin )
     for ( int k=0;k<n;++k ){
         noyau2d::Atelier<M> at;
         Balayage f{ -1, px.data(), py.data(), pw.data(), px[k], py[k], pw[k], n, 0, ids[k], ids.data() };
@@ -104,6 +116,7 @@ int main( int argc, char **argv ) {
             for ( int v=0;v<m;++v ) if ( a[(v+r)%m]!=b[v] ){ ok=false; break; }
             if ( ok ) return true; } return m==0; };
     int faux=0;
+    if ( temoin )
     for ( int k=0;k<n;++k )
         if ( nb_b[k]!=nb_a[k] || !rot_eq(&id_b[(size_t)k*M],&id_a[(size_t)k*M],nb_b[k]) ) ++faux;
 
@@ -111,7 +124,12 @@ int main( int argc, char **argv ) {
     printf( "  balayage complet : %8.4f s   aire %.9f\n", t_b, aire_b );
     printf( "  fournisseur BSP  : %8.4f s   aire %.9f   x%.1f   %.2f cotes/cellule\n",
             t_a, aire_a, t_b/t_a, double(cand_a)/n );
+    // le balayage complet est le TEMOIN : il ne depend pas de `ORDRE_NOYAU`... si, il en depend,
+    // c'est le meme noyau. Le temoin utile est donc le rapport des deux binaires, a cas identique.
+    printf( "CSV3 ordre=%d n=%d frac=%.1f bsp=%.6f balayage=%.6f\n",
+            ORDRE_NOYAU, n, frac, t_a, t_b );
     int faux_ordre=0;
+    if ( temoin )
     for ( int k=0;k<n;++k )
         if ( nb_b[k]!=nb_c[k] || !rot_eq(&id_b[(size_t)k*M],&id_c[(size_t)k*M],nb_b[k]) ) ++faux_ordre;
     printf( "  BSP vs balayage direct   : %d / %d\n", faux, n );

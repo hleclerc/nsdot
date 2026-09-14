@@ -40,6 +40,21 @@ static double now() {
     return duration<double>( steady_clock::now().time_since_epoch() ).count();
 }
 
+// UNE SEULE INSTANCIATION DU NOYAU PAR BINAIRE, et c'est une lecon de mesure.
+//
+// Mettre les deux ordres de test dans le meme executable donnait `ORD = 1` gagnant de 3.3 %. Faux :
+// la ligne temoin, en `ORD = 0`, passait de 8.51 a 9.00 ns des que la seconde variante existait --
+// six `etape<NB>` de plus, toutes `always_inline`, et la boucle chaude ne tient plus dans le cache
+// d'instructions. Le controle qui le montre est de mettre les DEUX lignes en `ORD = 0` : elles
+// mesurent alors 8.51 et 8.52, donc la position dans le banc n'y est pour rien.
+//
+// D'ou deux cibles sur une seule source, `pd_n50` et `pd_n50_ord`, et la comparaison se fait entre
+// deux processus. La justesse, elle, reste verifiee DANS chaque binaire, contre le scalaire en
+// place qui ne change pas.
+#ifndef ORDRE_BANC
+#define ORDRE_BANC 0
+#endif
+
 #ifndef MAXNB_BANC
 #define MAXNB_BANC 64
 #endif
@@ -124,11 +139,12 @@ int main( int argc, char **argv ) {
         px.swap( qx ); py.swap( qy );
     }
 
-    std::vector<int> nbv[ 4 ];
-    std::vector<int> idv[ 4 ];
-    for ( int p = 0; p < 4; ++p ) { nbv[ p ].assign( n, 0 ); idv[ p ].assign( (size_t) n * MAXNB, 0 ); }
-    double aire[ 4 ] = { 0, 0, 0, 0 };
-    double t[ 4 ] = { 1e30, 1e30, 1e30, 1e30 };
+    static constexpr int NV = 4;
+    std::vector<int> nbv[ NV ];
+    std::vector<int> idv[ NV ];
+    for ( int p = 0; p < NV; ++p ) { nbv[ p ].assign( n, 0 ); idv[ p ].assign( (size_t) n * MAXNB, 0 ); }
+    double aire[ NV ] = {};
+    double t[ NV ]; for ( int p = 0; p < NV; ++p ) t[ p ] = 1e30;
     int nb_echap = 0, nb_debord = 0, nb_abandon = 0;
 
     // ---- TOUT LE BANC EST UN PATRON SUR LE FOURNISSEUR. Une politique, une instanciation :
@@ -155,7 +171,7 @@ int main( int argc, char **argv ) {
         for ( int i = 0; i < n; ++i ) {
             noyau2d::Atelier<MAXNB> at;
             auto f = fabrique( i );
-            noyau2d::etats::moteur( &f, &at );
+            noyau2d::etats::moteur<ORDRE_BANC>( &f, &at );
             nbv[ 0 ][ i ] = at.nb;
             if ( at.nb < 0 ) { ++ech; continue; }
             for ( int v = 0; v < at.nb; ++v ) idv[ 0 ][ (size_t) i * MAXNB + v ] = at.cid[ v ];
@@ -231,13 +247,13 @@ int main( int argc, char **argv ) {
     }
 
     const double coupes = (double) n * ( n - 1 );
-    const char *nom[ 4 ] = { "SIMD aller-ret", "scalaire place", "scalaire neuf ", "SIMD echappe  " };
+    const char *nom[ NV ] = { "SIMD aller-ret", "scalaire place", "scalaire neuf ", "SIMD echappe  " };
     printf( "%d diracs, tous contre tous, aucune acceleration -- %.0f coupes proposees par passe\n",
             n, coupes );
     printf( "nuage : %s   parcours : %s   -- %d passes, on garde la meilleure\n\n",
             tri ? "TRI MORTON" : "brut", autour ? "en s'ecartant de soi" : "depuis l'indice 0", rep );
     printf( "                   temps/passe    par cellule    par coupe proposee\n" );
-    for ( int p = 0; p < 4; ++p )
+    for ( int p = 0; p < NV; ++p )
         printf( "%s   %9.2f us     %7.1f ns        %6.3f ns%s\n",
                 nom[ p ], t[ p ] * 1e6, t[ p ] * 1e9 / n, t[ p ] * 1e9 / coupes,
                 p == 3 ? "   <- incomplet" : "" );
@@ -255,6 +271,8 @@ int main( int argc, char **argv ) {
     printf( "CSV n=%d morton=%d autour=%d simd=%.3f place=%.3f neuf=%.3f ech=%.3f gain=%.3f pire=%d excur=%d faux=%d\n",
             n, tri, autour, t[ 0 ] * 1e9 / coupes, t[ 1 ] * 1e9 / coupes, t[ 2 ] * 1e9 / coupes,
             t[ 3 ] * 1e9 / coupes, best_sca / t[ 0 ], pire, nb_excur, faux_simd + faux_sca );
+    printf( "CSV2 ordre=%d n=%d morton=%d autour=%d simd=%.4f faux=%d\n",
+            ORDRE_BANC, n, tri, autour, t[ 0 ] * 1e9 / coupes, faux_simd + faux_sca );
     }; // fin du patron `banc`
 
     if ( autour ) banc( [ & ]( int i ) { return noyau2d::AutourDeMoi ( px.data(), py.data(), n, i ); } );
