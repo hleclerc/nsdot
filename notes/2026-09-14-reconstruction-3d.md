@@ -69,6 +69,27 @@ limite des angles, pas du solveur. Les expériences `rec 3D spheres` / `rec 3D r
 max_iter` pour que scipy ne conclue pas sur le bruit des ajustements ) écrivent HTML + `.pvd` +
 courbe tous les dix pas.
 
+## Par étages : peu de diracs, converger, raffiner
+
+`Reconstruction.multiscale` ( déjà là pour le 2D ) fonctionne tel quel en 3D : le premier étage
+tire dans l'enveloppe visuelle, chaque dirac est remplacé par `factor` enfants bruités une fois
+l'étage quasi convergé ( l'arrêt de scipy, ou `max_iter` ), et `ProjectedDiracModel` abandonne ses
+poids chauds quand le nuage change de taille. Expérience `rec 3D multiscale`.
+
+Mesuré, 8 boules au hasard, 6 angles, 128², 8000 diracs au final ( 4 threads OMP ) :
+
+| | pas | temps | perte | dans les boules |
+|---|---|---|---|---|
+| par étages 500 -> 2000 -> 8000 | 30 + 27 + 12 | 39 + 53 + 254 = 346 s | 4.96e-2 -> 2.24e-3 | 79 % -> 93.3 % |
+| direct à 8000 | 30 | 587 s | 2.38e-2 -> 2.22e-3 | 82 % -> 93.0 % |
+
+Même perte finale, même fraction dans les boules, en 1.7 fois moins de temps -- et l'étage
+final n'a eu que 12 pas à faire ( le direct part de 2.4e-2, les étages de 4.9e-3 ).
+Le raffinement ne coûte presque rien à la perte ( 9.5e-3 -> 8.6e-3 en passant de 500 à 2000,
+5.2e-3 -> 4.9e-3 de 2000 à 8000 ) : chaque étage hérite de la structure du précédent et n'a plus
+qu'à raffiner localement. Ce qui reste cher est l'étage final lui-même ( 21 s par pas à 8000 ) :
+les ajustements par angle y repartent encore du Voronoï à chaque évaluation.
+
 ## Ce que ça coûte, et ce qui a été mesuré
 
 * 60 diracs, 4 angles, 48² pixels, 30 pas de L-BFGS : 96 s, 90 % des diracs dans les boules, coût
