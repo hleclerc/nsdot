@@ -1,13 +1,20 @@
 import time
 from pprint import pprint
 import torch
+import tqdm
+
 import pandas as pd
 from geometry import CtGeometry
 from sinogram import Sinogram
 from unidim.plots import plot_points, make_gif_from_png
 
+import mlflow
+
+mlflow.set_tracking_uri("sqlite:///mlflow.db")
+mlflow.set_experiment("wasserstein-lbfgs")
+
 XLA_PYTHON_CLIENT_PREALLOCATE = True
-XLA_PYTHON_CLIENT_MEM_FRACTION = 0.75
+XLA_PYTHON_CLIENT_MEM_FRACTION = 1.0
 
 DEVICE = torch.device("cuda")
 img_dir= None
@@ -117,7 +124,7 @@ def optimize(points, sino, max_iter=50, line_search_fn="strong_wolfe",
         max_eval=5,
         tolerance_grad= 1e-7,
         tolerance_change=1e-9,
-        history_size=100,
+        history_size=5,
         line_search_fn=line_search_fn,
     )
     value_holder = {}
@@ -144,7 +151,7 @@ def optimize(points, sino, max_iter=50, line_search_fn="strong_wolfe",
     history = []
     time_to_loss = -1
 
-    for idx in range(1, max_iter + 1):
+    for idx in tqdm.tqdm(range(max_iter)):
         iteration_start = time.perf_counter()
         points, value, grad = step(points)
         torch.cuda.synchronize(DEVICE)
@@ -165,7 +172,9 @@ def optimize(points, sino, max_iter=50, line_search_fn="strong_wolfe",
             "iteration_time": round(iteration_time, 4),
         }
         history.append(raw_metrics)
-        if loss_value <= target_loss:
+        mlflow.log_metrics(raw_metrics, step=idx)
+
+        if time_to_loss < 0 and loss_value <= target_loss:
             time_to_loss = elapsed_time
 
     torch.cuda.synchronize(DEVICE)
@@ -184,53 +193,57 @@ def optimize(points, sino, max_iter=50, line_search_fn="strong_wolfe",
                "torch_peak_allocated": round(mem_info_mb['torch_peak_allocated']),
                "gpu_used": round(mem_info_mb["gpu_used"]),
                }
-    # mlflow.log_metrics(results)
-    # mlflow.log_text(df_history.to_csv(index=False), "history.csv", )
+    mlflow.log_metrics(results)
+    mlflow.log_text(df_history.to_csv(index=False), "history.csv", )
     return points, optimizer, results, df_history
 
 def run_experiments(params):
     pprint(params)
+    with mlflow.start_run():
+        mlflow.log_params(params)
+        sino = Sinogram(CtGeometry(nb_angles=params["nb_angles"], nb_bins=params["nb_bins"], extent=2.0))
 
-    sino = Sinogram(CtGeometry(nb_angles=params["nb_angles"], nb_bins=params["nb_bins"], extent=2.0))
+        sino.add_disk(center=[0, 0], radius=0.9, density=+1.0)
+        sino.add_disk(center=[0.5, 0], radius=0.3, density=-1.0)
+        sino.add_disk(center=[-0.5, 0], radius=0.3, density=-1.0)
 
-    sino.add_disk(center=[0, 0], radius=0.9, density=+1.0)
-    sino.add_disk(center=[0.5, 0], radius=0.3, density=-1.0)
-    sino.add_disk(center=[-0.5, 0], radius=0.3, density=-1.0)
+        torch.manual_seed(params["seed"])
 
-    torch.manual_seed(params["seed"])
+        points0 = torch.rand((params["nb_points"], 2), dtype=torch.float32, device=DEVICE) * 2.0 - 1.0
+        # points0.requires_grad_(True)
 
-    points0 = torch.rand((params["nb_points"], 2), dtype=torch.float32, device=DEVICE) * 2.0 - 1.0
-    # points0.requires_grad_(True)
+        points, optimizer, results, df_history = optimize(
+            points0,
+            sino,
+            max_iter=params["max_iter"],
+            line_search_fn=params['line_search_fn'],
+            ext_dtype=params["ext_dtype"],
+            batch_size=params["batch_size"],
+            use_checkpoint=params["use_checkpoint"],
+            target_loss=params["target_loss"],
+            avg_last_n=10,
+        )
+        print(df_history.to_markdown(index=False))
 
-    points, optimizer, results, df_history = optimize(
-        points0,
-        sino,
-        max_iter=params["max_iter"],
-        line_search_fn=params['line_search_fn'],
-        ext_dtype=params["ext_dtype"],
-        batch_size=params["batch_size"],
-        use_checkpoint=params["use_checkpoint"],
-        target_loss=params["target_loss"],
-        avg_last_n=10,
-    )
-    print(df_history.to_markdown(index=False))
-
-    pprint(results)
+        pprint(results)
 
 
 base_params = dict(XLA_PYTHON_CLIENT_PREALLOCATE=XLA_PYTHON_CLIENT_PREALLOCATE,
                        XLA_PYTHON_CLIENT_MEM_FRACTION=XLA_PYTHON_CLIENT_MEM_FRACTION,
-                       nb_points=10_000,
+                       nb_points=400_000,
                        nb_angles=600,
                        nb_bins=4096,
-                       batch_size=8,
+                       batch_size=1,
                        ext_dtype=torch.float64,
-                       max_iter=50,
-                       use_checkpoint = True,
+                       max_iter=15,
+                       use_checkpoint = False,
                        line_search_fn="strong_wolfe",
                        seed=27,
                        target_loss=1e-3)
+
+base_params['backend'] = "torch"
 run_experiments(base_params)
+
 
 
 if img_dir is not None :

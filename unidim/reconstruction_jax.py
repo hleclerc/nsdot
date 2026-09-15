@@ -170,7 +170,7 @@ def loss(points, normals, bin_edges, bin_mass, mem_budget_bytes=-1):
         """
         normal, mass = normal_and_mass
         # p_i · n : projection scalaire de chaque point sur la normale
-        projections = points @ normal
+        projections = points @ normal, # normal @ point.T, trie par angle
         return _w2_1d(projections, mass, bin_edges)
     # fin angle cost , retour sur la loss
     n, A = points.shape[0], normals.shape[0]    # Nombre de points 2D, # Nombre d'angles
@@ -287,7 +287,9 @@ def optimize(points,
     platform, vram_total, vram_used, vram_free = jax_memory_info()
 
     chunk_size = _get_chunk_size(points.shape[0],normals.shape[0], mem_budget_bytes)
-
+    # XLA_FLAGS =
+    # points @ normal -
+    # projections = points @ normal,  # normal @ point.T, trie par angle
 
     # mem_budget_bytes = 4096 *1024 *1024
     # Construit la fonction `step` avec le budget mémoire initial.

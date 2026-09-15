@@ -2,8 +2,9 @@ import time
 import os
 from pprint import pprint
 import pandas as pd
+import tqdm
 
-XLA_PYTHON_CLIENT_PREALLOCATE = True
+XLA_PYTHON_CLIENT_PREALLOCATE = False
 XLA_PYTHON_CLIENT_MEM_FRACTION = 0.75
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = str(XLA_PYTHON_CLIENT_PREALLOCATE).lower()
 os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"]= str(XLA_PYTHON_CLIENT_MEM_FRACTION)
@@ -123,8 +124,8 @@ def optimize(points,sino,
     # get_jax_gpu_memory()
 
     start_optimization = time.perf_counter()
-
-    for idx in range(2, max_iter):
+    time_to_loss = -1
+    for idx in tqdm.tqdm(range(1, max_iter)):
         iteration_start = time.perf_counter()
         if idx == max_iter - 1:
             (points, state, value, grad), peak = measure_gpu_peak(
@@ -133,14 +134,16 @@ def optimize(points,sino,
             points, state, value, grad = step(points, state)
         value.block_until_ready()
         grad.block_until_ready()
-        grad_norm = jnp.linalg.norm(grad)
-
+        grad_norm = float(jnp.linalg.norm(grad))
+        loss_value = float(value)
+        if time_to_loss < 0 and loss_value <= target_loss:
+            time_to_loss = elapsed_time
         # print("Structure de state :", jax.tree_util.tree_structure(state))
         # print("Valeurs de state :", state)
-
-        raw_metrics = {"iteration": idx, "loss": float(value),
-                        "grad_norm": float(grad_norm),
-                        "elapsed_time" : round(time.perf_counter() - start_total,2),
+        elapsed_time = round(time.perf_counter() - start_total,2)
+        raw_metrics = {"iteration": idx, "loss": loss_value,
+                        "grad_norm": grad_norm,
+                        "elapsed_time" : elapsed_time,
                         "iteration_time": round(time.perf_counter() - iteration_start,4),
                         "num_linesearch_steps": int(state[2].info.num_linesearch_steps),
                        }
@@ -157,7 +160,6 @@ def optimize(points,sino,
     avg_iteration_time_last_5 = sum(h["iteration_time"] for h in history[-5:]) / 5
     df_history = pd.DataFrame(history)
     reached = df_history["loss"] <= target_loss
-    time_to_loss = df_history.loc[reached, "elapsed_time"].iloc[0] if reached.any() else -1
     last_n = df_history.tail(avg_last_n)
     results = {"compile_time_1st_run": round(end_compile - start_total,3),
                 "time_2_to_end_run": round(optimization_time,3),
@@ -167,7 +169,7 @@ def optimize(points,sino,
                 "final_loss": float(value), "final_grad_norm": float(jnp.linalg.norm(grad)),
                 "mean_linesearch_steps": round(float(df_history["num_linesearch_steps"].mean()),2),
                 "max_linesearch_steps" : int(df_history["num_linesearch_steps"].max()),
-                "time_to_loss" : float(time_to_loss) if reached.any() else -1,
+                "time_to_loss" : float(time_to_loss),
                 "jax_peak_used_last_iter_MB":  round(peak["jax_peak_used"] / 1024**2, 2),
                 "jax_peak_pool_last_iter_MB":  round(peak["jax_peak_pool"] / 1024**2, 2),
                 "nvidia_peak_last_iter_MB":  round(peak["nvidia_peak"] / 1024**2,2),
@@ -217,10 +219,10 @@ if __name__ == '__main__':
 
     base_params = dict(XLA_PYTHON_CLIENT_PREALLOCATE=XLA_PYTHON_CLIENT_PREALLOCATE,
                        XLA_PYTHON_CLIENT_MEM_FRACTION=XLA_PYTHON_CLIENT_MEM_FRACTION,
-                       nb_points=10_000,
+                       nb_points=400_000,
                        nb_angles=600,
                        nb_bins=4096,
-                       batch_size=8,
+                       batch_size=1,
                        ext_dtype=jnp.float64,
                        use_checkpoint=True,
                        max_iter=15,
@@ -229,9 +231,11 @@ if __name__ == '__main__':
                        seed=27,
                        target_loss=1e-3)
 
-    base_params['exp_type'] = "nb_bins"
+    # base_params['exp_type'] = "big_nb_pts"
+    base_params['backend'] = "jax"
+
     # nb_angles_exp = [100, 200, 400, 600, 1000, 2000]
-    nb_bins_exp = [512, 1024, 2048, 4096, 8192]
+    # nb_bins_exp = [512, 1024, 2048, 4096, 8192]
     # nb_points_exp = [1_000, 5_000, 10_000, 20_000, 50_000]
     # batch_sizes = [1, 4, 8, 16, 32, 64, 128, 256, 600]
     # run_experiments(params)
@@ -242,12 +246,13 @@ if __name__ == '__main__':
     # batch_sizes = [1, 16, 64, 600]
     # checkpoints = [True, False]
     # line_searches = [1, 4, 8]
-    experiments = []
-    for nb_bins in nb_bins_exp : #product( batch_sizes, checkpoints, line_searches, ):
-        params = base_params.copy()
-        params["nb_bins"] = nb_bins
-        experiments.append(params)
-
-    for i, params in enumerate(experiments):
-        print( f"\n\n########## " f"EXPERIMENT {i + 1}/{len(experiments)} " f"##########" )
-        run_experiments(params)
+    # experiments = []
+    # for nb_bins in nb_bins_exp : #product( batch_sizes, checkpoints, line_searches, ):
+    #     params = base_params.copy()
+    #     params["nb_bins"] = nb_bins
+    #     experiments.append(params)
+    #
+    # for i, params in enumerate(experiments):
+    #     print( f"\n\n########## " f"EXPERIMENT {i + 1}/{len(experiments)} " f"##########" )
+    #     run_experiments(params)
+    run_experiments(base_params)
