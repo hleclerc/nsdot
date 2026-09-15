@@ -29,13 +29,25 @@ def plot_final_points(points, save_file):
     plt.axis("equal")
     plt.savefig(save_file)
 
-def  plot_points(points, step , exp_dir):
-    os.makedirs(exp_dir, exist_ok=True)
+def  plot_points(points, step , img_dir):
+    os.makedirs(img_dir, exist_ok=True)
     plt.figure(figsize=(10, 8))
     plt.scatter(points[:, 0], points[:, 1], s=1, alpha=0.5, color='blue')
     plt.title(f"Scatterplot step = {step}")
     plt.xlabel("x")
     plt.ylabel("y")
     plt.grid(True, linestyle='--', alpha=0.7)
-    plt.savefig(f'{exp_dir}/scatterplot_points_step_{step}.png', dpi=150, bbox_inches='tight')
+    plt.savefig(f'{img_dir}/scatterplot_points_step_{step}.png', dpi=150, bbox_inches='tight')
     plt.close()  # Fermer la figure pour libérer la mémoire
+
+
+def make_gif_from_png(img_dir):
+    import glob, os
+    from PIL import Image
+    from natsort import natsorted
+    pngs = natsorted(glob.glob(f"{img_dir}/scatterplot_points_step_*.png"))
+    Image.open(pngs[0]).save(f"{img_dir}/scatterplot_points.gif",
+                             save_all=True, append_images=[Image.open(p) for p in pngs[1:]],
+                             duration=500,
+                             loop=0)
+    [os.remove(p) for p in pngs]

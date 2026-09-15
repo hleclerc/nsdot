@@ -2,13 +2,15 @@ import jax
 import jax.numpy as jnp
 from lab_wasser import _w2_1d as wasser_dist
 import time
+
+from unidim.gpu_mem import get_jax_gpu_memory, _get_chunk_size
+
 print(f"wasser_dist used : {wasser_dist.__name__}")
 print("jax_lmap module, jax_enable_x64 :", jax.config.read("jax_enable_x64"))
 
 def loss_lax_map(points, normals, bin_mass, bin_edges, batch_size, ext_dtype, use_checkpoint=True):
-    # normals = jax.lax.stop_gradient(normals)
-    # bin_mass = jax.lax.stop_gradient(bin_mass)
-    # bin_edges = jax.lax.stop_gradient(bin_edges)
+
+
     def angle_cost(normal):
         projections = points @ normal
         w = wasser_dist(projections, bin_mass, bin_edges, ext_dtype)
@@ -16,15 +18,28 @@ def loss_lax_map(points, normals, bin_mass, bin_edges, batch_size, ext_dtype, us
 
     if use_checkpoint:
         angle_cost = jax.checkpoint(angle_cost)
-    costs = jax.lax.map(angle_cost, normals, batch_size=batch_size,)
-
+    if batch_size is None:
+        costs = jax.vmap(angle_cost)(normals)
+    else:
+        costs = jax.lax.map(angle_cost, normals, batch_size=batch_size)
+    # mémoire par appel à angle cost : 96*N + 48*B + 40
+    # from jax.experimental import shard_map
+    # devices = jax.devices()[:2]
+    # costs = shard_map(angle_cost, devices=devices)(normals)
     return jnp.sum(costs).astype(jnp.float32)
 
 if __name__ == '__main__':
-    NB_POINTS = 10_000
+    NB_POINTS = 1_000_000
     NB_ANGLES = 600
     NB_BINS = 4096
-    use_checkpoint = False
+    BYTES_PER_ELEMENT = 80
+    SAFETY_FRACTION = 0.8
+    # BATCH_SIZE = None #  [1,16,64,600], None vor vmap
+    available_memory = get_jax_gpu_memory()
+    print(f"Mémoire GPU disponible : {available_memory / (1024 ** 3):.2f} GiB")
+    BATCH_SIZE = _get_chunk_size(NB_POINTS, NB_ANGLES, NB_BINS, safety_fraction=SAFETY_FRACTION)
+    print("optimal BATCH_SIZE", BATCH_SIZE)
+    JAX_CHECKPOINT = True
 
     # Points initiaux aléatoires dans [-1, 1]²
     key = jax.random.PRNGKey(0)
@@ -44,16 +59,15 @@ if __name__ == '__main__':
     print("normals dtype :", normals.dtype)
     print("bin_edges dtype :", bin_edges.dtype)
     print("bin_mass dtype :", bin_mass.dtype)
-    print(f"checkpoint : {use_checkpoint}")
-    batch_size = 16 #  [1,16,64,600]:
+    print(f"checkpoint : {JAX_CHECKPOINT}")
     print("-"*60)
-    print(f"Opti lax.map with batchsize : {batch_size} , wasser : {wasser_dist.__name__}")
+    print(f"Opti lax.map with batchsize : {BATCH_SIZE} , wasser : {wasser_dist.__name__}")
     start = time.perf_counter()
-    loss_lax_map(points, normals, bin_mass, bin_edges, batch_size, ext_dtype, use_checkpoint=use_checkpoint)
+    loss_lax_map(points, normals, bin_mass, bin_edges, BATCH_SIZE, ext_dtype, use_checkpoint=JAX_CHECKPOINT)
     time.perf_counter() - start
     print("Time for loss_lax_map Compil  + run  ", round(time.perf_counter() - start, 2) )
     loss_jit = jax.jit(
-        lambda points: loss_lax_map(points,normals,bin_mass,bin_edges,batch_size,ext_dtype))
+        lambda points: loss_lax_map(points, normals, bin_mass, bin_edges, BATCH_SIZE, ext_dtype))
 
     start = time.perf_counter()
     loss = loss_jit(points)
@@ -85,11 +99,9 @@ if __name__ == '__main__':
 
     loss_and_grad = jax.jit(
         jax.value_and_grad(lambda points: loss_lax_map(points, normals, bin_mass, bin_edges,
-                batch_size, ext_dtype,use_checkpoint)
-        )
-    )
+                                                       BATCH_SIZE, ext_dtype, JAX_CHECKPOINT)
+        ))
     start = time.perf_counter()
-
     loss_value, grad = loss_and_grad(points)
     loss_value.block_until_ready()
     grad.block_until_ready()
@@ -130,7 +142,5 @@ if __name__ == '__main__':
     | **16 + ON**   | **0.13 s** | **3.95 MB** |
     | 64 + OFF      |     0.11 s |     82.1 MB |
     | 64 + ON       |     0.15 s |     15.5 MB |
-    
-    
     
     """

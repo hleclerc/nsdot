@@ -18,32 +18,38 @@ def print_memory_stats(label):
         print(f"{key:30s}: {value / 1024**2:10.2f} MiB")
 
 def _w2_1d(proj, bin_mass, bin_edges, ext_dtype):
-    proj = proj.astype(ext_dtype)
-    bin_mass = bin_mass.astype(ext_dtype)
-    bin_edges = bin_edges.astype(ext_dtype)
-
+    proj = proj.astype(ext_dtype) #(N,2) float64 : N x 2 x 8 bytes
+    bin_mass = bin_mass.astype(ext_dtype) #(B) float64 : B  x 8
+    bin_edges = bin_edges.astype(ext_dtype) #(B+1) float64: (B+1) x 8
+    # TOTAL entrées 16*N + 8*B + 8
     n = proj.shape[0]
     w = 1.0 / n
     dw = bin_edges[1] - bin_edges[0]
-    bin_center = bin_edges[:-1] + dw / 2
-    cum = jnp.cumsum(bin_mass)
-    cum_start = cum - bin_mass
-    prefix_M = jnp.cumsum(bin_mass * bin_center) - bin_mass * bin_center
+    bin_center = bin_edges[:-1] + dw / 2 # B  x 8
+    cum = jnp.cumsum(bin_mass) #(B) float64 # B  x 8
+    cum_start = cum - bin_mass # B  x 8
+    prefix_M = jnp.cumsum(bin_mass * bin_center) - bin_mass * bin_center #B  x 8
 
     def M(q):
         j = jnp.clip(jnp.searchsorted(cum, q, side="right"), 0, bin_mass.shape[0] - 1)
-        f = jnp.where(bin_mass[j] > 0, (q - cum_start[j]) / bin_mass[j], 0.0)
-        return prefix_M[j] + bin_mass[j] * (bin_edges[j] * f + dw * f * f / 2)
+        # N int32 :   N x 4
+        f = jnp.where(bin_mass[j] > 0, (q - cum_start[j]) / bin_mass[j], 0.0) # N float64 : N * 8
 
-    s = jnp.sort(proj)
-    q = jnp.arange(n) * w
-    bary = (M(q + w) - M(q)) / w
+        return prefix_M[j] + bin_mass[j] * (bin_edges[j] * f + dw * f * f / 2) # 12 N
 
-    source_M2 = w * jnp.sum(s * s)
-    target_M2 = jnp.sum(bin_mass * bin_center * bin_center) + dw * dw / 12
-    cross_term = 2 * w * jnp.sum(s * bary)
-    wasserstein2 = source_M2 + target_M2 - cross_term
-    return wasserstein2
+    s = jnp.sort(proj) # N * 8
+    q = jnp.arange(n) * w # N * 8
+    bary = (M(q + w) - M(q)) / w # N * 8
+    # 24 N
+    # + 2 appel fun M : 2 x 12 N = 24 N
+
+    source_M2 = w * jnp.sum(s * s)  # s*s : N * 8
+    target_M2 = jnp.sum(bin_mass * bin_center * bin_center) + dw * dw / 12 # B*8
+    cross_term = 2 * w * jnp.sum(s * bary) #s*bary : N * 8
+    wasserstein2 = source_M2 + target_M2 - cross_term  # mémoire  : 80*N + 48*B + 8 bytes
+    return wasserstein2 #
+    # mémoire par appel à angle cost : 96*N + 48*B + 40
+
 
 def _w2_1d_new(proj, bin_mass, bin_edges, ext_dtype):
     proj = proj.astype(ext_dtype)

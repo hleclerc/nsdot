@@ -1,113 +1,73 @@
 import time
-from plots import plot_points
+import os
+from pprint import pprint
+import pandas as pd
+
+XLA_PYTHON_CLIENT_PREALLOCATE = True
+XLA_PYTHON_CLIENT_MEM_FRACTION = 0.75
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = str(XLA_PYTHON_CLIENT_PREALLOCATE).lower()
+os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"]= str(XLA_PYTHON_CLIENT_MEM_FRACTION)
+
 import jax
 import jax.numpy as jnp
 import optax
-
+import nvidia_smi
 from geometry import CtGeometry
 from sinogram import Sinogram
 from lab_wasser import _w2_1d as wasser_dist
+from unidim.gpu_mem import get_jax_gpu_memory, measure_gpu_peak
+# from plots import plot_points
 
+import mlflow
+
+mlflow.set_tracking_uri("sqlite:///mlflow.db")
+mlflow.set_experiment("wasserstein-lbfgs")
+nvidia_smi.nvmlInit()
+handle = nvidia_smi.nvmlDeviceGetHandleByIndex(0)
+nvidia_mem = nvidia_smi.nvmlDeviceGetMemoryInfo(handle)
 
 def loss_lax_map(points, normals, bin_mass, bin_edges, batch_size, ext_dtype, use_checkpoint=True):
     def angle_cost(normal_and_mass):
         normal, mass = normal_and_mass
+        mass = jax.lax.stop_gradient(mass)
+        normal = jax.lax.stop_gradient(normal)
         projections = points @ normal
         w = wasser_dist(projections, mass, bin_edges, ext_dtype)
         return w
 
     if use_checkpoint:
         angle_cost = jax.checkpoint(angle_cost)
-    costs = jax.lax.map(angle_cost,
-                        (normals,bin_mass),
-                        batch_size=batch_size,)
+
+    if batch_size is None:
+        costs = jax.vmap(angle_cost,in_axes=0,)((normals, bin_mass))
+    else:
+        costs = jax.lax.map(angle_cost,(normals,bin_mass),batch_size=batch_size,)
 
     return jnp.sum(costs).astype(jnp.float32)
 
-
-print("JAX version :", jax.__version__)
-print("JAX x64     :", jax.config.read("jax_enable_x64"))
-print()
-
-
-
-NB_POINTS = 10_000
-NB_ANGLES = 600
-NB_BINS = 4096
-
-BATCH_SIZE = 16
-EXT_DTYPE = jnp.float64
-USE_CHECKPOINT = True
-
-MAX_ITER = 15
-MAX_LINESEARCH_STEPS = 4
-INITIAL_GUESS_STRATEGY = "one"
-
-
-# ============================================================
-# Construction du sinogramme cible
-# ============================================================
-
-sino = Sinogram(CtGeometry(nb_angles=NB_ANGLES,nb_bins=NB_BINS,extent=2.0))
-
-sino.add_disk(center=[0, 0],radius=0.9,density=+1.0)
-
-sino.add_disk(center=[0, 0],radius=0.7,density=-1.0)
-
-
-# ============================================================
-# Initialisation des points
-# ============================================================
-
-key = jax.random.PRNGKey(0)
-
-points0 = jax.random.uniform(key,shape=(NB_POINTS, 2),
-    minval=-1.0,maxval=1.0,dtype=jnp.float32)
-
-print("Problem")
-print("  points shape : ", points0.shape)
-print("  points dtype : ", points0.dtype)
-print("  sino shape   : ", sino.values.shape)
-
-print("sino min :", float(sino.values.min()))
-print("sino max :", float(sino.values.max()))
-
-mass_sum = sino.values.sum(axis=1)
-
-print("mass sum min/max :",float(mass_sum.min()),float(mass_sum.max()))
-
-# ============================================================
-# Optimisation L-BFGS
-# ============================================================
-
-def optimize(points,sino,max_iter=50, max_linesearch_steps=4,
-    initial_guess_strategy="one",):
+def optimize(points,sino,
+             max_iter=50,
+             max_linesearch_steps=4,
+             initial_guess_strategy="one",
+             ext_dtype=jnp.float64,
+             batch_size=16,
+             use_checkpoint=True,
+             target_loss = 1e-3,
+             avg_last_n=10):
     g = sino.geometry
 
-    normals = jnp.asarray(g.normals,dtype=EXT_DTYPE)
-    bin_edges = jnp.asarray(g.bin_edges,dtype=EXT_DTYPE)
-    bin_mass = jnp.asarray(sino.values,dtype=EXT_DTYPE)
+    normals = jnp.asarray(g.normals,dtype=ext_dtype)
+    bin_edges = jnp.asarray(g.bin_edges,dtype=ext_dtype)
+    bin_mass = jnp.asarray(sino.values,dtype=ext_dtype)
     bin_mass = bin_mass / bin_mass.sum(axis=1,keepdims=True)
 
-    # --------------------------------------------------------
-    # Fonction objectif
-    # --------------------------------------------------------
 
     def fun(p):
-        return loss_lax_map(
-            p,
-            normals,
-            bin_mass,
-            bin_edges,
-            BATCH_SIZE,
-            EXT_DTYPE,
-            USE_CHECKPOINT,
-        )
-
+        # jax.debug.callback(count_fun_call,p,ordered=True,)
+        return loss_lax_map(p, normals, bin_mass,bin_edges,batch_size, ext_dtype,use_checkpoint)
     # --------------------------------------------------------
     # L-BFGS + zoom line search
     # --------------------------------------------------------
-
     linesearch = optax.scale_by_zoom_linesearch(
         max_linesearch_steps=max_linesearch_steps,
         initial_guess_strategy=initial_guess_strategy,
@@ -115,80 +75,179 @@ def optimize(points,sino,max_iter=50, max_linesearch_steps=4,
 
     solver = optax.lbfgs(linesearch=linesearch)
     state = solver.init(points)
+    # print("0", jax.tree_util.tree_structure(state[0]))
+    # print("1", jax.tree_util.tree_structure(state[1]))
+    # print("2", state[2].info.num_linesearch_steps)
+
 
     # --------------------------------------------------------
     # Une étape L-BFGS
     # --------------------------------------------------------
+    value_and_grad = optax.value_and_grad_from_state(fun)
 
     @jax.jit
     def step(p, state):
-        value_and_grad = optax.value_and_grad_from_state(fun)
         value, grad = value_and_grad(p,state=state)
         updates, state = solver.update(grad,state, p,value=value, grad=grad, value_fn=fun)
         p = optax.apply_updates(p,updates)
 
         return p, state, value, grad
 
+    history = []
     # --------------------------------------------------------
     # Première étape : compilation + exécution
     # --------------------------------------------------------
-
-    print("Starting L-BFGS")
-    print(f"  max_iter             : {max_iter}")
-    print(f"  max_linesearch_steps : {max_linesearch_steps}")
-    print(f"  batch_size           : {BATCH_SIZE}")
-    print(f"  ext_dtype            : {EXT_DTYPE}")
-    print(f"  checkpoint            : {USE_CHECKPOINT}")
-    print()
-
-    t0 = time.perf_counter()
-
-    points, state, value, grad = step(points,state)
+    # print(f"[GPU memory]  avant compilation")
+    # get_jax_gpu_memory()
+    start_total = time.perf_counter()
+    points, state, value, grad = step( points, state)
 
     value.block_until_ready()
     grad.block_until_ready()
-    compile_time = time.perf_counter() - t0
-    grad_norm = jnp.linalg.norm(grad)
+    end_compile = time.perf_counter()
+    history.append({"iteration": 1, "loss": float(value), "grad_norm": float(jnp.linalg.norm(grad)),
+                    "elapsed_time": round(time.perf_counter() - start_total,2),
+                    'iteration_time': round(end_compile - start_total,4),
+                    "num_linesearch_steps": int(state[2].info.num_linesearch_steps)})
+    # points.block_until_ready()
 
-    print(f"iter {1:3d} | loss = {float(value):.12e} | |grad| = {float(grad_norm):.6e}")
+    # print(f"[GPU memory]  apres angle cost")
+    # get_jax_gpu_memory()
+    # nvidia_mem = nvidia_smi.nvmlDeviceGetMemoryInfo(handle)
+    # print(f" (NVIDIA) used / total  {nvidia_mem.used / 1024 ** 3:.2f}/{nvidia_mem.total / 1024 ** 3:.2f} GiB ")
 
-    # --------------------------------------------------------
-    # Itérations restantes
-    # --------------------------------------------------------
+    # plot_points(points, step=1, exp_dir='visu')
 
-    t1 = time.perf_counter()
+    # print( f"Compilation + première itération : " f"{end_compile - start_total:.3f} s" )
+    # print(f"[GPU memory]  après compilation")
+    # get_jax_gpu_memory()
 
-    for i in range(1, max_iter):
-        points, state, value, grad = step(points,state)
+    start_optimization = time.perf_counter()
 
+    for idx in range(2, max_iter):
+        iteration_start = time.perf_counter()
+        if idx == max_iter - 1:
+            (points, state, value, grad), peak = measure_gpu_peak(
+                step, points, state, interval=0.02,)
+        else:
+            points, state, value, grad = step(points, state)
         value.block_until_ready()
         grad.block_until_ready()
-
         grad_norm = jnp.linalg.norm(grad)
 
-        print(f"iter {i + 1:3d} | loss = {float(value):.12e} | |grad| = {float(grad_norm):.6e}")
-        plot_points(points, step=i, exp_dir='visu')
+        # print("Structure de state :", jax.tree_util.tree_structure(state))
+        # print("Valeurs de state :", state)
 
-    optimization_time = time.perf_counter() - t1
-    total_time = compile_time + optimization_time
+        raw_metrics = {"iteration": idx, "loss": float(value),
+                        "grad_norm": float(grad_norm),
+                        "elapsed_time" : round(time.perf_counter() - start_total,2),
+                        "iteration_time": round(time.perf_counter() - iteration_start,4),
+                        "num_linesearch_steps": int(state[2].info.num_linesearch_steps),
+                       }
+        history.append(raw_metrics)
+        mlflow.log_metrics(raw_metrics, step=idx)
+
+        # print(f"{iteration:5d} " f"{float(value):18.12e} " f"{float(grad_norm):16.6e}")
+        # plot_points(points, step=iteration, exp_dir='visu')
+
+    end_optimization = time.perf_counter()
+    optimization_time = end_optimization - start_optimization
+    total_time = end_optimization - start_total
+    # average_time = optimization_time / (max_iter - 2)
+    avg_iteration_time_last_5 = sum(h["iteration_time"] for h in history[-5:]) / 5
+    df_history = pd.DataFrame(history)
+    reached = df_history["loss"] <= target_loss
+    time_to_loss = df_history.loc[reached, "elapsed_time"].iloc[0] if reached.any() else -1
+    last_n = df_history.tail(avg_last_n)
+    results = {"compile_time_1st_run": round(end_compile - start_total,3),
+                "time_2_to_end_run": round(optimization_time,3),
+                "total_time": round(total_time,3),
+                "avg_iteration_time_last_5": round(avg_iteration_time_last_5,3),
+                "avg_iteration_time_last_n": round(float(last_n["iteration_time"].mean()),3),
+                "final_loss": float(value), "final_grad_norm": float(jnp.linalg.norm(grad)),
+                "mean_linesearch_steps": round(float(df_history["num_linesearch_steps"].mean()),2),
+                "max_linesearch_steps" : int(df_history["num_linesearch_steps"].max()),
+                "time_to_loss" : float(time_to_loss) if reached.any() else -1,
+                "jax_peak_used_last_iter_MB":  round(peak["jax_peak_used"] / 1024**2, 2),
+                "jax_peak_pool_last_iter_MB":  round(peak["jax_peak_pool"] / 1024**2, 2),
+                "nvidia_peak_last_iter_MB":  round(peak["nvidia_peak"] / 1024**2,2),
+              }
+    mlflow.log_metrics(results)
+    mlflow.log_text(df_history.to_csv(index=False),"history.csv",)
+    return points, state, results, df_history
+
+def run_experiments(params):
+    pprint(params)
+
+    with mlflow.start_run():
+        mlflow.log_params(params)
+
+        sino = Sinogram(CtGeometry(nb_angles=params['nb_angles'], nb_bins=params['nb_bins'], extent=2.0))
+        sino.add_disk(center=[0, 0], radius=0.9, density=+1.0)
+        sino.add_disk(center=[0.5, 0], radius=0.3, density=-1.0)
+        sino.add_disk(center=[-0.5, 0], radius=0.3, density=-1.0)
+
+        key = jax.random.PRNGKey(params['seed'])
+        points0 = jax.random.uniform(key, shape=(params['nb_points'], 2), minval=-1.0, maxval=1.0,
+                                     dtype=jnp.float32)
 
 
-    print("-" * 60)
-    print(f"Compilation + première itération : {compile_time:.3f} s")
-    print(f"Optimisation après compilation  : {optimization_time:.3f} s")
-    print(f"Temps total                     : {total_time:.3f} s")
-    print(f"Temps moyen après compilation   :{optimization_time / max(1, max_iter - 1):.3f} s/it")
-    print(f"Loss finale                     : {float(value):.12e}")
-    print(f"Gradient final                  : {float(grad_norm):.6e}")
-    print("-" * 60)
+        # plot_points(points0, step=0, exp_dir='visu')
+        points, state, results, df_history = optimize(points0,
+                                                      sino,
+                                                      max_iter=params['max_iter'],
+                                                      max_linesearch_steps=params['max_linesearch_steps'],
+                                                      initial_guess_strategy=params['initial_guess_strategy'],
+                                                      ext_dtype=params["ext_dtype"],
+                                                      batch_size=params['batch_size'],
+                                                      use_checkpoint=params['use_checkpoint'],
+                                                      target_loss=params['target_loss'],
+                                                      avg_last_n=10,
+                                                      )
+        # plot_points(points, step=MAX_ITER, exp_dir='visu')
 
-    return points, state
+        print(df_history.to_markdown(index=False))
+        pprint(results)
 
 
-plot_points(points0, step='init', exp_dir='visu')
+if __name__ == '__main__':
+    print("JAX version :", jax.__version__)
+    print("JAX x64 :", jax.config.read("jax_enable_x64"))
+    print("Device :", jax.devices()[0])
 
-points, state = optimize(points0,sino,max_iter=MAX_ITER,
-                         max_linesearch_steps=MAX_LINESEARCH_STEPS,
-                        initial_guess_strategy=INITIAL_GUESS_STRATEGY,)
-plot_points(points, step='optim', exp_dir='visu')
+    base_params = dict(XLA_PYTHON_CLIENT_PREALLOCATE=XLA_PYTHON_CLIENT_PREALLOCATE,
+                       XLA_PYTHON_CLIENT_MEM_FRACTION=XLA_PYTHON_CLIENT_MEM_FRACTION,
+                       nb_points=10_000,
+                       nb_angles=600,
+                       nb_bins=4096,
+                       batch_size=8,
+                       ext_dtype=jnp.float64,
+                       use_checkpoint=True,
+                       max_iter=15,
+                       max_linesearch_steps=4,
+                       initial_guess_strategy="one",
+                       seed=27,
+                       target_loss=1e-3)
 
+    base_params['exp_type'] = "nb_bins"
+    # nb_angles_exp = [100, 200, 400, 600, 1000, 2000]
+    nb_bins_exp = [512, 1024, 2048, 4096, 8192]
+    # nb_points_exp = [1_000, 5_000, 10_000, 20_000, 50_000]
+    # batch_sizes = [1, 4, 8, 16, 32, 64, 128, 256, 600]
+    # run_experiments(params)
+
+
+    # from itertools import product
+    #
+    # batch_sizes = [1, 16, 64, 600]
+    # checkpoints = [True, False]
+    # line_searches = [1, 4, 8]
+    experiments = []
+    for nb_bins in nb_bins_exp : #product( batch_sizes, checkpoints, line_searches, ):
+        params = base_params.copy()
+        params["nb_bins"] = nb_bins
+        experiments.append(params)
+
+    for i, params in enumerate(experiments):
+        print( f"\n\n########## " f"EXPERIMENT {i + 1}/{len(experiments)} " f"##########" )
+        run_experiments(params)

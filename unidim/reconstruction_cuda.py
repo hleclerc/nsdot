@@ -41,7 +41,7 @@ import torch
 import torch.utils.cpp_extension
 from loom.testing import Param, bench
 
-from .gpu_mem import torch_cuda_mem_budget_bytes
+from .gpu_mem import torch_mem_budget_bytes
 from .tracker import GradTimer
 
 _CPP_DECL = r"""
@@ -317,7 +317,7 @@ def _cost_grad(points, sino, grad_timer=None, mem_budget_bytes=None):
     """
     ext = _load_extension()
     if mem_budget_bytes is None:
-        mem_budget_bytes = torch_cuda_mem_budget_bytes()
+        mem_budget_bytes = torch_mem_budget_bytes()
     g = sino.geometry
     device, dtype = points.device, points.dtype
 
