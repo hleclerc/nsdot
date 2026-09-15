@@ -529,8 +529,14 @@ class OtPlan:
             alive = diag > 0
             if not alive.any():
                 break
+            # la constante libre ( ajouter le même nombre à tous les poids ne déplace rien ) est
+            # FIXÉE en clouant le premier poids : la diagonale moyenne ajoutée sur `H[ 0, 0 ]`, qui
+            # rend `H` définie positive sans changer la direction ailleurs -- plutôt qu'un
+            # `epsilon` partout, qui laissait dériver la constante ( HL ). Une cellule vide, elle,
+            # reçoit la diagonale moyenne : un pas de gradient à l'échelle des autres.
             mean_diag = float( diag[ alive ].mean() )
-            fix = np.where( alive, 1e-8 * mean_diag, mean_diag )
+            fix = np.where( alive, 0.0, mean_diag )
+            fix[ 0 ] += mean_diag
             direction = spsolve( ( H + sp.diags( fix ) ).tocsc(), -g )
             if not np.isfinite( direction ).all():
                 direction = -g / mean_diag

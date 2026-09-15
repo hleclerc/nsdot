@@ -108,9 +108,12 @@ Deux réponses ( proposées par HL ) :
   converge comme les autres.
 
 Le Newton NON amorti ( `damping = "none"` : pas plein dès qu'il baisse le résidu, retour arrière
-sinon, pas de plancher ) a été essayé et mesuré 5 à 50 fois plus lent que KMT dans tous les cas,
-floutage ou pas ( 1000 à 5000 évaluations contre 10 à 90 ) : son retour arrière repart de 1 à
-chaque pas, là où KMT repart du dernier pas accepté. Il reste disponible, KMT reste le défaut.
+sinon, pas de plancher ) a été essayé, d'abord avec un `epsilon I` de régularisation ( 5 à 50
+fois plus lent que KMT partout ), puis avec la constante fixée en clouant le premier poids
+( `H[ 0, 0 ] += diagonale moyenne`, HL ) : là il ne converge plus que dans un cas sur douze
+( flou 1, cube ), les autres s'arrêtent sans pas qui baisse le résidu. KMT, lui, ne change pas
+avec le clouage ( mêmes 6 à 11 pas flouté ) -- le clouage est gardé pour les deux, KMT reste le
+défaut, `"none"` reste disponible.
 
 Expériences `rec 3D blur` ( depuis le cube ) et `rec 3D blur multiscale` ( le flou resserré sur
 un petit nuage, puis le raffinement par étages sur la donnée nette ). Mesuré, 4 boules, 4 angles,
