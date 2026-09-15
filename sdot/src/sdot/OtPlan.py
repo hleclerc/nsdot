@@ -58,7 +58,7 @@ class OtPlan:
                   kernel_dtype = None, weights0 = None, max_iter = 200, ftol = 1e-13,
                   barrier_eps = 1e-4, min_measure_floor = 1e-6, memory = 10,
                   c1 = 1e-4, rho = 0.5, max_backtracks = 30, callback = None, jit = True,
-                  objective = "least_squares", mass_tol = 1e-8 ):
+                  objective = "least_squares", mass_tol = 1e-8, damping = "kmt" ):
         """`src_dist` : une `SumOfDiracs` (ses `weights`, normalisés, sont les masses cibles).
         `dst_dist` : la distribution CONTINUE contre laquelle intégrer (`Image`,
         `SumOfGaussians`, ...) -- normalisée à la même masse totale que `src_dist`.
@@ -107,6 +107,19 @@ class OtPlan:
           L-BFGS en demande de plus en plus. Mêmes limites que `"dual"` ( domaine borné, précision
           de la valeur ), plus : une distribution constante par morceaux ( `Image`, ou rien ).
 
+        `damping` ( Newton seulement ) : `"kmt"` -- le pas est retenu dès que la norme du résidu
+        baisse d'un facteur `1 - t/2` SANS qu'une cellule passe sous le plancher ( la moitié de la
+        plus petite mesure de départ ), ce qui garantit la convergence à une vitesse bornée par ce
+        plancher ; `"none"` -- le Newton NON amorti : le pas plein dès qu'il baisse le résidu, un
+        retour arrière sinon, aucun plancher. Plus rapide loin de la solution quand rien n'est
+        proche de zéro ( des projections floutées, `otrec` ), sans garantie sinon.
+
+        Avant l'un comme l'autre, le point de départ est VÉRIFIÉ : si le Voronoï ( ou les poids
+        donnés ) laisse une cellule vide -- des diracs hors du domaine -- les poids de départ sont
+        ceux d'une SIMILITUDE qui ramène le nuage dans le domaine ( `_similarity_start` ) : le
+        Voronoï du nuage translaté et contracté s'écrit comme un diagramme de puissance du nuage
+        d'origine, `w_i = | p_i |^2 - | a p_i + b |^2 / a`, et ses cellules sont toutes nourries.
+
         `jit` : compiler le gradient de l'objectif une fois pour toute la descente ( voir `_fit` ).
         C'est ce qu'on veut pour UN ajustement long ; c'est ce qu'on ne veut pas pour BEAUCOUP de
         petits ajustements sur des nuages différents ( une reconstruction, `otrec` ), où chaque
@@ -148,7 +161,7 @@ class OtPlan:
         if objective == "dual":
             self.weights = self._fit_dual( w0, max_iter, float( mass_tol ), memory, c1, rho, max_backtracks, callback )
         elif objective == "newton":
-            self.weights = self._fit_newton( w0, max_iter, float( mass_tol ), c1, rho, max_backtracks, callback )
+            self.weights = self._fit_newton( w0, max_iter, float( mass_tol ), rho, max_backtracks, callback, damping )
         elif objective == "least_squares":
             self.weights = self._fit( w0, max_iter, ftol, min_measure_floor, memory,
                                       c1, rho, max_backtracks, callback )
@@ -426,15 +439,42 @@ class OtPlan:
         diag = np.bincount( r, weights = v, minlength = n )
         return ( off + sp.diags( diag ) ).tocsr(), diag
 
-    def _fit_newton( self, w0, max_iter, mass_tol, c1, rho, max_backtracks, callback ):
-        """Newton amorti sur `-Phi` ( voir `objective = "newton"` ) : la direction résout
+    def _domain_box( self ):
+        """`( lo, hi )` du pavé du domaine ( celui que `PowerDiagram` a lu sur les demi-espaces, donc
+        aussi le support d'une image ), ou `None` s'il n'y en a pas"""
+        pd = self._pd
+        if not pd.box_min.is_defined:
+            return None
+        return np.asarray( pd.box_min ).reshape( -1 ), np.asarray( pd.box_max ).reshape( -1 )
+
+    def _similarity_start( self, margin = 0.1 ):
+        """Les poids du Voronoï d'une SIMILITUDE du nuage qui le loge dans le domaine ( voir
+        `damping` dans `__init__` ) : la boîte du nuage est contractée ( jamais dilatée ) et
+        translatée dans le pavé du domaine réduit d'une marge. Zéro ( le Voronoï lui-même ) sans
+        pavé, ou si le nuage y est déjà."""
+        box = self._domain_box()
+        p = self._positions
+        if box is None:
+            return np.zeros( len( p ) )
+        lo, hi = box
+        p_lo, p_hi = p.min( axis = 0 ), p.max( axis = 0 )
+        span_dom = ( hi - lo ) * ( 1 - 2 * margin )
+        span_pts = np.maximum( p_hi - p_lo, 1e-300 )
+        a = float( min( 1.0, ( span_dom / span_pts ).min() ) )
+        # le centre du nuage contracté sur le centre du domaine
+        b = ( lo + hi ) / 2 - a * ( p_lo + p_hi ) / 2
+        q = a * p + b
+        return ( p * p ).sum( axis = 1 ) - ( q * q ).sum( axis = 1 ) / a
+
+    def _fit_newton( self, w0, max_iter, mass_tol, rho, max_backtracks, callback, damping ):
+        """Newton sur `-Phi` ( voir `objective = "newton"` et `damping` ) : la direction résout
         `H d = -( m - nu )` ( `H` régularisée d'un `epsilon` sur sa diagonale, qui fixe la constante
-        libre ), et le pas est celui de l'amortissement de Kitagawa-Mérigot-Thibert : la norme du
-        résidu doit baisser, et aucune cellule ne doit passer sous le plancher. Une cellule VIDE a
-        une ligne nulle : on lui donne la diagonale moyenne, ce qui en fait un pas de gradient à
-        l'échelle des autres, le temps qu'elle revienne."""
+        libre ). Une cellule VIDE a une ligne nulle : on lui donne la diagonale moyenne, ce qui en
+        fait un pas de gradient à l'échelle des autres, le temps qu'elle revienne."""
         from scipy.sparse.linalg import spsolve
         import scipy.sparse as sp
+        if damping not in ( "kmt", "none" ):
+            raise ValueError( f"damping inconnu : { damping !r } ( 'kmt' ou 'none' )" )
 
         def record( step, w, m, f, t = 1.0, nb_evals = 1 ):
             entry = { "step": step, "weights": np.asarray( w ).copy(), "loss": f,
@@ -465,11 +505,20 @@ class OtPlan:
             f0, g0, m0 = self._dual( x0 )
             if float( m0.min() ) > float( m.min() ):
                 x, f, g, m = x0, f0, g0, m0
+        # ... et le Voronoï lui-même peut laisser des cellules VIDES ( des diracs hors du domaine ) :
+        # alors la similitude qui ramène le nuage dedans ( voir `_similarity_start` )
+        if float( m.min() ) <= 0:
+            x1 = self._similarity_start()
+            f1, g1, m1 = self._dual( x1 )
+            if float( m1.min() ) > float( m.min() ):
+                x, f, g, m = x1, f1, g1, m1
         record( 0, x, m, f )
         # le PLANCHER de Kitagawa-Mérigot-Thibert : aucun pas accepté ne laisse une cellule sous la
         # moitié de la plus petite mesure de départ ( ni de la plus petite masse cible ) -- c'est
-        # ce qui garantit la convergence, à une vitesse qui dépend de ce plancher
-        floor = 0.5 * min( float( m.min() ), float( self._masses.min() ) )
+        # ce qui garantit la convergence, à une vitesse qui dépend de ce plancher. Non amorti :
+        # pas de plancher, et le pas d'essai repart toujours de 1.
+        kmt = damping == "kmt"
+        floor = 0.5 * min( float( m.min() ), float( self._masses.min() ) ) if kmt else -np.inf
         t_start = 1.0
 
         for it in range( 1, max_iter + 1 ):
@@ -502,7 +551,7 @@ class OtPlan:
                 nb_evals += 1
                 gn_try = float( np.linalg.norm( g_try ) )
                 if np.isfinite( f_try ) and float( m_try.min() ) >= floor:
-                    if gn_try <= ( 1 - t / 2 ) * gn:
+                    if gn_try <= ( ( 1 - t / 2 ) if kmt else 1.0 ) * gn:
                         accepted = ( x_try, f_try, g_try, m_try, t )
                         break
                     if gn_try < gn and ( best is None or gn_try < best[ 5 ] ):
@@ -512,7 +561,7 @@ class OtPlan:
             if accepted is None:
                 break
             x, f, g, m, t = accepted
-            t_start = min( 1.0, 4 * t )
+            t_start = min( 1.0, 4 * t ) if kmt else 1.0
             record( it, x, m, f, t, nb_evals )
 
         return x

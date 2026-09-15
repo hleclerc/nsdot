@@ -213,6 +213,30 @@ if test( "newton_converges_quadratically_on_an_image" ):
     assert numpy.all( bad.history[ 0 ][ "weights" ] == 0 )
 
 
+if test( "newton_starts_from_a_similarity_when_the_voronoi_has_empty_cells" ):
+    # des diracs HORS du domaine ( leur cellule de Voronoï restreinte au domaine est vide ) : le
+    # départ est le Voronoï du nuage ramené dans le domaine par une similitude, écrit comme
+    # diagramme de puissance du nuage d'origine -- toutes les cellules nourries, et Newton converge
+    rng = numpy.random.default_rng( 51 )
+    n = 40
+    pos = rng.uniform( -2, 3, size = ( n, 2 ) )
+    img = Image( values = 1 + 0.3 * rng.random( ( 16, 16 ) ), origin = [ 0.0, 0.0 ],
+                 frame = [ [ 1 / 16, 0 ], [ 0, 1 / 16 ] ] )
+    voronoi = OtPlan( SumOfDiracs( pos ), img, objective = "newton", max_iter = 0, kernel_dtype = "FP64" )
+    f, g, m = voronoi._dual( numpy.zeros( n ) )
+    assert ( m == 0 ).any()                           # le problème existe bien
+    plan = OtPlan( SumOfDiracs( pos ), img, objective = "newton", max_iter = 80, mass_tol = 1e-10 / n,
+                   kernel_dtype = "FP64" )
+    assert plan.history[ 0 ][ "min_measure" ] > 0     # ... et le départ l'a résolu
+    assert numpy.any( plan.history[ 0 ][ "weights" ] != 0 )
+    assert plan.history[ -1 ][ "max_abs_residual" ] * n < 1e-9, plan.history[ -1 ][ "max_abs_residual" ] * n
+    # la similitude elle-même : ses poids sont ceux du Voronoï du nuage contracté
+    w = plan._similarity_start()
+    q = 0.5 + 0.8 * ( pos - ( pos.min( axis = 0 ) + pos.max( axis = 0 ) ) / 2 ) / numpy.ptp( pos, axis = 0 ).max()
+    a = 0.8 / numpy.ptp( pos, axis = 0 ).max()
+    assert numpy.allclose( w - w[ 0 ], ( ( pos ** 2 ).sum( 1 ) - ( q ** 2 ).sum( 1 ) / a ) - ( ( pos ** 2 ).sum( 1 ) - ( q ** 2 ).sum( 1 ) / a )[ 0 ] )
+
+
 # -- les moments, et ce qu'un coût de transport en tire ---------------------------------------
 
 if test( "moments_are_the_closed_forms" ):

@@ -90,6 +90,37 @@ Le raffinement ne coûte presque rien à la perte ( 9.5e-3 -> 8.6e-3 en passant 
 qu'à raffiner localement. Ce qui reste cher est l'étage final lui-même ( 21 s par pas à 8000 ) :
 les ajustements par angle y repartent encore du Voronoï à chaque évaluation.
 
+## Les zéros des projections : flouter d'abord, et un départ qui loge dans le domaine
+
+2026-09-15. Les projections ont des zéros, et tout ce qui y projette est sans cellule ni gradient.
+Deux réponses ( proposées par HL ) :
+
+* `Radiographs.blurred( sigma )` / `Sinogram.blurred`, et `Reconstruction.anneal_blur( blurs )` :
+  des itérations sur les projections FLOUTÉES d'abord ( `sigma` = la largeur du détecteur ), puis
+  resserrées étage par étage ( 1, 0.25, 0.06, 0.015, 0 en fraction de la largeur ). Mesuré sur
+  3000 diracs, `OtPlan` Newton ( KMT ) : floutée à l'échelle du domaine, la cible se résout en
+  6 à 11 pas depuis N'IMPORTE quel nuage -- l'enveloppe visuelle, le cube, ou hors du détecteur --
+  là où la donnée nette demande 34 pas depuis l'enveloppe et ne converge pas depuis le cube ;
+* un TEST avant Newton : si le Voronoï laisse une cellule vide, le départ est le Voronoï d'une
+  SIMILITUDE qui ramène le nuage dans le domaine ( contraction + translation ), écrit comme
+  diagramme de puissance du nuage d'origine, `w_i = | p_i |^2 - | a p_i + b |^2 / a`
+  ( `OtPlan._similarity_start` ) : toutes les cellules nourries, et le cas « hors du détecteur »
+  converge comme les autres.
+
+Le Newton NON amorti ( `damping = "none"` : pas plein dès qu'il baisse le résidu, retour arrière
+sinon, pas de plancher ) a été essayé et mesuré 5 à 50 fois plus lent que KMT dans tous les cas,
+floutage ou pas ( 1000 à 5000 évaluations contre 10 à 90 ) : son retour arrière repart de 1 à
+chaque pas, là où KMT repart du dernier pas accepté. Il reste disponible, KMT reste le défaut.
+
+Expériences `rec 3D blur` ( depuis le cube ) et `rec 3D blur multiscale` ( le flou resserré sur
+un petit nuage, puis le raffinement par étages sur la donnée nette ). Mesuré, 4 boules, 4 angles,
+64², 1500 diracs depuis le cube : 5 étages, 40 pas, 59 s, 92.9 % des diracs dans les boules.
+Puis 8 boules, 6 angles, 128², depuis le CUBE, 500 diracs floutés ( 5 étages, 109 s ) puis
+raffinés 500 -> 2000 -> 8000 sur la donnée nette : 639 s en tout, perte finale 2.27e-3 et 94.3 %
+des diracs dans les boules -- le même résultat que depuis l'enveloppe visuelle ( 2.24e-3, 93.3 %,
+346 s ), obtenu sans elle, en partant de n'importe où. L'étage à 8000 reste le poste principal
+( 454 s, 23 s par pas ).
+
 ## Ce que ça coûte, et ce qui a été mesuré
 
 * 60 diracs, 4 angles, 48² pixels, 30 pas de L-BFGS : 96 s, 90 % des diracs dans les boules, coût
