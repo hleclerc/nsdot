@@ -16,6 +16,11 @@ tmp/
 .codewhale
 .envs.py
 .qwen/
+*.csv
+*.png
+*.gif
+mlflow.db
+*.html
 
 otrec/src/otrec/benchmarks/results/*.png
 graphify-out/
