@@ -4,20 +4,19 @@ import optax
 from functools import partial
 # TODO from jax.tree_util import Partial
 import tqdm
-
-from unidim.plots import plot_final_points
 import nvidia_smi
+
+from unidim.plots import plot_points
 
 nvidia_smi.nvmlInit()
 handle = nvidia_smi.nvmlDeviceGetHandleByIndex(0)
 # input
 NB_ANGLES = 600
 NB_BINS = 4096
-NB_POINTS_FINAL = 100_000
+NB_POINTS_FINAL = 10_000
 INNER_RADIUS = 0.7
 OUTER_RADIUS = 0.9
 # reconstruction
-JAX_ENABLE_X64 = False
 BYTES_PER_CHUNK_ELEMENT = 256  # no effect on gpu mem
 SAFETY_FRACTION = 0.5  # leave headroom for everything else alive on the device
 FALLBACK_BYTES = 512 * 1024 * 1024  # no CUDA visible -- a conservative default chunk budget
@@ -29,7 +28,7 @@ INITIAL_GUESS_STRATEGY="one" # TODO "quadratic"  # ou "backtracking"
 NB_POINTS_INIT=200
 FACTOR=4
 SEED=0
-
+JAX_ENABLE_X64 = True
 jax.config.update("jax_enable_x64", JAX_ENABLE_X64)
 ext_dtype = jnp.float64 if jax.config.x64_enabled else jnp.float32
 
@@ -211,15 +210,9 @@ if __name__ == '__main__':
                                  max_linesearch_steps=MAX_LINESEARCH_STEPS,
                                  initial_guess_strategy=INITIAL_GUESS_STRATEGY)
 
-    plot_final_points(points, 'final_points.png')
+    plot_points(points, 'final', 'reconstruction_jax_simpler')
 
 
-
-# def compute_percent_in_ring(points):
-#     distances = jnp.sqrt(points[:, 0] ** 2 + points[:, 1] ** 2)
-#     in_ring = (distances >= INNER_RADIUS) & (distances <= OUTER_RADIUS)
-#     percent_in_ring = jnp.mean(in_ring) * 100.  # Moyenne = proportion de True
-#     return float(percent_in_ring)
 
 
 # les points x la normale : en faisant AX.t matriciellement plus vite

@@ -1,12 +1,13 @@
+import os
 import time
 from functools import partial
 import jax
 import jax.numpy as jnp
 import jax.random as jr
 import optax
-# from loom.testing import Param, bench
-from gpu_mem import jax_mem_budget_bytes, jax_memory_info
+from gpu_mem import jax_mem_budget_bytes
 from tracker import GradTimer
+from unidim import reconstruction_jax_simpler
 
 # Needed for the float64 promotion in `_w2_1d` below -- disabled by default,
 # JAX otherwise SILENTLY truncates any float64 array back to float32.
@@ -48,16 +49,12 @@ def _w2_1d(proj, bin_mass,bin_edges):
         La distance de Wasserstein quadratique entre les deux mesures.
     """
     ext_dtype = jnp.float64 if jax.config.x64_enabled else jnp.float32
-
     n = proj.shape[0]                    # Nombre de Dirac dans la projection
     w = 1.0 / n                          # Chaque Dirac porte la masse 1/n
-
     dw = bin_edges[1] - bin_edges[0]     # Largeur commune des bins
     bin_center = bin_edges[:-1] + dw / 2 # Centre de chaque bin
-
     cum = jnp.cumsum(bin_mass)            # CDF discrète : masse cumulée
     cum_start = cum - bin_mass            # Quantile auquel commence chaque bin
-
     # Intégrale cumulée du quantile :
     # prefix_M[j] = ∫ jusqu'au début du bin j de Q(t) dt
     prefix_M = jnp.cumsum(bin_mass * bin_center) - bin_mass * bin_center
@@ -170,7 +167,7 @@ def loss(points, normals, bin_edges, bin_mass, mem_budget_bytes=-1):
         """
         normal, mass = normal_and_mass
         # p_i · n : projection scalaire de chaque point sur la normale
-        projections = points @ normal, # normal @ point.T, trie par angle
+        projections = points @ normal # normal @ point.T, trie par angle
         return _w2_1d(projections, mass, bin_edges)
     # fin angle cost , retour sur la loss
     n, A = points.shape[0], normals.shape[0]    # Nombre de points 2D, # Nombre d'angles
@@ -284,7 +281,6 @@ def optimize(points,
     # Demande le budget mémoire disponible pour le calcul.
     # Ce budget sera utilisé dans `loss` pour déterminer combien d'angles peuvent être traités simultanément sur le GPU.
     mem_budget_bytes = jax_mem_budget_bytes()
-    platform, vram_total, vram_used, vram_free = jax_memory_info()
 
     chunk_size = _get_chunk_size(points.shape[0],normals.shape[0], mem_budget_bytes)
     # XLA_FLAGS =
@@ -297,8 +293,6 @@ def optimize(points,
     # Affiche le début de la phase de warmup. Cette phase sert principalement à déclencher la compilation JIT
     # et à vérifier que le calcul tient dans la mémoire disponible.
     print(f"  [warmup] compiling/stabilizing JIT (n={points.shape[0]}, A={normals.shape[0]} )..."
-          f"  [memory] VRAM libre={vram_free / 1024 ** 3:.2f} GiB | "
-          f"VRAM utilisée={vram_used / 1024 ** 3:.2f} GiB | "
           f"budget={mem_budget_bytes / 1024 ** 3:.2f} GiB | "
           f"chunk={chunk_size}"
           , end="", flush=True)
@@ -532,7 +526,7 @@ def multiscale_optimize(sino,
 
 if __name__=='__main__':
 
-    nb_diracs = 100_000
+    nb_diracs = 10_000
     # p = bench( "multiscale", nb_diracs = Param( 1_000, help = "nb diracs" ) )
     from geometry import CtGeometry
     from sinogram import Sinogram
@@ -542,9 +536,7 @@ if __name__=='__main__':
     sino.add_disk( center = [ 0, 0 ], radius = 0.9, density = + 1.0 )
     sino.add_disk( center = [ 0, 0 ], radius = 0.7, density = - 1.0 )
 
-    from unidim.plots import plot_sinogram, plot_final_points
 
-    plot_sinogram(sino,'input_sinogram.png')
 
 
     # tracker = Tracker( record_frames = True )
@@ -558,8 +550,11 @@ if __name__=='__main__':
 
     # p.results[ "ms_per_grad_by_n" ] = timings
     # tracker.export_html("unidim_reconstruction.html", sino.geometry.extent )
-    plot_final_points(points, 'final_points.png')
-
+    # plot_final_points(points,final_points.png')
+    from unidim.plots import plot_sinogram, plot_points
+    os.makedirs('reconstruction_jax')
+    plot_sinogram(sino,'reconstruction_jax/input_sinogram.png')
+    plot_points(points, 'final',  'reconstruction_jax')
     # import subprocess
     # subprocess.Popen(["firefox", "unidim_reconstruction.html"])
 

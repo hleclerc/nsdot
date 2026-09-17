@@ -39,10 +39,10 @@ import time
 
 import torch
 import torch.utils.cpp_extension
-from loom.testing import Param, bench
+# from loom.testing import Param, bench
 
-from .gpu_mem import torch_mem_budget_bytes
-from .tracker import GradTimer
+from gpu_mem import torch_mem_budget_bytes
+from tracker import GradTimer
 
 _CPP_DECL = r"""
 std::vector<torch::Tensor> ot_cost_grad_cuda(
@@ -421,17 +421,17 @@ def multiscale_optimize(sino, nb_points_final, nb_points_init=200, factor=4,
         points = _split(points, n, jitter=sino.geometry.dw)
 
 
-if p := bench( "multiscale_cuda", nb_diracs = Param( 100_000, help = "nb diracs" ) ):
-    from .geometry import CtGeometry
-    from .sinogram import Sinogram
-    from .tracker import Tracker
+# if p := bench( "multiscale_cuda", nb_diracs = Param( 100_000, help = "nb diracs" ) ):
+from geometry import CtGeometry
+from sinogram import Sinogram
+from tracker import Tracker
+nb_diracs = 10_000
+sino = Sinogram( CtGeometry( nb_angles = 600, nb_bins = 4096, extent = 2.0 ) )
+sino.add_disk( center = [ 0, 0 ], radius = 0.9, density = + 1.0 )
+sino.add_disk( center = [ 0, 0 ], radius = 0.7, density = - 1.0 )
 
-    sino = Sinogram( CtGeometry( nb_angles = 600, nb_bins = 4096, extent = 2.0 ) )
-    sino.add_disk( center = [ 0, 0 ], radius = 0.9, density = + 1.0 )
-    sino.add_disk( center = [ 0, 0 ], radius = 0.7, density = - 1.0 )
-
-    tracker = Tracker( record_frames = True )
-    timings = {}
-    points = multiscale_optimize( sino, nb_points_final = p.nb_diracs, tracker = tracker, timings = timings )
-    p.results[ "ms_per_grad_by_n" ] = timings
-    tracker.export_html( p.out_dir / "unidim_reconstruction_cuda.html", sino.geometry.extent )
+tracker = Tracker( record_frames = True )
+timings = {}
+points = multiscale_optimize( sino, nb_points_final = nb_diracs, tracker = tracker, timings = timings )
+# results[ "ms_per_grad_by_n" ] = timings
+tracker.export_html( "reconstruction_cuda/unidim_reconstruction_cuda.html", sino.geometry.extent )

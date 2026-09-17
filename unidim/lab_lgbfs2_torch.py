@@ -13,8 +13,9 @@ import mlflow
 mlflow.set_tracking_uri("sqlite:///mlflow.db")
 mlflow.set_experiment("wasserstein-lbfgs")
 
-XLA_PYTHON_CLIENT_PREALLOCATE = True
+XLA_PYTHON_CLIENT_PREALLOCATE = False
 XLA_PYTHON_CLIENT_MEM_FRACTION = 1.0
+torch.cuda.set_per_process_memory_fraction(XLA_PYTHON_CLIENT_MEM_FRACTION)
 
 DEVICE = torch.device("cuda")
 img_dir= None
@@ -43,7 +44,6 @@ def get_torch_gpu_memory(device=DEVICE):
 
     return mem_info_mb
 
-torch.cuda.set_per_process_memory_fraction(XLA_PYTHON_CLIENT_MEM_FRACTION)
 
 def _w2_1d(proj, bin_mass, bin_edges, ext_dtype=torch.float64):
     proj = proj.to(dtype=ext_dtype)
@@ -230,7 +230,7 @@ def run_experiments(params):
 
 base_params = dict(XLA_PYTHON_CLIENT_PREALLOCATE=XLA_PYTHON_CLIENT_PREALLOCATE,
                        XLA_PYTHON_CLIENT_MEM_FRACTION=XLA_PYTHON_CLIENT_MEM_FRACTION,
-                       nb_points=400_000,
+                       nb_points=10_000,
                        nb_angles=600,
                        nb_bins=4096,
                        batch_size=1,

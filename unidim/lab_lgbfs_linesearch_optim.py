@@ -117,7 +117,7 @@ points0 = jax.random.uniform(
     dtype=jnp.float32,
 )
 for max_linesearch_steps in [1, 4, 8 ]:
-    points = points0
+    points = points0.copy()
     print("-"*60)
     # print(max_linesearch_steps)
     optimize(points, sino,max_iter=50,max_linesearch_steps=max_linesearch_steps,initial_guess_strategy="one")

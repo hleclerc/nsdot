@@ -1,14 +1,13 @@
 import jax
 import jax.numpy as jnp
-from lab_wasser import _w2_1d as wasser_dist
+from lab_wasser import _w2_1d, _w2_1d_new,_w2_1d_new2
 import time
 
-from unidim.gpu_mem import get_jax_gpu_memory, _get_chunk_size
+from unidim.gpu_mem import get_jax_gpu_memory
 
-print(f"wasser_dist used : {wasser_dist.__name__}")
 print("jax_lmap module, jax_enable_x64 :", jax.config.read("jax_enable_x64"))
 
-def loss_lax_map(points, normals, bin_mass, bin_edges, batch_size, ext_dtype, use_checkpoint=True):
+def loss_lax_map(points, normals, bin_mass, bin_edges, batch_size, ext_dtype,wasser_dist, use_checkpoint=True):
 
 
     def angle_cost(normal):
@@ -28,16 +27,35 @@ def loss_lax_map(points, normals, bin_mass, bin_edges, batch_size, ext_dtype, us
     # costs = shard_map(angle_cost, devices=devices)(normals)
     return jnp.sum(costs).astype(jnp.float32)
 
+
+def _get_chunk_size(nb_points, nb_angles, nb_bins, safety_fraction=0.8):
+    import jax # Mémoire par angle (en bytes)
+    memory_per_angle = 96 * nb_points + 48 * nb_bins + 48 # estimation
+
+    # Mémoire disponible sur le GPU
+    device = jax.devices()[0]
+    stats = device.memory_stats()
+    available_jax_bytes = stats["bytes_limit"] - stats["bytes_in_use"]
+
+    # Appliquer une marge de sécurité
+    safe_mem_budget = int(available_jax_bytes * safety_fraction)
+
+    # Calculer le batch_size maximal
+    max_batch_size = safe_mem_budget // memory_per_angle
+    max_batch_size = max(1, min(nb_angles, max_batch_size))
+    return max_batch_size
+
 if __name__ == '__main__':
-    NB_POINTS = 1_000_000
+    NB_POINTS = 100_000
     NB_ANGLES = 600
     NB_BINS = 4096
     BYTES_PER_ELEMENT = 80
     SAFETY_FRACTION = 0.8
     # BATCH_SIZE = None #  [1,16,64,600], None vor vmap
-    available_memory = get_jax_gpu_memory()
+    bytes_in_use, bytes_limit = get_jax_gpu_memory()
+    available_memory = bytes_limit - bytes_in_use
     print(f"Mémoire GPU disponible : {available_memory / (1024 ** 3):.2f} GiB")
-    BATCH_SIZE = _get_chunk_size(NB_POINTS, NB_ANGLES, NB_BINS, safety_fraction=SAFETY_FRACTION)
+    BATCH_SIZE = 128 #_get_chunk_size(NB_POINTS, NB_ANGLES, NB_BINS, safety_fraction=SAFETY_FRACTION)
     print("optimal BATCH_SIZE", BATCH_SIZE)
     JAX_CHECKPOINT = True
 
@@ -61,86 +79,62 @@ if __name__ == '__main__':
     print("bin_mass dtype :", bin_mass.dtype)
     print(f"checkpoint : {JAX_CHECKPOINT}")
     print("-"*60)
-    print(f"Opti lax.map with batchsize : {BATCH_SIZE} , wasser : {wasser_dist.__name__}")
-    start = time.perf_counter()
-    loss_lax_map(points, normals, bin_mass, bin_edges, BATCH_SIZE, ext_dtype, use_checkpoint=JAX_CHECKPOINT)
-    time.perf_counter() - start
-    print("Time for loss_lax_map Compil  + run  ", round(time.perf_counter() - start, 2) )
-    loss_jit = jax.jit(
-        lambda points: loss_lax_map(points, normals, bin_mass, bin_edges, BATCH_SIZE, ext_dtype))
+    for wasser_dist in [_w2_1d, _w2_1d_new,_w2_1d_new2 ]:
+        print(f"Opti lax.map with batchsize : {BATCH_SIZE} , wasser dist : {wasser_dist.__name__}")
+        start = time.perf_counter()
+        loss_lax_map(points, normals, bin_mass, bin_edges, BATCH_SIZE, ext_dtype, wasser_dist, use_checkpoint=JAX_CHECKPOINT)
+        time.perf_counter() - start
+        print("Time for loss_lax_map Compil  + run  ", round(time.perf_counter() - start, 2) )
+        loss_jit = jax.jit(
+            lambda points: loss_lax_map(points, normals, bin_mass, bin_edges, BATCH_SIZE, ext_dtype, wasser_dist,use_checkpoint=JAX_CHECKPOINT))
 
-    start = time.perf_counter()
-    loss = loss_jit(points)
-    loss.block_until_ready()
-    print("Time run compiled version :", round(time.perf_counter() - start, 2) )
+        start = time.perf_counter()
+        loss = loss_jit(points)
+        loss.block_until_ready()
+        print("Time run compiled version :", round(time.perf_counter() - start, 2) )
 
-    loss_compiled = loss_jit.lower(points).compile()
+        loss_compiled = loss_jit.lower(points).compile()
 
-    print("\nMémoire du loss_lax_map compilé")
-    print(loss_compiled.memory_analysis())
-    print(f"Loss = {float(loss):.12e}")
+        print("\nMémoire du loss_lax_map compilé")
+        print(loss_compiled.memory_analysis())
+        print(f"Loss = {float(loss):.12e}")
 
-    """  
-    il faut distinguer le choix de batch_size pour la loss seule du choix pour L-BFGS + gradient.  
-    Tes résultats avec checkpoint ON/OFF sont pratiquement identiques :
-    | batch_size |     run ON |  mémoire ON |    run OFF | mémoire OFF |
-    | ---------: | ---------: | ----------: | ---------: | ----------: |
-    |          1 |     1.15 s |     0.52 MB |     1.16 s |     0.52 MB |
-    |         16 |     1.18 s |     1.93 MB | **1.09 s** |     1.93 MB |
-    |         64 |     1.08 s |     7.69 MB |     1.14 s |     7.69 MB |
-    |    **600** | **0.91 s** | **72.0 MB** | **0.92 s** | **72.0 MB** |
+        loss_and_grad = jax.jit(
+            jax.value_and_grad(lambda points: loss_lax_map(points, normals, bin_mass, bin_edges,
+                                                           BATCH_SIZE, ext_dtype,wasser_dist,  JAX_CHECKPOINT)
+            ))
+        start = time.perf_counter()
+        loss_value, grad = loss_and_grad(points)
+        loss_value.block_until_ready()
+        grad.block_until_ready()
+
+        time_grad_compile_run = time.perf_counter() - start
+        print("Time gradient Compil + run :", round(time_grad_compile_run, 2),"s")
+        start = time.perf_counter()
+        loss_value, grad = loss_and_grad(points)
+
+        loss_value.block_until_ready()
+        grad.block_until_ready()
+
+        time_grad_run = time.perf_counter() - start
+        print("Time gradient run compiled :",round(time_grad_run, 2),"s")
+        grad_compiled = loss_and_grad.lower(points,).compile()
+        print("\nMémoire du loss + gradient compilé")
+        print(grad_compiled.memory_analysis())
+        grad_norm = jnp.linalg.norm(grad,)
+        print(f"Loss = {float(loss_value):.12e}")
+        print(f"Gradient dtype = {grad.dtype}")
+        print(f"Gradient shape = {grad.shape}")
+        print(f"||gradient|| = {float(grad_norm):.12e}")
+    """
     
-    
-    600 → 0.92 s / 72 MB
-    64  → 1.14 s / 7.7 MB compromis pour préparer L-BFGS
-    """
+|                |       `_w2_1d` |   `_w2_1d_new` |  `_w2_1d_new2` |
+| -------------- | -------------: | -------------: | -------------: |
+| Loss           | 1.684825301170 | 1.684825301170 | 1.684825301170 |
+| Loss run       |         3.42 s |         3.47 s |     **3.45 s** |
+| Grad run       |         6.19 s |         6.19 s |         6.19 s |
+| Temp loss      |      146.5 MiB |      148.0 MiB |  **146.5 MiB** |
+| Temp loss+grad |     294.65 MiB | **294.65 MiB** |     294.65 MiB |
+| Gradient norm  |  1.01417728e-1 |  1.01417728e-1 |  1.01417728e-1 |
 
-
-
-    loss_and_grad = jax.jit(
-        jax.value_and_grad(lambda points: loss_lax_map(points, normals, bin_mass, bin_edges,
-                                                       BATCH_SIZE, ext_dtype, JAX_CHECKPOINT)
-        ))
-    start = time.perf_counter()
-    loss_value, grad = loss_and_grad(points)
-    loss_value.block_until_ready()
-    grad.block_until_ready()
-
-    time_grad_compile_run = time.perf_counter() - start
-    print("Time gradient Compil + run :", round(time_grad_compile_run, 2),"s")
-    start = time.perf_counter()
-    loss_value, grad = loss_and_grad(points)
-
-    loss_value.block_until_ready()
-    grad.block_until_ready()
-
-    time_grad_run = time.perf_counter() - start
-    print("Time gradient run compiled :",round(time_grad_run, 2),"s")
-    grad_compiled = loss_and_grad.lower(points,).compile()
-    print("\nMémoire du loss + gradient compilé")
-    print(grad_compiled.memory_analysis())
-    grad_norm = jnp.linalg.norm(grad,)
-    print(f"Loss = {float(loss_value):.12e}")
-    print(f"Gradient dtype = {grad.dtype}")
-    print(f"Gradient shape = {grad.shape}")
-    print(f"||gradient|| = {float(grad_norm):.12e}")
-    """
-    batch_size=64
-    |                        | Checkpoint ON | Checkpoint OFF |
-    | ---------------------- | ------------: | -------------: |
-    | Loss compilée          |        0.16 s |     **0.11 s** |
-    | Temp mémoire loss+grad |   **15.5 MB** |        82.1 MB |
-    | Code généré            |        110 KB |        77.6 KB |
-    | Gradient               |       float32 |        float32 |
-    | Norme gradient         |    0.31720358 |     0.31720358 |
-    """
-
-    """"
-    | Configuration |   Gradient | Temp memory |
-    | ------------- | ---------: | ----------: |
-    | 16 + OFF      | **0.10 s** |     74.5 MB |
-    | **16 + ON**   | **0.13 s** | **3.95 MB** |
-    | 64 + OFF      |     0.11 s |     82.1 MB |
-    | 64 + ON       |     0.15 s |     15.5 MB |
-    
-    """
+            """

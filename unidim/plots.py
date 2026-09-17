@@ -18,16 +18,6 @@ def plot_sinogram(sino,save_file):
     plt.colorbar(label="Densité")
     plt.savefig(save_file)
 
-def plot_final_points(points, save_file):
-
-    plt.figure(figsize=(7, 7))
-    points = points.cpu()
-    plt.scatter(points[:, 0],points[:, 1],s=2)
-    plt.xlabel("x")
-    plt.ylabel("y")
-    plt.title(f"Reconstruction finale — {points.shape[0]} points")
-    plt.axis("equal")
-    plt.savefig(save_file)
 
 def  plot_points(points, step , img_dir):
     os.makedirs(img_dir, exist_ok=True)

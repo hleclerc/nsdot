@@ -5,7 +5,6 @@ import optax
 import tqdm
 
 
-
 def _w2_1d(proj, bin_mass, bin_edges, ext_dtype):
     """
     Calcule W2² entre une mesure empirique uniforme portée par `proj` et une
@@ -84,7 +83,7 @@ def optimize(points, normals, batch_size, max_iter=15, max_linesearch_steps=8, e
     points, state, value = step(points, state)
     value.block_until_ready()
 
-    for i in tqdm.tqdm(range(max_iter)):
+    for i in  tqdm.tqdm(range(max_iter)):
         points, state, value = step(points, state)
         value.block_until_ready()
 
@@ -121,7 +120,7 @@ if __name__ == "__main__":
     BATCH_SIZE = 16
     MAX_ITER = 15
     MAX_LINESEARCH_STEPS = 8
-    ext_dtype = jnp.float64
+    ext_dtype = jnp.float32
 
     # On construit une mesure uniforme sur [-1, 1].
     # Toutes les masses sont identiques.
@@ -135,7 +134,10 @@ if __name__ == "__main__":
     # Initialisation aléatoire des points.Les points sont initialement dans [-1, 1]².
     key = jax.random.PRNGKey(0)
     points = jax.random.uniform(key,shape=(NB_POINTS, 2),minval=-1.0,maxval=1.0,dtype=ext_dtype,)
-    benchmark_loss(points, normals,bin_mass, bin_edges,ext_dtype=ext_dtype)
-    points = optimize(points, normals, None, max_iter=15, max_linesearch_steps=8, ext_dtype=jnp.float32)
+    print("Optimisation de la loss W2 en  ", ext_dtype)
+    points = optimize(points, normals, BATCH_SIZE, max_iter=MAX_ITER, max_linesearch_steps=MAX_LINESEARCH_STEPS, ext_dtype=ext_dtype)
     print("Optimisation terminée.")
-    print("points.shape =", points.shape)
+    print("="*60)
+    print("Benchmark: effet du batchsize , compromis mémoire, temps de calcul")
+
+    benchmark_loss(points, normals,bin_mass, bin_edges,ext_dtype=ext_dtype)

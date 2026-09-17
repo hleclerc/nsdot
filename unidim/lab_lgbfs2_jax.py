@@ -4,7 +4,7 @@ from pprint import pprint
 import pandas as pd
 import tqdm
 
-XLA_PYTHON_CLIENT_PREALLOCATE = False
+XLA_PYTHON_CLIENT_PREALLOCATE = True
 XLA_PYTHON_CLIENT_MEM_FRACTION = 0.75
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = str(XLA_PYTHON_CLIENT_PREALLOCATE).lower()
 os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"]= str(XLA_PYTHON_CLIENT_MEM_FRACTION)
@@ -16,7 +16,7 @@ import nvidia_smi
 from geometry import CtGeometry
 from sinogram import Sinogram
 from lab_wasser import _w2_1d as wasser_dist
-from unidim.gpu_mem import get_jax_gpu_memory, measure_gpu_peak
+from peak_memory_monitor import measure_gpu_peak
 # from plots import plot_points
 
 import mlflow
@@ -76,14 +76,7 @@ def optimize(points,sino,
 
     solver = optax.lbfgs(linesearch=linesearch)
     state = solver.init(points)
-    # print("0", jax.tree_util.tree_structure(state[0]))
-    # print("1", jax.tree_util.tree_structure(state[1]))
-    # print("2", state[2].info.num_linesearch_steps)
 
-
-    # --------------------------------------------------------
-    # Une étape L-BFGS
-    # --------------------------------------------------------
     value_and_grad = optax.value_and_grad_from_state(fun)
 
     @jax.jit
@@ -95,11 +88,7 @@ def optimize(points,sino,
         return p, state, value, grad
 
     history = []
-    # --------------------------------------------------------
-    # Première étape : compilation + exécution
-    # --------------------------------------------------------
-    # print(f"[GPU memory]  avant compilation")
-    # get_jax_gpu_memory()
+
     start_total = time.perf_counter()
     points, state, value, grad = step( points, state)
 
@@ -110,18 +99,7 @@ def optimize(points,sino,
                     "elapsed_time": round(time.perf_counter() - start_total,2),
                     'iteration_time': round(end_compile - start_total,4),
                     "num_linesearch_steps": int(state[2].info.num_linesearch_steps)})
-    # points.block_until_ready()
 
-    # print(f"[GPU memory]  apres angle cost")
-    # get_jax_gpu_memory()
-    # nvidia_mem = nvidia_smi.nvmlDeviceGetMemoryInfo(handle)
-    # print(f" (NVIDIA) used / total  {nvidia_mem.used / 1024 ** 3:.2f}/{nvidia_mem.total / 1024 ** 3:.2f} GiB ")
-
-    # plot_points(points, step=1, exp_dir='visu')
-
-    # print( f"Compilation + première itération : " f"{end_compile - start_total:.3f} s" )
-    # print(f"[GPU memory]  après compilation")
-    # get_jax_gpu_memory()
 
     start_optimization = time.perf_counter()
     time_to_loss = -1
@@ -159,13 +137,11 @@ def optimize(points,sino,
     # average_time = optimization_time / (max_iter - 2)
     avg_iteration_time_last_5 = sum(h["iteration_time"] for h in history[-5:]) / 5
     df_history = pd.DataFrame(history)
-    reached = df_history["loss"] <= target_loss
     last_n = df_history.tail(avg_last_n)
-    results = {"compile_time_1st_run": round(end_compile - start_total,3),
+    results = {"time_1st_run_compile_": round(end_compile - start_total,3),
                 "time_2_to_end_run": round(optimization_time,3),
                 "total_time": round(total_time,3),
                 "avg_iteration_time_last_5": round(avg_iteration_time_last_5,3),
-                "avg_iteration_time_last_n": round(float(last_n["iteration_time"].mean()),3),
                 "final_loss": float(value), "final_grad_norm": float(jnp.linalg.norm(grad)),
                 "mean_linesearch_steps": round(float(df_history["num_linesearch_steps"].mean()),2),
                 "max_linesearch_steps" : int(df_history["num_linesearch_steps"].max()),
@@ -219,10 +195,10 @@ if __name__ == '__main__':
 
     base_params = dict(XLA_PYTHON_CLIENT_PREALLOCATE=XLA_PYTHON_CLIENT_PREALLOCATE,
                        XLA_PYTHON_CLIENT_MEM_FRACTION=XLA_PYTHON_CLIENT_MEM_FRACTION,
-                       nb_points=400_000,
+                       nb_points=100_000,
                        nb_angles=600,
                        nb_bins=4096,
-                       batch_size=1,
+                       batch_size=2,
                        ext_dtype=jnp.float64,
                        use_checkpoint=True,
                        max_iter=15,
@@ -231,9 +207,8 @@ if __name__ == '__main__':
                        seed=27,
                        target_loss=1e-3)
 
-    # base_params['exp_type'] = "big_nb_pts"
     base_params['backend'] = "jax"
-
+    base_params['exp'] = "big_nb_pts"
     # nb_angles_exp = [100, 200, 400, 600, 1000, 2000]
     # nb_bins_exp = [512, 1024, 2048, 4096, 8192]
     # nb_points_exp = [1_000, 5_000, 10_000, 20_000, 50_000]
