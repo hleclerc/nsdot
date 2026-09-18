@@ -10,6 +10,7 @@
 // =====================================================================================
 
 #include "bench/Dispatch.h"
+#include "bench/Trames.h"
 #include "solver/Ecrasement.h"
 #include "solver/Lineaire.h"
 #include "solver/Newton.h"
@@ -28,6 +29,7 @@ struct Opts {
     int it_max = 4;            ///< au-dela, le pas en `s` est divise par deux
     TF  tol_inter = 1e-3;      ///< la tolerance sur les cibles intermediaires
     int ordre  = 0;            ///< le predicteur : 0 = `w( s )` tel quel, 2 = `w + w_1 + w_2` ( serie en s )
+    std::string dump;          ///< les trames de l'animation ( JSONL )
     NewtonOptions newton;
 };
 
@@ -49,6 +51,13 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu, Lin &lin ) {
     int it_total = 0, diag_total = 0, pas = 0, refus = 0;
     std::printf( "  %4s %9s %9s | %4s %5s %6s | %s\n", "pas", "s", "ds", "it", "diag", "reculs", "fin" );
     std::vector<TF> w_pred;
+    Trames trames;
+    if ( ! o.dump.empty() ) trames.ouvre( o.dump );
+    {
+        std::vector<TF> nuv0( n, nuv );
+        pd.set_weights( w.data(), a.par );
+        trames.ecrit( pd, nuv0, a.par, "voronoi", 0, -1, 0, 0 );
+    }
     while ( s < 1 ) {
         const TF s2 = std::min( TF( 1 ), s + ds );
         w_pred = w;
@@ -97,6 +106,10 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu, Lin &lin ) {
         Newton<PD,Lin> nw( pd, lin, nu.P, a.par, no );
         nw.nu.resize( n );
         for ( SI i = 0; i < n; ++i ) nw.nu[ i ] = a0[ i ] + s2 * ( nuv - a0[ i ] );
+        std::vector<TF> nuf( n, nuv );
+        nw.o.apres_pas = [ & ]( int it, TF t, int reculs ) {
+            trames.ecrit( pd, nuf, a.par, it < 0 ? "palier" : "correcteur", double( s2 ), it, double( t ), reculs );
+        };
         const bool ok = nw.resout( w_pred );
         it_total += nw.st.nb_iter; diag_total += nw.st.nb_diag;
         const bool pris = ok && nw.st.nb_iter <= o.it_max;
@@ -135,6 +148,7 @@ int main( int argc, char **argv ) {
         if ( a.parse( s, i, argc, argv ) ) continue;
         else if ( s == "--s0" )        o.s0 = std::atof( val() );
         else if ( s == "--ordre" )     o.ordre = std::atoi( val() );
+        else if ( s == "--dump" )      o.dump = val();
         else if ( s == "--it-max" )    o.it_max = std::atoi( val() );
         else if ( s == "--tol-inter" ) o.tol_inter = std::atof( val() );
         else if ( s == "--newton-tol" ) o.newton.tol = std::atof( val() );

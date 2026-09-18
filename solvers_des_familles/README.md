@@ -409,6 +409,20 @@ marche où la combinatoire est calme — mais échec au départ de Voronoï (le 
 tout `Δs ≥ 0.25`, et en fin de partie ; au mieux 25–30 itérations, pas moins de 22. Vérifié
 aussi après le correctif de l'engin (§ 7.5) : § 7.1 à 7.4 inchangés au chiffre près.
 
+**Pourquoi l'homotopie perd — l'animation** (`--dump` sur `newton` et `homotopie`, puis
+`scripts/animation.py` → `directions/homotopie_vs_newton.html`, lignes n = 2000, deux panneaux,
+couleur = `log₁₀(a/ν)`, mode « voisinage » = les cellules dont les voisins ont changé). Par
+trame : Newton direct fait `t = 0.035, 0.33, 0.61, 0.79, 1, 1, 1, 1` — le pas admissible est
+multiplié par 10 dès la deuxième itération, parce que la direction est recalculée sur un
+meilleur état — et le résidu tombe à 0.020 en trois itérations. L'homotopie, elle, passe 9
+itérations à atteindre `s = 0.5` (résidu 0.035, la moitié de r₀, comme la droite des cibles
+l'impose) : à chaque palier, 2 itérations sur 3 servent à *converger* sur une cible dont on ne
+veut pas, et le dernier palier fait 90 % du travail en 6 itérations — ce que Newton faisait
+depuis le début. En plus, son chemin est plus long : 7 225 changements de voisinage contre
+5 449. Newton amorti avec le pas par les limites *est* une homotopie adaptative — la taille du
+palier au maximum admissible, une correction par palier ; l'expliciter n'ajoute que le coût des
+convergences intermédiaires.
+
 ## 7.5 Glisser depuis d'autres positions : le meilleur cas, mesuré (`glissement`)
 
 L'idée : partir de positions `c` où le problème est facile, et faire glisser les diracs vers

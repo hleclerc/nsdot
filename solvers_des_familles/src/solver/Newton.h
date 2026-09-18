@@ -45,6 +45,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <functional>
 #include <vector>
 
 namespace sf {
@@ -64,6 +65,8 @@ struct NewtonOptions {
     TF   theta_mult = 5;       ///< TENSEUR : la cible partielle est `theta = theta_mult * alpha*`
     TF   confiance  = 0;       ///< ESSAI_LIMITES : le premier essai est `min( 1, confiance * t_prec )` ( 0 : toujours 1 )
     OptionsLimites lim;        ///< les reglages de la passe des limites ( `niveau` est mis ici )
+    /// appele apres chaque pas ACCEPTE ( et au depart, `it = -1` ) : `pd` porte alors `w`
+    std::function<void( int it, TF t, int reculs )> apres_pas;
 };
 
 struct NewtonStats {
@@ -142,6 +145,7 @@ struct Newton {
         for ( SI i = 0; i < n; ++i )                     // la jauge, imposee ici et maintenue par
             w[ i ] -= g;                                 // `d[ 0 ] = 0` ensuite
         mesures_et_facettes( w, a, fa );
+        if ( o.apres_pas ) o.apres_pas( -1, 0, 0 );
 
         TF eps = 0, t_prec = 0;
         for ( int it = 0; it < o.maxit; ++it ) {
@@ -341,6 +345,7 @@ struct Newton {
             w.swap( w2 );
             a.swap( a2 );
             fa.swap( fa2 );
+            if ( o.apres_pas ) o.apres_pas( it, t, st.nb_recul );
         }
         st.fin = "MAX ITERATIONS";
         return false;

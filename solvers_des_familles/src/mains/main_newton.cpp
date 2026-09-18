@@ -12,6 +12,7 @@
 // =====================================================================================
 
 #include "bench/Dispatch.h"
+#include "bench/Trames.h"
 #include "solver/Lineaire.h"
 #include "solver/Newton.h"
 #ifdef _OPENMP
@@ -32,6 +33,7 @@ struct Opts {
     TF            lintol = 1e-10;
     int           linmax = 20000;
     std::string   ecrire;          ///< ou ecrire les poids trouves, au format de `cases/`
+    std::string   dump;            ///< les trames de l'animation ( JSONL )
 };
 
 template<class PD, class Lin>
@@ -53,6 +55,9 @@ int lance( const Args &a, const Opts &o, const Nuage<PD::dim> &nu, Lin &lin ) {
 
     Newton<PD,Lin> nw( pd, lin, nu.P, a.par, o.newton );
     nw.nu.assign( n, TF( 1 ) / n );
+    Trames trames;
+    if ( ! o.dump.empty() && trames.ouvre( o.dump ) )
+        nw.o.apres_pas = [ & ]( int it, TF t, int reculs ) { trames.ecrit( pd, nw.nu, a.par, "newton", 0, it, double( t ), reculs ); };
     t0 = now();
     const bool ok = nw.resout( std::vector<TF>( n, TF( 0 ) ) );
     const double total = now() - t0 + t_arbre;
@@ -172,6 +177,7 @@ int main( int argc, char **argv ) {
         else if ( s == "--facteur" )    o.newton.facteur = std::atof( val() );
         else if ( s == "--theta-mult" ) o.newton.theta_mult = std::atof( val() );
         else if ( s == "--confiance" )  o.newton.confiance = std::atof( val() );
+        else if ( s == "--dump" )       o.dump = val();
         else if ( s == "--lim-tol" )    o.newton.lim.tol = std::atof( val() );
         else if ( s == "--lim-coeff" )  o.newton.lim.coeff = std::atof( val() );
         else if ( s == "--t-min" )      o.newton.t_min = std::atof( val() );
