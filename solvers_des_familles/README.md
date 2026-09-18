@@ -358,5 +358,27 @@ modèle × θ) ne dépasse pas l'`α*` de la direction de Newton et il est écar
 tient au-delà de cette implémentation : le pas est borné par la durée de validité de la
 combinatoire figée, pas par la direction.
 
-**Ce qui reste ouvert.** La continuation (partir de `ν = aires de Voronoï` et glisser vers
-`1/n`), le multi-échelle écarté dans `2d_des_familles` ; et le 3D.
+## 7.4 La continuation par série (MAN) : le modèle figé a des plis
+
+Le long du vrai chemin (`versW`), la combinatoire figée tient à `1e-4 ν` pour **1 %** du chemin,
+à `1e-2 ν` pour **3 %** ; 82 546 cellules sur 10⁵ changent d'arêtes au moins une fois, surtout
+dans les premiers 10 %. Toute série sur la combinatoire figée hérite de ça.
+
+La Méthode Asymptotique Numérique sur le modèle quadratique (`--man N`) : la cible glisse
+`a + s(ν − a)`, `δ(s) = Σ s^k w_k`, et parce qu'en 2D le modèle figé est *exactement*
+quadratique il ne faut que deux opérateurs — `L` factorisé une fois, et la forme bilinéaire
+`Q(u,v) = q(u+v) − q(u) − q(v)` par polarisation du modèle. Ordre 12 en 0.45 s. Mais le
+**rayon de convergence est 3.7e-4** (critère MAN), dix fois sous le pas KMT (0.004), cinquante
+fois sous le pas tensoriel (0.02) : `|w_2|/|w_1| = 0.3`, puis `|w_k|` croît comme `10^k`. Le
+modèle figé a un *pli* vers `s ≈ 5e-4` — la parabole de la cellule 22524 culmine à
+`α = 5.8e-4` (1.14 % de ν) le long de `d` : la branche issue de `s = 0` tourne, la solution
+du pas tensoriel à `θ = 0.02` est sur une autre branche, que Newton atteint en sautant et
+qu'aucune série ne suit. Le vrai chemin passe ce pli en réarrangeant la combinatoire. Vérifié
+aux petits `s` (ordre 4 à `s = 1e-4` : 5e-8 d'écart au modèle) ; à `s = 3e-3` l'ordre 2 vide
+17 cellules là où le pas droit (l'ordre 1, Newton) n'en vide aucune.
+
+**Conclusion.** Prédicteur d'ordre 1, un diagramme par pas — c'est Newton amorti, la
+continuation « à combinatoire vivante » qu'on a déjà, et le nombre de pas (~20) est le nombre
+d'époques combinatoires du chemin. Le levier restant est le coût du pas (réutiliser la
+factorisation d'un pas à l'autre, `limites` pour le pas), pas son ordre. Reste le 3D, et un
+chemin dans un autre paramètre (les positions, le multi-échelle) si l'on veut moins d'époques.

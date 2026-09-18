@@ -51,10 +51,14 @@ struct Opts {
     int         picard    = 30;
     TF          amort     = 1;
     bool        newton_modele = false; ///< le vrai jacobien du modele, refactorise, au lieu de L fige
+    int         man       = 0;         ///< l'ordre de la serie MAN ( 0 : pas de serie )
+    std::vector<TF> man_s;             ///< ou evaluer la serie
     std::vector<TF> check_alpha;       ///< verifier le fournisseur a alpha contre le diagramme
     std::string solver    = "amg";
     int         amgvar    = Amg::SA_SPAI0;
 };
+
+TF norme2( const std::vector<TF> &v ) { TF s = 0; for ( TF x : v ) s += x * x; return std::sqrt( s ); }
 
 /// LA DIRECTION DE NEWTON a l'iteration `K`, telle que `Newton.h` la calcule.
 template<class PD, class Lin>
@@ -354,6 +358,85 @@ void analyse( const Args &a, const Opts &o, const Direction<2> &dir ) {
 #endif
     }
 
+    // ---- LA SERIE ( Methode Asymptotique Numerique ) sur le modele quadratique : la cible glisse
+    // `a + s ( nu - a )`, `delta( s ) = sum s^k w_k`, avec `L` factorise UNE fois et la forme
+    // bilineaire `Q` par polarisation du modele. Puis la verite le long de la serie.
+    if ( o.man > 0 ) {
+#ifdef SF_EIGEN
+        using Cell = typename PD::Cell;
+        pd.set_weights( w.data(), par );
+        std::vector<ModeleCellule> mod( n );
+        std::vector<TF> res0;
+        std::vector<std::vector<Facette>> par_th( std::max( par.threads, 1 ) );
+        pd.measures_and_facets( res0, par, [ & ]( int t, SI i, SI j, TF mes ) {
+            TF d2 = 0;
+            for ( int k = 0; k < 2; ++k ) { const TF e = P[ k ][ j ] - P[ k ][ i ]; d2 += e * e; }
+            if ( d2 > 0 ) par_th[ t ].push_back( Facette{ i, j, mes / ( 2 * std::sqrt( d2 ) ) } );
+        } );
+        std::vector<Facette> fa;
+        for ( auto &v : par_th ) fa.insert( fa.end(), v.begin(), v.end() );
+        parallel_for( n, par, [ & ]( SI k, int ) { Cell cel; pd.cellule( k, cel ); mod[ pd.ids[ k ] ].depuis( cel, pd.ids[ k ], P, w.data() ); } );
+        Laplacien L;
+        L.assemble( n, fa );
+        Cholesky chol;
+        const int N = o.man;
+        std::vector<std::vector<TF>> W( N + 1 ), Q2( N + 1 );   // `W[ k ]` = w_k, `Q2[ k ]` = q2( w_k )
+        std::vector<TF> r( n );
+        for ( SI i = 0; i < n; ++i ) r[ i ] = nu - a0[ i ];
+        double t0 = now();
+        chol.resout( L, r, W[ 1 ] );
+        // q2( u ) = a_modele( u ) - a0 - L u = Q( u, u ) / 2
+        auto q2 = [ & ]( const std::vector<TF> &u, std::vector<TF> &out ) {
+            out.resize( n );
+            parallel_for( n, par, [ & ]( SI i, int ) {
+                TF lu = L.dia[ i ] * u[ i ];
+                for ( SI k = L.row[ i ]; k < L.row[ i + 1 ]; ++k ) lu -= L.c[ k ] * u[ L.col[ k ] ];
+                out[ i ] = mod[ i ].aire( u.data() ) - a0[ i ] - lu;
+            } );
+        };
+        q2( W[ 1 ], Q2[ 1 ] );
+        std::vector<TF> rhs( n ), tmp( n ), qq;
+        std::printf( "\n  MAN : ordre %d, |w_1| = %.3e\n", N, double( norme2( W[ 1 ] ) ) );
+        for ( int k = 2; k <= N; ++k ) {
+            // sum_{ i + j = k } Q( w_i, w_j ) / 2 = sum_{ i < j } [ q2( w_i + w_j ) - q2( w_i ) - q2( w_j ) ] + [ k pair ] q2( w_k/2 )
+            std::fill( rhs.begin(), rhs.end(), TF( 0 ) );
+            for ( int i = 1; i < k - i; ++i ) {
+                const int j = k - i;
+                for ( SI m = 0; m < n; ++m ) tmp[ m ] = W[ i ][ m ] + W[ j ][ m ];
+                q2( tmp, qq );
+                for ( SI m = 0; m < n; ++m ) rhs[ m ] += qq[ m ] - Q2[ i ][ m ] - Q2[ j ][ m ];
+            }
+            if ( k % 2 == 0 ) for ( SI m = 0; m < n; ++m ) rhs[ m ] += Q2[ k / 2 ][ m ];
+            for ( SI m = 0; m < n; ++m ) rhs[ m ] = -rhs[ m ];
+            chol.resout_encore( rhs, W[ k ] );
+            q2( W[ k ], Q2[ k ] );
+            const TF nk = norme2( W[ k ] ), nk1 = norme2( W[ k - 1 ] );
+            std::printf( "    w_%-2d : |w_k| = %.3e, |w_k-1| / |w_k| = %.4e\n", k, double( nk ), double( nk1 / nk ) );
+        }
+        const TF s_man = std::pow( TF( 1e-6 ) * norme2( W[ 1 ] ) / norme2( W[ N ] ), TF( 1 ) / ( N - 1 ) );
+        std::printf( "    serie en %.2f s ; rayon MAN ( tol 1e-6 ) : s_max = %.4e\n", now() - t0, double( s_man ) );
+
+        // la verite le long de la serie
+        std::vector<TF> delta( n ), am( n ), res;
+        std::printf( "  %-10s | %10s | %6s %10s %8s | %8s %8s\n", "s", "modele-cible", "vides", "aire min", "|r|/r0", "cible", "droit" );
+        for ( TF sv : o.man_s ) {
+            for ( SI m = 0; m < n; ++m ) { TF acc = 0, p = 1; for ( int k = 1; k <= N; ++k ) { p *= sv; acc += p * W[ k ][ m ]; } delta[ m ] = acc; }
+            parallel_for( n, par, [ & ]( SI i, int ) { am[ i ] = mod[ i ].aire( delta.data() ); } );
+            TF em = 0;
+            for ( SI i = 0; i < n; ++i ) em += ( am[ i ] - a0[ i ] - sv * r[ i ] ) * ( am[ i ] - a0[ i ] - sv * r[ i ] );
+            mesures_en( pd, w, delta, TF( 1 ), par, w2, res );
+            SI nv = 0; TF mn = INFINI, rr = 0;
+            for ( SI i = 0; i < n; ++i ) { nv += ! ( res[ i ] > 0 ); mn = std::min( mn, res[ i ] ); rr += ( nu - res[ i ] ) * ( nu - res[ i ] ); }
+            for ( SI m = 0; m < n; ++m ) delta[ m ] = sv * W[ 1 ][ m ];
+            mesures_en( pd, w, delta, TF( 1 ), par, w2, res );
+            SI nvd = 0;
+            for ( SI i = 0; i < n; ++i ) nvd += ! ( res[ i ] > 0 );
+            std::printf( "  %-10.4e | %10.2e | %6d %10.2e %8.4f | %8.4f %8d\n", double( sv ), double( std::sqrt( em ) / ( sv * r0 ) ),
+                         int( nv ), double( mn ), double( std::sqrt( rr ) / r0 ), double( 1 - sv ), int( nvd ) );
+        }
+#endif
+    }
+
     // ---- le chronometre des composantes de la passe
     if ( o.chrono ) {
         using Cell = typename PD::Cell;
@@ -613,6 +696,8 @@ int main( int argc, char **argv ) {
         else if ( s == "--picard" )    o.picard = std::atoi( val() );
         else if ( s == "--amort" )     o.amort = std::atof( val() );
         else if ( s == "--newton-modele" ) o.newton_modele = true;
+        else if ( s == "--man" )       o.man = std::atoi( val() );
+        else if ( s == "--s" )         o.man_s.push_back( std::atof( val() ) );
         else if ( s == "--solver" )    o.solver = val();
         else if ( s == "--amg-var" )   o.amgvar = std::atoi( val() );
         else {
@@ -641,6 +726,8 @@ int main( int argc, char **argv ) {
                 "  --picard K        iterations de Picard au plus                   (30)\n"
                 "  --amort A         amortissement de Picard                        (1)\n"
                 "  --newton-modele   Newton sur le modele ( jacobien signe refactorise ) au lieu de Picard\n"
+                "  --man N           la serie MAN a l'ordre N sur le modele, et la verite le long\n"
+                "  --s S             ou evaluer la serie ( repetable )\n"
                 "  --solver S        amg | chol, pour la direction                 (amg)\n"
                 "  --amg-var V       la hierarchie AMGCL                           (0)\n" );
             return s == "--help" || s == "-h" ? 0 : 1;
@@ -648,6 +735,7 @@ int main( int argc, char **argv ) {
     }
     a.finalise();
     if ( o.thetas.empty() ) o.thetas = { 0.01, 0.02, 0.05, 0.1, 0.2 };
+    if ( o.man_s.empty() ) o.man_s = { 0.005, 0.01, 0.02, 0.03, 0.05, 0.07, 0.1, 0.15, 0.2 };
     if ( a.dims != 2 ) { std::printf( "2D seulement pour l'instant\n" ); return 1; }
 
     return dispatch<2>( a, [ & ]( auto tag ) {
