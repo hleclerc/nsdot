@@ -63,6 +63,7 @@ src/mains/     main_check.cpp     l'exactitude
                main_diagramme.cpp la ligne de base
                main_newton.cpp    le solveur
                main_ecrasement.cpp les cellules qui se vident le long d'une direction (§ 7)
+               main_multiechelle.cpp la prolongation du multi-échelle, mesurée (§ 8)
 
 directions/    les directions « à problème » sauvées, leurs CSV et leurs figures
 scripts/       ecrasement_plot.py, les figures depuis les CSV
@@ -92,7 +93,8 @@ cycle. Newton amorti tel quel, l'assemblage **sans tri** (4.2 → 0.67 s à n = 
 (4.9× sur le total à 10⁶ contre Cholesky) avec ses trois hiérarchies, et Cholesky en témoin parce
 qu'il gagne encore sur le nuage de lignes.
 
-**Pas gardé.** Le multi-échelle (écrit, mesuré, pas abouti : plus cher que Newton depuis `w = 0`),
+**Pas gardé.** Le multi-échelle (écrit, mesuré, pas abouti : plus cher que Newton depuis `w = 0` —
+rouvert et refermé au § 8),
 `--memo` (−19 % au mieux, jamais confirmé), le front sur diagramme grossier dans Newton (−21 à
 −46 % au total), le bouclier, la grille, les BSP à quatre fils et obliques, la pré-passe, le
 gradient conjugué maison (5× plus lent que Cholesky), les découpages `strided`, la boîte de cellule
@@ -457,3 +459,89 @@ le majorant affine des poids (`WeightMajorant.h`) sur un nœud de germes clampé
 même temps — et Newton stagne désormais à **2.35e-6, le plancher annoncé par le fichier**, au
 lieu de 3.05e-6. `check --load FILE [--cellule I] [--weights -1]` le vérifie ; **le même code
 vit dans `sdot` (`refresh_weight_majorants`), à reporter.**
+
+# 8. LE MULTI-ÉCHELLE : LA PROLONGATION, MESURÉE (`multiechelle`)
+
+L'idée (Mérigot) : résoudre sur `n/R` représentants portant la masse de leur paquet, prolonger,
+résoudre en dessous. `2d_des_familles` l'avait écrit et abandonné (« plus cher que Newton depuis
+`w = 0` ») ; la question rouverte ici est celle des poids à donner aux germes qui n'étaient pas au
+niveau grossier. `src/solver/Prolongation.h` et `xmake run multiechelle --help` : niveaux par un
+BSP à feuilles de `R` germes (représentant = le germe le plus proche du centre), Newton
+`essai-limites` + Cholesky à chaque niveau, la prolongation puis un **test** (le diagramme fin :
+aucune cellule sous `0.5 × min(ν_i, aire min de Voronoi)`, le plancher de l'amortissement), et
+une **correction** si ça ne passe pas.
+
+Les prolongations : `copie` (le poids du représentant) ; **`harmonique`** — la proposition : les
+représentants imposés, les autres poids résolvent l'équation de la chaleur du graphe de Voronoi
+fin, chaque poids libre étant la moyenne pondérée (`c_ij`) de ses voisins ; `mls` — un polynôme
+de degré 2 ajusté par moindres carrés mobiles sur les représentants à deux anneaux ; `ctransf`
+— `w_i = max_l (w_l − |p_i − p_l|²)`, l'ancienne. Les corrections : **`penal`** — la lecture
+invariante par jauge de « `((1−t) I + t M) w* = t w` » : on ne peut pas faire décroître `w*`
+vers zéro (une constante ne change aucune cellule, la prolongation ne doit pas en dépendre), on
+relâche la condition imposée, `w_k = (moy_j w_j + μ w_k^c)/(1 + μ)`, `μ = t/(1−t)`, `t = 1`
+exact, `t → 0` la constante ; `retrait` — `t·w`, l'homothétie vers Voronoi ; `jacobi` — `k`
+balayages de Jacobi amorti sur tout le niveau ; `rattrape` — relever chaque cellule vide à
+`−ψ(p_i) + marge·h_i²` (le germe rentre dans sa cellule), et recommencer.
+
+## 8.1 Ce que ça donne
+
+Lignes `s = 0.005` (le cas de la suite), `--threads 8`, `R = 8`, niveaux 100000 / 16384 / 2048 /
+256. Le niveau 256 converge en 5 itérations, comme avant. La prolongation harmonique vers 2048 :
+**1296 cellules sur 2048 sous le plancher, 1240 vides** ; vers 10⁵ : 22 025 vides à `t = 1`, et
+`penal` n'en enlève presque pas (`t = 1/2`, 22 068 ; `t = 1/16`, 19 373 ; **`t = 2.4e-4`, 7 521**).
+Aucune prolongation ne passe avant `t ≈ 6e-5` avec `retrait` — et ce `w` là *est* Voronoi :
+Newton y refait ses 19 itérations et 40 diagrammes (`mls`, 20 et 45), ou stagne sur les cellules
+encore vides (`harmonique`, `copie`, `ctransf`). Les niveaux intermédiaires sont dans le même cas.
+
+Pour vérifier que ce n'est pas la faute de la prolongation, des nuages moins contrastés ont été
+tirés (`scripts/nuage_lignes.py --sigma 0.1 | 0.05 | 0.02`, sans le clip de `gen_cases.py` qui
+confond des germes dans les coins dès que la ligne s'épaissit) :
+
+| σ | Newton depuis `w = 0` | `harmonique`, vides à `t = 1` | `mls`, vides à `t = 1` | `t` qui passe | Newton depuis là |
+|---|---|---|---|---|---|
+| 0.1   |  9 it, 10 diag |  14 757 / 10⁵ |   681 | 1/128 – 1/64 |  **9 it, 10 diag** ; `mls` 10 it, 13 diag |
+| 0.05  | 11 it, 16 diag |  41 320 | 1 042 | 1/256 – 1/128 | **11 it, 16 diag** |
+| 0.02  | 15 it, 26 diag |  79 238 | 2 792 | 1/2048 – 1/128 | **15 it, 26 diag** |
+| 0.005 | 19 it, 40 diag |  22 025 | (96 %) | 6e-5 | 19–20 it |
+
+**Le niveau fin refait exactement le travail de Newton depuis Voronoi**, à contraste égal, et le
+multi-échelle coûte les niveaux grossiers en plus (+1 s). `mls` interpole dix à cinquante fois
+mieux que l'harmonique (la courbure, voir plus bas), et ça ne change rien : 0.7 % de cellules
+vides suffisent.
+
+## 8.2 Pourquoi : l'admissible est un fil, et il ne survit à aucun lissage
+
+**La borne.** Prendre la SOLUTION fine (`FILE_equal`), la lisser par `k` balayages de Jacobi sur
+le graphe de Voronoi, et repartir de là (`--lisse-solution k`). `s = 0.1` : **un seul balayage
+vide 374 cellules**, et Newton stagne ; `s = 0.005` : 21 851 vides après un balayage, 74 755
+après 64. Le point de départ le plus proche qui se puisse imaginer n'est pas admissible dès
+qu'on le touche — aucune prolongation d'un niveau grossier, qui ne connaît pas la solution fine,
+ne fera mieux.
+
+**Le mécanisme.** Une cellule est non vide, en gros, tant que `w_i − moy_j w_j ≥ −h̄_i²` (`h̄_i`
+la distance aux voisins) : la condition est *locale et à l'échelle du carré de l'espacement*.
+Là où les cellules sont étirées d'un facteur `S` (dans la bande, `S ≈ 10⁴` pour `s = 0.005`), la
+solution est à `−h̄_i² (1 − 1/S)` : sur le fil. Tout ce qui déplace la courbure discrète de `w`
+d'une fraction `1/S` de `h̄²` vide des cellules — et un lissage isotrope transporte la courbure
+des cellules de grand `h̄²` (hors bande) vers celles de petit `h̄²` (la bande) : un balayage
+suffit. Les prolongations souffrent du même mal, en pire : l'harmonique annule le laplacien
+entre les représentants, donc concentre toute la courbure de `w` en **plis sur les
+représentants**, du mauvais côté (la cellule du représentant se vide, `H_c · h · w''` contre
+`h²` admis, soit `√R · w''` fois trop — même sur l'uniforme, 1705 vides à `t = 1`) ; la copie
+saute de `∇w · H_c` entre deux paquets ; et le `mls`, qui porte la courbure, hérite du **bruit
+de discrétisation du niveau grossier** — la solution grossière satisfait *ses* aires, à `O(H_c²)
+= O(R h²)` près de tout champ lisse, ce qui est `R` fois le fil. Le `t` qui passe est celui qui
+ramène tout ça sous `h̄²/S` : Voronoi.
+
+**Le rattrapage cascade.** Relever les vides à `−ψ(p_i) + marge·h_i²` : `s = 0.1`, 27 vides
+sur 2048 deviennent 696 après 20 passes, 374 sur 10⁵ deviennent 54 185 (`marge` 0.1, 0.01 ou
+0.001) — relever un germe lui fait prendre l'aire de ses voisins, qui étaient sur le fil aussi.
+C'est ce que `2d_des_familles` avait vu (« le relèvement d'une cellule vide en vide d'autres »).
+
+**Ce qui reste vrai.** Voronoi est le point le plus intérieur de l'admissible (`w_i − moy w_j =
+0` partout, la marge maximale), et Newton depuis là coûte 5, 7, 11, 19 itérations pour 256,
+2048, 16384, 10⁵ germes sur le cas dur, 9 à 19 selon le contraste à 10⁵ : ce n'est pas le
+départ qui manque, c'est le nombre d'époques combinatoires à traverser, et il ne dépend que de la
+distance entre Voronoi et la solution. Le multi-échelle ne peut payer que là où une prolongation
+serait admissible *sans* correction — il faudrait pour ça que les cellules fines ne soient pas
+étirées (`S ≈ 1`), et alors Newton depuis zéro converge déjà en 6 itérations (l'uniforme).

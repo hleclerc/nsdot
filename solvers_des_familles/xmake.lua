@@ -7,6 +7,7 @@
 --   xmake run diagramme              un diagramme chronometre, sur la suite
 --   xmake run newton --help          le transport semi-discret resolu, chronometre par poste
 --   xmake run ecrasement --help      jusqu'ou une direction de Newton peut aller avant une cellule vide
+--   xmake run multiechelle --help    resoudre sur des representants, prolonger, resoudre en dessous
 --
 -- OU EST QUOI :
 --   src/util/      les types, l'horloge, les fils
@@ -53,7 +54,7 @@ local function reglages()
     add_syslinks( "pthread" )
 end
 
-for _, nom in ipairs( { "check", "diagramme", "newton", "ecrasement", "glissement", "homotopie" } ) do
+for _, nom in ipairs( { "check", "diagramme", "newton", "ecrasement", "glissement", "homotopie", "multiechelle" } ) do
     target( nom )
         set_kind( "binary" )
         add_files( "src/mains/main_" .. nom .. ".cpp" )
