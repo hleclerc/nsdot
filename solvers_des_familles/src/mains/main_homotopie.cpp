@@ -140,7 +140,8 @@ int main( int argc, char **argv ) {
         else if ( s == "--newton-tol" ) o.newton.tol = std::atof( val() );
         else if ( s == "--t-min" )     o.newton.t_min = std::atof( val() );
         else if ( s == "--solver" )    solver = val();
-        else if ( s == "--pas" )       o.newton.pas = std::string( val() ) == "facteur" ? NewtonOptions::FACTEUR : NewtonOptions::ESSAIS;
+        else if ( s == "--pas" ) { const std::string v = val(); o.newton.pas = v == "facteur" ? NewtonOptions::FACTEUR : v == "essai-limites" ? NewtonOptions::ESSAI_LIMITES : NewtonOptions::ESSAIS; }
+        else if ( s == "--confiance" ) o.newton.confiance = std::atof( val() );
         else if ( s == "--trace" )     o.newton.trace = true;
         else { std::printf( "usage: homotopie --load FILE [--s0 S] [--it-max K] [--tol-inter T] [--solver chol|amg] [--pas essais|facteur] [--t-min T]\n" ); return 1; }
     }

@@ -403,10 +403,11 @@ struct OptionsLimites {
 /// la ou l'horizon `alpha = 1` est un diagramme monstrueux. Si le minimum trouve a la fin depasse
 /// la borne de certaines cellules, on les repasse -- rare, une prediction conservative de plus
 /// de 10 % sur la premiere cellule.
+/// `seules` : ne traiter que ces cellules ( identifiants ) -- les autres gardent `lim[ id ]` tel quel.
 template<class PD>
 void limites( const PD &pd, const TF *const *P, const std::vector<TF> &w, const std::vector<TF> &d,
               const Parallel &par, const OptionsLimites &o, std::vector<LimiteCellule> &lim,
-              Voisinage vois = {} ) {
+              Voisinage vois = {}, const std::vector<SI> *seules = nullptr ) {
     static_assert( PD::dim == 2, "2D seulement pour l'instant" );
     using Cell = typename PD::Cell;
     using TK   = typename PD::TKernel;
@@ -533,20 +534,32 @@ void limites( const PD &pd, const TF *const *P, const std::vector<TF> &w, const 
         fini( a_ok, LimiteCellule::ECHEC );              // le conservatif, faute de mieux
     };
 
-    lim.assign( n, LimiteCellule{} );
+    // les rangs a traiter : tous, ou ceux des identifiants demandes
+    std::vector<SI> rangs;
+    if ( SI( lim.size() ) != n ) lim.assign( n, LimiteCellule{} );
+    if ( seules ) {
+        std::vector<SI> rang_de( n );
+        for ( SI k = 0; k < n; ++k ) rang_de[ pd.ids[ k ] ] = k;
+        for ( SI i : *seules ) { rangs.push_back( rang_de[ i ] ); lim[ i ] = LimiteCellule{}; }
+    } else {
+        lim.assign( n, LimiteCellule{} );
+        rangs.resize( n );
+        for ( SI k = 0; k < n; ++k ) rangs[ k ] = k;
+    }
+    const SI nr = SI( rangs.size() );
     if ( ! o.global ) {
-        parallel_for( n, par, [ & ]( SI k, int ) { une( k, o.horizon ); } );
+        parallel_for( nr, par, [ & ]( SI j, int ) { une( rangs[ j ], o.horizon ); } );
         return;
     }
 
     // ---- le mode global : l'horizon est le minimum courant, avec une marge
-    parallel_for( n, par, [ & ]( SI k, int ) {
-        une( k, std::min( o.horizon, TF( 1.1 ) * courant.load() ) );
+    parallel_for( nr, par, [ & ]( SI j, int ) {
+        une( rangs[ j ], std::min( o.horizon, TF( 1.1 ) * courant.load() ) );
     } );
     for ( int passe = 0; passe < 8; ++passe ) {          // les bornes passees sous le minimum trouve
         const TF c = courant.load();
         std::vector<SI> encore;
-        for ( SI k = 0; k < n; ++k ) {
+        for ( SI k : rangs ) {
             const LimiteCellule &L = lim[ pd.ids[ k ] ];
             if ( L.etat == LimiteCellule::HORIZON && L.alpha < c && L.alpha < o.horizon ) encore.push_back( k );
         }

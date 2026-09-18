@@ -58,10 +58,11 @@ struct NewtonOptions {
     bool trace      = true;
     int  extraire   = -1;      ///< >= 0 : s'arreter des que la DIRECTION de cette iteration est
                                ///< calculee ( `w` et `d` sont alors ceux du pas propose )
-    enum Pas : int { ESSAIS = 0, DYADIQUE, FACTEUR, TENSEUR };
+    enum Pas : int { ESSAIS = 0, DYADIQUE, FACTEUR, TENSEUR, ESSAI_LIMITES };
     int  pas        = ESSAIS;  ///< comment choisir `t` ( voir en tete )
     TF   facteur    = 0.9;     ///< `t = facteur * alpha*` en mode FACTEUR
     TF   theta_mult = 5;       ///< TENSEUR : la cible partielle est `theta = theta_mult * alpha*`
+    TF   confiance  = 0;       ///< ESSAI_LIMITES : le premier essai est `min( 1, confiance * t_prec )` ( 0 : toujours 1 )
     OptionsLimites lim;        ///< les reglages de la passe des limites ( `niveau` est mis ici )
 };
 
@@ -73,6 +74,8 @@ struct NewtonStats {
     SI     nb_cell_lim = 0;    ///< cellules calculees par la passe des limites, en tout
     int    nb_tenseur = 0;     ///< pas tensoriels tentes
     double t_tenseur = 0;
+    SI     nb_cell_mauvaises = 0; ///< ESSAI_LIMITES : cellules trouvees sous `eps` par les essais, en tout
+    int    nb_tours_essai = 0;    ///< ESSAI_LIMITES : essais corriges par des limites locales
     int    nb_lim_refus = 0;   ///< pas proposes par les limites et refuses par le diagramme
     double t_maj = 0, t_diag = 0, t_asm = 0, t_lin = 0, t_lim = 0;
 };
@@ -140,7 +143,7 @@ struct Newton {
             w[ i ] -= g;                                 // `d[ 0 ] = 0` ensuite
         mesures_et_facettes( w, a, fa );
 
-        TF eps = 0;
+        TF eps = 0, t_prec = 0;
         for ( int it = 0; it < o.maxit; ++it ) {
             TF pire = 0;
             SI nvide = 0;
@@ -188,7 +191,7 @@ struct Newton {
             TF t = 1, alpha_lim = -1;
             TF gain = 1;                                 // ce que `t = 1` vise : `nu` pour `d`, la cible
                                                          // partielle `theta` pour un pas tensoriel
-            if ( o.pas != NewtonOptions::ESSAIS ) {
+            if ( o.pas != NewtonOptions::ESSAIS && o.pas != NewtonOptions::ESSAI_LIMITES ) {
                 if constexpr ( PD::dim == 2 ) {
                     t0 = now();
                     OptionsLimites ol = o.lim;
@@ -256,14 +259,55 @@ struct Newton {
                 }
             }
 
+            // ---- L'ESSAI PUIS LES LIMITES LOCALES : le diagramme du pas d'abord, et si des cellules
+            // y passent sous `eps`, leurs limites ( a elles seules ), le pas ramene sous la plus
+            // petite, et on recommence -- la non-monotonie peut en reveler d'autres
+            if ( o.pas == NewtonOptions::ESSAI_LIMITES ) {
+                if constexpr ( PD::dim == 2 ) {
+                    t = o.confiance > 0 && t_prec > 0 ? std::min( TF( 1 ), o.confiance * t_prec ) : TF( 1 );
+                    OptionsLimites ol = o.lim;
+                    ol.niveau = eps;
+                    ol.global = true;
+                    std::vector<SI> mauvaises;
+                    w2.resize( n );
+                    for ( int tour = 0; tour < 8; ++tour ) {
+                        for ( SI i = 0; i < n; ++i ) w2[ i ] = w[ i ] + t * d[ i ];
+                        w2[ 0 ] = 0;
+                        mesures_et_facettes( w2, a2, fa2 );
+                        mauvaises.clear();
+                        for ( SI i = 0; i < n; ++i ) if ( a2[ i ] < eps ) mauvaises.push_back( i );
+                        if ( mauvaises.empty() ) break;
+                        st.nb_cell_mauvaises += SI( mauvaises.size() );
+                        ++st.nb_tours_essai;
+                        t0 = now();
+                        ol.horizon = t;
+                        pd.set_weights( w.data(), par );
+                        limites( pd, P, w, d, par, ol, lim, Voisinage{ L.row.data(), L.col.data() }, &mauvaises );
+                        TF al = t;
+                        for ( SI i : mauvaises ) { st.nb_cell_lim += lim[ i ].tours; al = std::min( al, lim[ i ].alpha ); }
+                        st.t_lim += now() - t0;
+                        if ( o.trace )
+                            std::printf( "      essai t %.3e : %d cellules sous eps, limite locale %.3e ( %.3f s, %d cellules calculees )\n",
+                                         double( t ), int( mauvaises.size() ), double( al ), now() - t0,
+                                         int( [ & ]{ SI c = 0; for ( SI i : mauvaises ) c += lim[ i ].tours; return c; }() ) );
+                        t = o.facteur * al;
+                        if ( t < o.t_min ) break;
+                    }
+                    alpha_lim = t;                       // pour la trace : le pas retenu
+                    // le diagramme en `t` est fait : on rejoint l'amortissement au test du residu
+                }
+            }
+
             // ---- L'AMORTISSEMENT
             bool pris = false;
             const TF t_lim0 = t;
             w2.resize( n );
             for ( int essai = 0; essai < o.max_reculs; ++essai ) {
-                for ( SI i = 0; i < n; ++i ) w2[ i ] = w[ i ] + t * d[ i ];
-                w2[ 0 ] = 0;                             // la jauge, imposee et non esperee
-                mesures_et_facettes( w2, a2, fa2 );
+                if ( ! ( essai == 0 && o.pas == NewtonOptions::ESSAI_LIMITES ) ) {   // deja fait en `t`
+                    for ( SI i = 0; i < n; ++i ) w2[ i ] = w[ i ] + t * d[ i ];
+                    w2[ 0 ] = 0;                         // la jauge, imposee et non esperee
+                    mesures_et_facettes( w2, a2, fa2 );
+                }
                 TF m2 = a2[ 0 ], n2 = 0;                 // le plancher `eps` est une aire ABSOLUE
                 for ( SI i = 0; i < n; ++i ) {
                     m2 = std::min( m2, a2[ i ] );
@@ -293,6 +337,7 @@ struct Newton {
                 st.fin = "STAGNATION";                   // le plancher numerique, pas un echec
                 return false;
             }
+            t_prec = t;
             w.swap( w2 );
             a.swap( a2 );
             fa.swap( fa2 );
