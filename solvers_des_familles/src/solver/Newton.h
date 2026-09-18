@@ -63,7 +63,10 @@ struct NewtonOptions {
     int  pas        = ESSAIS;  ///< comment choisir `t` ( voir en tete )
     TF   facteur    = 0.9;     ///< `t = facteur * alpha*` en mode FACTEUR
     TF   theta_mult = 5;       ///< TENSEUR : la cible partielle est `theta = theta_mult * alpha*`
-    TF   confiance  = 0;       ///< ESSAI_LIMITES : le premier essai est `min( 1, confiance * t_prec )` ( 0 : toujours 1 )
+    TF   confiance  = 0;       ///< ESSAI_LIMITES : apres un pas CORRIGE, le prochain essai est au moins `confiance * t`
+                               ///< ( 0 : `beta` inchange -- mesure meilleur : le pas admissible croit vite )
+    TF   beta0      = 0.25;    ///< ESSAI_LIMITES : le tout premier essai ( 1 : un diagramme a moitie vide sur Voronoi )
+    TF   mult_ok    = 2;       ///< ESSAI_LIMITES : apres un essai passe DIRECT, `beta *= mult_ok` ( plafonne a 1 )
     OptionsLimites lim;        ///< les reglages de la passe des limites ( `niveau` est mis ici )
     /// appele apres chaque pas ACCEPTE ( et au depart, `it = -1` ) : `pd` porte alors `w`
     std::function<void( int it, TF t, int reculs )> apres_pas;
@@ -147,7 +150,7 @@ struct Newton {
         mesures_et_facettes( w, a, fa );
         if ( o.apres_pas ) o.apres_pas( -1, 0, 0 );
 
-        TF eps = 0, t_prec = 0;
+        TF eps = 0, t_prec = 0, beta = o.beta0;
         for ( int it = 0; it < o.maxit; ++it ) {
             TF pire = 0;
             SI nvide = 0;
@@ -268,7 +271,7 @@ struct Newton {
             // petite, et on recommence -- la non-monotonie peut en reveler d'autres
             if ( o.pas == NewtonOptions::ESSAI_LIMITES ) {
                 if constexpr ( PD::dim == 2 ) {
-                    t = o.confiance > 0 && t_prec > 0 ? std::min( TF( 1 ), o.confiance * t_prec ) : TF( 1 );
+                    t = beta;
                     OptionsLimites ol = o.lim;
                     ol.niveau = eps;
                     ol.global = true;
@@ -298,6 +301,10 @@ struct Newton {
                         if ( t < o.t_min ) break;
                     }
                     alpha_lim = t;                       // pour la trace : le pas retenu
+                    // le prochain essai : `mult_ok` fois celui-ci s'il est passe direct, et jamais moins
+                    // que `confiance` fois le pas retenu
+                    const bool direct = t >= beta;
+                    beta = std::min( TF( 1 ), std::max( direct ? o.mult_ok * beta : beta, o.confiance * t ) );
                     // le diagramme en `t` est fait : on rejoint l'amortissement au test du residu
                 }
             }

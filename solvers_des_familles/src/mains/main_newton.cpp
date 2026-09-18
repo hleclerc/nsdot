@@ -177,6 +177,8 @@ int main( int argc, char **argv ) {
         else if ( s == "--facteur" )    o.newton.facteur = std::atof( val() );
         else if ( s == "--theta-mult" ) o.newton.theta_mult = std::atof( val() );
         else if ( s == "--confiance" )  o.newton.confiance = std::atof( val() );
+        else if ( s == "--beta0" )      o.newton.beta0 = std::atof( val() );
+        else if ( s == "--mult-ok" )    o.newton.mult_ok = std::atof( val() );
         else if ( s == "--dump" )       o.dump = val();
         else if ( s == "--lim-tol" )    o.newton.lim.tol = std::atof( val() );
         else if ( s == "--lim-coeff" )  o.newton.lim.coeff = std::atof( val() );
@@ -194,7 +196,9 @@ int main( int argc, char **argv ) {
                 "  --ecrire FILE   ecrire les poids trouves au format de cases/ ( le dernier nuage deroule )\n"
                 "  --quiet         pas de trace par iteration\n"
                 "  --pas P         essais ( KMT, defaut ) | dyadique | facteur | tenseur | essai-limites ( 2D )\n"
-                "  --confiance C   essai-limites : premier essai min( 1, C * t precedent )  (0 = toujours 1)\n"
+                "  --beta0 B       essai-limites : le premier essai                          (0.25)\n"
+                "  --mult-ok M     essai-limites : apres un essai passe direct, beta *= M     (2)\n"
+                "  --confiance C   essai-limites : apres un pas corrige, au moins C * t       (0 = beta inchange)\n"
                 "  --theta-mult M  tenseur : cible partielle theta = M * alpha*        (5)\n"
                 "  --facteur F     t = F * alpha* en mode facteur                (0.9)\n"
                 "  --lim-tol T     precision relative des limites               (1e-2)\n"
