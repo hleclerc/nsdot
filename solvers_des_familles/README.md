@@ -395,6 +395,16 @@ continuation « à combinatoire vivante » qu'on a déjà, et le nombre de pas (
 d'époques combinatoires du chemin. Le levier restant est le coût du pas (réutiliser la
 factorisation d'un pas à l'autre, `limites` pour le pas), pas son ordre.
 
+**L'homotopie sur la prescription, à combinatoire vivante** (`xmake run homotopie`) : la cible
+glisse `ν_s = a₀ + s(ν − a₀)` et Newton *converge* sur chaque cible intermédiaire (tolérance
+lâche), `s` doublé si le palier coûte peu, divisé sinon. Lignes n = 10⁵, Cholesky : 9 paliers,
+**32–33 itérations, 41–62 diagrammes, 9.1–10.7 s**, contre 22 itérations, 34 diagrammes, 8.7 s
+en direct avec `facteur`. Le chemin est *lisse* — 0 recul sur les paliers intermédiaires, là où
+Newton direct en fait 65 — mais pas moins cher : 3 corrections par palier (la combinatoire
+bouge dans chaque palier de `Δs = 0.125`) et un dernier palier de 8–9 itérations, la fin de
+partie de Newton. Vérifié aussi après le correctif de l'engin (§ 7.5) : § 7.1 à 7.4 inchangés
+au chiffre près.
+
 ## 7.5 Glisser depuis d'autres positions : le meilleur cas, mesuré (`glissement`)
 
 L'idée : partir de positions `c` où le problème est facile, et faire glisser les diracs vers
