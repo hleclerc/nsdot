@@ -22,6 +22,16 @@
 // ( mesure : 54 diagrammes par iteration a residu constant ). On sort alors en STAGNATION -- le
 // plancher numerique, pas un echec, et la difference se lit sur `reste`.
 //
+// = Le pas par les limites ( `pas != ESSAIS`, 2D )
+//
+// Au lieu d'essayer `t = 1, 1/2, 1/4, ...` a un diagramme l'essai, on calcule la LIMITE de
+// chaque cellule le long de `d` ( `Ecrasement.h` : le polynome predit, une cellule exacte
+// verifie et corrige ), et `alpha* = min_i` dit jusqu'ou on peut aller sans passer sous `eps`.
+// Le pas est la puissance de deux sous `alpha*` ( DYADIQUE ) ou `facteur * alpha*` ( FACTEUR ),
+// et le diagramme de ce pas -- qu'il faut de toute facon pour l'iteration suivante -- confirme
+// la decroissance du residu. S'il refuse ( residu, ou une cellule non monotone ), on recule
+// comme avant depuis la.
+//
 // = Ce que coute une iteration
 //
 // UN diagramme par pas essaye, et rien de plus : le pas accepte livre a la fois les mesures ( le
@@ -30,6 +40,7 @@
 // =====================================================================================
 
 #include "diagram/PowerDiagram.h"
+#include "solver/Ecrasement.h"
 #include "solver/Laplacien.h"
 #include <algorithm>
 #include <cmath>
@@ -42,9 +53,15 @@ struct NewtonOptions {
     TF   tol        = 1e-6;    ///< arret : `max_i |a_i - nu_i| <= tol * nu_i`
     int  maxit      = 100;
     int  max_reculs = 60;      ///< divisions par deux du pas, au plus, par iteration
+    TF   t_min      = 1e-10;   ///< en dessous, on declare la STAGNATION ( 34 diagrammes pour y
+                               ///< descendre depuis 1 : `1e-3` en coute 10 )
     bool trace      = true;
     int  extraire   = -1;      ///< >= 0 : s'arreter des que la DIRECTION de cette iteration est
                                ///< calculee ( `w` et `d` sont alors ceux du pas propose )
+    enum Pas : int { ESSAIS = 0, DYADIQUE, FACTEUR };
+    int  pas        = ESSAIS;  ///< comment choisir `t` ( voir en tete )
+    TF   facteur    = 0.9;     ///< `t = facteur * alpha*` en mode FACTEUR
+    OptionsLimites lim;        ///< les reglages de la passe des limites ( `niveau` est mis ici )
 };
 
 struct NewtonStats {
@@ -52,7 +69,9 @@ struct NewtonStats {
     TF     reste = 0;          ///< le `max_i |a_i - nu_i| / nu_i` atteint
     int    nb_iter = 0, nb_diag = 0, nb_recul = 0;
     SI     nb_deborde = 0;     ///< cellules qui ont deborde `MaxNv`, en tout ( mesure fausse )
-    double t_maj = 0, t_diag = 0, t_asm = 0, t_lin = 0;
+    SI     nb_cell_lim = 0;    ///< cellules calculees par la passe des limites, en tout
+    int    nb_lim_refus = 0;   ///< pas proposes par les limites et refuses par le diagramme
+    double t_maj = 0, t_diag = 0, t_asm = 0, t_lin = 0, t_lim = 0;
 };
 
 template<class PD, class Lin>
@@ -109,6 +128,7 @@ struct Newton {
         const SI n = pd.n;
         std::vector<TF> a2, b, w2;
         std::vector<Facette> fa, fa2;
+        std::vector<LimiteCellule> lim;
         Laplacien L;
 
         w = w_init;
@@ -161,9 +181,41 @@ struct Newton {
                 return false;
             }
 
+            // ---- LE PAS PAR LES LIMITES, s'il est demande
+            TF t = 1, alpha_lim = -1;
+            if ( o.pas != NewtonOptions::ESSAIS ) {
+                if constexpr ( PD::dim == 2 ) {
+                    t0 = now();
+                    OptionsLimites ol = o.lim;
+                    ol.niveau = eps;
+                    ol.global = true;
+                    pd.set_weights( w.data(), par );
+                    limites( pd, P, w, d, par, ol, lim, Voisinage{ L.row.data(), L.col.data() } );
+                    // le minimum des limites TROUVEES ; une borne ( HORIZON ) ne compte que si elle
+                    // est sous ce minimum, et alors comme lui. Rien avant l'horizon : le pas plein.
+                    alpha_lim = INFINI;
+                    for ( SI i = 0; i < n; ++i ) {
+                        st.nb_cell_lim += lim[ i ].tours;
+                        if ( lim[ i ].etat != LimiteCellule::VIDE_AU_DEPART && lim[ i ].etat != LimiteCellule::HORIZON )
+                            alpha_lim = std::min( alpha_lim, lim[ i ].alpha );
+                    }
+                    for ( SI i = 0; i < n; ++i )
+                        if ( lim[ i ].etat == LimiteCellule::HORIZON && lim[ i ].alpha < ol.horizon )
+                            alpha_lim = std::min( alpha_lim, lim[ i ].alpha );
+                    if ( alpha_lim >= ol.horizon )
+                        t = 1;
+                    else if ( o.pas == NewtonOptions::DYADIQUE ) {
+                        t = 1;
+                        while ( t > alpha_lim && t > TF( 1e-10 ) ) t /= 2;
+                    } else
+                        t = std::min( TF( 1 ), o.facteur * alpha_lim );
+                    st.t_lim += now() - t0;
+                }
+            }
+
             // ---- L'AMORTISSEMENT
-            TF t = 1;
             bool pris = false;
+            const TF t_lim0 = t;
             w2.resize( n );
             for ( int essai = 0; essai < o.max_reculs; ++essai ) {
                 for ( SI i = 0; i < n; ++i ) w2[ i ] = w[ i ] + t * d[ i ];
@@ -179,15 +231,19 @@ struct Newton {
                 if ( m2 >= eps && n2r <= ( 1 - t / 2 ) * nr && n2r < nr ) { pris = true; break; }
                 t /= 2;
                 ++st.nb_recul;
-                if ( t < TF( 1e-10 ) )
+                if ( t < o.t_min )
                     break;
             }
+            if ( pris && alpha_lim >= 0 && t < t_lim0 ) ++st.nb_lim_refus;
             if ( o.trace ) {
                 std::printf( "    it %2d  |r|_2 %.3e  max|a-nu|/nu %.3e  %d vides  pas %.2e  %d diag"
-                             "  [maj %.2f  diag %.2f  asm %.2f  lin %.2f%s]\n",
+                             "  [maj %.2f  diag %.2f  asm %.2f  lin %.2f%s]",
                              it, double( nr ), double( pire ), int( nvide ), double( t ),
                              st.nb_diag - g0, st.t_maj - m0, st.t_diag - d0, st.t_asm - s0,
                              lin.st.total() - l0, it_txt( lin.st.nb_iter - i0 ) );
+                if ( alpha_lim >= 0 )
+                    std::printf( "  alpha* %.2e%s", double( alpha_lim ), t < t_lim0 ? " REFUSE" : "" );
+                std::printf( "\n" );
                 std::fflush( stdout );
             }
             if ( ! pris ) {

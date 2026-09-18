@@ -297,6 +297,34 @@ précision grossière lui suffit) ; pour la seule limite globale, vérifier chaq
 minimum courant plutôt qu'à sa propre prédiction ramènerait à une cellule par cellule, à petit
 `α` ; et le majorant de `d` pourrait être calculé avec celui de `w`, en un seul passage.
 
-**La suite.** Brancher les limites dans Newton (le pas sans diagramme d'essai), puis s'en
-servir pour **modifier la direction** là où elle écrase ; le 3D (polynôme de degré 3, même
-fournisseur) ; plusieurs directions.
+## 7.2 Dans Newton : `--pas dyadique | facteur`
+
+`Newton.h` calcule les limites (`OptionsLimites::global` : une cellule dont la prédiction
+dépasse le minimum courant n'est vérifiée qu'à `1.1 ×` ce minimum — une cellule à petit `α`,
+pas à l'horizon — et la cellule en `α = 0` se refait par ses seuls voisins, lus dans le CSR du
+laplacien, sans parcours), puis `t` est la puissance de deux sous `α*` (`dyadique`) ou
+`0.9 α*` (`facteur`), et le diagramme de ce pas — nécessaire de toute façon — confirme la
+décroissance du résidu ; s'il refuse, on recule comme avant. Lignes, n = 10⁵, 8 fils :
+
+| solveur | essais (KMT) | dyadique | facteur 0.9 |
+|---|---|---|---|
+| Cholesky | 26 it, 117 diag, **11.2 s** | 26 it, 62 diag, 10.4 s | 22 it, 61 diag, **9.2 s** |
+| AMG Ruge-Stüben + GS | 27 it, 119 diag, **14.0 s** | 27 it, 64 diag, 13.5 s | 22 it, 57 diag, **11.5 s** |
+
+`dyadique` reproduit **exactement** les pas que KMT trouve par essais (mêmes itérations, 0 à
+3 refus sur 26), pour moitié moins de diagrammes : la passe coûte ~0.08 s par itération, soit
+1.3 diagramme, contre 3.3 diagrammes d'essai en moyenne. Le gros de la passe est le parcours
+de l'α-cellule, incompressible — il faut chercher les nouveaux voisins ; le départ à chaud
+n'économise que les coupes, pas le parcours (mesuré : 0.029 s à chaud contre 0.027 s à froid
+pour 10⁵ cellules), parce que les plans des voisins touchent la cellule et empêchent d'élaguer
+leurs feuilles. `facteur` gagne en plus quatre à cinq itérations, donc autant de résolutions
+linéaires, le poste dominant : **−17 %** au total. Ce qui reste : la sortie en `STAGNATION`
+brûle 34 diagrammes à descendre jusqu'à `t = 1e-10` (`--t-min`), la moitié du poste diagrammes
+en mode limites (`--t-min 1e-3` : 37 diagrammes, 7.7 s avec Cholesky + facteur, contre ~9.9 s
+pour KMT au même `t_min`) ; et l'AMG agrégation+spai0, le défaut, **échoue** sur certaines trajectoires
+(20 000 itérations, 50 s, une fois par run) là où Cholesky et Ruge-Stüben passent — une
+fragilité du solveur linéaire sur des cellules proches de `eps` (2.5e-5 ν ici), pas du pas.
+
+**La suite.** Se servir des limites par cellule (mode non global) pour **modifier la
+direction** là où elle écrase ; le 3D (polynôme de degré 3, même fournisseur) ; plusieurs
+directions.

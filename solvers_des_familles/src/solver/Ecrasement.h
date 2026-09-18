@@ -44,9 +44,11 @@
 #include "diagram/PowerDiagram.h"
 #include "util/parallel.h"
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <type_traits>
 #include <vector>
 
 namespace sf {
@@ -305,6 +307,14 @@ struct LimiteCellule {
     int etat       = ECHEC;
 };
 
+/// LE VOISINAGE DEJA CONNU : les voisins de chaque cellule en `alpha = 0`, en CSR par identifiant
+/// ( ce que le laplacien de Newton porte deja ). Avec lui, la cellule en 0 se refait en coupant
+/// le carre par ses seuls voisins, sans parcours -- au lieu d'un diagramme complet.
+struct Voisinage {
+    const SI *row = nullptr, *col = nullptr;
+    bool connu() const { return row && col; }
+};
+
 struct OptionsLimites {
     TF  niveau    = 0;          ///< le plancher ( `eps` de l'amortissement )
     TF  coeff     = 0.99;       ///< on verifie en `a_ok + coeff * ( predit - a_ok )` : la
@@ -313,13 +323,23 @@ struct OptionsLimites {
     TF  tol       = 1e-2;       ///< precision relative demandee sur la limite
     int max_tours = 12;
     SI  trace     = -1;         ///< une cellule dont on imprime chaque tour
+    bool global   = false;      ///< seul `min_i alpha_i` compte : voir `limites`
 };
 
 /// LA PASSE « predire, verifier, corriger », sur toutes les cellules. `pd` doit porter les poids
 /// `w` ( `set_weights( w )` ). Rend `lim[ id ]`.
+///
+/// `o.global` : on ne veut que `min_i alpha_i`. Une cellule dont la prediction depasse le minimum
+/// COURANT ( atomique, partage entre les threads ) n'est verifiee qu'a `1.1 x` ce minimum : si
+/// elle y est bonne, sa limite est au-dela et c'est tout ce qu'on a besoin de savoir ( etat
+/// HORIZON, `alpha` = ce point ). C'est une cellule a PETIT `alpha`, presque gratuite a chaud,
+/// la ou l'horizon `alpha = 1` est un diagramme monstrueux. Si le minimum trouve a la fin depasse
+/// la borne de certaines cellules, on les repasse -- rare, une prediction conservative de plus
+/// de 10 % sur la premiere cellule.
 template<class PD>
 void limites( const PD &pd, const TF *const *P, const std::vector<TF> &w, const std::vector<TF> &d,
-              const Parallel &par, const OptionsLimites &o, std::vector<LimiteCellule> &lim ) {
+              const Parallel &par, const OptionsLimites &o, std::vector<LimiteCellule> &lim,
+              Voisinage vois = {} ) {
     static_assert( PD::dim == 2, "2D seulement pour l'instant" );
     using Cell = typename PD::Cell;
     using TK   = typename PD::TKernel;
@@ -337,12 +357,27 @@ void limites( const PD &pd, const TF *const *P, const std::vector<TF> &w, const 
         } );
     } );
 
-    lim.assign( n, LimiteCellule{} );
-    parallel_for( n, par, [ & ]( SI k, int ) {
+    // le minimum courant des limites trouvees, partage
+    std::atomic<TF> courant{ INFINI };
+    auto abaisse = [ & ]( TF a ) {
+        TF c = courant.load();
+        while ( a < c && ! courant.compare_exchange_weak( c, a ) ) {}
+    };
+
+    // ---- UNE CELLULE : depuis son rang `k`, avec l'horizon `hz`
+    auto une = [ & ]( SI k, TF hz ) {
         const SI i = pd.ids[ k ];
         LimiteCellule &L = lim[ i ];
+        L.tours = 0;
         Cell cel;
-        pd.cellule( k, cel );
+        if ( vois.connu() ) {                            // la cellule en 0 par ses seuls voisins
+            static_assert( std::is_same_v<SI, d2::SI32>, "le CSR se lit tel quel" );
+            d2::FournisseurAlpha<TK> f0( &arbre, dm.data(), dt.data(), P, w.data(), d.data(), TF( 0 ),
+                                         d2::SI32( i ), vois.col + vois.row[ i ], int( vois.row[ i + 1 ] - vois.row[ i ] ) );
+            f0.parcours = false;
+            d2::moteur<TK>( &f0, &cel );
+        } else
+            pd.cellule( k, cel );
         PolyCellule q = polynome_cellule( cel, i, P, w.data(), d.data() );
         if ( q.etat != PolyCellule::OK ) { L.etat = LimiteCellule::VIDE_AU_DEPART; return; }
         L.alpha_poly = q.premiere_racine( o.niveau );
@@ -358,13 +393,15 @@ void limites( const PD &pd, const TF *const *P, const std::vector<TF> &w, const 
         for ( int j = 0; j < nb_ok; ++j ) cids_ok[ j ] = cel.cid[ j ];
         std::sort( cids_ok, cids_ok + nb_ok );
 
+        auto fini = [ & ]( TF a, int etat ) { L.alpha = a; L.etat = etat; if ( etat != LimiteCellule::HORIZON ) abaisse( a ); };
+
         for ( ; L.tours < o.max_tours; ) {
             // ---- ou verifier
             bool sur_pred = cible == pred;                // on vise la prediction du polynome
-            TF a_test = std::min( cible, o.horizon );
+            TF a_test = std::min( cible, hz );
             if ( ! ( a_test < a_bad ) ) { a_test = TF( 0.5 ) * ( a_ok + a_bad ); sur_pred = false; }
-            if ( sur_pred && a_test < o.horizon ) a_test = a_ok + o.coeff * ( a_test - a_ok );
-            if ( ! ( a_test > a_ok ) ) { L.alpha = a_ok; L.etat = LimiteCellule::CORRIGEE; return; }
+            if ( sur_pred && a_test < hz ) a_test = a_ok + o.coeff * ( a_test - a_ok );
+            if ( ! ( a_test > a_ok ) ) return fini( a_ok, LimiteCellule::CORRIGEE );
 
             // ---- la cellule exacte en `a_test`, a chaud depuis la derniere bonne
             d2::FournisseurAlpha<TK> f( &arbre, dm.data(), dt.data(), P, w.data(), d.data(), a_test,
@@ -372,11 +409,11 @@ void limites( const PD &pd, const TF *const *P, const std::vector<TF> &w, const 
             d2::moteur<TK>( &f, &cel );
             ++L.tours;
             if ( i == o.trace )
-                std::printf( "    cellule %d tour %d : a_ok %.6e a_bad %.6e pred %.6e cible %.6e -> a_test %.6e :"
+                std::printf( "    cellule %d tour %d : a_ok %.6e a_bad %.6e pred %.6e cible %.6e hz %.6e -> a_test %.6e :"
                              " nb %d ( avant %d ), aire %.4e / niveau %.4e\n",
                              int( i ), L.tours, double( a_ok ), double( a_bad ), double( pred ), double( cible ),
-                             double( a_test ), cel.nb, nb_ok, double( cel.nb > 0 ? PD::mesure( cel ) : TF( 0 ) ),
-                             double( o.niveau ) );
+                             double( hz ), double( a_test ), cel.nb, nb_ok,
+                             double( cel.nb > 0 ? PD::mesure( cel ) : TF( 0 ) ), double( o.niveau ) );
 
             // ---- memes aretes : `q_ok` etait exact de `a_ok` a `a_test`
             bool memes = cel.nb == nb_ok;
@@ -387,15 +424,12 @@ void limites( const PD &pd, const TF *const *P, const std::vector<TF> &w, const 
                 for ( int j = 0; j < cel.nb && memes; ++j ) memes = c2[ j ] == cids_ok[ j ];
             }
             if ( memes ) {
-                if ( a_test >= o.horizon ) { L.alpha = pred; L.etat = LimiteCellule::HORIZON; return; }
-                if ( sur_pred ) {                        // la prediction est confirmee, a `coeff` pres
-                    L.alpha = pred;
-                    L.etat = L.tours == 1 ? LimiteCellule::CONFIRMEE : LimiteCellule::CORRIGEE;
-                    return;
-                }
+                if ( a_test >= hz ) return fini( pred < INFINI && pred < hz ? pred : hz, LimiteCellule::HORIZON );
+                if ( sur_pred )                          // la prediction est confirmee, a `coeff` pres
+                    return fini( pred, L.tours == 1 ? LimiteCellule::CONFIRMEE : LimiteCellule::CORRIGEE );
                 a_ok = a_test;                           // le polynome tient encore ici ; `pred` reste
                 cible = pred;
-                if ( a_bad < INFINI && a_bad - a_ok <= o.tol * a_bad ) { L.alpha = a_ok; L.etat = LimiteCellule::CORRIGEE; return; }
+                if ( a_bad < INFINI && a_bad - a_ok <= o.tol * a_bad ) return fini( a_ok, LimiteCellule::CORRIGEE );
                 continue;
             }
 
@@ -412,8 +446,9 @@ void limites( const PD &pd, const TF *const *P, const std::vector<TF> &w, const 
                 std::sort( cids_ok, cids_ok + nb_ok );
                 const TF beta = q2.premiere_racine( o.niveau );
                 pred = cible = a_test + beta;
-                if ( a_test >= o.horizon ) { L.alpha = pred; L.etat = LimiteCellule::HORIZON; return; }
-                if ( beta <= o.tol * a_test ) { L.alpha = a_test; L.etat = LimiteCellule::CORRIGEE; return; }
+                if ( a_test >= hz ) return fini( hz, LimiteCellule::HORIZON );
+                if ( ! ( pred < a_bad ) ) cible = TF( 0.5 ) * ( a_ok + a_bad );
+                if ( beta <= o.tol * a_test ) return fini( a_test, LimiteCellule::CORRIGEE );
             } else {                                     // mauvaise : la limite est avant
                 a_bad = a_test;
                 TF r1, r2, beta = -INFINI;
@@ -426,11 +461,33 @@ void limites( const PD &pd, const TF *const *P, const std::vector<TF> &w, const 
                 if ( ! ( cible > a_ok && cible < a_bad ) ) cible = TF( 0.5 ) * ( a_ok + a_bad );
                 if ( cible == pred ) cible = std::nextafter( cible, a_ok );
             }
-            if ( a_bad < INFINI && a_bad - a_ok <= o.tol * a_bad ) { L.alpha = a_ok; L.etat = LimiteCellule::CORRIGEE; return; }
+            if ( a_bad < INFINI && a_bad - a_ok <= o.tol * a_bad ) return fini( a_ok, LimiteCellule::CORRIGEE );
         }
-        L.alpha = a_ok;                                  // le conservatif, faute de mieux
-        L.etat = LimiteCellule::ECHEC;
+        fini( a_ok, LimiteCellule::ECHEC );              // le conservatif, faute de mieux
+    };
+
+    lim.assign( n, LimiteCellule{} );
+    if ( ! o.global ) {
+        parallel_for( n, par, [ & ]( SI k, int ) { une( k, o.horizon ); } );
+        return;
+    }
+
+    // ---- le mode global : l'horizon est le minimum courant, avec une marge
+    parallel_for( n, par, [ & ]( SI k, int ) {
+        une( k, std::min( o.horizon, TF( 1.1 ) * courant.load() ) );
     } );
+    for ( int passe = 0; passe < 8; ++passe ) {          // les bornes passees sous le minimum trouve
+        const TF c = courant.load();
+        std::vector<SI> encore;
+        for ( SI k = 0; k < n; ++k ) {
+            const LimiteCellule &L = lim[ pd.ids[ k ] ];
+            if ( L.etat == LimiteCellule::HORIZON && L.alpha < c && L.alpha < o.horizon ) encore.push_back( k );
+        }
+        if ( encore.empty() ) break;
+        parallel_for( SI( encore.size() ), par, [ & ]( SI j, int ) {
+            une( encore[ j ], std::min( o.horizon, TF( 1.1 ) * courant.load() ) );
+        } );
+    }
 }
 
 } // namespace sf

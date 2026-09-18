@@ -54,6 +54,8 @@ struct FournisseurAlpha {
     SI32            i0;
     const SI32     *chauds;      ///< les germes a proposer d'abord ( `< 0` : ignore )
     int             nb_chauds;
+    bool            parcours = true; ///< `false` : les plans chauds SEULS -- pour refaire une cellule
+                                     ///< dont on connait deja les voisins, sans rien chercher
 
     FournisseurAlpha( const Arbre *arbre, const WMajT<2> *dm, const TF *dt, const TF *const *P,
                       const TF *w, const TF *d, TF alpha, SI32 i0, const SI32 *chauds, int nb_chauds )
@@ -107,6 +109,8 @@ struct FournisseurAlpha {
             plan( j, TK( P[ 0 ][ j ] ), TK( P[ 1 ][ j ] ), TK( w[ j ] + alpha * d[ j ] ), p );
             return true;
         }
+        if ( ! parcours )
+            return false;
         if ( ! l.amorce ) { l.pile[ l.haut++ ] = 0; l.amorce = true; }
 
         for ( ;; ) {

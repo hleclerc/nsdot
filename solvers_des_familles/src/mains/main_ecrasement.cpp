@@ -20,6 +20,7 @@
 #include "bench/Direction.h"
 #include "bench/Dispatch.h"
 #include "solver/Ecrasement.h"
+#include "solver/Laplacien.h"
 #include "solver/Lineaire.h"
 #include "solver/Newton.h"
 #ifdef _OPENMP
@@ -44,6 +45,7 @@ struct Opts {
     int         bissec    = 40;        ///< pas de bissection
     OptionsLimites lim;                ///< la passe « predire, verifier, corriger »
     bool        verifie   = true;
+    bool        chrono    = false;     ///< chronometrer les composantes de la passe
     std::vector<TF> check_alpha;       ///< verifier le fournisseur a alpha contre le diagramme
     std::string solver    = "amg";
     int         amgvar    = Amg::SA_SPAI0;
@@ -234,6 +236,66 @@ void analyse( const Args &a, const Opts &o, const Direction<2> &dir ) {
     SI c_vide, c_eps;
     borne( k_vide, vide, "premiere cellule vide", pz.alpha, pz.cellule, c_vide );
     const TF a_eps = borne( k_eps, sous_eps, "premiere sous eps  ", pe.alpha, pe.cellule, c_eps );
+
+    // ---- le chronometre des composantes de la passe
+    if ( o.chrono ) {
+        using Cell = typename PD::Cell;
+        using TK   = typename PD::TKernel;
+        pd.set_weights( w.data(), par );
+        std::vector<TF> dt( n );
+        for ( SI k = 0; k < n; ++k ) dt[ k ] = d[ pd.arbre.order[ k ] ];
+        std::vector<WMajT<2>> dm( pd.arbre.nodes.size() );
+        double t0 = now();
+        parallel_for( SI( dm.size() ), par, [ & ]( SI m, int ) {
+            const auto &nd = pd.arbre.nodes[ m ];
+            dm[ m ] = weight_majorant<2>( nd.beg, nd.end, [ & ]( SI k, Vec<2> &q, TF &v ) {
+                q[ 0 ] = pd.arbre.p[ 0 ][ k ]; q[ 1 ] = pd.arbre.p[ 1 ][ k ]; v = dt[ k ];
+            } );
+        } );
+        const double t_dm = now() - t0;
+        auto chrono = [ & ]( const char *quoi, auto &&f ) {
+            double best = 1e9;
+            for ( int r = 0; r < 3; ++r ) { const double t = now(); parallel_for( n, par, f ); best = std::min( best, now() - t ); }
+            std::printf( "  CHRONO %-44s %.4f s\n", quoi, best );
+            return best;
+        };
+        std::printf( "  CHRONO %-44s %.4f s\n", "majorant de d", t_dm );
+        chrono( "cellule en 0 ( = un diagramme )", [ & ]( SI k, int ) { Cell cel; pd.cellule( k, cel ); } );
+        {                                                // le voisinage, comme Newton l'a
+            std::vector<Facette> fa;
+            std::vector<TF> res;
+            std::vector<std::vector<Facette>> par_th( std::max( par.threads, 1 ) );
+            pd.measures_and_facets( res, par, [ & ]( int t, SI i, SI j, TF ) { par_th[ t ].push_back( Facette{ i, j, 1 } ); } );
+            for ( auto &v : par_th ) fa.insert( fa.end(), v.begin(), v.end() );
+            Laplacien L;
+            L.assemble( n, fa );
+            chrono( "cellule en 0 par ses voisins ( CSR )", [ & ]( SI k, int ) {
+                const SI i = pd.ids[ k ];
+                Cell cel;
+                std::vector<d2::SI32> vs( L.col.data() + L.row[ i ], L.col.data() + L.row[ i + 1 ] );
+                d2::FournisseurAlpha<TK> f( &pd.arbre, dm.data(), dt.data(), P, w.data(), d.data(), TF( 0 ),
+                                            d2::SI32( i ), vs.data(), int( vs.size() ) );
+                f.parcours = false;
+                d2::moteur<TK>( &f, &cel ); } );
+        }
+        chrono( "cellule en 0 + polynome", [ & ]( SI k, int ) {
+            Cell cel; pd.cellule( k, cel ); polynome_cellule( cel, pd.ids[ k ], P, w.data(), d.data() ); } );
+        for ( TF al : { TF( 1e-3 ), TF( 4e-3 ), TF( 1e-1 ), TF( 1 ) } ) {
+            char nom[ 64 ];
+            std::snprintf( nom, sizeof( nom ), "cellule en 0 + a chaud en %.0e", double( al ) );
+            chrono( nom, [ & ]( SI k, int ) {
+                Cell cel; pd.cellule( k, cel );
+                d2::FournisseurAlpha<TK> f( &pd.arbre, dm.data(), dt.data(), P, w.data(), d.data(), al,
+                                            d2::SI32( pd.ids[ k ] ), cel.cid, std::max( cel.nb, 0 ) );
+                d2::moteur<TK>( &f, &cel ); } );
+            std::snprintf( nom, sizeof( nom ), "cellule a froid en %.0e ( fournisseur alpha )", double( al ) );
+            chrono( nom, [ & ]( SI k, int ) {
+                Cell cel;
+                d2::FournisseurAlpha<TK> f( &pd.arbre, dm.data(), dt.data(), P, w.data(), d.data(), al,
+                                            d2::SI32( pd.ids[ k ] ), nullptr, 0 );
+                d2::moteur<TK>( &f, &cel ); } );
+        }
+    }
 
     // ---- le fournisseur a alpha contre le diagramme rafraichi, cellule par cellule
     for ( TF ac : o.check_alpha ) {
@@ -428,6 +490,7 @@ int main( int argc, char **argv ) {
         else if ( s == "--sans-verif" ) o.verifie = false;
         else if ( s == "--trace" )     o.lim.trace = std::atoi( val() );
         else if ( s == "--check" )     o.check_alpha.push_back( std::atof( val() ) );
+        else if ( s == "--chrono" )    o.chrono = true;
         else if ( s == "--solver" )    o.solver = val();
         else if ( s == "--amg-var" )   o.amgvar = std::atoi( val() );
         else {
@@ -448,6 +511,9 @@ int main( int argc, char **argv ) {
                 "  --tol T           precision relative des limites                  (1e-2)\n"
                 "  --tours K         cellules calculees au plus, par cellule         (12)\n"
                 "  --sans-verif      sauter la passe « predire, verifier, corriger »\n"
+                "  --trace I         imprimer chaque tour de la cellule I\n"
+                "  --check A         le fournisseur a alpha contre le diagramme rafraichi, en A ( repetable )\n"
+                "  --chrono          chronometrer les composantes de la passe\n"
                 "  --solver S        amg | chol, pour la direction                 (amg)\n"
                 "  --amg-var V       la hierarchie AMGCL                           (0)\n" );
             return s == "--help" || s == "-h" ? 0 : 1;

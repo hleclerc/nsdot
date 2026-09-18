@@ -58,7 +58,7 @@ int lance( const Args &a, const Opts &o, const Nuage<PD::dim> &nu, Lin &lin ) {
     const double total = now() - t0 + t_arbre;
     const NewtonStats &st = nw.st;
     const StatsLin &sl = lin.st;
-    const double autre = total - t_arbre - st.t_maj - st.t_diag - st.t_asm - st.t_lin;
+    const double autre = total - t_arbre - st.t_maj - st.t_diag - st.t_asm - st.t_lin - st.t_lim;
 
     std::printf( "  newton %s ( max|a-nu|/nu = %.2e ) : %dD n=%d threads=%d kernel=%s maxnv=%d leaf=%d"
                  " -- %d iterations, %d diagrammes ( %d reculs ), %s%s\n",
@@ -66,8 +66,11 @@ int lance( const Args &a, const Opts &o, const Nuage<PD::dim> &nu, Lin &lin ) {
                  int( a.leaf ), st.nb_iter, st.nb_diag, st.nb_recul, lin.nom(),
                  sl.nb_iter ? ( " ( " + std::to_string( sl.nb_iter ) + " iterations )" ).c_str() : "" );
     std::printf( "         arbre %.3f | majorants %.3f | diagrammes %.3f | assemblage %.3f"
-                 " | resolution %.3f | reste %.3f | TOTAL %.3f s\n",
-                 t_arbre, st.t_maj, st.t_diag, st.t_asm, st.t_lin, autre, total );
+                 " | resolution %.3f | limites %.3f | reste %.3f | TOTAL %.3f s\n",
+                 t_arbre, st.t_maj, st.t_diag, st.t_asm, st.t_lin, st.t_lim, autre, total );
+    if ( st.nb_cell_lim )
+        std::printf( "         limites : %d cellules calculees ( %.2f par germe et par iteration ), %d pas refuses par le diagramme\n",
+                     int( st.nb_cell_lim ), double( st.nb_cell_lim ) / n / std::max( st.nb_iter, 1 ), st.nb_lim_refus );
     std::printf( "         soit %.0f %% de diagramme, %.3f s par diagramme, %.1f us/germe en tout\n",
                  100 * st.t_diag / total, st.t_diag / std::max( st.nb_diag, 1 ), 1e6 * total / n );
     std::printf( "         resolution en detail : mise en forme %.3f | hierarchie/analyse %.3f ( %d )"
@@ -156,6 +159,15 @@ int main( int argc, char **argv ) {
         else if ( s == "--amg-var" )    o.amgvar = std::atoi( val() );
         else if ( s == "--ecrire" )     o.ecrire = val();
         else if ( s == "--quiet" )      o.newton.trace = false;
+        else if ( s == "--pas" ) {
+            const std::string v = val();
+            o.newton.pas = v == "dyadique" ? NewtonOptions::DYADIQUE : v == "facteur" ? NewtonOptions::FACTEUR
+                         : NewtonOptions::ESSAIS;
+        }
+        else if ( s == "--facteur" )    o.newton.facteur = std::atof( val() );
+        else if ( s == "--lim-tol" )    o.newton.lim.tol = std::atof( val() );
+        else if ( s == "--lim-coeff" )  o.newton.lim.coeff = std::atof( val() );
+        else if ( s == "--t-min" )      o.newton.t_min = std::atof( val() );
         else {
             std::printf( "usage: newton [options]\n" );
             Args::usage();
@@ -167,7 +179,12 @@ int main( int argc, char **argv ) {
                 "  --lin-tol T     arret du solveur lineaire, relatif       (1e-10)\n"
                 "  --lin-max K     iterations du solveur lineaire au plus   (20000)\n"
                 "  --ecrire FILE   ecrire les poids trouves au format de cases/ ( le dernier nuage deroule )\n"
-                "  --quiet         pas de trace par iteration\n" );
+                "  --quiet         pas de trace par iteration\n"
+                "  --pas P         essais ( KMT, defaut ) | dyadique | facteur : le pas par les LIMITES ( 2D )\n"
+                "  --facteur F     t = F * alpha* en mode facteur                (0.9)\n"
+                "  --lim-tol T     precision relative des limites               (1e-2)\n"
+                "  --lim-coeff C   ou verifier la prediction                    (0.99)\n"
+                "  --t-min T       sous ce pas, STAGNATION                      (1e-10)\n" );
             return s == "--help" || s == "-h" ? 0 : 1;
         }
     }
