@@ -71,11 +71,31 @@ bool balaye( const PD &pd, SI k, int sens, Temoin<PD> &cel ) {
 }
 
 template<class PD>
-int verifie( const Args &a, const Nuage<PD::dim> &nu ) {
+int verifie( const Args &a, const Nuage<PD::dim> &nu, const std::vector<SI> &seules = {} ) {
     constexpr int D = PD::dim;
     PD pd;
-    pd.build( nu.P, nu.W, nu.n, a.leaf );
+    if ( a.wscale < 0 ) {                                // `--weights -1` : le chemin de Newton, arbre nu puis poids
+        pd.build( nu.P, nullptr, nu.n, a.leaf );
+        if ( nu.W ) pd.set_weights( nu.W, a.par );
+    } else
+        pd.build( nu.P, nu.W, nu.n, a.leaf );
     const SI n = nu.n;
+    if ( nu.W ) {                                        // les majorants sont-ils VALIDES ?
+        SI faux = 0; TF pire = 0;
+        for ( const auto &nd : pd.arbre.nodes )
+            for ( SI k = nd.beg; k < nd.end; ++k ) {
+                TF m = nd.wm.b;
+                for ( int d = 0; d < D; ++d ) m += TF( nd.wm.a[ d ] ) * pd.arbre.p[ d ][ k ];
+                if ( pd.arbre.pw[ k ] > m ) {
+                    if ( faux < 3 )
+                        std::printf( "    noeud [%d,%d) a = ( %.6e %.6e ) b = %.10e : germe %d y = ( %.6f %.6f ) w = %.10e > %.10e de %.3e\n",
+                                     int( nd.beg ), int( nd.end ), double( nd.wm.a[ 0 ] ), double( nd.wm.a[ 1 ] ), double( nd.wm.b ), int( k ),
+                                     double( pd.arbre.p[ 0 ][ k ] ), double( pd.arbre.p[ 1 ][ k ] ), double( pd.arbre.pw[ k ] ), double( m ), double( pd.arbre.pw[ k ] - m ) );
+                    ++faux; pire = std::max( pire, pd.arbre.pw[ k ] - m );
+                }
+            }
+        std::printf( "  majorants : %d violations sur %d noeuds, pire %.3e\n", int( faux ), int( pd.arbre.nodes.size() ), double( pire ) );
+    }
 
     std::vector<TF> res;
     const double t0 = now();
@@ -86,6 +106,7 @@ int verifie( const Args &a, const Nuage<PD::dim> &nu ) {
 
     int faux_bsp = 0, faux_ordre = 0, faux_adj = 0, deb_temoin = 0;
     for ( SI k = 0; k < n; ++k ) {
+        if ( ! seules.empty() && std::find( seules.begin(), seules.end(), pd.ids[ k ] ) == seules.end() ) continue;
         typename PD::Cell ca;
         Temoin<PD> cb, cc;
         pd.cellule( k, ca );
@@ -93,6 +114,14 @@ int verifie( const Args &a, const Nuage<PD::dim> &nu ) {
         const bool ok_c = nu.W ? balaye<PD,true>( pd, k, -1, cc ) : balaye<PD,false>( pd, k, -1, cc );
         if ( ! ok_b || ! ok_c ) { ++deb_temoin; continue; }
         const auto va = voisins<D>( ca ), vb = voisins<D>( cb ), vc = voisins<D>( cc );
+        if ( ! seules.empty() ) {
+            auto imprime = [ & ]( const char *quoi, const std::vector<int> &v ) {
+                std::printf( "      cellule %d %-8s :", int( pd.ids[ k ] ), quoi );
+                for ( int x : v ) std::printf( " %d", x );
+                std::printf( "\n" );
+            };
+            imprime( "BSP", va ); imprime( "direct", vb ); imprime( "inverse", vc );
+        }
         faux_bsp   += va != vb;
         faux_ordre += vb != vc;
         if constexpr ( D == 3 ) faux_adj += ca.verifie();
@@ -112,9 +141,16 @@ int verifie( const Args &a, const Nuage<PD::dim> &nu ) {
 }
 
 template<int D>
-int deroule( const Args &a ) {
+int deroule( const Args &a, const std::vector<SI> &seules ) {
     int bad = 0;
     std::printf( "=== %dD  kernel=%s maxnv=%d leaf=%d\n", D, a.kernel.c_str(), a.nv( D ), int( a.leaf ) );
+    if ( ! a.load.empty() ) {
+        for ( const Nuage<D> &nu : a.nuages<D>() ) {
+            if ( nu.absent ) return 1;
+            bad += dispatch<D>( a, [ & ]( auto tag ) { return verifie<typename decltype( tag )::type>( a, nu, seules ); } );
+        }
+        return bad;
+    }
     for ( double ws : { 0.0, 1.0 } ) {
         const Nuage<D> nu = nuage_uniforme<D>( a.n, a.graine, ws );
         bad += dispatch<D>( a, [ & ]( auto tag ) {
@@ -129,17 +165,20 @@ int deroule( const Args &a ) {
 int main( int argc, char **argv ) {
     Args a;
     a.n = 5000;                                          // le balayage est en O( n^2 )
+    std::vector<SI> seules;
     for ( int i = 1; i < argc; ++i ) {
         const std::string s = argv[ i ];
         if ( a.parse( s, i, argc, argv ) ) continue;
+        if ( s == "--cellule" && i + 1 < argc ) { seules.push_back( std::atoi( argv[ ++i ] ) ); continue; }
         std::printf( "usage: check [options]\n" );
         Args::usage();
+        std::printf( "  --cellule I     avec --load : ne confronter que cette cellule ( repetable )\n" );
         return s == "--help" || s == "-h" ? 0 : 1;
     }
     a.finalise();
 
     int bad = 0;
-    if ( a.dims != 3 ) bad += deroule<2>( a );
-    if ( a.dims != 2 ) bad += deroule<3>( a );
+    if ( a.dims != 3 ) bad += deroule<2>( a, seules );
+    if ( a.dims != 2 ) bad += deroule<3>( a, seules );
     return bad ? 1 : 0;
 }

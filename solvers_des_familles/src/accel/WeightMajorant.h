@@ -14,11 +14,21 @@
 // Pourquoi les pentes sont en `float` : `a` est un CHOIX, pas une mesure. N'importe quel `a` donne
 // un majorant valide pourvu que `b` soit calcule AVEC ce `a` -- on arrondit donc les pentes, puis on
 // calcule `b`, et le noeud garde sa taille.
+//
+// DEUX GARDE-FOUS, appris sur un vrai nuage ( des germes clampes au bord, `x` egaux a 1e-8 pres ) :
+// la matrice normale y est presque singuliere, le pivot n'est pas nul, la pente sort a 1e13, et
+// `b = max( w - a . y )` se calcule a 1e9 avec une annulation qui rend le majorant FAUX de 3e-8 --
+// l'elagage, exact pour un majorant valide, ecarte alors un vrai voisin ( somme des aires
+// 1.00001 ). Donc : ( 1 ) une pente n'est admise que si `|a_d| * etendue_d` reste de l'ordre de
+// l'etalement des poids -- au-dela elle n'explique rien, elle ne fait qu'amplifier l'arrondi ;
+// ( 2 ) `b` prend une marge de quelques ulp de ce qu'il soustrait, pour que le majorant tienne
+// aussi en flottant.
 // =====================================================================================
 
 #include "util/common.h"
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace sf {
 
@@ -45,13 +55,17 @@ WMajT<D> weight_majorant( SI beg, SI end, Get &&get ) {
     TF w;
     get( beg, y, w );
     TF wmin = w, wmax = w, sw = w;
-    Vec<D> sy = y;
+    Vec<D> sy = y, ylo = y, yhi = y;
     for ( SI k = beg + 1; k < end; ++k ) {
         get( k, y, w );
         wmin = w < wmin ? w : wmin;
         wmax = w > wmax ? w : wmax;
         sw += w;
-        for ( int d = 0; d < D; ++d ) sy[ d ] += y[ d ];
+        for ( int d = 0; d < D; ++d ) {
+            sy[ d ] += y[ d ];
+            ylo[ d ] = y[ d ] < ylo[ d ] ? y[ d ] : ylo[ d ];
+            yhi[ d ] = y[ d ] > yhi[ d ] ? y[ d ] : yhi[ d ];
+        }
     }
 
     const TF spread = wmax - wmin;
@@ -103,6 +117,11 @@ WMajT<D> weight_majorant( SI beg, SI end, Get &&get ) {
                 a[ i ] = s / A[ i ][ i ];
             }
 
+        // ( 1 ) une pente qui, sur l'etendue du noeud, depasse de loin l'etalement des poids est un
+        // artefact du conditionnement, pas un ajustement
+        for ( int d = 0; d < D && ok; ++d )
+            if ( std::fabs( a[ d ] ) * ( yhi[ d ] - ylo[ d ] ) > 8 * spread ) ok = false;
+
         if ( ok ) {
             TF rmin = 0, rmax = 0;
             for ( SI k = beg; k < end; ++k ) {
@@ -118,15 +137,21 @@ WMajT<D> weight_majorant( SI beg, SI end, Get &&get ) {
         }
     }
 
-    // `b` avec les pentes STOCKEES, donc arrondies : le majorant est exact, sans marge a prendre.
-    TF b = 0;
+    // `b` avec les pentes STOCKEES, donc arrondies, et ( 2 ) une marge de quelques ulp de ce qui
+    // est soustrait : le majorant tient en flottant.
+    TF b = 0, ampl = 0;
     for ( SI k = beg; k < end; ++k ) {
         get( k, y, w );
-        TF v = w;
-        for ( int d = 0; d < D; ++d ) v -= TF( r.a[ d ] ) * y[ d ];
+        TF v = w, m = std::fabs( w );
+        for ( int d = 0; d < D; ++d ) {
+            const TF t = TF( r.a[ d ] ) * y[ d ];
+            v -= t;
+            m += std::fabs( t );
+        }
         b = ( k == beg || v > b ) ? v : b;
+        ampl = m > ampl ? m : ampl;
     }
-    r.b = b;
+    r.b = b + 8 * std::numeric_limits<TF>::epsilon() * ampl;
     return r;
 }
 
