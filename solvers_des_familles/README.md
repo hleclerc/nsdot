@@ -377,6 +377,13 @@ qu'aucune série ne suit. Le vrai chemin passe ce pli en réarrangeant la combin
 aux petits `s` (ordre 4 à `s = 1e-4` : 5e-8 d'écart au modèle) ; à `s = 3e-3` l'ordre 2 vide
 17 cellules là où le pas droit (l'ordre 1, Newton) n'en vide aucune.
 
+Le test direct (`--man N` fait aussi, pour chaque ordre, `s = 1` puis `s/2` tant qu'une cellule
+passe sous `eps`) : à l'itération 0 l'ordre 1 (KMT) accepte `3.9e-3`, les ordres 2 à 4 `9.8e-4`,
+les ordres 8 et 16 `2.4e-4` — la série fait *moins* bien que la droite ; à l'itération 5, où le
+rayon MAN vaut 0.32 et l'ordre 16 tombe sur la cible partielle à 2e-6 près, tous les ordres
+s'arrêtent au même `6.25e-2` : la cellule 90645 mangée par un nouveau voisin, invisible à tout
+ordre du modèle figé.
+
 **Conclusion.** Prédicteur d'ordre 1, un diagramme par pas — c'est Newton amorti, la
 continuation « à combinatoire vivante » qu'on a déjà, et le nombre de pas (~20) est le nombre
 d'époques combinatoires du chemin. Le levier restant est le coût du pas (réutiliser la

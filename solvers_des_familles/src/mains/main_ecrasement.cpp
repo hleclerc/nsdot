@@ -416,8 +416,27 @@ void analyse( const Args &a, const Opts &o, const Direction<2> &dir ) {
         const TF s_man = std::pow( TF( 1e-6 ) * norme2( W[ 1 ] ) / norme2( W[ N ] ), TF( 1 ) / ( N - 1 ) );
         std::printf( "    serie en %.2f s ; rayon MAN ( tol 1e-6 ) : s_max = %.4e\n", now() - t0, double( s_man ) );
 
-        // la verite le long de la serie
+        // LE TEST : pour chaque ordre, `s = 1` puis `s / 2` tant qu'une cellule passe sous `eps`
         std::vector<TF> delta( n ), am( n ), res;
+        std::printf( "  essais dyadiques par ordre ( eps = %.2e ) :\n", double( eps ) );
+        for ( int ordre = 1; ordre <= N; ordre = ordre < 4 ? ordre + 1 : 2 * ordre ) {
+            TF sv = 1;
+            int essais = 0;
+            for ( ;; ++essais ) {
+                for ( SI m = 0; m < n; ++m ) { TF acc = 0, p = 1; for ( int k = 1; k <= ordre; ++k ) { p *= sv; acc += p * W[ k ][ m ]; } delta[ m ] = acc; }
+                mesures_en( pd, w, delta, TF( 1 ), par, w2, res );
+                TF mn = INFINI, rr = 0;
+                for ( SI i = 0; i < n; ++i ) { mn = std::min( mn, res[ i ] ); rr += ( nu - res[ i ] ) * ( nu - res[ i ] ); }
+                if ( mn >= eps || sv < 1e-12 ) {
+                    std::printf( "    ordre %2d : s = %.3e accepte apres %d essais, aire min %.2e, |r|/r0 = %.6f ( cible %.6f )\n",
+                                 ordre, double( sv ), essais, double( mn ), double( std::sqrt( rr ) / r0 ), double( 1 - sv ) );
+                    break;
+                }
+                sv /= 2;
+            }
+        }
+
+        // la verite le long de la serie
         std::printf( "  %-10s | %10s | %6s %10s %8s | %8s %8s\n", "s", "modele-cible", "vides", "aire min", "|r|/r0", "cible", "droit" );
         for ( TF sv : o.man_s ) {
             for ( SI m = 0; m < n; ++m ) { TF acc = 0, p = 1; for ( int k = 1; k <= N; ++k ) { p *= sv; acc += p * W[ k ][ m ]; } delta[ m ] = acc; }
