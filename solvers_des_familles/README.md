@@ -38,6 +38,7 @@ src/cell/      L'ENGIN. La cellule DIRIGE : elle demande un plan à un fournisse
                Noyau2D.h          la cellule dans trois registres de huit voies, machine à états sur NB
                Elagage2D.h        « un germe de cette boîte peut-il encore couper ? » -- exact, SIMD
                FournisseurBsp2D.h le parcours de l'arbre, SUSPENDU entre deux demandes
+               FournisseurAlpha2D.h le même parcours en w + alpha d, sans rafraîchir, à chaud (§ 7.1)
                Contrat3D.h        Plan3, l'état que le fournisseur voit
                Cellule3D.h        le polytope simple porté par ses sommets (3 coupes, 3 voisins chacun)
                Elagage3D.h        le même test, un axe de plus, sur des sommets en mémoire
@@ -237,7 +238,52 @@ diagramme d'essai**. Cellule par cellule, le polynôme colle à `1e-4 ν` sur 99
 elle est mangée par un nouveau voisin, l'événement que le polynôme d'une seule cellule ne peut
 pas voir, et la prédiction est optimiste d'un facteur 2.5 — Newton a dû refuser `t = 0.125`.
 
-**La suite.** Deux choses manquent pour prédire sans diagramme : les plans des non-voisins
-proches (ceux que l'élagage a écartés de peu : le temps d'entrée d'un plan dans la cellule est
-une racine linéaire par sommet), et le recollement du polynôme après une arête annulée. Puis
-la même chose en 3D, et plusieurs directions.
+## 7.1 Prédire, vérifier, corriger
+
+Le polynôme seul ne voit pas le nouveau voisin ; une vraie cellule voit tout. D'où la passe
+`limites` (`Ecrasement.h`), une cellule à la fois, dans le même parcours :
+
+1. le polynôme en `α = 0` donne une limite prédite (le premier `α` où l'aire passe sous `eps`) ;
+2. on calcule la cellule **exacte** en `0.99 × prédit`, avec `FournisseurAlpha2D.h` : l'arbre
+   n'est pas rafraîchi — chaque nœud porte un majorant de `w` et un majorant de `d`, et
+   `w + α d ≤ (a_w + α a_d)·y + (b_w + α b_d)` est exact pour tout `α ≥ 0`, donc `α` peut
+   changer d'une cellule à l'autre ; et le départ est **à chaud** : les voisins de `α = 0` sont
+   coupés d'abord, sans parcours, puis le parcours élagué ne trouve presque plus rien (les
+   germes déjà proposés sont sautés : les reproposer recouperait une lamelle d'aire nulle par
+   arrondi, et la combinatoire serait fausse) ;
+3. **mêmes arêtes** ⇒ le polynôme était exact jusque-là, la limite est confirmée — un test
+   exact, pas un seuil. Sinon la cellule calculée porte la nouvelle combinatoire, donc un nouveau
+   polynôme, donc une limite corrigée, et on repart de là ; une cellule trouvée trop petite
+   borne par au-dessus et son polynôme, lu à rebours, dit où revenir ; une cellule vide ne
+   porte rien, on resserre par bissection. Au-delà de l'horizon (`α = 1`, le pas plein) on ne
+   vérifie qu'à l'horizon.
+
+Le fournisseur est vérifié contre le diagramme rafraîchi (`--check A` : 0 cellule différente
+sur 10⁵, à quatre `α`). Résultat sur les trois directions, `--coeff 0.99 --tol 1e-2` :
+
+| direction | limite globale (cellule) | exact | cellules calculées / cellule | temps | diagrammes d'essai de Newton |
+|---|---|---|---|---|---|
+| n = 2000, it 0 | 3.874695e-2 (1693) | 3.874695e-2 | 2.1 | 6 ms | 6 |
+| n = 10⁵, it 0 | 4.234123e-3 (22524) | 4.234123e-3 | 2.7 | 0.18 s | 9 (0.38 s) |
+| n = 10⁵, it 5 | 8.171690e-2 (90645) | 8.171690e-2 | 1.05 | 0.13 s | 5 |
+
+Les trois limites globales sont **exactes** — y compris à l'itération 5, où le polynôme seul se
+trompait de ×2.5 —, et cellule par cellule les limites tombent dans l'encadrement que donne la
+grille de 41 diagrammes pour **100 %** des cellules (avec `--coeff 0.9`, trois cellules sur 10⁵
+sortent de 4 % : l'extrapolation des derniers 10 %). Le coût : à l'itération 0 la moitié des
+cellules survivent au pas plein et sont vérifiées une fois à `α = 1` ; l'autre moitié change de
+combinatoire avant sa limite prédite (la direction depuis Voronoï est violente) et demande 2 à 5
+tours ; à l'itération 5 c'est une cellule par cellule. Une cellule à chaud coûte ~1.8 fois une
+cellule de diagramme, parce qu'on l'évalue à grand `α`, là où le diagramme lui-même est plus
+cher. Au total ~2 fois moins que les diagrammes d'essai, **et une limite par cellule**, ce que
+les diagrammes d'essai ne donnent pas.
+
+**Ce qu'on pourrait encore gagner.** `--tol 0.3` fait 1.8 cellule par cellule à l'itération 0
+(la limite globale tombe alors à 0.96 de l'exact — Newton ne teste que des puissances de 2, une
+précision grossière lui suffit) ; pour la seule limite globale, vérifier chaque cellule au
+minimum courant plutôt qu'à sa propre prédiction ramènerait à une cellule par cellule, à petit
+`α` ; et le majorant de `d` pourrait être calculé avec celui de `w`, en un seul passage.
+
+**La suite.** Brancher les limites dans Newton (le pas sans diagramme d'essai), puis s'en
+servir pour **modifier la direction** là où elle écrase ; le 3D (polynôme de degré 3, même
+fournisseur) ; plusieurs directions.

@@ -25,6 +25,7 @@
 #ifdef _OPENMP
 #include <omp.h>
 #endif
+#include <atomic>
 #include <cstdio>
 #include <string>
 
@@ -41,6 +42,9 @@ struct Opts {
     int         alpha_nb  = 41;        ///< points de la grille geometrique
     int         suivre    = 6;         ///< cellules suivies en detail
     int         bissec    = 40;        ///< pas de bissection
+    OptionsLimites lim;                ///< la passe « predire, verifier, corriger »
+    bool        verifie   = true;
+    std::vector<TF> check_alpha;       ///< verifier le fournisseur a alpha contre le diagramme
     std::string solver    = "amg";
     int         amgvar    = Amg::SA_SPAI0;
 };
@@ -177,7 +181,8 @@ void analyse( const Args &a, const Opts &o, const Direction<2> &dir ) {
                                 double( 1 - al / 2 ) );
     }
     if ( fg ) std::fclose( fg );
-    std::printf( "  ( %d diagrammes en %.3f s )\n", o.alpha_nb, now() - t0 );
+    const double t_grille = now() - t0;
+    std::printf( "  ( %d diagrammes en %.3f s )\n", o.alpha_nb, t_grille );
 
     // ---- la verite par bissection : premiere cellule vide, premiere sous eps
     auto vide = [ & ]( const std::vector<TF> &m, SI &c ) {
@@ -188,20 +193,109 @@ void analyse( const Args &a, const Opts &o, const Direction<2> &dir ) {
         for ( SI i = 0; i < n; ++i ) if ( m[ i ] < eps ) { c = i; return true; }
         return false;
     };
-    auto borne = [ & ]( int k, auto &&crit, const char *quoi, TF predit, SI cpred ) {
+    auto borne = [ & ]( int k, auto &&crit, const char *quoi, TF predit, SI cpred, SI &c ) {
+        c = -1;
         if ( k < 0 ) {
             std::printf( "  EXACT  : %s -- aucune sur la grille ( jusqu'a alpha = %.3e ) ; predit %.6e ( %d )\n",
                          quoi, double( grille.back() ), double( predit ), int( cpred ) );
-            return;
+            return INFINI;
         }
         const TF lo = k ? grille[ k - 1 ] : TF( 0 );
-        SI c = -1;
         const TF al = bissection( pd, w, d, lo, grille[ k ], par, o.bissec, crit, c );
         std::printf( "  EXACT  : %s alpha = %.6e ( cellule %d )  --  predit %.6e ( cellule %d ), rapport %.4f\n",
                      quoi, double( al ), int( c ), double( predit ), int( cpred ), double( predit / al ) );
+        return al;
     };
-    borne( k_vide, vide, "premiere cellule vide", pz.alpha, pz.cellule );
-    borne( k_eps, sous_eps, "premiere sous eps  ", pe.alpha, pe.cellule );
+    SI c_vide, c_eps;
+    borne( k_vide, vide, "premiere cellule vide", pz.alpha, pz.cellule, c_vide );
+    const TF a_eps = borne( k_eps, sous_eps, "premiere sous eps  ", pe.alpha, pe.cellule, c_eps );
+
+    // ---- le fournisseur a alpha contre le diagramme rafraichi, cellule par cellule
+    for ( TF ac : o.check_alpha ) {
+        using Cell = typename PD::Cell;
+        using TK   = typename PD::TKernel;
+        std::vector<TF> exact;
+        mesures_en( pd, w, d, ac, par, w2, exact );      // l'arbre porte `w + ac d`
+        std::vector<Cell> cel0( n );
+        pd.set_weights( w.data(), par );                  // puis `w`, pour le fournisseur
+        parallel_for( n, par, [ & ]( SI k, int ) { pd.cellule( k, cel0[ pd.ids[ k ] ] ); } );
+        std::vector<TF> dt( n );
+        for ( SI k = 0; k < n; ++k ) dt[ k ] = d[ pd.arbre.order[ k ] ];
+        std::vector<WMajT<2>> dm( pd.arbre.nodes.size() );
+        for ( size_t m = 0; m < dm.size(); ++m ) {
+            const auto &nd = pd.arbre.nodes[ m ];
+            dm[ m ] = weight_majorant<2>( nd.beg, nd.end, [ & ]( SI k, Vec<2> &q, TF &v ) {
+                q[ 0 ] = pd.arbre.p[ 0 ][ k ]; q[ 1 ] = pd.arbre.p[ 1 ][ k ]; v = dt[ k ];
+            } );
+        }
+        std::atomic<SI> nb_diff{ 0 };
+        std::vector<TF> ecart_th( std::max( par.threads, 1 ), TF( 0 ) );
+        parallel_for( n, par, [ & ]( SI k, int t ) {
+            const SI i = pd.ids[ k ];
+            Cell cel;
+            d2::FournisseurAlpha<TK> f( &pd.arbre, dm.data(), dt.data(), P, w.data(), d.data(), ac,
+                                        d2::SI32( i ), cel0[ i ].cid, std::max( cel0[ i ].nb, 0 ) );
+            d2::moteur<TK>( &f, &cel );
+            const TF m = cel.nb > 0 ? PD::mesure( cel ) : TF( 0 );
+            const TF e = std::fabs( m - exact[ i ] ) / nu;
+            ecart_th[ t ] = std::max( ecart_th[ t ], e );
+            if ( e > 1e-9 ) {
+                if ( nb_diff++ < 5 )
+                    std::printf( "    alpha %.3e cellule %d : fournisseur %.6e ( nb %d ), diagramme %.6e\n",
+                                 double( ac ), int( i ), double( m ), cel.nb, double( exact[ i ] ) );
+            }
+        } );
+        TF ecart = 0;
+        for ( TF e : ecart_th ) ecart = std::max( ecart, e );
+        std::printf( "  CHECK alpha = %.3e : fournisseur a alpha contre diagramme, %d cellules differentes, ecart max %.2e nu\n",
+                     double( ac ), int( nb_diff.load() ), double( ecart ) );
+    }
+
+    // ---- la passe « predire, verifier, corriger », contre la bissection et contre la grille
+    if ( o.verifie ) {
+        OptionsLimites ol = o.lim;
+        ol.niveau = eps;
+        pd.set_weights( w.data(), par );
+        std::vector<LimiteCellule> lim;
+        t0 = now();
+        limites( pd, P, w, d, par, ol, lim );
+        const double t_lim = now() - t0;
+
+        SI cnt[ 5 ] = {}, tours = 0, tmax = 0;
+        Premier pl;
+        for ( SI i = 0; i < n; ++i ) {
+            ++cnt[ lim[ i ].etat ];
+            tours += lim[ i ].tours;
+            tmax = std::max( tmax, lim[ i ].tours );
+            if ( lim[ i ].etat != LimiteCellule::VIDE_AU_DEPART ) pl.propose( lim[ i ].alpha, i );
+        }
+        std::printf( "\n  VERIFIE ( coeff %.2f, horizon %.2f, tol %.0e ) : %.3f s, soit %.2f diagrammes de la grille ;"
+                     " %d cellules calculees ( %.2f par cellule, %d au plus )\n",
+                     double( ol.coeff ), double( ol.horizon ), double( ol.tol ), t_lim,
+                     t_lim / ( t_grille / o.alpha_nb ), int( tours ), double( tours ) / n, int( tmax ) );
+        std::printf( "           %d confirmees, %d corrigees, %d au-dela de l'horizon, %d vides au depart, %d en echec\n",
+                     int( cnt[ 0 ] ), int( cnt[ 1 ] ), int( cnt[ 2 ] ), int( cnt[ 3 ] ), int( cnt[ 4 ] ) );
+        std::printf( "           limite globale alpha = %.6e ( cellule %d )  --  exact %.6e ( cellule %d ), rapport %.6f\n",
+                     double( pl.alpha ), int( pl.cellule ), double( a_eps ), int( c_eps ), double( pl.alpha / a_eps ) );
+
+        // chaque limite contre l'encadrement que donne la grille : `mes[ k ][ i ] < eps` pour la
+        // premiere fois en `k` veut dire une limite exacte dans `( grille[ k - 1 ], grille[ k ] ]`
+        SI coherent = 0, incoh = 0, montre = 0;
+        for ( SI i = 0; i < n; ++i ) {
+            if ( lim[ i ].etat == LimiteCellule::VIDE_AU_DEPART ) continue;
+            int kk = -1;
+            for ( int k = 0; k < o.alpha_nb && kk < 0; ++k ) if ( mes[ k ][ i ] < eps ) kk = k;
+            const TF lo = kk < 0 ? grille.back() : kk ? grille[ kk - 1 ] : TF( 0 ), hi = kk < 0 ? INFINI : grille[ kk ];
+            const TF al = lim[ i ].alpha;
+            const bool ok = al >= lo * ( 1 - 2 * ol.tol ) && al <= hi * ( 1 + 2 * ol.tol );
+            coherent += ok; incoh += ! ok;
+            if ( ! ok && montre++ < 8 )
+                std::printf( "           incoherente : cellule %d, limite %.4e ( etat %d, %d tours, poly %.4e ), grille dit ( %.4e, %.4e ]\n",
+                             int( i ), double( al ), lim[ i ].etat, lim[ i ].tours, double( lim[ i ].alpha_poly ),
+                             double( lo ), double( hi ) );
+        }
+        std::printf( "           contre la grille : %d limites coherentes, %d incoherentes\n", int( coherent ), int( incoh ) );
+    }
 
     // ---- les cellules suivies : les premieres racines predites, et la premiere vide exacte
     std::vector<SI> suivies;
@@ -302,6 +396,13 @@ int main( int argc, char **argv ) {
         else if ( s == "--alpha-nb" )  o.alpha_nb = std::atoi( val() );
         else if ( s == "--suivre" )    o.suivre = std::atoi( val() );
         else if ( s == "--bissec" )    o.bissec = std::atoi( val() );
+        else if ( s == "--coeff" )     o.lim.coeff = std::atof( val() );
+        else if ( s == "--horizon" )   o.lim.horizon = std::atof( val() );
+        else if ( s == "--tol" )       o.lim.tol = std::atof( val() );
+        else if ( s == "--tours" )     o.lim.max_tours = std::atoi( val() );
+        else if ( s == "--sans-verif" ) o.verifie = false;
+        else if ( s == "--trace" )     o.lim.trace = std::atoi( val() );
+        else if ( s == "--check" )     o.check_alpha.push_back( std::atof( val() ) );
         else if ( s == "--solver" )    o.solver = val();
         else if ( s == "--amg-var" )   o.amgvar = std::atoi( val() );
         else {
@@ -317,6 +418,11 @@ int main( int argc, char **argv ) {
                 "  --alpha-nb K      points de la grille                           (41)\n"
                 "  --suivre K        cellules suivies en detail                    (6)\n"
                 "  --bissec K        pas de bissection                             (40)\n"
+                "  --coeff C         verifier en a_ok + C ( predit - a_ok )          (0.99)\n"
+                "  --horizon A       au-dela, ne verifier qu'a l'horizon             (1)\n"
+                "  --tol T           precision relative des limites                  (1e-2)\n"
+                "  --tours K         cellules calculees au plus, par cellule         (12)\n"
+                "  --sans-verif      sauter la passe « predire, verifier, corriger »\n"
                 "  --solver S        amg | chol, pour la direction                 (amg)\n"
                 "  --amg-var V       la hierarchie AMGCL                           (0)\n" );
             return s == "--help" || s == "-h" ? 0 : 1;
