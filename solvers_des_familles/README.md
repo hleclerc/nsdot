@@ -384,6 +384,12 @@ rayon MAN vaut 0.32 et l'ordre 16 tombe sur la cible partielle à 2e-6 près, to
 s'arrêtent au même `6.25e-2` : la cellule 90645 mangée par un nouveau voisin, invisible à tout
 ordre du modèle figé.
 
+La limite exacte de `s` par ordre (bissection) : it 0 — ordre 1 `4.23e-3`, ordre 2 `1.32e-3`,
+ordre 12 `3.4e-4` ; it 5 — ordre 1 `8.17e-2`, **ordre 2 `9.32e-2`** (+14 %), ordres ≥ 3
+`9.1e-2` (la limite du chemin du modèle lui-même). Le seul ordre qui apporte quelque chose est
+le 2, quand le modèle n'a pas de pli (`|w₂|/|w₁|` = 0.12 à l'it 5, 0.31 à l'it 0 où il divise
+la portée par 3) ; il faudrait le tester contre l'ordre 1 à chaque pas, pour +14 % au mieux.
+
 **Conclusion.** Prédicteur d'ordre 1, un diagramme par pas — c'est Newton amorti, la
 continuation « à combinatoire vivante » qu'on a déjà, et le nombre de pas (~20) est le nombre
 d'époques combinatoires du chemin. Le levier restant est le coût du pas (réutiliser la

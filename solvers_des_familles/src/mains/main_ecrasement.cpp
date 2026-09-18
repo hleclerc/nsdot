@@ -419,7 +419,7 @@ void analyse( const Args &a, const Opts &o, const Direction<2> &dir ) {
         // LE TEST : pour chaque ordre, `s = 1` puis `s / 2` tant qu'une cellule passe sous `eps`
         std::vector<TF> delta( n ), am( n ), res;
         std::printf( "  essais dyadiques par ordre ( eps = %.2e ) :\n", double( eps ) );
-        for ( int ordre = 1; ordre <= N; ordre = ordre < 4 ? ordre + 1 : 2 * ordre ) {
+        for ( int ordre = 1; ordre <= N; ordre = ordre < 6 ? ordre + 1 : 2 * ordre ) {
             TF sv = 1;
             int essais = 0;
             for ( ;; ++essais ) {
@@ -428,8 +428,18 @@ void analyse( const Args &a, const Opts &o, const Direction<2> &dir ) {
                 TF mn = INFINI, rr = 0;
                 for ( SI i = 0; i < n; ++i ) { mn = std::min( mn, res[ i ] ); rr += ( nu - res[ i ] ) * ( nu - res[ i ] ); }
                 if ( mn >= eps || sv < 1e-12 ) {
-                    std::printf( "    ordre %2d : s = %.3e accepte apres %d essais, aire min %.2e, |r|/r0 = %.6f ( cible %.6f )\n",
-                                 ordre, double( sv ), essais, double( mn ), double( std::sqrt( rr ) / r0 ), double( 1 - sv ) );
+                    // puis la limite exacte, par bissection entre `s` ( bon ) et `2 s` ( mauvais )
+                    TF lo = sv, hi = 2 * sv;
+                    for ( int b = 0; b < 25; ++b ) {
+                        const TF mid = TF( 0.5 ) * ( lo + hi );
+                        for ( SI m = 0; m < n; ++m ) { TF acc = 0, p = 1; for ( int k = 1; k <= ordre; ++k ) { p *= mid; acc += p * W[ k ][ m ]; } delta[ m ] = acc; }
+                        mesures_en( pd, w, delta, TF( 1 ), par, w2, res );
+                        TF m2 = INFINI;
+                        for ( SI i = 0; i < n; ++i ) m2 = std::min( m2, res[ i ] );
+                        ( m2 >= eps ? lo : hi ) = mid;
+                    }
+                    std::printf( "    ordre %2d : s = %.3e accepte apres %d essais ( limite exacte %.4e ), |r|/r0 = %.6f ( cible %.6f )\n",
+                                 ordre, double( sv ), essais, double( lo ), double( std::sqrt( rr ) / r0 ), double( 1 - sv ) );
                     break;
                 }
                 sv /= 2;
