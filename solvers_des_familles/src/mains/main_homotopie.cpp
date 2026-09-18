@@ -10,6 +10,7 @@
 // =====================================================================================
 
 #include "bench/Dispatch.h"
+#include "solver/Ecrasement.h"
 #include "solver/Lineaire.h"
 #include "solver/Newton.h"
 #ifdef _OPENMP
@@ -26,6 +27,7 @@ struct Opts {
     TF  s0     = 1.0 / 64;     ///< le premier `s`
     int it_max = 4;            ///< au-dela, le pas en `s` est divise par deux
     TF  tol_inter = 1e-3;      ///< la tolerance sur les cibles intermediaires
+    int ordre  = 0;            ///< le predicteur : 0 = `w( s )` tel quel, 2 = `w + w_1 + w_2` ( serie en s )
     NewtonOptions newton;
 };
 
@@ -46,14 +48,56 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu, Lin &lin ) {
     TF s = 0, ds = o.s0;
     int it_total = 0, diag_total = 0, pas = 0, refus = 0;
     std::printf( "  %4s %9s %9s | %4s %5s %6s | %s\n", "pas", "s", "ds", "it", "diag", "reculs", "fin" );
+    std::vector<TF> w_pred;
     while ( s < 1 ) {
         const TF s2 = std::min( TF( 1 ), s + ds );
+        w_pred = w;
+        if ( o.ordre >= 2 ) {
+            // LE PREDICTEUR D'ORDRE 2 : `w_1 = L^-1 ( nu_s2 - a )`, `w_2 = -L^-1 q2( w_1 )` avec `q2( u ) =
+            // a_modele( u ) - a - L u` ( le modele quadratique de chaque cellule, `Ecrasement.h` )
+            pd.set_weights( w.data(), a.par );
+            std::vector<TF> mes;
+            std::vector<std::vector<Facette>> par_th( std::max( a.par.threads, 1 ) );
+            pd.measures_and_facets( mes, a.par, [ & ]( int t, SI i, SI j, TF m ) {
+                TF d2 = 0; for ( int d = 0; d < 2; ++d ) { const TF e = nu.P[ d ][ j ] - nu.P[ d ][ i ]; d2 += e * e; }
+                if ( d2 > 0 ) par_th[ t ].push_back( Facette{ i, j, m / ( 2 * std::sqrt( d2 ) ) } );
+            } );
+            std::vector<Facette> fa;
+            for ( auto &v : par_th ) fa.insert( fa.end(), v.begin(), v.end() );
+            Laplacien L; L.assemble( n, fa );
+            std::vector<ModeleCellule> mod( n );
+            parallel_for( n, a.par, [ & ]( SI k, int ) { typename PD::Cell cel; pd.cellule( k, cel ); mod[ pd.ids[ k ] ].depuis( cel, pd.ids[ k ], nu.P, w.data() ); } );
+            std::vector<TF> r( n ), w1, q( n ), w2;
+            for ( SI i = 0; i < n; ++i ) r[ i ] = a0[ i ] + s2 * ( nuv - a0[ i ] ) - mes[ i ];
+            if ( ! lin.resout( L, r, w1 ) ) return 1;
+            parallel_for( n, a.par, [ & ]( SI i, int ) {
+                TF lu = L.dia[ i ] * w1[ i ];
+                for ( SI k = L.row[ i ]; k < L.row[ i + 1 ]; ++k ) lu -= L.c[ k ] * w1[ L.col[ k ] ];
+                q[ i ] = -( mod[ i ].aire( w1.data() ) - mes[ i ] - lu );
+            } );
+            if ( ! lin.resout( L, q, w2 ) ) return 1;
+            // LES TROIS CANDIDATS -- `w`, `w + w_1`, `w + w_1 + w_2` -- juges par un diagramme chacun :
+            // l'ordre 2 est excellent quand la combinatoire est calme et toxique devant un pli
+            std::vector<TF> cand( n ), res;
+            TF meilleur = INFINI;
+            int choix = -1;
+            for ( int ordre = 0; ordre <= 2; ++ordre ) {
+                for ( SI i = 0; i < n; ++i ) cand[ i ] = w[ i ] + ( ordre >= 1 ? w1[ i ] : 0 ) + ( ordre >= 2 ? w2[ i ] : 0 );
+                pd.set_weights( cand.data(), a.par );
+                pd.measures( res, a.par );
+                TF pire = 0;
+                for ( SI i = 0; i < n; ++i ) pire = std::max( pire, std::fabs( res[ i ] - ( a0[ i ] + s2 * ( nuv - a0[ i ] ) ) ) / nuv );
+                if ( pire < meilleur ) { meilleur = pire; choix = ordre; w_pred = cand; }
+            }
+            diag_total += 3;
+            std::printf( "      predicteur : ordre %d retenu ( max|a-nu_s|/nu = %.2e )\n", choix, double( meilleur ) );
+        }
         NewtonOptions no = o.newton;
         no.tol = s2 < 1 ? o.tol_inter : o.newton.tol;
         Newton<PD,Lin> nw( pd, lin, nu.P, a.par, no );
         nw.nu.resize( n );
         for ( SI i = 0; i < n; ++i ) nw.nu[ i ] = a0[ i ] + s2 * ( nuv - a0[ i ] );
-        const bool ok = nw.resout( w );
+        const bool ok = nw.resout( w_pred );
         it_total += nw.st.nb_iter; diag_total += nw.st.nb_diag;
         const bool pris = ok && nw.st.nb_iter <= o.it_max;
         std::printf( "  %4d %9.6f %9.2e | %4d %5d %6d | %s%s\n", pas, double( s2 ), double( ds ), nw.st.nb_iter, nw.st.nb_diag,
@@ -90,6 +134,7 @@ int main( int argc, char **argv ) {
         auto val = [ & ]() { return i + 1 < argc ? argv[ ++i ] : ""; };
         if ( a.parse( s, i, argc, argv ) ) continue;
         else if ( s == "--s0" )        o.s0 = std::atof( val() );
+        else if ( s == "--ordre" )     o.ordre = std::atoi( val() );
         else if ( s == "--it-max" )    o.it_max = std::atoi( val() );
         else if ( s == "--tol-inter" ) o.tol_inter = std::atof( val() );
         else if ( s == "--newton-tol" ) o.newton.tol = std::atof( val() );

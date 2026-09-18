@@ -402,8 +402,12 @@ lâche), `s` doublé si le palier coûte peu, divisé sinon. Lignes n = 10⁵, C
 en direct avec `facteur`. Le chemin est *lisse* — 0 recul sur les paliers intermédiaires, là où
 Newton direct en fait 65 — mais pas moins cher : 3 corrections par palier (la combinatoire
 bouge dans chaque palier de `Δs = 0.125`) et un dernier palier de 8–9 itérations, la fin de
-partie de Newton. Vérifié aussi après le correctif de l'engin (§ 7.5) : § 7.1 à 7.4 inchangés
-au chiffre près.
+partie de Newton. Avec le prédicteur d'ordre 2 en `s` (`--ordre 2` : `w + w₁ + w₂`, `w₂ =
+−L⁻¹ q₂(w₁)` sur le modèle quadratique, contre `w` et `w + w₁`, un diagramme chacun pour
+choisir) : **1 correction par palier** de `s = 0.001` à `0.25` en doublant `Δs` — la série
+marche où la combinatoire est calme — mais échec au départ de Voronoï (le pli de l'it 0), à
+tout `Δs ≥ 0.25`, et en fin de partie ; au mieux 25–30 itérations, pas moins de 22. Vérifié
+aussi après le correctif de l'engin (§ 7.5) : § 7.1 à 7.4 inchangés au chiffre près.
 
 ## 7.5 Glisser depuis d'autres positions : le meilleur cas, mesuré (`glissement`)
 
