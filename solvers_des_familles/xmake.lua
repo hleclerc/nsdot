@@ -53,7 +53,7 @@ local function reglages()
     add_syslinks( "pthread" )
 end
 
-for _, nom in ipairs( { "check", "diagramme", "newton", "ecrasement" } ) do
+for _, nom in ipairs( { "check", "diagramme", "newton", "ecrasement", "glissement" } ) do
     target( nom )
         set_kind( "binary" )
         add_files( "src/mains/main_" .. nom .. ".cpp" )

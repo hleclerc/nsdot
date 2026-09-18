@@ -393,5 +393,39 @@ la portée par 3) ; il faudrait le tester contre l'ordre 1 à chaque pas, pour +
 **Conclusion.** Prédicteur d'ordre 1, un diagramme par pas — c'est Newton amorti, la
 continuation « à combinatoire vivante » qu'on a déjà, et le nombre de pas (~20) est le nombre
 d'époques combinatoires du chemin. Le levier restant est le coût du pas (réutiliser la
-factorisation d'un pas à l'autre, `limites` pour le pas), pas son ordre. Reste le 3D, et un
-chemin dans un autre paramètre (les positions, le multi-échelle) si l'on veut moins d'époques.
+factorisation d'un pas à l'autre, `limites` pour le pas), pas son ordre.
+
+## 7.5 Glisser depuis d'autres positions : le meilleur cas, mesuré (`glissement`)
+
+L'idée : partir de positions `c` où le problème est facile, et faire glisser les diracs vers
+`p` en suivant `w*(τ)`. Le meilleur `c` possible, on le connaît en trichant : les **barycentres
+des cellules de la solution** (`c_i → p_i` est le transport optimal lui-même, sans croisement).
+`xmake run glissement --load FILE_equal` : résolution en `c` depuis `w = 0`, puis
+`p(τ) = (1−τ) c + τ p` avec le prédicteur tangent `L dw = ν − a − (∂a/∂p)·dp` (la vitesse
+normale du plan `ij` quand un site bouge, intégrée sur l'arête : `∂a_i = Σ_j ℓ_ij/|p_j−p_i|
+[dp_j·(p_j − m_ij) + dp_i·(m_ij − p_i)]`) et Newton en correcteur, pas en `τ` adaptatif.
+
+Lignes, n = 2000 : le départ aux barycentres est facile (4 itérations, 0 recul, contre 9 et 5
+reculs pour la résolution directe) — mais la continuation coûte **79 itérations de Newton**
+(15 pas, 4 refus, 193 diagrammes) contre 9, avec 4.1 changements de voisinage *par cellule* le
+long du chemin (400 à 800 cellules sur 2000 à chaque pas de 0.1) et une fin de chemin (`τ → 1`,
+les diracs qui se resserrent) qui refuse les pas — la sensibilité `(w_i − w_j)/2|p_i − p_j|²`
+prédite. Le prédicteur tangent divise le résidu après prédiction par 5 (0.64 contre 3.0 sans
+prédicteur, pour `Δτ = 0.1`) mais `τ ↦ w*` est si non linéaire que 3 itérations de correcteur
+restent nécessaires ; réduire `Δτ` donne 1 itération par pas et 10× plus de pas. À n = 10⁵ :
+départ aux barycentres en 10 itérations (9 reculs), puis **86 pas, 209 itérations de Newton,
+295 diagrammes, 5.2 changements de voisinage par cellule**, `Δτ` tombé à 0.0125 dès le début,
+et le dernier pas (`τ = 1`) refusé jusqu'à `Δτ = 2e-4` — contre 22 itérations en direct.
+**Un chemin en positions compte plus d'époques combinatoires qu'un chemin en poids**, même
+dans le meilleur cas — l'idée est morte pour une heure de travail, comme prévu.
+
+**Trouvé en chemin : un bug de l'engin.** Avec les poids du fichier, la somme des aires valait
+1.00001 : la cellule 74917 n'avait pas d'arête contre 60863, qui était *dans* sa bande. Cause :
+le majorant affine des poids (`WeightMajorant.h`) sur un nœud de germes clampés au bord
+(`x = 0.0001` à 1e-8 près) — matrice normale presque singulière, pivot non nul, pente 1e13,
+`b` calculé à 1e9 avec une annulation qui rend le majorant **faux** de 3e-8 ; 11 535 nœuds sur
+32 767 violés. Deux garde-fous (pente admise seulement si `|a_d| × étendue_d ≤ 8 ×
+étalement`, marge de 8 ulp sur `b`) : zéro violation, somme 1.000000000, témoins inchangés,
+même temps — et Newton stagne désormais à **2.35e-6, le plancher annoncé par le fichier**, au
+lieu de 3.05e-6. `check --load FILE [--cellule I] [--weights -1]` le vérifie ; **le même code
+vit dans `sdot` (`refresh_weight_majorants`), à reporter.**
