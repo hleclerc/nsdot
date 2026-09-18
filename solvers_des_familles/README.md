@@ -325,6 +325,38 @@ pour KMT au même `t_min`) ; et l'AMG agrégation+spai0, le défaut, **échoue**
 (20 000 itérations, 50 s, une fois par run) là où Cholesky et Ruge-Stüben passent — une
 fragilité du solveur linéaire sur des cellules proches de `eps` (2.5e-5 ν ici), pas du pas.
 
-**La suite.** Se servir des limites par cellule (mode non global) pour **modifier la
-direction** là où elle écrase ; le 3D (polynôme de degré 3, même fournisseur) ; plusieurs
-directions.
+## 7.3 Modifier la direction : ce que les chiffres disent
+
+**Le segment droit de Voronoï vers `w*` est admissible.** Avec `d = w*` (les poids du fichier),
+`α` de 0 à 1 : **aucune** cellule vide, l'aire minimale croît de façon monotone de 8e-10 à ν
+(`directions/lignes100000_versW.txt`). Une bonne direction existe donc. La direction de Newton
+lui est corrélée à 0.991, avec 18 % d'écart (`|d − w*|/|w*|`), par régions (une ligne poussée
+40 % trop fort). Et la géométrie amplifie : à `α = 1`, le plan entre une cellule et son plus
+proche voisin se déplace de 150× la distance à ce voisin (médiane ; 570× au 90ᵉ centile) — pour
+`w*` aussi, qui survit parce que la combinatoire se réarrange de façon cohérente. C'est l'erreur
+de direction, amplifiée ×150, qui tue. Le polynôme figé prédit 18 310 cellules vides à `α = 1`
+le long de `w*` : au-delà de `α ~ 0.02–0.05` la combinatoire change trop pour lui.
+
+**Pondérer les aires ne change pas la direction** : `(ΩL) d = Ω r` a la même solution que
+`L d = r`. Un pas par cellule (`w + T d`) n'est pas viable non plus : le plan `ij` bouge de
+`(t_i d_i − t_j d_j)/2|p_i − p_j|`, et un écart `t_i − t_j` de 1e-7 fait un espacement.
+
+**Le pas tensoriel** (`--tenseur` du banc, `--pas tenseur` de Newton) : le modèle quadratique de
+*chaque* cellule dans tout l'espace des poids (`ModeleCellule` : son polygone figé, décalages
+`c_k + (δ_i − δ_j)/2`), résolu par Newton *sur le modèle* — le jacobien est le laplacien aux
+longueurs d'arêtes **signées**, même motif que `L`, refactorisé, amorti sur le résidu du modèle
+— pour la cible partielle `a + θ(ν − a)`. À l'itération 0, `θ = 0.02` : 4 itérations, 0.37 s,
+et le vrai diagramme en `w + δ` donne **0 cellule vide** pour le même gain de résidu que le pas
+droit `0.02·d`, qui en vide 351 — cinq fois le pas que KMT accepte. À `θ = 0.05` la solution
+exacte du modèle laisse encore 2 cellules vides (le nouveau voisin) et le Newton interne stalle
+(Picard sur-amorti y arrive en 276 itérations). Picard avec `L` figé diverge dès `θ = 0.01`.
+
+Branché dans Newton (`θ = 5 α*`, puis `limites` sur `δ`, critère de décroissance ramené à `θ`) :
+20 itérations au lieu de 22, mais 4 s de pas tensoriels — **11.8 s contre 7.7 s**. Il n'est
+utile qu'aux itérations 0–1 ; de 2 à 12, avec des pas de 0.04 à 0.8, sa portée (validité du
+modèle × θ) ne dépasse pas l'`α*` de la direction de Newton et il est écarté. La conclusion
+tient au-delà de cette implémentation : le pas est borné par la durée de validité de la
+combinatoire figée, pas par la direction.
+
+**Ce qui reste ouvert.** La continuation (partir de `ν = aires de Voronoï` et glisser vers
+`1/n`), le multi-échelle écarté dans `2d_des_familles` ; et le 3D.

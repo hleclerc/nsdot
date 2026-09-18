@@ -46,6 +46,11 @@ struct Opts {
     OptionsLimites lim;                ///< la passe « predire, verifier, corriger »
     bool        verifie   = true;
     bool        chrono    = false;     ///< chronometrer les composantes de la passe
+    bool        tenseur   = false;     ///< le pas tensoriel
+    std::vector<TF> thetas;            ///< les cibles partielles
+    int         picard    = 30;
+    TF          amort     = 1;
+    bool        newton_modele = false; ///< le vrai jacobien du modele, refactorise, au lieu de L fige
     std::vector<TF> check_alpha;       ///< verifier le fournisseur a alpha contre le diagramme
     std::string solver    = "amg";
     int         amgvar    = Amg::SA_SPAI0;
@@ -236,6 +241,118 @@ void analyse( const Args &a, const Opts &o, const Direction<2> &dir ) {
     SI c_vide, c_eps;
     borne( k_vide, vide, "premiere cellule vide", pz.alpha, pz.cellule, c_vide );
     const TF a_eps = borne( k_eps, sous_eps, "premiere sous eps  ", pe.alpha, pe.cellule, c_eps );
+
+    // ---- LE PAS TENSORIEL : le modele quadratique de chaque cellule, resolu par Picard pour une
+    // cible partielle `a + theta ( nu - a )`, contre le pas droit `theta d`
+    if ( o.tenseur ) {
+#ifndef SF_EIGEN
+        std::printf( "  tenseur : Eigen absent\n" );
+#else
+        using Cell = typename PD::Cell;
+        pd.set_weights( w.data(), par );
+        std::vector<ModeleCellule> mod( n );
+        std::vector<TF> res0;
+        std::vector<std::vector<Facette>> par_th( std::max( par.threads, 1 ) );
+        pd.measures_and_facets( res0, par, [ & ]( int t, SI i, SI j, TF mes ) {
+            TF d2 = 0;
+            for ( int k = 0; k < 2; ++k ) { const TF e = P[ k ][ j ] - P[ k ][ i ]; d2 += e * e; }
+            if ( d2 > 0 ) par_th[ t ].push_back( Facette{ i, j, mes / ( 2 * std::sqrt( d2 ) ) } );
+        } );
+        std::vector<Facette> fa;
+        for ( auto &v : par_th ) fa.insert( fa.end(), v.begin(), v.end() );
+        parallel_for( n, par, [ & ]( SI k, int ) { Cell cel; pd.cellule( k, cel ); mod[ pd.ids[ k ] ].depuis( cel, pd.ids[ k ], P, w.data() ); } );
+        TF e0 = 0;
+        for ( SI i = 0; i < n; ++i ) e0 = std::max( e0, std::fabs( mod[ i ].aire( nullptr ) - a0[ i ] ) / nu );
+        Laplacien L;
+        L.assemble( n, fa );
+        Cholesky chol;
+        std::vector<TF> b( n ), dn, delta, corr, r( n ), res;
+        for ( SI i = 0; i < n; ++i ) b[ i ] = nu - a0[ i ];
+        chol.resout( L, b, dn );
+        TF ecart_d = 0, nd = 0;
+        for ( SI i = 0; i < n; ++i ) { ecart_d = std::max( ecart_d, std::fabs( dn[ i ] - d[ i ] ) ); nd = std::max( nd, std::fabs( d[ i ] ) ); }
+        std::printf( "\n  TENSEUR : modele contre aire en 0 : %.1e nu ; direction de Newton recalculee contre celle du fichier : %.1e / %.1e\n",
+                     double( e0 ), double( ecart_d ), double( nd ) );
+        auto modele = [ & ]( const std::vector<TF> &dl, std::vector<TF> &out ) {
+            out.resize( n );
+            parallel_for( n, par, [ & ]( SI i, int ) { out[ i ] = mod[ i ].aire( dl.data() ); } );
+        };
+        // le jacobien du modele en `dl` : le laplacien aux longueurs signees ( non symetrique en
+        // general -- Cholesky lit le triangle inferieur, on prend ce qu'il prend )
+        auto jacobien = [ & ]( const std::vector<TF> &dl, std::vector<TF> &out, Laplacien &J ) {
+            out.resize( n );
+            for ( auto &v : par_th ) v.clear();
+            parallel_for( n, par, [ & ]( SI i, int t ) {
+                out[ i ] = mod[ i ].aire( dl.data(), [ & ]( d2::SI32 j, TF c ) { par_th[ t ].push_back( Facette{ i, j, c } ); } );
+            } );
+            fa.clear();
+            for ( auto &v : par_th ) fa.insert( fa.end(), v.begin(), v.end() );
+            J.assemble( n, fa );
+        };
+        auto verite = [ & ]( const std::vector<TF> &dl, const char *quoi ) {
+            std::vector<TF> un( n, TF( 1 ) );
+            mesures_en( pd, w, dl, TF( 1 ), par, w2, res );  // les poids `w + dl`
+            SI nv = 0; TF mn = INFINI, rr = 0;
+            for ( SI i = 0; i < n; ++i ) { nv += ! ( res[ i ] > 0 ); mn = std::min( mn, res[ i ] ); rr += ( nu - res[ i ] ) * ( nu - res[ i ] ); }
+            std::printf( "      %-22s : %6d vides, aire min %.2e ( eps %.2e ), |r|/|r0| = %.4f\n", quoi, int( nv ), double( mn ), double( eps ), double( std::sqrt( rr ) / r0 ) );
+        };
+        std::vector<TF> am;
+        for ( TF theta : o.thetas ) {
+            std::printf( "    theta = %.3f :\n", double( theta ) );
+            for ( SI i = 0; i < n; ++i ) b[ i ] = a0[ i ] + theta * ( nu - a0[ i ] );
+            delta.resize( n );
+            for ( SI i = 0; i < n; ++i ) delta[ i ] = theta * dn[ i ];
+            TF rn0 = 0, rn = 0;
+            int k = 0;
+            Laplacien J;
+            Cholesky cj;
+            const double tk0 = now();
+            for ( ; k < o.picard; ++k ) {
+                if ( o.newton_modele ) jacobien( delta, am, J );
+                else                   modele( delta, am );
+                rn = 0;
+                SI neg = 0;
+                for ( SI i = 0; i < n; ++i ) { r[ i ] = b[ i ] - am[ i ]; rn += r[ i ] * r[ i ]; neg += ! ( am[ i ] > 0 ); }
+                rn = std::sqrt( rn );
+                if ( k == 0 ) rn0 = rn;
+                if ( k < 8 || k % 5 == 0 )
+                    std::printf( "      %s %2d : |modele - cible| / |cible - a| = %.3e, %d cellules du modele <= 0\n",
+                                 o.newton_modele ? "newton" : "picard", k, double( rn / ( theta * r0 ) ), int( neg ) );
+                if ( rn < 1e-8 * theta * r0 ) break;
+                if ( o.newton_modele ) {
+                    if ( ! cj.resout( J, r, corr ) ) { std::printf( "      factorisation en echec\n" ); break; }
+                    // l'amortissement SUR LE MODELE : des polygones a evaluer, rien d'autre
+                    TF tm = 1;
+                    std::vector<TF> essai( n ), am2;
+                    for ( int rec = 0; rec < 30; ++rec, tm /= 2 ) {
+                        for ( SI i = 0; i < n; ++i ) essai[ i ] = delta[ i ] + tm * corr[ i ];
+                        essai[ 0 ] = 0;
+                        modele( essai, am2 );
+                        TF rn2 = 0;
+                        for ( SI i = 0; i < n; ++i ) rn2 += ( b[ i ] - am2[ i ] ) * ( b[ i ] - am2[ i ] );
+                        if ( std::sqrt( rn2 ) < rn ) break;
+                    }
+                    if ( tm < 1e-8 ) { std::printf( "      le modele ne descend plus ( amortissement %.1e )\n", double( tm ) ); break; }
+                    if ( tm < 1 ) std::printf( "        amorti a %.3e\n", double( tm ) );
+                    delta.swap( essai );
+                } else {
+                    chol.resout_encore( r, corr );
+                    for ( SI i = 0; i < n; ++i ) delta[ i ] += o.amort * corr[ i ];
+                    delta[ 0 ] = 0;
+                }
+            }
+            std::printf( "      fini a %d : %.3e, %.2f s\n", k, double( rn / ( theta * r0 ) ), now() - tk0 );
+            std::vector<TF> droit( n );
+            for ( SI i = 0; i < n; ++i ) droit[ i ] = theta * dn[ i ];
+            verite( droit, "pas droit theta d" );
+            verite( delta, "pas tensoriel" );
+            if ( o.csv.size() ) {
+                std::FILE *fd = std::fopen( ( o.csv + "_tenseur_" + std::to_string( double( theta ) ) + ".txt" ).c_str(), "w" );
+                if ( fd ) { for ( SI i = 0; i < n; ++i ) std::fprintf( fd, "%.17g\n", double( delta[ i ] ) ); std::fclose( fd ); }
+            }
+        }
+#endif
+    }
 
     // ---- le chronometre des composantes de la passe
     if ( o.chrono ) {
@@ -491,6 +608,11 @@ int main( int argc, char **argv ) {
         else if ( s == "--trace" )     o.lim.trace = std::atoi( val() );
         else if ( s == "--check" )     o.check_alpha.push_back( std::atof( val() ) );
         else if ( s == "--chrono" )    o.chrono = true;
+        else if ( s == "--tenseur" )   o.tenseur = true;
+        else if ( s == "--theta" )     o.thetas.push_back( std::atof( val() ) );
+        else if ( s == "--picard" )    o.picard = std::atoi( val() );
+        else if ( s == "--amort" )     o.amort = std::atof( val() );
+        else if ( s == "--newton-modele" ) o.newton_modele = true;
         else if ( s == "--solver" )    o.solver = val();
         else if ( s == "--amg-var" )   o.amgvar = std::atoi( val() );
         else {
@@ -514,12 +636,18 @@ int main( int argc, char **argv ) {
                 "  --trace I         imprimer chaque tour de la cellule I\n"
                 "  --check A         le fournisseur a alpha contre le diagramme rafraichi, en A ( repetable )\n"
                 "  --chrono          chronometrer les composantes de la passe\n"
+                "  --tenseur         le pas tensoriel ( modele quadratique de chaque cellule, Picard )\n"
+                "  --theta T         cible partielle a + T ( nu - a ), repetable      (0.01 0.02 0.05 0.1 0.2)\n"
+                "  --picard K        iterations de Picard au plus                   (30)\n"
+                "  --amort A         amortissement de Picard                        (1)\n"
+                "  --newton-modele   Newton sur le modele ( jacobien signe refactorise ) au lieu de Picard\n"
                 "  --solver S        amg | chol, pour la direction                 (amg)\n"
                 "  --amg-var V       la hierarchie AMGCL                           (0)\n" );
             return s == "--help" || s == "-h" ? 0 : 1;
         }
     }
     a.finalise();
+    if ( o.thetas.empty() ) o.thetas = { 0.01, 0.02, 0.05, 0.1, 0.2 };
     if ( a.dims != 2 ) { std::printf( "2D seulement pour l'instant\n" ); return 1; }
 
     return dispatch<2>( a, [ & ]( auto tag ) {

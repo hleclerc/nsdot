@@ -125,6 +125,18 @@ struct Cholesky {
 
     const char *nom() const { return "Cholesky creux ( Eigen LDLT, AMD )"; }
 
+    /// UNE DESCENTE DE PLUS sur la derniere factorisation : pour qui a plusieurs seconds membres.
+    void resout_encore( const std::vector<TF> &b, std::vector<TF> &d ) {
+        const SI n = SI( b.size() ), m = n - 1;
+        const double t0 = now();
+        Eigen::VectorXd rb( m );
+        for ( SI i = 1; i < n; ++i ) rb[ i - 1 ] = double( b[ i ] );
+        const Eigen::VectorXd sol = so.solve( rb );
+        d.assign( n, TF( 0 ) );
+        for ( SI i = 1; i < n; ++i ) d[ i ] = TF( sol[ i - 1 ] );
+        st.t_res += now() - t0;
+    }
+
     /// LE MOTIF NE BOUGE PRESQUE PAS : quelques aretes par iteration au debut, zero a la fin, alors
     /// que la renumerotation et l'analyse symbolique coutent le tiers de la factorisation. On les
     /// refait SEULEMENT quand le motif a change -- compare tel quel, une passe lineaire.

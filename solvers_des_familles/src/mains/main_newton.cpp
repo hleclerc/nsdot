@@ -71,6 +71,8 @@ int lance( const Args &a, const Opts &o, const Nuage<PD::dim> &nu, Lin &lin ) {
     if ( st.nb_cell_lim )
         std::printf( "         limites : %d cellules calculees ( %.2f par germe et par iteration ), %d pas refuses par le diagramme\n",
                      int( st.nb_cell_lim ), double( st.nb_cell_lim ) / n / std::max( st.nb_iter, 1 ), st.nb_lim_refus );
+    if ( st.nb_tenseur )
+        std::printf( "         tenseur : %d pas tensoriels, %.3f s ( compris dans limites )\n", st.nb_tenseur, st.t_tenseur );
     std::printf( "         soit %.0f %% de diagramme, %.3f s par diagramme, %.1f us/germe en tout\n",
                  100 * st.t_diag / total, st.t_diag / std::max( st.nb_diag, 1 ), 1e6 * total / n );
     std::printf( "         resolution en detail : mise en forme %.3f | hierarchie/analyse %.3f ( %d )"
@@ -162,9 +164,10 @@ int main( int argc, char **argv ) {
         else if ( s == "--pas" ) {
             const std::string v = val();
             o.newton.pas = v == "dyadique" ? NewtonOptions::DYADIQUE : v == "facteur" ? NewtonOptions::FACTEUR
-                         : NewtonOptions::ESSAIS;
+                         : v == "tenseur" ? NewtonOptions::TENSEUR : NewtonOptions::ESSAIS;
         }
         else if ( s == "--facteur" )    o.newton.facteur = std::atof( val() );
+        else if ( s == "--theta-mult" ) o.newton.theta_mult = std::atof( val() );
         else if ( s == "--lim-tol" )    o.newton.lim.tol = std::atof( val() );
         else if ( s == "--lim-coeff" )  o.newton.lim.coeff = std::atof( val() );
         else if ( s == "--t-min" )      o.newton.t_min = std::atof( val() );
@@ -180,7 +183,8 @@ int main( int argc, char **argv ) {
                 "  --lin-max K     iterations du solveur lineaire au plus   (20000)\n"
                 "  --ecrire FILE   ecrire les poids trouves au format de cases/ ( le dernier nuage deroule )\n"
                 "  --quiet         pas de trace par iteration\n"
-                "  --pas P         essais ( KMT, defaut ) | dyadique | facteur : le pas par les LIMITES ( 2D )\n"
+                "  --pas P         essais ( KMT, defaut ) | dyadique | facteur | tenseur : le pas par les LIMITES ( 2D )\n"
+                "  --theta-mult M  tenseur : cible partielle theta = M * alpha*        (5)\n"
                 "  --facteur F     t = F * alpha* en mode facteur                (0.9)\n"
                 "  --lim-tol T     precision relative des limites               (1e-2)\n"
                 "  --lim-coeff C   ou verifier la prediction                    (0.99)\n"

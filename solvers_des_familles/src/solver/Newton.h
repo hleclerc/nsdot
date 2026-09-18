@@ -58,9 +58,10 @@ struct NewtonOptions {
     bool trace      = true;
     int  extraire   = -1;      ///< >= 0 : s'arreter des que la DIRECTION de cette iteration est
                                ///< calculee ( `w` et `d` sont alors ceux du pas propose )
-    enum Pas : int { ESSAIS = 0, DYADIQUE, FACTEUR };
+    enum Pas : int { ESSAIS = 0, DYADIQUE, FACTEUR, TENSEUR };
     int  pas        = ESSAIS;  ///< comment choisir `t` ( voir en tete )
     TF   facteur    = 0.9;     ///< `t = facteur * alpha*` en mode FACTEUR
+    TF   theta_mult = 5;       ///< TENSEUR : la cible partielle est `theta = theta_mult * alpha*`
     OptionsLimites lim;        ///< les reglages de la passe des limites ( `niveau` est mis ici )
 };
 
@@ -70,6 +71,8 @@ struct NewtonStats {
     int    nb_iter = 0, nb_diag = 0, nb_recul = 0;
     SI     nb_deborde = 0;     ///< cellules qui ont deborde `MaxNv`, en tout ( mesure fausse )
     SI     nb_cell_lim = 0;    ///< cellules calculees par la passe des limites, en tout
+    int    nb_tenseur = 0;     ///< pas tensoriels tentes
+    double t_tenseur = 0;
     int    nb_lim_refus = 0;   ///< pas proposes par les limites et refuses par le diagramme
     double t_maj = 0, t_diag = 0, t_asm = 0, t_lin = 0, t_lim = 0;
 };
@@ -183,6 +186,8 @@ struct Newton {
 
             // ---- LE PAS PAR LES LIMITES, s'il est demande
             TF t = 1, alpha_lim = -1;
+            TF gain = 1;                                 // ce que `t = 1` vise : `nu` pour `d`, la cible
+                                                         // partielle `theta` pour un pas tensoriel
             if ( o.pas != NewtonOptions::ESSAIS ) {
                 if constexpr ( PD::dim == 2 ) {
                     t0 = now();
@@ -202,6 +207,44 @@ struct Newton {
                     for ( SI i = 0; i < n; ++i )
                         if ( lim[ i ].etat == LimiteCellule::HORIZON && lim[ i ].alpha < ol.horizon )
                             alpha_lim = std::min( alpha_lim, lim[ i ].alpha );
+                    // ---- LE PAS TENSORIEL : quand la direction de Newton est bloquee bien avant le
+                    // pas plein, on demande au modele quadratique la direction de la cible partielle
+                    // `theta = theta_mult * alpha*`, puis ses propres limites
+                    if ( o.pas == NewtonOptions::TENSEUR && alpha_lim < TF( 0.2 ) ) {
+                        const TF theta = std::min( TF( 1 ), o.theta_mult * alpha_lim );
+                        std::vector<ModeleCellule> mod( n );
+                        parallel_for( n, par, [ & ]( SI k, int ) {
+                            typename PD::Cell cel;
+                            pd.cellule( k, cel );
+                            mod[ pd.ids[ k ] ].depuis( cel, pd.ids[ k ], P, w.data() );
+                        } );
+                        PasTensoriel<Lin> pt;
+                        std::vector<TF> delta;
+                        const TF rm = pt.resout( mod, a, nu, d, theta, par, lin, delta );
+                        st.t_tenseur += pt.t;
+                        ++st.nb_tenseur;
+                        // les limites de la direction corrigee ( `delta` deja a l'echelle : horizon 1 )
+                        limites( pd, P, w, delta, par, ol, lim, Voisinage{ L.row.data(), L.col.data() } );
+                        TF al2 = INFINI;
+                        for ( SI i = 0; i < n; ++i ) {
+                            st.nb_cell_lim += lim[ i ].tours;
+                            if ( lim[ i ].etat != LimiteCellule::VIDE_AU_DEPART && lim[ i ].etat != LimiteCellule::HORIZON )
+                                al2 = std::min( al2, lim[ i ].alpha );
+                        }
+                        for ( SI i = 0; i < n; ++i )
+                            if ( lim[ i ].etat == LimiteCellule::HORIZON && lim[ i ].alpha < ol.horizon )
+                                al2 = std::min( al2, lim[ i ].alpha );
+                        if ( o.trace )
+                            std::printf( "      tenseur : theta %.3e, %d it, residu du modele %.2e, limite de delta %.3e\n",
+                                         double( theta ), pt.nb_it, double( rm ), double( al2 ) );
+                        // on garde `delta` si elle porte plus loin que `alpha* d` ( en unites de theta )
+                        const TF portee = std::min( al2, TF( 1 ) ) * theta;
+                        if ( portee > alpha_lim ) {
+                            d.swap( delta );                     // `d` devient `delta`, `t` en fraction de delta
+                            alpha_lim = std::min( al2, ol.horizon );
+                            gain = theta;
+                        }
+                    }
                     if ( alpha_lim >= ol.horizon )
                         t = 1;
                     else if ( o.pas == NewtonOptions::DYADIQUE ) {
@@ -228,7 +271,7 @@ struct Newton {
                     n2 += e * e;
                 }
                 const TF n2r = std::sqrt( n2 );
-                if ( m2 >= eps && n2r <= ( 1 - t / 2 ) * nr && n2r < nr ) { pris = true; break; }
+                if ( m2 >= eps && n2r <= ( 1 - gain * t / 2 ) * nr && n2r < nr ) { pris = true; break; }
                 t /= 2;
                 ++st.nb_recul;
                 if ( t < o.t_min )

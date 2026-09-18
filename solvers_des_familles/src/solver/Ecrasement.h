@@ -42,6 +42,7 @@
 
 #include "cell/FournisseurAlpha2D.h"
 #include "diagram/PowerDiagram.h"
+#include "solver/Laplacien.h"
 #include "util/parallel.h"
 #include <algorithm>
 #include <atomic>
@@ -108,6 +109,72 @@ struct PolyCellule {
 /// Une droite `n . x <= c + alpha delta`, la normale fixe.
 struct Droite2 {
     TF nx, ny, c, delta;
+};
+
+/// LE MODELE QUADRATIQUE D'UNE CELLULE dans TOUT l'espace des poids : ses droites a combinatoire
+/// figee, `n_k . x <= c_k + ( delta_i - delta_j_k ) / 2`, et l'aire signee qui en sort pour un
+/// `delta` quelconque -- une forme quadratique en `delta`, exacte tant que la combinatoire tient.
+struct ModeleCellule {
+    SI  i = -1;
+    int nb = 0;
+    TF  signe = 1;                  ///< l'orientation en `delta = 0`, pour rendre l'aire positive
+    std::vector<d2::SI32> vois;     ///< le germe de chaque arete ( `< 0` : un cote du domaine )
+    std::vector<TF> nx, ny, c0;
+
+    template<class Cell>
+    void depuis( const Cell &cel, SI id, const TF *const *P, const TF *w ) {
+        i = id; nb = std::max( cel.nb, 0 );
+        vois.resize( nb ); nx.resize( nb ); ny.resize( nb ); c0.resize( nb );
+        const TF xi = P[ 0 ][ i ], yi = P[ 1 ][ i ];
+        for ( int j = 0; j < nb; ++j ) {
+            const auto id2 = cel.cid[ j ];
+            vois[ j ] = id2;
+            if ( id2 >= 0 ) {
+                const TF xj = P[ 0 ][ id2 ], yj = P[ 1 ][ id2 ];
+                nx[ j ] = xj - xi; ny[ j ] = yj - yi;
+                c0[ j ] = TF( 0.5 ) * ( nx[ j ] * ( xj + xi ) + ny[ j ] * ( yj + yi ) + w[ i ] - w[ id2 ] );
+            } else switch ( id2 ) {
+                case -1: nx[ j ] =  0; ny[ j ] = -1; c0[ j ] = 0; break;
+                case -2: nx[ j ] =  1; ny[ j ] =  0; c0[ j ] = 1; break;
+                case -3: nx[ j ] =  0; ny[ j ] =  1; c0[ j ] = 1; break;
+                default: nx[ j ] = -1; ny[ j ] =  0; c0[ j ] = 0; break;
+            }
+        }
+        signe = 1;
+        const TF a = aire( nullptr );
+        if ( a < 0 ) signe = -1;
+    }
+
+    /// l'aire signee pour le deplacement `delta` des poids ( `nullptr` : zero ), et pour qui les
+    /// veut les longueurs SIGNEES des aretes : `facette( j, l / ( 2 |p_j - p_i| ) )` -- la derivee
+    /// de l'aire par rapport au decalage de l'arete est sa longueur, signe compris.
+    template<class F>
+    TF aire( const TF *delta, F &&facette ) const {
+        if ( nb < 3 ) return 0;
+        TF c[ 128 ], vx[ 128 ], vy[ 128 ];
+        const TF di = delta ? delta[ i ] : TF( 0 );
+        for ( int j = 0; j < nb; ++j )
+            c[ j ] = c0[ j ] + ( vois[ j ] >= 0 && delta ? TF( 0.5 ) * ( di - delta[ vois[ j ] ] ) : TF( 0 ) );
+        for ( int j = 0; j < nb; ++j ) {
+            const int a = j ? j - 1 : nb - 1;
+            const TF det = nx[ a ] * ny[ j ] - ny[ a ] * nx[ j ];
+            if ( ! ( std::fabs( det ) > 0 ) ) return 0;
+            vx[ j ] = ( c[ a ] * ny[ j ] - c[ j ] * ny[ a ] ) / det;
+            vy[ j ] = ( nx[ a ] * c[ j ] - nx[ j ] * c[ a ] ) / det;
+        }
+        TF s = 0;
+        for ( int j = 0; j < nb; ++j ) {
+            const int l = j + 1 < nb ? j + 1 : 0;
+            s += vx[ j ] * vy[ l ] - vx[ l ] * vy[ j ];
+            if ( vois[ j ] >= 0 ) {                      // l'arete `j` va de `v_j` a `v_l`, le long de `t = ( -ny, nx )`
+                const TF n2 = nx[ j ] * nx[ j ] + ny[ j ] * ny[ j ];
+                const TF lg = signe * ( ( vx[ l ] - vx[ j ] ) * ( -ny[ j ] ) + ( vy[ l ] - vy[ j ] ) * nx[ j ] ) / std::sqrt( n2 );
+                facette( vois[ j ], lg / ( 2 * std::sqrt( n2 ) ) );
+            }
+        }
+        return signe * TF( 0.5 ) * s;
+    }
+    TF aire( const TF *delta ) const { return aire( delta, []( d2::SI32, TF ) {} ); }
 };
 
 /// LE POLYNOME D'UNE CELLULE `cel` du germe `i`, calculee aux poids `w + alpha0 d`, le long de
@@ -489,5 +556,65 @@ void limites( const PD &pd, const TF *const *P, const std::vector<TF> &w, const 
         } );
     }
 }
+
+// ------------------------------------------------------------------------------------ le pas tensoriel
+/// LE PAS TENSORIEL : `delta` tel que le modele quadratique de chaque cellule atteigne la cible
+/// partielle `a + theta ( nu - a )`, par Newton SUR LE MODELE ( jacobien = laplacien aux longueurs
+/// signees, meme motif que `L`, refactorise ), amorti sur le residu du modele. Rend le residu
+/// relatif atteint ; `delta` part de `theta d`.
+template<class Lin>
+struct PasTensoriel {
+    int    max_it = 8;
+    TF     tol    = 1e-6;
+    int    nb_it  = 0;
+    double t      = 0;
+
+    TF resout( const std::vector<ModeleCellule> &mod, const std::vector<TF> &a, const std::vector<TF> &nu,
+               const std::vector<TF> &d, TF theta, const Parallel &par, Lin &lin, std::vector<TF> &delta ) {
+        const SI n = SI( mod.size() );
+        const double t0 = now();
+        std::vector<TF> b( n ), am( n ), r( n ), corr, essai( n ), am2( n );
+        std::vector<std::vector<Facette>> par_th( std::max( par.threads, 1 ) );
+        std::vector<Facette> fa;
+        Laplacien J;
+        TF rb = 0;
+        for ( SI i = 0; i < n; ++i ) { b[ i ] = a[ i ] + theta * ( nu[ i ] - a[ i ] ); rb += ( b[ i ] - a[ i ] ) * ( b[ i ] - a[ i ] ); }
+        rb = std::sqrt( rb );
+        delta.resize( n );
+        for ( SI i = 0; i < n; ++i ) delta[ i ] = theta * d[ i ];
+        auto modele = [ & ]( const std::vector<TF> &dl, std::vector<TF> &out ) {
+            parallel_for( n, par, [ & ]( SI i, int ) { out[ i ] = mod[ i ].aire( dl.data() ); } );
+        };
+        TF rn = INFINI;
+        for ( nb_it = 0; nb_it < max_it; ++nb_it ) {
+            for ( auto &v : par_th ) v.clear();
+            parallel_for( n, par, [ & ]( SI i, int t ) {
+                am[ i ] = mod[ i ].aire( delta.data(), [ & ]( d2::SI32 j, TF c ) { par_th[ t ].push_back( Facette{ i, j, c } ); } );
+            } );
+            rn = 0;
+            for ( SI i = 0; i < n; ++i ) { r[ i ] = b[ i ] - am[ i ]; rn += r[ i ] * r[ i ]; }
+            rn = std::sqrt( rn );
+            if ( rn <= tol * rb ) break;
+            fa.clear();
+            for ( auto &v : par_th ) fa.insert( fa.end(), v.begin(), v.end() );
+            J.assemble( n, fa );
+            if ( ! lin.resout( J, r, corr ) ) break;
+            TF tm = 1;
+            bool mieux = false;
+            for ( int rec = 0; rec < 20; ++rec, tm /= 2 ) {
+                for ( SI i = 0; i < n; ++i ) essai[ i ] = delta[ i ] + tm * corr[ i ];
+                essai[ 0 ] = 0;
+                modele( essai, am2 );
+                TF rn2 = 0;
+                for ( SI i = 0; i < n; ++i ) rn2 += ( b[ i ] - am2[ i ] ) * ( b[ i ] - am2[ i ] );
+                if ( std::sqrt( rn2 ) < rn ) { mieux = true; break; }
+            }
+            if ( ! mieux ) break;
+            delta.swap( essai );
+        }
+        t += now() - t0;
+        return rn / rb;
+    }
+};
 
 } // namespace sf
