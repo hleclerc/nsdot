@@ -238,6 +238,19 @@ diagramme d'essai**. Cellule par cellule, le polynôme colle à `1e-4 ν` sur 99
 elle est mangée par un nouveau voisin, l'événement que le polynôme d'une seule cellule ne peut
 pas voir, et la prédiction est optimiste d'un facteur 2.5 — Newton a dû refuser `t = 0.125`.
 
+**Ce qui ne marche pas : décomposer en triangles.** On a testé deux estimateurs bâtis sur
+l'éventail `(p_i, v_j, v_{j+1})`, un polynôme par triangle : la somme des *parties positives*,
+et la somme où chaque triangle est mis à zéro passé son premier changement de signe (colonnes
+`pos` et `zero` de la grille). Résultat, lignes n = 10⁵, it 0 : à `α = 4e-3` (le pas de
+Newton) 47 % des cellules à `1e-4 ν` contre 99.8 % pour le polynôme ; à `α = 1`, **0** cellule
+vide prédite contre 50 030 vraies. La raison est géométrique : une cellule mince qui s'écrase
+d'un bloc est un polygone qui *s'inverse* — la somme signée devient négative, c'est la racine du
+polynôme — mais certains de ses triangles restent positifs, donc la somme des parties positives
+ne s'annule jamais. Et après une arête annulée, le triangle inversé *négatif* compense au premier
+ordre le dépassement de ses deux voisins (l'erreur de la somme signée est `−|A'B'C|`, du second
+ordre) ; l'enlever laisse une erreur du premier ordre. En Laguerre (it 5) c'est faux dès
+`α = 0` : la cellule ne contient pas toujours son germe. La somme *signée* est le bon objet.
+
 ## 7.1 Prédire, vérifier, corriger
 
 Le polynôme seul ne voit pas le nouveau voisin ; une vraie cellule voit tout. D'où la passe

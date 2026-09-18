@@ -175,6 +175,74 @@ PolyCellule polynome_cellule( const Cell &cel, SI i, const TF *const *P, const T
     return q;
 }
 
+/// LA DECOMPOSITION EN TRIANGLES `( p_i, v_j, v_j+1 )`, un polynome par triangle, pour tester
+/// deux estimateurs de l'aire a combinatoire figee : la somme des PARTIES POSITIVES, et la somme
+/// ou chaque triangle est mis a ZERO passe son premier changement de signe. `offs[ i ] ..
+/// offs[ i + 1 ]` sont les triangles de la cellule `i`.
+struct Triangle { TF a0, a1, a2, alpha_signe; TF operator()( TF al ) const { return a0 + al * ( a1 + al * a2 ); } };
+
+template<class Cell>
+void triangles_cellule( const Cell &cel, SI i, const TF *const *P, const TF *w, const TF *d,
+                        std::vector<Triangle> &out ) {
+    if ( cel.nb <= 0 ) return;
+    const int nb = cel.nb;
+    Droite2 dr[ Cell::max_nb ];
+    const TF xi = P[ 0 ][ i ], yi = P[ 1 ][ i ];
+    for ( int j = 0; j < nb; ++j ) {
+        const auto id = cel.cid[ j ];
+        if ( id >= 0 ) {
+            const TF xj = P[ 0 ][ id ], yj = P[ 1 ][ id ], nx = xj - xi, ny = yj - yi;
+            dr[ j ] = { nx, ny, TF( 0.5 ) * ( nx * ( xj + xi ) + ny * ( yj + yi ) + w[ i ] - w[ id ] ),
+                        TF( 0.5 ) * ( d[ i ] - d[ id ] ) };
+        } else switch ( id ) {
+            case -1: dr[ j ] = {  0, -1, 0, 0 }; break;
+            case -2: dr[ j ] = {  1,  0, 1, 0 }; break;
+            case -3: dr[ j ] = {  0,  1, 1, 0 }; break;
+            default: dr[ j ] = { -1,  0, 0, 0 }; break;
+        }
+    }
+    TF v0x[ Cell::max_nb ], v0y[ Cell::max_nb ], v1x[ Cell::max_nb ], v1y[ Cell::max_nb ];
+    for ( int j = 0; j < nb; ++j ) {
+        const Droite2 &a = dr[ j ? j - 1 : nb - 1 ], &b = dr[ j ];
+        const TF det = a.nx * b.ny - a.ny * b.nx;
+        if ( ! ( std::fabs( det ) > 0 ) ) return;
+        v0x[ j ] = ( a.c * b.ny - b.c * a.ny ) / det - xi;   // relatif au germe
+        v0y[ j ] = ( a.nx * b.c - b.nx * a.c ) / det - yi;
+        v1x[ j ] = ( a.delta * b.ny - b.delta * a.ny ) / det;
+        v1y[ j ] = ( a.nx * b.delta - b.nx * a.delta ) / det;
+    }
+    TF sg = 0;
+    for ( int j = 0; j < nb; ++j ) { const int l = j + 1 < nb ? j + 1 : 0; sg += v0x[ j ] * v0y[ l ] - v0x[ l ] * v0y[ j ]; }
+    sg = sg < 0 ? TF( -0.5 ) : TF( 0.5 );
+    for ( int j = 0; j < nb; ++j ) {
+        const int l = j + 1 < nb ? j + 1 : 0;
+        Triangle t;
+        t.a0 = sg * ( v0x[ j ] * v0y[ l ] - v0x[ l ] * v0y[ j ] );
+        t.a1 = sg * ( v0x[ j ] * v1y[ l ] - v0x[ l ] * v1y[ j ] + v1x[ j ] * v0y[ l ] - v1x[ l ] * v0y[ j ] );
+        t.a2 = sg * ( v1x[ j ] * v1y[ l ] - v1x[ l ] * v1y[ j ] );
+        PolyCellule q; q.a0 = t.a0; q.a1 = t.a1; q.a2 = t.a2;
+        t.alpha_signe = t.a0 > 0 ? q.premiere_racine( 0 ) : TF( 0 );
+        out.push_back( t );
+    }
+}
+
+template<class PD>
+void decomposition( const PD &pd, const TF *const *P, const std::vector<TF> &w, const std::vector<TF> &d,
+                    const Parallel &par, std::vector<SI> &offs, std::vector<Triangle> &tris ) {
+    using Cell = typename PD::Cell;
+    const SI n = pd.n;
+    std::vector<std::vector<Triangle>> par_cell( n );
+    parallel_for( n, par, [ & ]( SI k, int ) {
+        Cell cel;
+        pd.cellule( k, cel );
+        triangles_cellule( cel, pd.ids[ k ], P, w.data(), d.data(), par_cell[ pd.ids[ k ] ] );
+    } );
+    offs.assign( n + 1, 0 );
+    for ( SI i = 0; i < n; ++i ) offs[ i + 1 ] = offs[ i ] + SI( par_cell[ i ].size() );
+    tris.clear(); tris.reserve( offs[ n ] );
+    for ( SI i = 0; i < n; ++i ) tris.insert( tris.end(), par_cell[ i ].begin(), par_cell[ i ].end() );
+}
+
 /// LES POLYNOMES DE TOUTES LES CELLULES du diagramme `pd` ( aux poids `w` ), le long de `d`.
 /// `P` et `w` dans l'ordre des identifiants. Rend `poly[ id ]`.
 template<class PD>

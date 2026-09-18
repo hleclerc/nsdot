@@ -130,6 +130,26 @@ void analyse( const Args &a, const Opts &o, const Direction<2> &dir ) {
                  double( pz.alpha ), int( pz.cellule ), double( pe.alpha ), int( pe.cellule ),
                  double( pa.alpha ), int( pa.cellule ) );
 
+    // ---- la decomposition en triangles, pour les deux estimateurs a comparer au polynome
+    std::vector<SI> offs;
+    std::vector<Triangle> tris;
+    decomposition( pd, P, w, d, par, offs, tris );
+    auto est_pos = [ & ]( SI i, TF al ) {              // somme des parties positives
+        TF s = 0;
+        for ( SI t = offs[ i ]; t < offs[ i + 1 ]; ++t ) s += std::max( tris[ t ]( al ), TF( 0 ) );
+        return s;
+    };
+    auto est_zero = [ & ]( SI i, TF al ) {             // zero passe le premier changement de signe
+        TF s = 0;
+        for ( SI t = offs[ i ]; t < offs[ i + 1 ]; ++t ) if ( al < tris[ t ].alpha_signe ) s += tris[ t ]( al );
+        return s;
+    };
+    {
+        TF e0 = 0;
+        for ( SI i = 0; i < n; ++i ) if ( offs[ i + 1 ] > offs[ i ] ) e0 = std::max( e0, std::fabs( est_pos( i, 0 ) - a0[ i ] ) / nu );
+        std::printf( "  triangles : %d, ecart max de leur somme a l'aire en alpha = 0 : %.2e nu\n", int( tris.size() ), double( e0 ) );
+    }
+
     // ---- la grille, et le diagramme sur chacun de ses points
     std::vector<TF> grille( o.alpha_nb );
     for ( int k = 0; k < o.alpha_nb; ++k )
@@ -137,11 +157,11 @@ void analyse( const Args &a, const Opts &o, const Direction<2> &dir ) {
                     ? o.alpha_min * std::pow( o.alpha_max / o.alpha_min, TF( k ) / ( o.alpha_nb - 1 ) )
                     : o.alpha_max;
     std::vector<std::vector<TF>> mes( o.alpha_nb );
-    std::printf( "\n  %-11s %7s %7s %7s | %10s %10s | %9s %6s %6s %6s | %7s %6s | %7s %7s %7s\n",
+    std::printf( "\n  %-11s %7s %7s %7s | %10s %10s | %9s %6s %6s %6s | %7s %6s | %7s %7s %7s | %6s %6s %6s %6s\n",
                  "alpha", "vides", "predit", "accord", "min exact", "min poly", "err max",
-                 "<1e-8", "<1e-4", "<1e-2", "hors", "<1e-4", "|r|/r0", "poly", "borne" );
-    std::printf( "  %-11s %7s %7s %7s | %10s %10s | %9s %6s %6s %6s | %7s %6s | %7s %7s %7s\n",
-                 "", "exact", "vides", "", "", "", "/ nu", "", "", "", "combin.", "", "exact", "", "1-a/2" );
+                 "<1e-8", "<1e-4", "<1e-2", "hors", "<1e-4", "|r|/r0", "poly", "borne", "pos", "pos", "zero", "zero" );
+    std::printf( "  %-11s %7s %7s %7s | %10s %10s | %9s %6s %6s %6s | %7s %6s | %7s %7s %7s | %6s %6s %6s %6s\n",
+                 "", "exact", "vides", "", "", "", "/ nu", "", "", "", "combin.", "", "exact", "", "1-a/2", "<1e-4", "vides", "<1e-4", "vides" );
     std::FILE *fg = o.csv.empty() ? nullptr : std::fopen( ( o.csv + "_grille.csv" ).c_str(), "w" );
     if ( fg ) std::fprintf( fg, "alpha,vides_exact,vides_poly,accord,min_exact,min_poly,err_max,"
                                 "f_1e8,f_1e4,f_1e2,hors_comb,hors_comb_1e4,res_exact,res_poly,borne\n" );
@@ -153,9 +173,13 @@ void analyse( const Args &a, const Opts &o, const Direction<2> &dir ) {
         const std::vector<TF> &m = mes[ k ];
         SI nv = 0, np = 0, nacc = 0, f8 = 0, f4 = 0, f2 = 0, hors = 0, hors4 = 0;
         TF mn = INFINI, mp = INFINI, err = 0, re = 0, rp = 0;
+        SI fpos = 0, vpos = 0, fzero = 0, vzero = 0;
         for ( SI i = 0; i < n; ++i ) {
             if ( poly[ i ].etat != PolyCellule::OK ) continue;
             const TF q = poly[ i ]( al );
+            const TF ep = est_pos( i, al ), ez = est_zero( i, al );
+            fpos += std::fabs( m[ i ] - ep ) / nu < 1e-4; vpos += ! ( ep > 0 );
+            fzero += std::fabs( m[ i ] - ez ) / nu < 1e-4; vzero += ! ( ez > 0 );
             re += ( nu - m[ i ] ) * ( nu - m[ i ] );
             rp += ( nu - std::max( q, TF( 0 ) ) ) * ( nu - std::max( q, TF( 0 ) ) );
             const bool ve = ! ( m[ i ] > 0 ), vp = ! ( q > 0 );
@@ -170,10 +194,11 @@ void analyse( const Args &a, const Opts &o, const Direction<2> &dir ) {
         if ( nv && k_vide < 0 ) k_vide = k;
         if ( mn < eps && k_eps < 0 ) k_eps = k;
         re = std::sqrt( re ) / r0; rp = std::sqrt( rp ) / r0;
-        std::printf( "  %-11.4e %7d %7d %7d | %10.3e %10.3e | %9.2e %6.3f %6.3f %6.3f | %7d %6.3f | %7.4f %7.4f %7.4f\n",
+        std::printf( "  %-11.4e %7d %7d %7d | %10.3e %10.3e | %9.2e %6.3f %6.3f %6.3f | %7d %6.3f | %7.4f %7.4f %7.4f | %6.3f %6d %6.3f %6d\n",
                      double( al ), int( nv ), int( np ), int( nacc ), double( mn ), double( mp ), double( err ),
                      double( f8 ) / n_ok, double( f4 ) / n_ok, double( f2 ) / n_ok, int( hors ),
-                     hors ? double( hors4 ) / hors : 1.0, double( re ), double( rp ), double( 1 - al / 2 ) );
+                     hors ? double( hors4 ) / hors : 1.0, double( re ), double( rp ), double( 1 - al / 2 ),
+                     double( fpos ) / n_ok, int( vpos ), double( fzero ) / n_ok, int( vzero ) );
         if ( fg ) std::fprintf( fg, "%.10e,%d,%d,%d,%.10e,%.10e,%.10e,%.6f,%.6f,%.6f,%d,%.6f,%.10e,%.10e,%.10e\n",
                                 double( al ), int( nv ), int( np ), int( nacc ), double( mn ), double( mp ),
                                 double( err ), double( f8 ) / n_ok, double( f4 ) / n_ok, double( f2 ) / n_ok,
