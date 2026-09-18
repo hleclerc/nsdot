@@ -119,8 +119,11 @@ WMajT<D> weight_majorant( SI beg, SI end, Get &&get ) {
 
         // ( 1 ) une pente qui, sur l'etendue du noeud, depasse de loin l'etalement des poids est un
         // artefact du conditionnement, pas un ajustement
-        for ( int d = 0; d < D && ok; ++d )
-            if ( std::fabs( a[ d ] ) * ( yhi[ d ] - ylo[ d ] ) > 8 * spread ) ok = false;
+        for ( int d = 0; d < D && ok; ++d ) {
+            const TF reach = std::max( std::fabs( ylo[ d ] ), std::fabs( yhi[ d ] ) );
+            if ( std::fabs( a[ d ] ) * ( yhi[ d ] - ylo[ d ] ) > 8 * spread || std::fabs( a[ d ] ) * reach > 100 * spread )
+                ok = false;                              // la meme borne que sdot : `|a . y|` reste a l'echelle des poids
+        }
 
         if ( ok ) {
             TF rmin = 0, rmax = 0;

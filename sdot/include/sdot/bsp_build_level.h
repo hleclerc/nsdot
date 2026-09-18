@@ -87,13 +87,18 @@ void bsp_weight_majorant( const auto &pos, const auto &w, SI b, SI e, auto &&wa_
 
     TF wmin = TF( w( b ) ), wmax = wmin, wsum = 0;
     auto psum = Vector<TF,ct_dim>::zeros();
+    auto plo = Vector<TF,ct_dim>::with_func( [&]( PI d ) { return TF( pos( b, d ) ); } ), phi = plo;
     for ( SI k = b; k < e; ++k ) {
         const TF v = TF( w( k ) );
         wmin = v < wmin ? v : wmin;
         wmax = v > wmax ? v : wmax;
         wsum += v;
-        for ( int d = 0; d < ct_dim; ++d )
-            psum[ d ] += TF( pos( k, d ) );
+        for ( int d = 0; d < ct_dim; ++d ) {
+            const TF y = TF( pos( k, d ) );
+            psum[ d ] += y;
+            plo[ d ] = y < plo[ d ] ? y : plo[ d ];
+            phi[ d ] = y > phi[ d ] ? y : phi[ d ];
+        }
     }
     const TF spread = wmax - wmin;
 
@@ -165,7 +170,17 @@ void bsp_weight_majorant( const auto &pos, const auto &w, SI b, SI e, auto &&wa_
             // sur trois. Voir `AaBsp.py::_weight_majorant`.
             const TF u = TF( 1 ) - TF( ct_dim ) / TF( m - 1 );
             const TF by_chance = sycl::sqrt( u > 0 ? u : TF( 0 ) );
-            if ( rmax - rmin < TF( 0.85 ) * by_chance * spread )
+            // et une pente qui, sur l'etendue du noeud, depasse de loin l'etalement des poids
+            // est un artefact du conditionnement ( germes alignes a 1e-8 pres ), pas un
+            // ajustement : elle ferait un `b` a 1e9 qui ne majore plus rien d'utile. Voir
+            // `AaBsp.py::_weight_majorant`.
+            bool sage = true;
+            for ( int d = 0; d < ct_dim; ++d ) {
+                const TF reach = sycl::fabs( plo[ d ] ) > sycl::fabs( phi[ d ] ) ? sycl::fabs( plo[ d ] ) : sycl::fabs( phi[ d ] );
+                if ( sycl::fabs( fit[ d ] ) * ( phi[ d ] - plo[ d ] ) > 8 * spread || sycl::fabs( fit[ d ] ) * reach > TF( 100 ) * spread )
+                    sage = false;                        // la marge sur `b`, relative a `|a . y|`, doit rester negligeable
+            }
+            if ( sage && rmax - rmin < TF( 0.85 ) * by_chance * spread )
                 a = fit;
         }
     }

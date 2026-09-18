@@ -623,9 +623,16 @@ if test( "the_weight_majorant_majorates" ):
     # sert) autant que sur du bruit pur (celui où il doit se taire).
     rng = numpy.random.default_rng( 420 )
     pos = rng.uniform( 0, 1, size = ( 400, 2 ) )
-    for name, w in ( ( "affine", 0.5 * pos[ :, 0 ] - 0.3 * pos[ :, 1 ] ),
-                     ( "bruit", rng.normal( size = 400 ) ),
-                     ( "affine bruite", 0.5 * pos[ :, 0 ] + 0.02 * rng.normal( size = 400 ) ) ):
+    # et des germes CLAMPÉS au bord, `x` égaux à 1e-8 près, avec des poids qui varient : la matrice
+    # normale y est presque singulière et l'affine sortait à 1e13 -- valide (relevé) mais un `b`
+    # à 1e9 qui ne majore plus rien d'utile, et un majorant qui ne « touche » plus.
+    rng2 = numpy.random.default_rng( 421 )             # à part : ne pas décaler les tirages ci-dessus
+    clampe = pos.copy()
+    clampe[ :, 0 ] = 1e-4 + 1e-8 * rng2.uniform( 0, 1, size = 400 )
+    for name, pos, w in ( ( "affine", pos, 0.5 * pos[ :, 0 ] - 0.3 * pos[ :, 1 ] ),
+                          ( "bruit", pos, rng.normal( size = 400 ) ),
+                          ( "affine bruite", pos, 0.5 * pos[ :, 0 ] + 0.02 * rng.normal( size = 400 ) ),
+                          ( "bord clampe", clampe, 0.1 * numpy.sin( 7 * clampe[ :, 1 ] ) + 0.02 * rng2.normal( size = 400 ) ) ):
         bsp = AaBsp( pos, w, max_seeds_per_leaf = 12 )
         left = numpy.asarray( bsp.node_left ).reshape( -1 )
         right = numpy.asarray( bsp.node_right ).reshape( -1 )
@@ -665,7 +672,7 @@ if test( "the_weight_majorant_majorates" ):
         frac = nb_affine / nb_nodes
         if name == "bruit":
             assert frac < 0.2, ( name, frac )
-        else:
+        elif name != "bord clampe":
             assert frac > 0.5, ( name, frac )
 
 

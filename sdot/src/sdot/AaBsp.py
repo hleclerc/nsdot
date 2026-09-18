@@ -308,6 +308,16 @@ def _weight_majorant( pos, w ):
     Sans cette correction, un nœud de poids purement aléatoires retenait l'affine une fois sur
     trois -- toujours VALIDE (le relevé s'en charge), mais un vecteur de plus à lire par nœud
     pour une borne qui ne vaut pas mieux.
+
+    Un second garde-fou, appris sur un vrai nuage (`solvers_des_familles`, § 7.5) : des germes
+    clampés au bord, `x` égaux à 1e-8 près, et la matrice normale est presque singulière -- le
+    rapport de valeurs singulières, 3e-8, passe le `rcond` de `lstsq` -- donc la pente sort à
+    1e13 et `b` se calcule à 1e9 par une annulation qui mange tout. Relevé, le majorant reste
+    vrai, mais il ne majore plus RIEN d'utile. Une pente n'est donc admise que si, sur l'étendue
+    du nœud, elle reste de l'ordre de l'étalement des poids : au-delà elle n'explique rien, elle
+    amplifie l'arrondi. Et comme la marge d'arrondi de `b` est relative à `|a . y|` (le noyau
+    calcule en `float`), `|a . y|` ne doit pas dépasser cent fois l'étalement, sans quoi cette
+    marge cesse d'être négligeable devant ce qu'on majore.
     """
     d = pos.shape[ 1 ]
     if w is None:
@@ -323,7 +333,10 @@ def _weight_majorant( pos, w ):
         fit = np.linalg.lstsq( q, w - w.mean(), rcond = None )[ 0 ]
         r = w - pos @ fit
         by_chance = np.sqrt( max( 1.0 - d / ( m - 1 ), 0.0 ) )
-        if float( r.max() - r.min() ) < 0.85 * by_chance * spread:
+        extent = pos.max( axis = 0 ) - pos.min( axis = 0 )
+        reach = np.abs( pos ).max( axis = 0 )
+        sage = bool( ( np.abs( fit ) * extent <= 8 * spread ).all() and ( np.abs( fit ) * reach <= 100 * spread ).all() )
+        if sage and float( r.max() - r.min() ) < 0.85 * by_chance * spread:
             a = fit
 
     b = float( ( w - pos @ a ).max() )
