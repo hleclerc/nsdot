@@ -518,30 +518,53 @@ après 64. Le point de départ le plus proche qui se puisse imaginer n'est pas a
 qu'on le touche — aucune prolongation d'un niveau grossier, qui ne connaît pas la solution fine,
 ne fera mieux.
 
-**Le mécanisme.** Une cellule est non vide, en gros, tant que `w_i − moy_j w_j ≥ −h̄_i²` (`h̄_i`
-la distance aux voisins) : la condition est *locale et à l'échelle du carré de l'espacement*.
-Là où les cellules sont étirées d'un facteur `S` (dans la bande, `S ≈ 10⁴` pour `s = 0.005`), la
-solution est à `−h̄_i² (1 − 1/S)` : sur le fil. Tout ce qui déplace la courbure discrète de `w`
-d'une fraction `1/S` de `h̄²` vide des cellules — et un lissage isotrope transporte la courbure
-des cellules de grand `h̄²` (hors bande) vers celles de petit `h̄²` (la bande) : un balayage
-suffit. Les prolongations souffrent du même mal, en pire : l'harmonique annule le laplacien
-entre les représentants, donc concentre toute la courbure de `w` en **plis sur les
-représentants**, du mauvais côté (la cellule du représentant se vide, `H_c · h · w''` contre
-`h²` admis, soit `√R · w''` fois trop — même sur l'uniforme, 1705 vides à `t = 1`) ; la copie
-saute de `∇w · H_c` entre deux paquets ; et le `mls`, qui porte la courbure, hérite du **bruit
-de discrétisation du niveau grossier** — la solution grossière satisfait *ses* aires, à `O(H_c²)
-= O(R h²)` près de tout champ lisse, ce qui est `R` fois le fil. Le `t` qui passe est celui qui
-ramène tout ça sous `h̄²/S` : Voronoi.
+**Le mécanisme (corrigé par l'étude 1D, § 8.3).** Avec `w_lin` la valeur en `p_i` de la corde de
+`w` entre les deux voisins, la cellule est non vide tant que `w_i − w_lin ≥ −h̄_i²`, et la MARGE
+`m_i = 1 + (w_i − w_lin)/h̄_i²` vaut *exactement* (en 1D) `a_i / |Vor_i|` : **la marge d'une cellule
+est son taux de compression par rapport à Voronoi**. Voronoi est à 1 partout ; la solution est à
+`(1/n)/|Vor_i|` — grande là où les cellules s'étirent (la bande), *petite là où elles doivent
+rétrécir* : les germes des queues gaussiennes, dont la cellule de Voronoi vaut dix à mille fois la
+cible. Une perturbation de `w` de courbure locale `κ` coûte `κ/2` de marge, et `w` porte, à chaque
+germe, une composante *à l'échelle de la cellule* de taille `(1 − m_i) h̄²` — c'est elle qui rend les
+aires égales malgré des cellules de Voronoi qui fluctuent d'un facteur 10 d'un germe à l'autre. Un
+lissage la brasse entre voisins ; une prolongation ne la connaît pas et n'apporte que la partie
+lisse, avec ses erreurs de courbure : l'harmonique annule le laplacien entre les représentants et
+concentre toute la courbure de `w` en **plis sur les représentants**, `(H_c/h)·w''`, du mauvais
+côté là où `w` est convexe (`w'' = 2(1 − S) > 0` ⇔ compression `S < 1`) — même sur l'uniforme,
+1705 vides ; la copie saute de `∇w · H_c` entre deux paquets ; le `mls` porte la courbure mais
+hérite du bruit de discrétisation du niveau grossier, `O(H_c²) = O(R h²)`. Le `t` qui passe est celui
+qui ramène ces erreurs sous `m_i h̄²` pour les germes les plus comprimés : Voronoi.
 
 **Le rattrapage cascade.** Relever les vides à `−ψ(p_i) + marge·h_i²` : `s = 0.1`, 27 vides
 sur 2048 deviennent 696 après 20 passes, 374 sur 10⁵ deviennent 54 185 (`marge` 0.1, 0.01 ou
 0.001) — relever un germe lui fait prendre l'aire de ses voisins, qui étaient sur le fil aussi.
 C'est ce que `2d_des_familles` avait vu (« le relèvement d'une cellule vide en vide d'autres »).
 
-**Ce qui reste vrai.** Voronoi est le point le plus intérieur de l'admissible (`w_i − moy w_j =
-0` partout, la marge maximale), et Newton depuis là coûte 5, 7, 11, 19 itérations pour 256,
+**Ce qui reste vrai.** Voronoi est le point le plus intérieur de l'admissible (marge 1 partout), et Newton depuis là coûte 5, 7, 11, 19 itérations pour 256,
 2048, 16384, 10⁵ germes sur le cas dur, 9 à 19 selon le contraste à 10⁵ : ce n'est pas le
 départ qui manque, c'est le nombre d'époques combinatoires à traverser, et il ne dépend que de la
 distance entre Voronoi et la solution. Le multi-échelle ne peut payer que là où une prolongation
-serait admissible *sans* correction — il faudrait pour ça que les cellules fines ne soient pas
-étirées (`S ≈ 1`), et alors Newton depuis zéro converge déjà en 6 itérations (l'uniforme).
+serait admissible *sans* correction — il faudrait pour ça qu'aucune cellule n'ait à se comprimer
+beaucoup (`m_i` jamais petit), et alors Newton depuis zéro converge déjà en 6 itérations (l'uniforme).
+
+## 8.3 En 1D, où tout se dessine (`scripts/multiechelle_1d.py`)
+
+`python scripts/multiechelle_1d.py [-n 400 --sigma 0.005 -R 8]` écrit `figures/multiechelle_1d_*.png`.
+En 1D la cellule de `i` est non vide ssi son point relevé `(p_i, p_i² − w_i)` est un sommet de
+l'enveloppe convexe inférieure, la marge est exacte, et l'extension harmonique du graphe de Voronoi
+est l'interpolation *linéaire* en `p`. Le cas : la moitié des germes en amas gaussien (`S ≈ 40`),
+l'autre moitié uniforme. Quatre figures : le problème (cellules, `w`, points relevés — la solution est
+une ligne presque droite dans l'amas) ; la marge de la solution (`= a_i/|Vor_i|`, vérifié point par
+point : 40 dans l'amas, 0.1 à 0.5 au fond) et celle de la solution lissée (un balayage de Jacobi :
+28 vides, tous au fond) ; les quatre prolongations, points relevés et marges (copie 366 vides,
+harmonique 79 — ses représentants là où `w` est convexe, marges de −1 à −100, les germes libres
+restant exactement à 1 —, spline 7, c-transformée 101) ; le retrait `t·w` et, pour chaque germe, la
+marge de la prolongation contre la compression de la solution — l'harmonique renvoie l'image miroir
+de la solution autour de 1, amplifiée `H_c/h` fois, la spline la suit.
+
+**Une différence avec la 2D à garder en tête :** en 1D `a(w)` est *linéaire* tant qu'aucune cellule
+ne se vide, et le segment de tout départ admissible vers la solution reste admissible (`a(t) =
+(1−t) a₀ + t ν > 0`) — Newton converge en **un pas**, depuis Voronoi comme depuis `t·w`. La 1D ne
+montre donc que l'admissibilité de la prolongation, pas ce que Newton coûte ensuite ; la seconde
+moitié du constat 2D (« le niveau fin refait le travail de Newton depuis Voronoi ») tient à ce que
+le seul `t` admissible *est* Voronoi.
