@@ -837,3 +837,31 @@ bonne — et le problème n'est pas la courbure du chemin mais les quelques cell
 l'ordre 2 pince un peu plus : dans la zone dure la garde refuse tout (`θ = 0` après cinq essais)
 là où l'ordre 1 gardait `θ = 1/4`, et les deux diagrammes de différences finies sont perdus.
 Hors de la zone, `θ = 1` et deux à trois itérations par étape dans les deux cas.
+
+## 9.5 La garde par cellule
+
+`--garde cellule` : au lieu de reculer `θ` pour tout le monde, les cellules que la tangente a
+pincées sous le plancher sont **relevées seules** — bissection sur leur poids, les autres poids
+et l'arbre inchangés (`cellule_avec_poids`, comme le relèvement de § 8.5 mais en masse), jusqu'à
+une masse entre `ν/2` et `3ν/2` — toutes sur le même diagramme ; puis on re-mesure (un diagramme
+par passe), et on recommence tant qu'il en reste, six passes au plus ; `θ` ne recule que si ça
+ne suffit pas. Diagrammes en tout, ratio `√2`, ordre 1 :
+
+| σ | garde globale | garde par cellule |
+|---|---|---|
+| 0.05 | 107 (17 reculs) | 113 (10 reculs, 277 relèvements) |
+| 0.02 | 332 (168) | 351 (128, 4 219 relèvements) |
+| 0.01 | 606 (368) | 728 (354, 13 716 relèvements) |
+
+À `σ = 0.05` elle fait ce qu'on lui demande : `θ = 1` conservé à toutes les étapes de la zone
+dure (16, 10, 1, 83 cellules pincées, réparées en 3 à 6 passes), Newton y fait 12–16 diagrammes
+au lieu de 15–20, les reculs tombent de 17 à 10 — et le total ne bouge pas, parce que chaque
+passe de réparation coûte un diagramme complet. À `σ = 0.02` et `0.01` elle ne sert plus : à
+`s = 0.031` la tangente pince **619 cellules**, les relèvements se disputent la place (calculés
+sur le même diagramme, deux voisines relevées se vident l'une l'autre : 619 → 249 → 226 → 172 →
+135 → 105, ça ne converge pas, et à `θ = 1/4` la liste *grossit* de passe en passe) — et surtout
+le résidu ℓ² de l'extrapolation réparée est **pire que le départ nu** (`1.7e-3` contre `1.45e-3`).
+Là, la tangente ne dit rien d'utile : `s ↦ w(s)` a un pli — des milliers de cellules changent de
+régime entre deux étapes — et aucune garde ne répare une prédiction fausse. Un relèvement
+séquentiel avec re-mesure locale (la leçon de la 1D, § 8.4) demanderait de rafraîchir l'arbre à
+chaque cellule : 600 rafraîchissements, le prix de 100 diagrammes.

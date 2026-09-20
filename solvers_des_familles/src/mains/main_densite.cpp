@@ -25,8 +25,10 @@
 #ifdef _OPENMP
 #include <omp.h>
 #endif
+#include <atomic>
 #include <cstdio>
 #include <functional>
+#include <limits>
 #include <random>
 #include <sstream>
 #include <string>
@@ -51,6 +53,8 @@ struct Opts {
     int           ordre = 0;          ///< l'extrapolation : 0 ( poids precedents ), 1 ( tangente ), 2
     std::string   variable = "s";     ///< s | s2 : la variable de l'extrapolation sur le chemin conv
     TF            fd = 0.25;          ///< ordre 2 : le pas des differences finies, en fraction du pas
+    std::string   garde = "global";   ///< global ( theta ) | cellule ( les pincees relevees seules, puis theta )
+    int           passes = 6;         ///< garde par cellule : passes de relevement au plus
     bool          check = false;
     std::string   ecrire, dump;
 };
@@ -208,6 +212,10 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu, Lin &lin ) {
     const bool dump = ! o.dump.empty() && trames.ouvre( o.dump );
 
     std::vector<TF> w( n, TF( 0 ) ), w1, w2, dw, b, a_p, da_p, w_try, a_try, da_try, a_pl, a_mi;
+    std::vector<SI> rang( n );                           // identifiant -> rang dans l'arbre
+    for ( SI k = 0; k < n; ++k ) rang[ pd.ids[ k ] ] = k;
+    const TF h2 = TF( 1 ) / n;                           // l'echelle des poids : h^2
+    SI tot_releves = 0;
     std::vector<Facette> fa_p, fa_try, fa_tmp;
     const double debut = now();
     int tot_it = 0, tot_diag = 0, tot_recul = 0, tot_extra = 0;
@@ -237,10 +245,45 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu, Lin &lin ) {
             for ( SI i = 0; i < n; ++i ) plancher = std::min( plancher, a_p[ i ] );
             plancher *= TF( 0.5 );
             w_try.resize( n );
+            SI releves = 0;
             for ( theta = 1; theta >= TF( 1. / 16 ); theta /= 2 ) {
                 ++nb_essais;
                 for ( SI i = 0; i < n; ++i ) w_try[ i ] = w[ i ] + theta * dw[ i ];
                 nw.mesures_et_facettes( w_try, a_try, fa_try, pdt );
+                // LA GARDE PAR CELLULE ( `--garde cellule` ) : les cellules que la tangente a pincees
+                // sous le plancher sont RELEVEES seules -- bissection sur leur poids, les autres
+                // poids et l'arbre inchanges -- jusqu'a leur masse cible ( entre nu/2 et 3nu/2 ),
+                // toutes sur le meme diagramme ; puis on re-mesure, et on recommence tant qu'il en
+                // reste ( les voisines peuvent l'etre a leur tour ), `passes` fois au plus. Le
+                // theta global ne recule que si ca ne suffit pas.
+                if ( o.garde == "cellule" ) {
+                    for ( int passe = 0; passe < o.passes; ++passe ) {
+                        std::vector<SI> pincees;
+                        for ( SI i = 0; i < n; ++i ) if ( a_try[ i ] < plancher ) pincees.push_back( i );
+                        if ( pincees.empty() ) break;
+                        std::vector<TF> neuf( pincees.size() );
+                        std::atomic<SI> nb_cel{ 0 };
+                        parallel_for( SI( pincees.size() ), a.par, [ & ]( SI q, int ) {
+                            const SI i = pincees[ q ], k = rang[ i ];
+                            const TF cible = nw.nu[ i ];
+                            typename PD::Cell cel;
+                            auto masse = [ & ]( TF wk ) { ++nb_cel; return pd.cellule_avec_poids( k, wk, cel ) ? rho.mesure( cel, []( int, TF ) {} ) : std::numeric_limits<TF>::infinity(); };
+                            TF lo = w_try[ i ], pas = std::max( std::fabs( dw[ i ] ), TF( 1e-3 ) * h2 ), hi = lo + pas, ah = masse( hi );
+                            for ( int it = 0; it < 20 && ah < cible; ++it ) { pas *= 2; hi = lo + pas; ah = masse( hi ); }
+                            for ( int it = 0; it < 40; ++it ) {
+                                if ( ah <= TF( 1.5 ) * cible ) break;
+                                const TF mid = ( lo + hi ) / 2, am = masse( mid );
+                                if ( am >= TF( 0.5 ) * cible ) { hi = mid; ah = am; } else lo = mid;
+                            }
+                            neuf[ q ] = hi;
+                        } );
+                        for ( SI q = 0; q < SI( pincees.size() ); ++q ) w_try[ pincees[ q ] ] = neuf[ q ];
+                        releves += SI( pincees.size() );
+                        nw.mesures_et_facettes( w_try, a_try, fa_try, pdt );
+                        std::printf( "   garde par cellule, passe %d : %d cellules pincees relevees ( %d cellules calculees ), |r|_2 %.3e\n",
+                                     passe, int( pincees.size() ), int( nb_cel.load() ), norme_res( a_try ) );
+                    }
+                }
                 TF amin = a_try[ 0 ];
                 for ( SI i = 0; i < n; ++i ) amin = std::min( amin, a_try[ i ] );
                 const TF r_t = norme_res( a_try );
@@ -248,6 +291,7 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu, Lin &lin ) {
                 std::printf( "   theta %.4f refuse : plus petite masse %.2e ( plancher %.2e ), |r|_2 %.3e ( sans : %.3e )\n",
                              theta, amin, plancher, r_t, r_p );
             }
+            tot_releves += releves;
             if ( theta >= TF( 1. / 16 ) ) {
                 w.swap( w_try ); nw.a.swap( a_try ); nw.fa.swap( fa_try ); if ( nw.derivee ) nw.da.swap( da_try );
                 std::printf( "   extrapolation retenue : theta %.4f ( %d essais ), |r|_2 %.3e contre %.3e sans\n", theta, nb_essais, norme_res( nw.a ), r_p );
@@ -326,8 +370,8 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu, Lin &lin ) {
         }
     }
     const double total = now() - debut + t_arbre;
-    std::printf( "  TOTAL : %d iterations, %d diagrammes dont %d pour l'extrapolation ( %d reculs ), %.2f s ( arbre %.3f )  --  %s\n",
-                 tot_it, tot_diag, tot_extra, tot_recul, total, t_arbre, ok ? "converge" : "PAS CONVERGE" );
+    std::printf( "  TOTAL : %d iterations, %d diagrammes dont %d pour l'extrapolation ( %d reculs, %d cellules relevees ), %.2f s ( arbre %.3f )  --  %s\n",
+                 tot_it, tot_diag, tot_extra, tot_recul, int( tot_releves ), total, t_arbre, ok ? "converge" : "PAS CONVERGE" );
     std::printf( "  | %s | theta (essais) | depart | it | diag (reculs) | reste | temps | fin |\n  |---|---|---|---|---|---|---|---|\n", melange ? "t" : "s" );
     for ( const std::string &l : lignes ) std::printf( "  %s\n", l.c_str() );
 
@@ -369,6 +413,8 @@ int main( int argc, char **argv ) {
         else if ( s == "--ordre" )      o.ordre = std::atoi( val() );
         else if ( s == "--variable" )   o.variable = val();
         else if ( s == "--fd" )         o.fd = std::atof( val() );
+        else if ( s == "--garde" )      o.garde = val();
+        else if ( s == "--passes" )     o.passes = std::atoi( val() );
         else if ( s == "--check" )      o.check = true;
         else if ( s == "--solver" )     o.solver = val();
         else if ( s == "--amg-var" )    o.amgvar = std::atoi( val() );
@@ -397,6 +443,8 @@ int main( int argc, char **argv ) {
                 "  --ordre K       l'extrapolation vers l'etape suivante : 0 | 1 ( tangente ) | 2 ( + derivee seconde, 2 diagrammes )  (0)\n"
                 "  --variable V    s | s2 : la variable de l'extrapolation ( chemin conv )     (s)\n"
                 "  --fd F          ordre 2 : le pas des differences finies, en fraction du pas   (0.25)\n"
+                "  --garde G       global ( theta = 1, 1/2, ... ) | cellule ( les pincees relevees seules, puis theta )  (global)\n"
+                "  --passes K      garde par cellule : passes de relevement au plus              (6)\n"
                 "  --check         verifier la mesure ( circulation contre surface, derivee contre differences finies )\n"
                 "  --solver S      chol ( Eigen, defaut ) | amg\n"
                 "  --amg-var V     0 = agregation+spai0 | 1 = agregation+GS | 2 = Ruge-Stuben+GS  (2)\n"
