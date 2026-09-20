@@ -896,3 +896,34 @@ pincement transitoire fait partie du chemin** — une aiguille est une cellule p
 trouvé sa masse — et pénaliser les petites masses pénalise la transition elle-même. Avec la
 tangente (ordre 1, garde sur le mérite barrière), même chose : `θ = 1` partout sauf dans la
 zone, et 198 diagrammes à `s = 0.031`.
+
+## 9.7 Le pas par les limites, en masse : là où ça tombe
+
+`--pas essai-limites` avec une densité : l'essai `t = β` d'abord, et si des cellules y passent
+sous `ε`, leurs **limites en masse** — pas de polynôme (la masse le long de `w + αd` n'en est
+pas un), une bissection sur `α` entre 0 et l'essai, une cellule exacte par tour à chaud depuis
+les voisins de la dernière bonne (`FournisseurAlpha`, l'arbre non rafraîchi), à `1e-2` près ;
+le pas ramené sous la plus petite, on recommence, et le diagramme du pas retenu sert à
+l'itération suivante (`limites_masse`, `Ecrasement.h`). Une limite nulle rend la main aux
+essais depuis la moitié du dernier pas calculé, au lieu de stagner. Diagrammes en tout,
+continuation `√2` depuis `s = 0.5`, `β₀ = 1` :
+
+| | essais (KMT) | essais + tangente | **limites en masse** | limites + tangente |
+|---|---|---|---|---|
+| direct, `σ = 0.1` | 155 (127 reculs) | — | **44 (0 recul)** | — |
+| `σ = 0.05` | 123 (39) | 107 (17) | **97 (1)** | 101 (0) |
+| `σ = 0.02` | 400 (246) | 332 (168) | **204 (2)** | 202 (1) |
+| `σ = 0.01` | 645 (436) | 606 (368) | **288 (3)** | 304 (0) |
+
+Les reculs disparaissent : dans la zone dure, 33, 30, 26, 22 diagrammes par étape à
+`σ = 0.02` contre 92, 79, 58, 47 — le nombre d'itérations de Newton est le même (19, 17, 15, 13),
+c'est le prix de chacune qui tombe de 4–5 diagrammes à 1.7. Les limites coûtent 860 000
+cellules et 1.7 s sur 61 (`σ = 0.02`), 1.9 million et 4.4 s sur 115 (`σ = 0.01`) : 3 %. La
+tangente n'apporte plus rien (ses essais coûtent ce qu'elle épargne), et `ratio 2` redevient
+viable (259 au lieu de 862) sans rattraper `√2`. Le direct à `σ = 0.05` reste hors de portée :
+les cellules de masse nulle n'ont pas de limite à trouver.
+
+Pourquoi ça marche là où la barrière (§ 9.6) et les gardes (§ 9.5) échouaient : le pas par les
+limites ne cherche pas à *empêcher* les pincements, il mesure exactement jusqu'où la direction
+peut aller avant qu'une cellule ne passe sous le plancher, et y va — au lieu de deviner par
+moitiés. Les cellules qui s'amincissent sans passer sous `ε` ne le freinent pas.

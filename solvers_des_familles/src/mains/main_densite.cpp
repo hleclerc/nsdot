@@ -215,7 +215,9 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu, Lin &lin ) {
     std::vector<SI> rang( n );                           // identifiant -> rang dans l'arbre
     for ( SI k = 0; k < n; ++k ) rang[ pd.ids[ k ] ] = k;
     const TF h2 = TF( 1 ) / n;                           // l'echelle des poids : h^2
-    SI tot_releves = 0;
+    SI tot_releves = 0, tot_cel_lim = 0;
+    int tot_tours = 0;
+    double t_lim = 0;
     std::vector<Facette> fa_p, fa_try, fa_tmp;
     const double debut = now();
     int tot_it = 0, tot_diag = 0, tot_recul = 0, tot_extra = 0;
@@ -307,7 +309,7 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu, Lin &lin ) {
         const double dt = now() - te;
         const NewtonStats &st = nw.st;
         ok = ok && fini;
-        tot_it += st.nb_iter; tot_recul += st.nb_recul;
+        tot_it += st.nb_iter; tot_recul += st.nb_recul; tot_cel_lim += st.nb_cell_lim; tot_tours += st.nb_tours_essai; t_lim += st.t_lim;
         const int diag_newton = st.nb_diag;              // les essais d'extrapolation compris ( `nb_diag` compte tout )
         char buf[ 512 ];
         std::snprintf( buf, sizeof( buf ), "| %-8g | %.2f (%d) | %.2e | %d | %d (%d) | %.2e | %.2f s | %s |",
@@ -372,6 +374,8 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu, Lin &lin ) {
     const double total = now() - debut + t_arbre;
     std::printf( "  TOTAL : %d iterations, %d diagrammes dont %d pour l'extrapolation ( %d reculs, %d cellules relevees ), %.2f s ( arbre %.3f )  --  %s\n",
                  tot_it, tot_diag, tot_extra, tot_recul, int( tot_releves ), total, t_arbre, ok ? "converge" : "PAS CONVERGE" );
+    if ( tot_tours )
+        std::printf( "  limites en masse : %d essais corriges, %d cellules calculees, %.2f s\n", tot_tours, int( tot_cel_lim ), t_lim );
     std::printf( "  | %s | theta (essais) | depart | it | diag (reculs) | reste | temps | fin |\n  |---|---|---|---|---|---|---|---|\n", melange ? "t" : "s" );
     for ( const std::string &l : lignes ) std::printf( "  %s\n", l.c_str() );
 
@@ -425,6 +429,11 @@ int main( int argc, char **argv ) {
         else if ( s == "--newton-tol" ) o.newton.tol = std::atof( val() );
         else if ( s == "--newton-max" ) o.newton.maxit = std::atoi( val() );
         else if ( s == "--t-min" )      o.newton.t_min = std::atof( val() );
+        else if ( s == "--pas" )        o.newton.pas = std::string( val() ) == "essai-limites" ? NewtonOptions::ESSAI_LIMITES : NewtonOptions::ESSAIS;
+        else if ( s == "--beta0" )      o.newton.beta0 = std::atof( val() );
+        else if ( s == "--mult-ok" )    o.newton.mult_ok = std::atof( val() );
+        else if ( s == "--facteur" )    o.newton.facteur = std::atof( val() );
+        else if ( s == "--lim-tol" )    o.newton.lim.tol = std::atof( val() );
         else if ( s == "--quiet" )      o.newton.trace = false;
         else if ( s == "--ecrire" )     o.ecrire = val();
         else if ( s == "--dump" )       o.dump = val();
@@ -447,6 +456,11 @@ int main( int argc, char **argv ) {
                 "  --ordre K       l'extrapolation vers l'etape suivante : 0 | 1 ( tangente ) | 2 ( + derivee seconde, 2 diagrammes )  (0)\n"
                 "  --variable V    s | s2 : la variable de l'extrapolation ( chemin conv )     (s)\n"
                 "  --fd F          ordre 2 : le pas des differences finies, en fraction du pas   (0.25)\n"
+                "  --pas P         essais ( KMT, defaut ) | essai-limites ( l'essai, puis les limites EN MASSE des cellules sous eps, par bissection )\n"
+                "  --beta0 B       essai-limites : le premier essai                          (0.25)\n"
+                "  --mult-ok M     essai-limites : apres un essai passe direct, beta *= M     (2)\n"
+                "  --facteur F     essai-limites : t = F * limite                            (0.9)\n"
+                "  --lim-tol T     precision relative des limites                            (1e-2)\n"
                 "  --residu R      lin ( a - nu ) | barriere ( x - 1/x, x = a/nu ) | log : le residu de Newton et le merite  (lin)\n"
                 "  --garde G       global ( theta = 1, 1/2, ... ) | cellule ( les pincees relevees seules, puis theta )  (global)\n"
                 "  --passes K      garde par cellule : passes de relevement au plus              (6)\n"

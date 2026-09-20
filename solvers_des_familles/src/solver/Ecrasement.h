@@ -630,4 +630,84 @@ struct PasTensoriel {
     }
 };
 
+
+/// LA MEME PASSE EN MASSE, pour une densite : pas de polynome ( la masse d'une cellule le long de
+/// `w + alpha d` n'en est pas un ), une BISSECTION sur `alpha` entre 0 ( la cellule y est au-dessus
+/// du niveau : le point courant est admissible ) et l'horizon ( ou l'essai l'a trouvee en dessous ),
+/// une cellule exacte par tour, a chaud depuis les voisins de la derniere bonne, jusqu'a `tol`
+/// relatif sur `alpha`. `mesure( cel )` rend la masse. Seules les cellules `seules` ( les mauvaises
+/// de l'essai ) sont traitees ; en mode global, une cellule encore bonne a `1.1 x` le minimum
+/// courant s'arrete la ( HORIZON ).
+template<class PD, class Mesure>
+void limites_masse( const PD &pd, const TF *const *P, const std::vector<TF> &w, const std::vector<TF> &d,
+                    const Parallel &par, const OptionsLimites &o, std::vector<LimiteCellule> &lim,
+                    Voisinage vois, const std::vector<SI> &seules, Mesure &&mesure ) {
+    static_assert( PD::dim == 2, "2D seulement" );
+    using Cell = typename PD::Cell;
+    using TK   = typename PD::TKernel;
+    const SI n = pd.n;
+    const auto &arbre = pd.arbre;
+
+    std::vector<TF> dt( n );
+    for ( SI k = 0; k < n; ++k ) dt[ k ] = d[ arbre.order[ k ] ];
+    std::vector<WMajT<2>> dm( arbre.nodes.size() );
+    parallel_for( SI( arbre.nodes.size() ), par, [ & ]( SI m, int ) {
+        const auto &nd = arbre.nodes[ m ];
+        dm[ m ] = weight_majorant<2>( nd.beg, nd.end, [ & ]( SI k, Vec<2> &q, TF &v ) {
+            q[ 0 ] = arbre.p[ 0 ][ k ]; q[ 1 ] = arbre.p[ 1 ][ k ]; v = dt[ k ];
+        } );
+    } );
+    std::atomic<TF> courant{ INFINI };
+    auto abaisse = [ & ]( TF a ) {
+        TF c = courant.load();
+        while ( a < c && ! courant.compare_exchange_weak( c, a ) ) {}
+    };
+    if ( SI( lim.size() ) != n ) lim.assign( n, LimiteCellule{} );
+    std::vector<SI> rang_de( n );
+    for ( SI k = 0; k < n; ++k ) rang_de[ pd.ids[ k ] ] = k;
+
+    parallel_for( SI( seules.size() ), par, [ & ]( SI j, int ) {
+        const SI i = seules[ j ], k = rang_de[ i ];
+        LimiteCellule &L = lim[ i ];
+        L = LimiteCellule{};
+        Cell cel;
+        d2::SI32 cids_ok[ Cell::max_nb ];
+        int nb_ok;
+        if ( vois.connu() ) {
+            nb_ok = int( vois.row[ i + 1 ] - vois.row[ i ] );
+            for ( int q = 0; q < nb_ok; ++q ) cids_ok[ q ] = vois.col[ vois.row[ i ] + q ];
+        } else {
+            pd.cellule( k, cel );
+            nb_ok = cel.nb;
+            for ( int q = 0; q < nb_ok; ++q ) cids_ok[ q ] = cel.cid[ q ];
+        }
+        auto masse_en = [ & ]( TF alpha ) {
+            d2::FournisseurAlpha<TK> f( &arbre, dm.data(), dt.data(), P, w.data(), d.data(), alpha,
+                                        d2::SI32( i ), cids_ok, nb_ok );
+            d2::moteur<TK>( &f, &cel );
+            ++L.tours;
+            return cel.nb > 0 ? mesure( cel ) : TF( 0 );
+        };
+        auto garde_voisins = [ & ]() {                   // la cellule courante est bonne : on repart d'elle
+            nb_ok = cel.nb;
+            for ( int q = 0; q < nb_ok; ++q ) cids_ok[ q ] = cel.cid[ q ];
+        };
+        TF a_ok = 0, a_bad = o.horizon;
+        if ( o.global ) {                                // encore bonne a 1.1 x le minimum courant : au-dela
+            const TF c = TF( 1.1 ) * courant.load();
+            if ( c < a_bad ) {
+                if ( masse_en( c ) >= o.niveau ) { L.alpha = c; L.etat = LimiteCellule::HORIZON; return; }
+                a_bad = c;
+            }
+        }
+        for ( ; L.tours < o.max_tours && a_bad - a_ok > o.tol * a_bad; ) {
+            const TF mid = TF( 0.5 ) * ( a_ok + a_bad );
+            if ( masse_en( mid ) >= o.niveau ) { a_ok = mid; garde_voisins(); } else a_bad = mid;
+        }
+        L.alpha = a_ok;
+        L.etat = LimiteCellule::CORRIGEE;
+        abaisse( a_ok );
+    } );
+}
+
 } // namespace sf

@@ -110,7 +110,7 @@ struct Newton {
     NewtonStats     st;
 
     /// UNE DENSITE au lieu de Lebesgue ( 2D ) : la mesure d'une cellule est sa masse. Le pas par les
-    /// limites parle en aires, il est alors ramene aux ESSAIS.
+    /// limites ( ESSAI_LIMITES ) passe alors par `limites_masse` : la bissection, pas le polynome.
     const Densite  *rho = nullptr;
     bool            derivee = false; ///< avec `rho` : calculer aussi `da = d a / d s` a chaque diagramme
     std::vector<TF> da;        ///< `d a_i / d s` pour `w` ( la largeur de convolution de `rho` )
@@ -199,7 +199,6 @@ struct Newton {
         std::vector<LimiteCellule> lim;
         Laplacien L;
         std::vector<TF> *pda = rho && derivee ? &da : nullptr, *pda2 = pda ? &da2 : nullptr;
-        if ( rho && o.pas == NewtonOptions::ESSAI_LIMITES ) o.pas = NewtonOptions::ESSAIS;
 
         w = w_init;
         const TF jauge = w[ 0 ];
@@ -341,6 +340,7 @@ struct Newton {
             // ---- L'ESSAI PUIS LES LIMITES LOCALES : le diagramme du pas d'abord, et si des cellules
             // y passent sous `eps`, leurs limites ( a elles seules ), le pas ramene sous la plus
             // petite, et on recommence -- la non-monotonie peut en reveler d'autres
+            bool deja = false;                           // ESSAI_LIMITES : le diagramme en `t` est deja fait
             if ( o.pas == NewtonOptions::ESSAI_LIMITES ) {
                 if constexpr ( PD::dim == 2 ) {
                     t = beta;
@@ -349,10 +349,12 @@ struct Newton {
                     ol.global = true;
                     std::vector<SI> mauvaises;
                     w2.resize( n );
+                    TF t_fait = -1;                      // le pas dont le diagramme est dans `a2`
                     for ( int tour = 0; tour < 8; ++tour ) {
                         for ( SI i = 0; i < n; ++i ) w2[ i ] = w[ i ] + t * d[ i ];
                         w2[ 0 ] = 0;
-                        mesures_et_facettes( w2, a2, fa2 );
+                        mesures_et_facettes( w2, a2, fa2, pda2 );
+                        t_fait = t;
                         mauvaises.clear();
                         for ( SI i = 0; i < n; ++i ) if ( a2[ i ] < eps ) mauvaises.push_back( i );
                         if ( mauvaises.empty() ) break;
@@ -361,7 +363,11 @@ struct Newton {
                         t0 = now();
                         ol.horizon = t;
                         pd.set_weights( w.data(), par );
-                        limites( pd, P, w, d, par, ol, lim, Voisinage{ L.row.data(), L.col.data() }, &mauvaises );
+                        if ( rho )                       // en masse : la bissection, pas le polynome
+                            limites_masse( pd, P, w, d, par, ol, lim, Voisinage{ L.row.data(), L.col.data() }, mauvaises,
+                                           [ & ]( const typename PD::Cell &cel ) { return rho->mesure( cel, []( int, TF ) {} ); } );
+                        else
+                            limites( pd, P, w, d, par, ol, lim, Voisinage{ L.row.data(), L.col.data() }, &mauvaises );
                         TF al = t;
                         for ( SI i : mauvaises ) { st.nb_cell_lim += lim[ i ].tours; al = std::min( al, lim[ i ].alpha ); }
                         st.t_lim += now() - t0;
@@ -372,6 +378,11 @@ struct Newton {
                         t = o.facteur * al;
                         if ( t < o.t_min ) break;
                     }
+                    // une limite nulle ( la cellule est deja au plancher, ou la bissection n'a rien
+                    // trouve ) n'est pas une raison de stagner : on rend la main aux essais, depuis la
+                    // moitie du dernier pas calcule
+                    if ( t < o.t_min ) t = t_fait / 2;
+                    deja = t == t_fait;
                     alpha_lim = t;                       // pour la trace : le pas retenu
                     // le prochain essai : `mult_ok` fois celui-ci s'il est passe direct, et jamais moins
                     // que `confiance` fois le pas retenu
@@ -386,7 +397,7 @@ struct Newton {
             const TF t_lim0 = t;
             w2.resize( n );
             for ( int essai = 0; essai < o.max_reculs; ++essai ) {
-                if ( ! ( essai == 0 && o.pas == NewtonOptions::ESSAI_LIMITES ) ) {   // deja fait en `t`
+                if ( ! ( essai == 0 && deja ) ) {        // sinon, deja fait en `t`
                     for ( SI i = 0; i < n; ++i ) w2[ i ] = w[ i ] + t * d[ i ];
                     w2[ 0 ] = 0;                         // la jauge, imposee et non esperee
                     mesures_et_facettes( w2, a2, fa2, pda2 );
