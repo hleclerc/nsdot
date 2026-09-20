@@ -633,3 +633,36 @@ Transport, Old and New* (2009, ch. 5) ; Aurenhammer, Hoffmann & Aronov (1998) po
 diagramme de puissance ↔ enveloppe inférieure ; multi-échelle et amortissement : Mérigot (2011),
 Kitagawa, Mérigot & Thibert (2019), Lévy (2015). Prolongation lissée en multigrille : Vaněk, Mandel
 & Brezina (1996, agrégation lissée).
+
+## 8.5 Le relèvement minimal en 2D : là où le multi-échelle commence à payer
+
+`--corr releve` : sur les cellules que la prolongation laisse sous le plancher, une **bissection sur
+le poids de la cellule seule** (`cellule_avec_poids`, le moteur avec un autre `w_i`, l'arbre
+inchangé) entre `w_i` et `−ψ(p_i)`, jusqu'à une aire dans `[ε, 2ε] × min(ν_i, |Vor_i|)` —
+c'est le poids de naissance de la cellule, à `ε` près. Toutes les vides d'une passe sur le même
+diagramme, six passes au plus (deux vides nées au même sommet se disputent la place ; doubler la
+cible à chaque reprise, essayé, fait tout exploser : 2 millions de relèvements).
+
+Mesuré sur la solution lissée d'un balayage (`s = 0.1`, 374 vides) : 469 relèvements en 6 passes,
+**0 vide, pas de cascade** — là où le rattrapage à `−ψ(p_i)` en fabriquait 54 000. Et Newton
+depuis là : **10 itérations, 13 diagrammes**, contre 9 et 10 depuis Voronoi. Même à un balayage de
+la solution, une fois réparé, le départ ne fait pas gagner une itération : ce qui compte pour
+l'amortissement est le *pire* résidu (`max|a−ν|/ν = 80` ici, les cellules nées minuscules), pas la
+distance ℓ².
+
+`mls` + relèvement, `R = 8`, `--threads 8`, contre Newton depuis Voronoi :
+
+| σ | vides du `mls` au niveau fin | relèvements | fine : Newton | total | référence |
+|---|---|---|---|---|---|
+| 0.1   |   681 |   836 | **8 it, 11 diag** (2.7 s) | 4.25 s | 9 it, 10 diag, 2.84 s |
+| 0.05  | 1 042 | 1 134 | **9 it, 12 diag** (3.1 s) | 4.06 s | 11 it, 16 diag, 3.64 s |
+| 0.02  | 2 792 | 3 077 | **8 it, 11 diag** (2.4 s) | **3.95 s** | 15 it, 26 diag, 4.40 s |
+| 0.005 | ~5 000 | 343 000 : cascade | stagne | — | 19 it, 40 diag, 7.1 s |
+
+Première fois que le niveau fin coûte *moins* que Newton depuis Voronoi — la moitié à `s = 0.02`
+(11 diagrammes contre 26) — et le premier gain sur le total (10 %), mangé aux deux tiers par les
+niveaux grossiers (0.35 s) et le relèvement (0.86 s : six diagrammes complets et 47 000 cellules).
+Le cas dur reste hors de portée : à `s = 0.005` les germes comprimés à `S ~ 1e-3` sont des
+milliers, leurs naissances interfèrent, et le relèvement cascade. Le relèvement pourrait ne
+re-mesurer que le voisinage de ce qu'il relève, et les niveaux grossiers s'arrêter plus tôt
+(`--n-min`) : à faire si la piste est retenue.

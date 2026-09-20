@@ -318,7 +318,7 @@ SI rattrape( PD &pd, const TF *const *P, const Laplacien &Lvor, std::vector<TF> 
         pd.measures( a, par );
         std::vector<SI> vides;
         for ( SI i = 0; i < n; ++i ) if ( a[ i ] < plancher ) vides.push_back( i );
-        if ( vides.empty() ) return 0;
+        if ( vides.empty() ) { cellules = nb_cel.load(); return 0; }
         std::vector<TF> neuf( vides.size() );
         parallel_for( SI( vides.size() ), par, [ & ]( SI q, int ) {
             const SI i = vides[ q ];
@@ -334,6 +334,60 @@ SI rattrape( PD &pd, const TF *const *P, const Laplacien &Lvor, std::vector<TF> 
         for ( SI q = 0; q < SI( vides.size() ); ++q ) w[ vides[ q ] ] = std::max( w[ vides[ q ] ], neuf[ q ] );
         releves += SI( vides.size() );
     }
+    pd.set_weights( w.data(), par );
+    pd.measures( a, par );
+    SI reste = 0;
+    for ( SI i = 0; i < n; ++i ) reste += a[ i ] < plancher;
+    return reste;
+}
+
+/// LE RELEVEMENT MINIMAL ( `scripts/adoucissement_1d.py` ) : une cellule vide NAIT en un sommet du
+/// diagramme des autres, et le poids qui l'y fait naitre est le plus petit qui la rende non vide. On
+/// le cherche par BISSECTION sur le poids de `i` seul ( `cellule_avec_poids` ), entre `w_i` ( vide )
+/// et `-psi( p_i )` ( `p_i` dans sa cellule : non vide a coup sur ), jusqu'a une aire dans
+/// `[ cible, 2 cible ]`, `cible = eps * min( nu_i, |Vor_i| )`. Toutes les vides d'une passe sur le
+/// meme diagramme, puis on recommence tant qu'il en reste ( deux vides nees au meme sommet se
+/// disputent la place -- un ping-pong a l'echelle de `cible`, que `passes` borne ; doubler la cible
+/// a chaque reprise, essaye, fait tout exploser ). Rend le nombre de cellules encore sous `plancher`.
+template<class PD>
+SI releve_minimal( PD &pd, const TF *const *P, const std::vector<TF> &nu, const std::vector<TF> &avor, std::vector<TF> &w,
+                   TF plancher, TF eps, int passes, const Parallel &par, SI &releves, int &faites, SI &cellules ) {
+    constexpr int D = PD::dim;
+    const SI n = pd.n;
+    std::vector<TF> a;
+    std::vector<SI> rang( n );                              // identifiant -> rang dans l'arbre
+    for ( SI k = 0; k < n; ++k ) rang[ pd.ids[ k ] ] = k;
+    releves = 0; cellules = 0;
+    std::atomic<SI> nb_cel{ 0 };
+    for ( faites = 0; faites < passes; ++faites ) {
+        pd.set_weights( w.data(), par );
+        pd.measures( a, par );
+        std::vector<SI> vides;
+        for ( SI i = 0; i < n; ++i ) if ( a[ i ] < plancher ) vides.push_back( i );
+        if ( vides.empty() ) { cellules = nb_cel.load(); return 0; }
+        std::vector<TF> neuf( vides.size() );
+        parallel_for( SI( vides.size() ), par, [ & ]( SI q, int ) {
+            const SI i = vides[ q ], k = rang[ i ];
+            TF x[ D ];
+            for ( int d = 0; d < D; ++d ) x[ d ] = P[ d ][ i ];
+            const TF cible = eps * std::min( nu[ i ], avor[ i ] );
+            TF lo = w[ i ], hi = std::max( moins_psi( pd, x, i ) + cible, w[ i ] + cible );
+            typename PD::Cell cel;
+            // une cellule qui DEBORDE `MaxNv` est une cellule enorme : on la compte infinie, la bissection redescend
+            auto aire = [ & ]( TF wk ) { ++nb_cel; return pd.cellule_avec_poids( k, wk, cel ) ? PD::mesure( cel ) : std::numeric_limits<TF>::infinity(); };
+            TF ah = aire( hi );
+            for ( int it = 0; it < 20 && ah < cible; ++it ) { hi += std::max( hi - lo, cible ); ah = aire( hi ); }   // par securite
+            for ( int it = 0; it < 60; ++it ) {
+                if ( ah <= 2 * cible ) break;
+                const TF mid = ( lo + hi ) / 2, am = aire( mid );
+                if ( am >= cible ) { hi = mid; ah = am; } else lo = mid;
+            }
+            neuf[ q ] = hi;
+        } );
+        for ( SI q = 0; q < SI( vides.size() ); ++q ) w[ vides[ q ] ] = neuf[ q ];
+        releves += SI( vides.size() );
+    }
+    cellules = nb_cel.load();
     pd.set_weights( w.data(), par );
     pd.measures( a, par );
     SI reste = 0;

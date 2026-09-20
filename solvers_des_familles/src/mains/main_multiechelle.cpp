@@ -40,7 +40,7 @@ struct Opts {
     TF            mls_largeur = 1;        ///< MLS : largeur de la gaussienne, en unites de H
     TF            tolg   = 1e-3;          ///< la tolerance de Newton aux niveaux grossiers
     int           essais = 12;            ///< divisions de `t` au plus
-    int           passes = 20;            ///< rattrape : passes au plus
+    int           passes = 6;             ///< rattrape / releve : passes au plus
     TF            marge  = 0.1;           ///< rattrape : l'air donne a la cellule relevee, en h_i^2
     bool          reference = false;
 };
@@ -78,12 +78,13 @@ int depuis_solution( const Args &a, const Opts &o, const Nuage<PD::dim> &nu0 ) {
     SI mauv = teste_admissible( pd, w, nu, o.seuil * amin_vor, a.par, amin, pire );
     std::printf( "  solution lissee par %d balayages : %d cellules sous le plancher, aire min %.2e nu, max|a-nu|/nu %.2e\n",
                  o.lisse_solution, int( mauv ), double( amin ), double( pire ) );
-    if ( o.corr == "rattrape" && mauv ) {
-        SI releves; int faites;
-        const SI reste = rattrape( pd, nu0.P, Lvor, w, o.seuil * amin_vor, o.marge, o.passes, a.par, releves, faites );
+    if ( ( o.corr == "rattrape" || o.corr == "releve" ) && mauv ) {
+        SI releves, cels; int faites;
+        const SI reste = o.corr == "rattrape" ? rattrape( pd, nu0.P, Lvor, w, o.seuil * amin_vor, o.marge, o.passes, a.par, releves, faites )
+                                              : releve_minimal( pd, nu0.P, nu, avor, w, o.seuil * amin_vor, o.marge, o.passes, a.par, releves, faites, cels );
         mauv = teste_admissible( pd, w, nu, o.seuil * amin_vor, a.par, amin, pire );
-        std::printf( "  rattrapage : %d passes, %d relevements, %d cellules encore sous le plancher, max|a-nu|/nu %.2e\n",
-                     faites, int( releves ), int( reste ), double( pire ) );
+        std::printf( "  %s : %d passes, %d relevements, %d cellules encore sous le plancher, max|a-nu|/nu %.2e\n",
+                     o.corr.c_str(), faites, int( releves ), int( reste ), double( pire ) );
     }
     Cholesky lin;
     Newton<PD,Cholesky> nw( pd, lin, nu0.P, a.par, o.newton );
@@ -154,11 +155,15 @@ int lance( const Args &a, const Opts &o, const Nuage<PD::dim> &nu0 ) {
             TF t = 1; int k = 0;
             for ( int e = 0; e <= o.essais; ++e ) {
                 t0 = now();
-                if ( o.corr == "rattrape" ) {
+                if ( o.corr == "rattrape" || o.corr == "releve" ) {
                     w0 = base;
-                    SI releves; int faites;
-                    const SI reste = rattrape( pd, L.P, L.Lvor, w0, o.seuil * amin_vor, o.marge, o.passes, a.par, releves, faites );
-                    std::printf( "    rattrapage : %d passes, %d relevements, %d cellules encore sous le plancher\n", faites, int( releves ), int( reste ) );
+                    SI releves, cels = 0; int faites; SI reste;
+                    if ( o.corr == "rattrape" )
+                        reste = rattrape( pd, L.P, L.Lvor, w0, o.seuil * amin_vor, o.marge, o.passes, a.par, releves, faites );
+                    else
+                        reste = releve_minimal( pd, L.P, L.nu, avor, w0, o.seuil * amin_vor, o.marge, o.passes, a.par, releves, faites, cels );
+                    std::printf( "    %s : %d passes, %d relevements ( %d cellules calculees ), %d cellules encore sous le plancher ( %.3f s )\n",
+                                 o.corr.c_str(), faites, int( releves ), int( cels ), int( reste ), now() - t0 );
                     L.essais += faites;
                 }
                 else if ( e == 0 || o.corr == "aucune" ) w0 = base;
@@ -178,7 +183,7 @@ int lance( const Args &a, const Opts &o, const Nuage<PD::dim> &nu0 ) {
                              e, double( t ), o.corr == "jacobi" ? ( " ( " + std::to_string( k ) + " balayages )" ).c_str() : "",
                              int( mauv ), double( amin ), double( pire ) );
                 L.t_final = t; L.pire_depart = pire;
-                if ( ! mauv || o.corr == "aucune" || o.corr == "rattrape" ) break;
+                if ( ! mauv || o.corr == "aucune" || o.corr == "rattrape" || o.corr == "releve" ) break;
                 if ( o.corr == "jacobi" ) k = k ? 2 * k : 1; else t /= 2;
             }
         }
@@ -262,9 +267,9 @@ int main( int argc, char **argv ) {
             Args::usage();
             std::printf(
                 "  --prol P        copie | harmonique | mls | ctransf                (harmonique)\n"
-                "  --corr C        penal | retrait | jacobi | rattrape | aucune       (penal)\n"
-                "  --passes K      rattrape : passes au plus                          (20)\n"
-                "  --marge M       rattrape : l'air donne a la cellule relevee, en h_i^2  (0.1)\n"
+                "  --corr C        penal | retrait | jacobi | rattrape | releve | aucune  (penal)\n"
+                "  --passes K      rattrape / releve : passes au plus                 (6)\n"
+                "  --marge M       rattrape : l'air donne, en h_i^2 ; releve : aire cible eps * min( nu_i, |Vor_i| )  (0.1)\n"
                 "  -r R            germes par paquet                                 (8)\n"
                 "  --n-min N       taille du niveau le plus grossier, au plus        (2000)\n"
                 "  --seuil S       admissible : toute aire >= S * min( nu_i, aire min de Voronoi )  (0.5)\n"

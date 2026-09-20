@@ -79,6 +79,19 @@ struct PowerDiagram {
         return laguerre() ? cellule_<true>( k, cel ) : cellule_<false>( k, cel );
     }
 
+    /// La meme cellule avec un AUTRE poids pour le germe `k` seul ( les autres inchanges, l'arbre
+    /// aussi : les majorants ne parlent que des autres ). Laguerre seulement.
+    bool cellule_avec_poids( SI k, TF wk, Cell &cel ) const {
+        if constexpr ( D == 2 ) {
+            d2::FournisseurBsp<TK,true> f( &arbre, c[ 0 ][ k ], c[ 1 ][ k ], TK( wk ), ids[ k ] );
+            d2::moteur<TK>( &f, &cel );
+            return cel.nb >= 0;
+        } else {
+            d3::FournisseurBsp3<TK,true> f( &arbre, c[ 0 ][ k ], c[ 1 ][ k ], c[ 2 ][ k ], TK( wk ), ids[ k ] );
+            return d3::moteur( &f, &cel ) == 0;
+        }
+    }
+
     /// La mesure de la cellule, et ses facettes contre d'autres germes : `facette( j, mes )`
     /// avec `j` l'identifiant du voisin -- les parois du domaine ne sont pas rendues.
     template<class Facette>
