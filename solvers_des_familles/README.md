@@ -568,3 +568,68 @@ ne se vide, et le segment de tout départ admissible vers la solution reste admi
 montre donc que l'admissibilité de la prolongation, pas ce que Newton coûte ensuite ; la seconde
 moitié du constat 2D (« le niveau fin refait le travail de Newton depuis Voronoi ») tient à ce que
 le seul `t` admissible *est* Voronoi.
+
+## 8.4 Adoucir plutôt qu'aplatir (`scripts/adoucissement_1d.py`)
+
+Deux « lissages » ont été confondus plus haut, et ils n'ont rien à voir : *interpoler* les poids
+grossiers par une fonction lisse (la spline, le `mls`) — ça va dans le bon sens, la spline n'a que
+7 vides sur 400 — et *filtrer* une `w` donnée sur le graphe fin (Jacobi, la proposition `M`), qui
+brasse entre voisins la composante à l'échelle de la cellule. La question était : peut-on rendre
+une bonne prolongation admissible en l'*adoucissant* (passe-bas, noyaux de plus en plus larges)
+plutôt qu'en l'aplatissant vers Voronoi ? Mesuré en 1D, `figures/adoucissement_1d_*.png` :
+
+| famille | vides selon le paramètre | admissible ? | résidu ℓ² du départ (Voronoi : 1.42) |
+|---|---|---|---|
+| filtre gaussien de la spline, λ = 5e-4 → 0.2 | 16 → 5 → 14 | jamais | 0.8 → 2.1 |
+| filtre gaussien de l'harmonique | 80 → 0 → 14 | à λ = 0.02 | **2.0** (pire que Voronoi) |
+| régression polynomiale locale, degré 0 / 1 / 2 | 316 → 43 / 184 → 14 / 197 → 24 | jamais | 2 à 6 |
+| ridge à noyau gaussien (λ, α) | 130 à 400 | jamais | 2 à 14 |
+| spline de lissage (`lam`) | 7 → 59 | jamais | 0.7 → 2.4 |
+| **enveloppe** de la spline, ε = 0.01 → 0.5 | 0 | **oui** | **0.70** |
+| enveloppe de l'harmonique | 0 | oui | 1.99 |
+
+**Pourquoi le passe-bas ne peut pas marcher.** Pour une `w` lisse, `m = 1 − w''/2` : l'admissible
+est la borne *à sens unique* `w'' < 2`. La solution a `w'' = 2(1 − S)` — très négatif dans l'amas
+(−78), proche de 2 au fond où les cellules se compriment — et sa forme est une tente : un pic
+concave, des flancs presque droits qui portent, étalée sur tout le domaine, la courbure positive
+qu'il faut pour redescendre. Un filtre symétrique prend la concavité du pic et la rend en
+convexité sur ses flancs, `~ (saut de pente)/λ`, bien au-dessus du jeu `2S` disponible : il faudrait
+`λ > 1`. Les noyaux gaussiens étroits *sonnent* (courbure `A/λ²`), les larges effacent le pic ; les
+vides ne tombent jamais à zéro et le résidu remonte au-dessus de Voronoi.
+
+**L'adoucissement à sens unique : l'enveloppe.** Admissible à marge `ε` ⇔ `(1−ε) p² − w` est
+convexe (points relevés). La projection est donc l'**enveloppe convexe inférieure** de
+`ψ = (1−ε)p² − w` : `w ← (1−ε)p² − H(p_i)`. Elle ne touche que les germes dont le point relevé
+est au-dessus de l'enveloppe (les 79 représentants pliés de l'harmonique, les 7 bouts de la
+spline), les remonte du *minimum*, d'un coup, sans cascade : tout point est alors un sommet de
+marge ≥ ε. Prendre `ε` sous la plus petite compression de la solution (~0.1 ici), sinon la
+projection aplatit aussi le fond. Le même objet s'écrit **germe par germe** : une cellule vide
+*naît en un sommet* `v` du diagramme des autres, et le poids qui l'y fait naître est
+
+    w_i = min_v ( |p_i − v|² − ψ(v) ),   ψ(v) = min_j ( |v − p_j|² − w_j )
+
+(`H(p) = max_v [2v·p − |v|² + ψ(v)]`, les bouts du domaine comptant comme sommets). C'est le
+**relèvement minimal** — le rattrapage de `2d_des_familles` relevait à `−ψ(p_i)`, c'est-à-dire
+jusqu'à mettre `p_i` *dans* sa cellule, condition bien plus forte quand la cellule est transportée
+loin, d'où la cascade. Fait une cellule à la fois (le diagramme refait entre deux), il converge à
+un ping-pong près à l'échelle de `ε` entre vides adjacentes ; d'un coup par l'enveloppe, il est
+exact. En 2D, c'est une bissection sur `w_i` seul avec le moteur de cellule (l'aire de `i` en
+fonction de son poids), sur les 0.7 % de cellules que le `mls` laisse vides — à essayer.
+
+Ce que ça vaut : spline + enveloppe donne un départ admissible à résidu **0.70 contre 1.42** pour
+Voronoi (la solution lissée d'un balayage puis projetée : 0.56) ; l'harmonique projetée reste à
+1.99 — ses représentants relevés naissent minuscules là où la solution voulait `1/n`. En 1D Newton
+finit en un pas quel que soit le départ ; ce que vaut un résidu divisé par deux se mesure en 2D.
+
+**Bibliographie (de mémoire, à vérifier avant de citer).** Lissage à noyaux : Nadaraya (1964),
+Watson (1964) ; régression polynomiale locale : Cleveland (1979, LOESS), Fan & Gijbels, *Local
+Polynomial Modelling and Its Applications* (1996) ; splines de lissage : Reinsch (1967), Wahba,
+*Spline Models for Observational Data* (1990) ; moindres carrés mobiles : Lancaster & Šalkauskas
+(1981), Levin (1998) ; approximation par fonctions radiales et ridge à noyau : Wendland,
+*Scattered Data Approximation* (2005), Schölkopf & Smola, *Learning with Kernels* (2002).
+Régression sous contrainte de convexité (le bon cadre pour `w'' < 2`) : Hildreth (1954), Seijo &
+Sen (2011), Lim & Glynn (2012). Enveloppe convexe et c-concavité en transport : Villani, *Optimal
+Transport, Old and New* (2009, ch. 5) ; Aurenhammer, Hoffmann & Aronov (1998) pour le relevé
+diagramme de puissance ↔ enveloppe inférieure ; multi-échelle et amortissement : Mérigot (2011),
+Kitagawa, Mérigot & Thibert (2019), Lévy (2015). Prolongation lissée en multigrille : Vaněk, Mandel
+& Brezina (1996, agrégation lissée).

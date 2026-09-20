@@ -36,20 +36,29 @@ from scipy.interpolate import CubicSpline
 
 # ------------------------------------------------------------------------------------ la geometrie
 
-def cellules( p, w ):
-    """les longueurs des cellules ( 0 si vide ), les indices des sommets de l'enveloppe, les bornes."""
-    n = len( p )
-    phi = p * p - w
+def enveloppe_inf( p, phi, L = 1e6 ):
+    """les indices des sommets de l'enveloppe convexe INFERIEURE de `( p, phi )`, LE DOMAINE [0,1]
+    COMPRIS : deux points virtuels tres loin, l'un a gauche a la hauteur du minimum ( pente 0 -- le
+    plan du bord x = 0 ), l'autre a droite sur la pente 2 ( le bord x = 1 ). Un germe dont la
+    cellule serait entierement hors de [0,1] n'est pas un sommet de cette enveloppe-la."""
+    P = np.concatenate( [ [ -L ], p, [ 1 + L ] ] )
+    F = np.concatenate( [ [ phi.min() ], phi, [ np.max( phi - 2 * p ) + 2 * ( 1 + L ) ] ] )
     hull = []
-    for i in range( n ):
+    for i in range( len( P ) ):
         while len( hull ) >= 2:
             j, k = hull[ -2 ], hull[ -1 ]
-            if ( p[ k ] - p[ j ] ) * ( phi[ i ] - phi[ j ] ) - ( phi[ k ] - phi[ j ] ) * ( p[ i ] - p[ j ] ) <= 0:
+            if ( P[ k ] - P[ j ] ) * ( F[ i ] - F[ j ] ) - ( F[ k ] - F[ j ] ) * ( P[ i ] - P[ j ] ) <= 0:
                 hull.pop()
             else:
                 break
         hull.append( i )
-    hull = np.array( hull )
+    return np.array( hull[ 1:-1 ] ) - 1
+
+
+def cellules( p, w ):
+    """les longueurs des cellules ( 0 si vide ), les indices des sommets de l'enveloppe, les bornes."""
+    n = len( p )
+    hull = enveloppe_inf( p, p * p - w )
     x = ( p[ hull[ :-1 ] ] + p[ hull[ 1: ] ] ) / 2 + ( w[ hull[ :-1 ] ] - w[ hull[ 1: ] ] ) / ( 2 * ( p[ hull[ 1: ] ] - p[ hull[ :-1 ] ] ) )
     b = np.concatenate( [ [ 0.0 ], np.clip( x, 0, 1 ), [ 1.0 ] ] )
     a = np.zeros( n )
