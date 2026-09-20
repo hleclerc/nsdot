@@ -791,3 +791,49 @@ Lebesgue) concentré dans une zone de `s` qui ne bouge pas. La dérivée `dw/ds`
 utile hors de cette zone, nuisible dedans sans garde. Le levier suivant n'est pas dans le pas en
 `s` mais dans Newton lui-même sur la naissance des aiguilles — le pendant, pour une masse, du
 pas par les limites de § 7.
+
+## 9.4 L'autre chemin, `(1 − t) + t·ρ`, et l'ordre 2
+
+Si ce sont les queues qui tuent, un **mélange avec Lebesgue** garantit les zéros : `ρ_t = (1 − t)
++ t·ρ`, le plancher `1 − t` descendant de 0.5 vers 0 (`--melange 0.5 --melange-ratio 2
+--melange-min F`), et la dérivée est gratuite et exacte, `∂a/∂t = masse_ρ − aire` (vérifiée à
+1e-13 contre des différences finies). L'**ordre 2** (`--ordre 2`) : `L w'' = ν'' − φ''` avec
+`φ(ε) = a(w + ε w', λ + ε)` mesuré par différences finies le long de la tangente (deux diagrammes
+par étape, `--fd 0.25` du pas) — toutes les dérivées secondes de `a` dans la direction `(w', 1)`,
+sans tenseur. Même garde `θ` que l'ordre 1. Diagrammes en tout, essais d'extrapolation et
+différences finies compris :
+
+| σ = 0.05 | ordre 0 | ordre 1 | ordre 2 |
+|---|---|---|---|
+| convolution, `√2`, en `s` | 123 | **107** | 138 (dont 22 de DF) |
+| convolution, `√2`, en `s²` | — | 107 | 126 |
+| mélange, planchers `0.5 … 2e-3`, puis 0 | **stagne à `t = 1`** | stagne | stagne |
+| mélange, planchers `0.5 … 1e-6`, puis 0 | 366 | 353 | — |
+| mélange, ratio 8, `0.5 … 1e-6` | — | 510 | — |
+
+| σ = 0.02 | ordre 0 | ordre 1 | ordre 2 |
+|---|---|---|---|
+| convolution, `√2`, en `s` / `s²` | 400 | **332** / 341 | — / 436 |
+| mélange, planchers `0.5 … 1e-6` | — | 2 093 (423 s) | — |
+
+**Le mélange bute sur le même mur, et plus loin.** Arrêté à un plancher de `2e-3`, une
+soixantaine de cellules vivent encore du plancher — loin des pics, larges de `1e-2` — et au
+passage à `t = 1` leur masse tombe à zéro : ligne nulle dans la hessienne, direction sans
+information, stagnation à la première itération. Il faut descendre le plancher sous `1e-5`
+(l'aire qu'il faudrait dépasse le carré) pour que *toutes* les cellules soient devenues des
+aiguilles avant `t = 1` ; alors la fin est gratuite — sous `1e-4` l'extrapolation passe à `θ = 1`
+et chaque étape converge en **une itération** (départ à `1e-5`) : là le problème est linéaire en
+`t` et la tangente exacte. Mais le chemin y arrive en payant chaque division du plancher par
+deux **30–45 diagrammes** (`σ = 0.05`) ou **200–340** (`σ = 0.02`), de `0.5` à `2e-3` : le départ
+de chaque étape vaut exactement `0.5` (les cellules de plancher perdent la moitié de leur
+masse), et la naissance des aiguilles, que la convolution concentre sur trois ou quatre étapes,
+est étalée sur neuf. Et à `t = 0.5` déjà, les pics sont à leur finesse : les cellules qui y
+tombent doivent se comprimer 200 fois, 289 diagrammes pour la première étape à `σ = 0.02` là
+où la convolution en met 8. C'est ce que le « moins spatial » coûte : le mélange garantit les
+zéros mais laisse la géométrie entière à faire d'un coup.
+
+**L'ordre 2 ne paie pas.** Le terme du second ordre vaut 5 à 20 % du premier, la tangente est
+bonne — et le problème n'est pas la courbure du chemin mais les quelques cellules pincées, que
+l'ordre 2 pince un peu plus : dans la zone dure la garde refuse tout (`θ = 0` après cinq essais)
+là où l'ordre 1 gardait `θ = 1/4`, et les deux diagrammes de différences finies sont perdus.
+Hors de la zone, `θ = 1` et deux à trois itérations par étape dans les deux cas.

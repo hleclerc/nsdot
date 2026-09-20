@@ -6,9 +6,10 @@
 //   xmake run densite --sigma 0.02 --conv 0.5            la continuation : la densite convolee par
 //                                                        une gaussienne de largeur 0.5, resolue,
 //                                                        puis 0.25, ... jusqu'a 0
-//   xmake run densite --sigma 0.02 --conv 0.5 --predire s2
-//                                                        et les poids de depart extrapoles par
-//                                                        `dw / ds` ( en `s^2` ) a chaque etape
+//   xmake run densite --sigma 0.02 --conv 0.5 --ordre 2  et les poids de depart extrapoles a
+//                                                        l'ordre 2 en `s` a chaque etape
+//   xmake run densite --sigma 0.02 --melange 0.5         l'autre chemin : `( 1 - t ) + t rho`, le
+//                                                        plancher 0.5, 0.25, ... 1e-3, puis 0
 //   xmake run densite --check                            la masse par circulation contre une
 //                                                        quadrature de surface, la derivee contre
 //                                                        des differences finies
@@ -43,9 +44,13 @@ struct Opts {
     std::string   gauss;              ///< "cx,cy,sigma,masse;..." a la place du jeu
     TF            plancher = 0;       ///< la fraction de la masse dans le plancher uniforme
     std::string   diracs = "uniforme";///< uniforme | rho
-    std::vector<TF> conv;             ///< les largeurs de convolution, decroissantes, 0 en dernier
+    std::string   chemin = "conv";    ///< conv ( la largeur `s` decroit vers 0 ) | melange ( `t` croit vers 1 )
+    std::vector<TF> liste;            ///< les valeurs du parametre, dans l'ordre ( la derniere : la densite elle-meme )
     TF            conv0 = 0, conv_ratio = 2, conv_min = 0;
-    std::string   predire = "non";    ///< non | s | s2 : extrapoler w par `dw / ds`
+    TF            mel0 = 0, mel_ratio = 2, mel_min = 1e-3;   ///< le melange : les PLANCHERS `1 - t`
+    int           ordre = 0;          ///< l'extrapolation : 0 ( poids precedents ), 1 ( tangente ), 2
+    std::string   variable = "s";     ///< s | s2 : la variable de l'extrapolation sur le chemin conv
+    TF            fd = 0.25;          ///< ordre 2 : le pas des differences finies, en fraction du pas
     bool          check = false;
     std::string   ecrire, dump;
 };
@@ -72,18 +77,6 @@ Densite densite_de( const Opts &o ) {
     for ( Gaussienne &g : rho.g ) g.masse *= ( 1 - o.plancher ) / mt;
     rho.plancher = o.plancher;
     return rho;
-}
-
-/// la masse EXACTE de la densite sur le carre ( la convolution comprise )
-TF masse_carre( const Densite &rho ) {
-    TF m = rho.plancher;
-    for ( SI k = 0; k < SI( rho.g.size() ); ++k ) {
-        const TF sig = rho.sigma_eff( k ) * M_SQRT2;
-        const Gaussienne &g = rho.g[ k ];
-        m += g.masse * TF( 0.25 ) * ( std::erf( ( 1 - g.cx ) / sig ) + std::erf( g.cx / sig ) )
-                                  * ( std::erf( ( 1 - g.cy ) / sig ) + std::erf( g.cy / sig ) );
-    }
-    return m;
 }
 
 /// des germes tires SELON `rho` ( rejet )
@@ -152,11 +145,11 @@ void verifie( const PD &pd, const Nuage<2> &nu, Densite rho, const Parallel &par
         for ( int i = 0, j = cel.nb - 1; i < cel.nb; j = i++ )
             tri( cel.vx[ j ], cel.vy[ j ], cel.vx[ i ], cel.vy[ i ], cx, cy );
         // la derivee par differences finies
-        const TF s0 = rho.s, ds = std::max( TF( 1e-4 ) * std::max( s0, smin ), TF( 1e-6 ) );
         Densite rp = rho, rm = rho;
-        rp.s = s0 + ds; rm.s = std::max( TF( 0 ), s0 - ds );
-        const TF df = ( rp.mesure( cel, []( int, TF ) {} ) - rm.mesure( cel, []( int, TF ) {} ) ) / ( rp.s - rm.s );
-        std::printf( "  germe %6d ( %.3f, %.3f ) %2d sommets : masse %.10e  surface %.10e  ecart %.2e  |  d/ds %.6e  dif. finies %.6e  ecart %.2e  ( %d triangles )\n",
+        if ( rho.chemin == Densite::MELANGE ) { rp.t = rho.t + 1e-4; rm.t = rho.t - 1e-4; }
+        else { const TF ds = std::max( TF( 1e-4 ) * std::max( rho.s, smin ), TF( 1e-6 ) ); rp.s = rho.s + ds; rm.s = std::max( TF( 0 ), rho.s - ds ); }
+        const TF df = ( rp.mesure( cel, []( int, TF ) {} ) - rm.mesure( cel, []( int, TF ) {} ) ) / ( rho.chemin == Densite::MELANGE ? rp.t - rm.t : rp.s - rm.s );
+        std::printf( "  germe %6d ( %.3f, %.3f ) %2d sommets : masse %.10e  surface %.10e  ecart %.2e  |  d/dlambda %.6e  dif. finies %.6e  ecart %.2e  ( %d triangles )\n",
                      int( pd.ids[ k ] ), pd.c[ 0 ][ k ], pd.c[ 1 ][ k ], cel.nb, m, q, std::fabs( m - q ) / std::max( q, TF( 1e-300 ) ),
                      dds, df, std::fabs( dds - df ) / std::max( std::fabs( df ), TF( 1e-300 ) ), int( nt ) );
     }
@@ -166,16 +159,23 @@ void verifie( const PD &pd, const Nuage<2> &nu, Densite rho, const Parallel &par
     TF sa = 0, amin = 1e30;
     for ( TF v : a ) { sa += v; amin = std::min( amin, v ); }
     std::printf( "  somme des masses %.12f  exacte %.12f  ecart %.2e  ( plus petite %.2e, moyenne %.2e )\n",
-                 sa, masse_carre( rho ), std::fabs( sa - masse_carre( rho ) ), amin, sa / n );
+                 sa, rho.masse_carre(), std::fabs( sa - rho.masse_carre() ), amin, sa / n );
 }
+
+/// la valeur du parametre du chemin dans la VARIABLE d'extrapolation, et retour
+TF var_de( const Opts &o, TF lam ) { return o.variable == "s2" ? lam * lam : lam; }
+TF lam_de( const Opts &o, TF v )   { return o.variable == "s2" ? std::sqrt( std::max( v, TF( 0 ) ) ) : v; }
 
 template<class PD, class Lin>
 int lance( const Args &a, const Opts &o, const Nuage<2> &nu, Lin &lin ) {
     const SI n = nu.n;
     Densite rho = densite_de( o );
+    const bool melange = o.chemin == "melange";
+    rho.chemin = melange ? Densite::MELANGE : Densite::CONV;
     std::printf( "  densite : %d gaussiennes", int( rho.g.size() ) );
     for ( const Gaussienne &g : rho.g ) std::printf( "  ( %.2f, %.2f ; sigma %.4f, masse %.3f )", g.cx, g.cy, g.sigma, g.masse );
-    std::printf( "  plancher %.3f  ;  germes %s, n = %d\n", rho.plancher, o.diracs.c_str(), int( n ) );
+    std::printf( "  plancher %.3f  ;  germes %s, n = %d  ;  chemin %s, %d etapes, extrapolation d'ordre %d en %s\n",
+                 rho.plancher, o.diracs.c_str(), int( n ), o.chemin.c_str(), int( o.liste.size() ), o.ordre, melange ? "t" : o.variable.c_str() );
 
     double t0 = now();
     PD pd;
@@ -192,31 +192,37 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu, Lin &lin ) {
             Densite r2 = rho; r2.s = s;
             verifie( pd, nu, r2, a.par );
         }
+        std::printf( "-- verification, melange t = 0.3\n" );
+        Densite r3 = rho; r3.t = 0.3; r3.chemin = Densite::MELANGE;
+        verifie( pd, nu, r3, a.par );
         return 0;
     }
 
+    // le parametre du chemin : `s` ( la convolution ) ou `t` ( le melange )
+    auto regle = [ & ]( TF lam ) { if ( melange ) rho.t = lam; else rho.s = lam; };
+
     Newton<PD,Lin> nw( pd, lin, nu.P, a.par, o.newton );
     nw.rho = &rho;
-    nw.derivee = o.predire != "non";
+    nw.derivee = o.ordre > 0;
     Trames trames;                                       // une trame par etape, le diagramme converge
     const bool dump = ! o.dump.empty() && trames.ouvre( o.dump );
 
-    std::vector<TF> w( n, TF( 0 ) ), dwds, dw, a_p, da_p, w_try, a_try, da_try;
-    std::vector<Facette> fa_p, fa_try;
+    std::vector<TF> w( n, TF( 0 ) ), w1, w2, dw, b, a_p, da_p, w_try, a_try, da_try, a_pl, a_mi;
+    std::vector<Facette> fa_p, fa_try, fa_tmp;
     const double debut = now();
-    int tot_it = 0, tot_diag = 0, tot_recul = 0;
+    int tot_it = 0, tot_diag = 0, tot_recul = 0, tot_extra = 0;
     bool ok = true;
     std::vector<std::string> lignes;
     auto norme_res = [ & ]( const std::vector<TF> &a ) { TF r = 0; for ( SI i = 0; i < n; ++i ) r += ( a[ i ] - nw.nu[ i ] ) * ( a[ i ] - nw.nu[ i ] ); return std::sqrt( r ); };
-    for ( SI e = 0; e < SI( o.conv.size() ); ++e ) {
-        const TF s = o.conv[ e ];
-        rho.s = s;
-        const TF M = masse_carre( rho );
+    for ( SI e = 0; e < SI( o.liste.size() ); ++e ) {
+        const TF lam = o.liste[ e ];
+        regle( lam );
+        const TF M = rho.masse_carre();
         nw.nu.assign( n, M / n );
         nw.st = NewtonStats{};
         lin.st = StatsLin{};
-        std::printf( "-- s = %g : masse sur le carre %.6f, rho max %.4g, %s\n", s, M, rho.max_rho(),
-                     e == 0 ? "depuis Voronoi" : o.predire == "non" ? "depuis les poids precedents" : "depuis les poids extrapoles" );
+        std::printf( "-- %s = %g : masse sur le carre %.6f, rho max %.4g, %s\n", melange ? "t" : "s", lam, M, rho.max_rho(),
+                     e == 0 ? "depuis Voronoi" : dw.empty() ? "depuis les poids precedents" : "depuis les poids extrapoles" );
         const double te = now();
         // L'EXTRAPOLATION, GARDEE : `w + theta dw`, theta = 1, 1/2, ... tant qu'une cellule passe sous
         // le plancher ( la moitie de la plus petite masse du depart sans extrapolation, comme
@@ -250,16 +256,18 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu, Lin &lin ) {
                 nw.a.swap( a_p ); nw.fa.swap( fa_p ); if ( nw.derivee ) nw.da.swap( da_p );
                 std::printf( "   extrapolation REFUSEE ( %d essais ) : depart sans\n", nb_essais );
             }
+            tot_extra += nb_essais;                      // le depart nu remplace le diagramme de depart de Newton
             mesure = true;
         }
         const bool fini = nw.resout( w, mesure );
         const double dt = now() - te;
         const NewtonStats &st = nw.st;
         ok = ok && fini;
-        tot_it += st.nb_iter; tot_diag += st.nb_diag; tot_recul += st.nb_recul;
+        tot_it += st.nb_iter; tot_recul += st.nb_recul;
+        const int diag_newton = st.nb_diag;              // les essais d'extrapolation compris ( `nb_diag` compte tout )
         char buf[ 512 ];
         std::snprintf( buf, sizeof( buf ), "| %-8g | %.2f (%d) | %.2e | %d | %d (%d) | %.2e | %.2f s | %s |",
-                       s, theta, nb_essais, double( st.reste0 ), st.nb_iter, st.nb_diag, st.nb_recul, double( st.reste ), dt, st.fin );
+                       lam, theta, nb_essais, double( st.reste0 ), st.nb_iter, st.nb_diag, st.nb_recul, double( st.reste ), dt, st.fin );
         lignes.push_back( buf );
         std::printf( "   newton %s : depart %.2e, %d iterations, %d diagrammes ( %d reculs ), reste %.2e, %.2f s"
                      " [ diag %.2f  asm %.2f  lin %.2f ]%s\n",
@@ -267,34 +275,60 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu, Lin &lin ) {
                      st.t_diag, st.t_asm, st.t_lin, st.nb_deborde ? ( "  DEBORDEMENTS : " + std::to_string( st.nb_deborde ) + " cellules ( --maxnv )" ).c_str() : "" );
         w = nw.w;
         dw.clear();
+        tot_diag += diag_newton;
         if ( dump ) {
             pd.set_weights( w.data(), a.par );
-            trames.ecrit( pd, nw.nu, a.par, "densite", double( s ), st.nb_iter, double( st.reste ), st.nb_recul );
+            trames.ecrit( pd, nw.nu, a.par, "densite", double( lam ), st.nb_iter, double( st.reste ), st.nb_recul );
         }
         if ( ! fini && st.fin != std::string( "STAGNATION" ) ) break;
 
-        // l'extrapolation vers la largeur suivante : `L dw/ds = dnu/ds - da/ds`
-        if ( e + 1 < SI( o.conv.size() ) && o.predire != "non" ) {
-            const TF s2 = o.conv[ e + 1 ];
+        // L'EXTRAPOLATION vers l'etape suivante, dans la variable `v` ( `s`, `s^2` ou `t` ) :
+        //   ordre 1 : `L w' = nu' - da/dv` ;
+        //   ordre 2 : `L w'' = nu'' - phi''`, `phi( eps ) = a( w + eps w', v + eps )` par differences
+        //             finies le long de la tangente ( deux diagrammes ) -- toutes les derivees secondes
+        //             de `a` dans la direction `( w', 1 )`, sans tenseur.
+        if ( e + 1 < SI( o.liste.size() ) && o.ordre > 0 ) {
+            const TF v = melange ? lam : var_de( o, lam ), v2 = melange ? o.liste[ e + 1 ] : var_de( o, o.liste[ e + 1 ] );
+            const TF dv = v2 - v;
+            const TF dl_dv = melange ? 1 : ( o.variable == "s2" ? 1 / ( 2 * lam ) : 1 );   // `d lam / d v`
             Laplacien L;
             L.assemble( n, nw.fa );
-            std::vector<TF> b( n );
+            b.resize( n );
             TF sda = 0;
             for ( SI i = 0; i < n; ++i ) sda += nw.da[ i ];
-            for ( SI i = 0; i < n; ++i ) b[ i ] = sda / n - nw.da[ i ];
-            if ( ! lin.resout( L, b, dwds ) ) { std::printf( "   extrapolation : solveur lineaire en echec\n" ); continue; }
-            // en `s` : w += ( s2 - s ) dw/ds ; en `s^2` : dw/d(s^2) = dw/ds / ( 2 s ), w += ( s2^2 - s^2 ) dw/d(s^2)
-            const TF coef = o.predire == "s2" ? ( s2 * s2 - s * s ) / ( 2 * s ) : ( s2 - s );
-            TF amp = 0, ampw = 0;
+            for ( SI i = 0; i < n; ++i ) b[ i ] = ( sda / n - nw.da[ i ] ) * dl_dv;
+            if ( ! lin.resout( L, b, w1 ) ) { std::printf( "   extrapolation : solveur lineaire en echec\n" ); continue; }
             dw.resize( n );
-            for ( SI i = 0; i < n; ++i ) { dw[ i ] = coef * dwds[ i ]; amp = std::max( amp, std::fabs( dw[ i ] ) ); ampw = std::max( ampw, std::fabs( w[ i ] ) ); }
-            std::printf( "   extrapolation vers s = %g ( en %s ) : |dw|max %.3e sur des poids d'amplitude %.3e\n", s2, o.predire.c_str(), amp, ampw );
+            for ( SI i = 0; i < n; ++i ) dw[ i ] = dv * w1[ i ];
+            TF amp2 = 0;
+            if ( o.ordre >= 2 ) {
+                const TF h = o.fd * std::fabs( dv );
+                auto phi = [ & ]( TF eps, std::vector<TF> &res ) {
+                    regle( melange ? lam + eps : lam_de( o, v + eps ) );
+                    w_try.resize( n );
+                    for ( SI i = 0; i < n; ++i ) w_try[ i ] = w[ i ] + eps * w1[ i ];
+                    nw.mesures_et_facettes( w_try, res, fa_tmp );
+                };
+                phi( +h, a_pl );
+                phi( -h, a_mi );
+                regle( lam );
+                tot_extra += 2; tot_diag += 2;
+                TF sb = 0;
+                for ( SI i = 0; i < n; ++i ) { b[ i ] = -( a_pl[ i ] - 2 * nw.a[ i ] + a_mi[ i ] ) / ( h * h ); sb += b[ i ]; }
+                for ( SI i = 0; i < n; ++i ) b[ i ] -= sb / n;           // `nu''` : la moyenne, la somme est nulle
+                if ( ! lin.resout( L, b, w2 ) ) { std::printf( "   extrapolation : solveur lineaire en echec ( ordre 2 )\n" ); dw.clear(); continue; }
+                for ( SI i = 0; i < n; ++i ) { const TF c = TF( 0.5 ) * dv * dv * w2[ i ]; amp2 = std::max( amp2, std::fabs( c ) ); dw[ i ] += c; }
+            }
+            TF amp = 0, ampw = 0;
+            for ( SI i = 0; i < n; ++i ) { amp = std::max( amp, std::fabs( dw[ i ] ) ); ampw = std::max( ampw, std::fabs( w[ i ] ) ); }
+            std::printf( "   extrapolation vers %g ( ordre %d ) : |dw|max %.3e%s sur des poids d'amplitude %.3e\n",
+                         o.liste[ e + 1 ], o.ordre, amp, o.ordre >= 2 ? ( " ( terme d'ordre 2 : " + std::to_string( amp2 ) + " )" ).c_str() : "", ampw );
         }
     }
     const double total = now() - debut + t_arbre;
-    std::printf( "  TOTAL : %d iterations, %d diagrammes ( %d reculs ), %.2f s ( arbre %.3f )  --  %s\n",
-                 tot_it, tot_diag, tot_recul, total, t_arbre, ok ? "converge" : "PAS CONVERGE" );
-    std::printf( "  | s | theta (essais) | depart | it | diag (reculs) | reste | temps | fin |\n  |---|---|---|---|---|---|---|---|\n" );
+    std::printf( "  TOTAL : %d iterations, %d diagrammes dont %d pour l'extrapolation ( %d reculs ), %.2f s ( arbre %.3f )  --  %s\n",
+                 tot_it, tot_diag, tot_extra, tot_recul, total, t_arbre, ok ? "converge" : "PAS CONVERGE" );
+    std::printf( "  | %s | theta (essais) | depart | it | diag (reculs) | reste | temps | fin |\n  |---|---|---|---|---|---|---|---|\n", melange ? "t" : "s" );
     for ( const std::string &l : lignes ) std::printf( "  %s\n", l.c_str() );
 
     if ( ! o.ecrire.empty() ) {
@@ -321,14 +355,20 @@ int main( int argc, char **argv ) {
         else if ( s == "--gauss" )      o.gauss = val();
         else if ( s == "--plancher" )   o.plancher = std::atof( val() );
         else if ( s == "--diracs" )     o.diracs = val();
-        else if ( s == "--conv" )       o.conv0 = std::atof( val() );
+        else if ( s == "--conv" )       { o.conv0 = std::atof( val() ); o.chemin = "conv"; }
         else if ( s == "--conv-ratio" ) o.conv_ratio = std::atof( val() );
         else if ( s == "--conv-min" )   o.conv_min = std::atof( val() );
-        else if ( s == "--conv-liste" ) {
+        else if ( s == "--melange" )    { o.mel0 = std::atof( val() ); o.chemin = "melange"; }
+        else if ( s == "--melange-ratio" ) o.mel_ratio = std::atof( val() );
+        else if ( s == "--melange-min" ) o.mel_min = std::atof( val() );
+        else if ( s == "--liste" ) {
             std::stringstream ss( val() ); std::string it;
-            while ( std::getline( ss, it, ',' ) ) o.conv.push_back( std::atof( it.c_str() ) );
+            while ( std::getline( ss, it, ',' ) ) o.liste.push_back( std::atof( it.c_str() ) );
         }
-        else if ( s == "--predire" )    o.predire = val();
+        else if ( s == "--chemin" )     o.chemin = val();
+        else if ( s == "--ordre" )      o.ordre = std::atoi( val() );
+        else if ( s == "--variable" )   o.variable = val();
+        else if ( s == "--fd" )         o.fd = std::atof( val() );
         else if ( s == "--check" )      o.check = true;
         else if ( s == "--solver" )     o.solver = val();
         else if ( s == "--amg-var" )    o.amgvar = std::atoi( val() );
@@ -347,11 +387,16 @@ int main( int argc, char **argv ) {
                 "  --gauss SPEC    \"cx,cy,sigma,masse;...\" a la place du jeu\n"
                 "  --plancher F    la fraction de la masse dans un plancher uniforme    (0)\n"
                 "  --diracs D      uniforme | rho ( germes tires selon la densite )    (uniforme)\n"
-                "  --conv S0       la continuation : largeurs S0, S0/R, ... >= Smin, puis 0   (0 : direct)\n"
+                "  --conv S0       la continuation en CONVOLUTION : largeurs S0, S0/R, ... >= Smin, puis 0   (0 : direct)\n"
                 "  --conv-ratio R                                                           (2)\n"
                 "  --conv-min S                                                             (0 : jusqu'a sigma/4)\n"
-                "  --conv-liste L  les largeurs explicites, \"0.5,0.2,0.1,0\"\n"
-                "  --predire P     non | s | s2 : extrapoler les poids par dw/ds vers l'etape suivante  (non)\n"
+                "  --melange F0    la continuation en MELANGE ( 1 - t ) + t rho : planchers F0, F0/R, ... >= Fmin, puis 0\n"
+                "  --melange-ratio R                                                        (2)\n"
+                "  --melange-min F                                                          (1e-3)\n"
+                "  --liste L       les valeurs explicites du parametre ( s, ou t avec --chemin melange ), \"0.5,0.2,0.1,0\"\n"
+                "  --ordre K       l'extrapolation vers l'etape suivante : 0 | 1 ( tangente ) | 2 ( + derivee seconde, 2 diagrammes )  (0)\n"
+                "  --variable V    s | s2 : la variable de l'extrapolation ( chemin conv )     (s)\n"
+                "  --fd F          ordre 2 : le pas des differences finies, en fraction du pas   (0.25)\n"
                 "  --check         verifier la mesure ( circulation contre surface, derivee contre differences finies )\n"
                 "  --solver S      chol ( Eigen, defaut ) | amg\n"
                 "  --amg-var V     0 = agregation+spai0 | 1 = agregation+GS | 2 = Ruge-Stuben+GS  (2)\n"
@@ -365,12 +410,17 @@ int main( int argc, char **argv ) {
         }
     }
     a.finalise();
-    if ( o.conv.empty() ) {
-        if ( o.conv0 > 0 ) {
-            const TF smin = o.conv_min > 0 ? o.conv_min : o.sigma / 4;
-            for ( TF s = o.conv0; s >= smin * ( 1 - 1e-12 ); s /= o.conv_ratio ) o.conv.push_back( s );
+    if ( o.liste.empty() ) {
+        if ( o.chemin == "melange" ) {
+            for ( TF f = o.mel0; f > 0 && f >= o.mel_min * ( 1 - 1e-12 ); f /= o.mel_ratio ) o.liste.push_back( 1 - f );
+            o.liste.push_back( 1 );
+        } else {
+            if ( o.conv0 > 0 ) {
+                const TF smin = o.conv_min > 0 ? o.conv_min : o.sigma / 4;
+                for ( TF s = o.conv0; s >= smin * ( 1 - 1e-12 ); s /= o.conv_ratio ) o.liste.push_back( s );
+            }
+            o.liste.push_back( 0 );
         }
-        o.conv.push_back( 0 );
     }
 
     const Opts &oc = o;

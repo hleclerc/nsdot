@@ -5,9 +5,14 @@
 //
 //     rho( x ) = plancher + sum_k m_k G_k( x ),   G_k( x ) = exp( -|x - c_k|^2 / 2 s_k^2 ) / ( 2 pi s_k^2 )
 //
-// et la CONVOLUTION par une gaussienne de largeur `s` : les gaussiennes s'elargissent en
-// `s_k' = sqrt( s_k^2 + s^2 )`, rien d'autre ne change ( le plancher est invariant ). Le support est
-// le carre, avant comme apres : les cellules sont deja coupees par lui.
+// et deux chemins vers elle :
+//
+//   la CONVOLUTION par une gaussienne de largeur `s` : les gaussiennes s'elargissent en
+//   `s_k' = sqrt( s_k^2 + s^2 )`, rien d'autre ne change ( le plancher est invariant ) ;
+//   le MELANGE `( 1 - t ) + t rho` avec Lebesgue : un plancher `1 - t` qui garantit qu'aucune
+//   cellule n'est jamais de masse nulle, et `d a / d t = masse_rho - aire`, gratuit.
+//
+// Le support est le carre, avant comme apres : les cellules sont deja coupees par lui.
 //
 // = La masse d'une cellule SANS quadrature de surface
 //
@@ -47,22 +52,38 @@ struct Gaussienne {
 };
 
 struct Densite {
-    std::vector<Gaussienne> g;
-    TF plancher = 0;          ///< la densite uniforme ajoutee
+    enum Chemin : int { CONV = 0, MELANGE = 1 };
+    std::vector<Gaussienne> g;  ///< les gaussiennes de `rho` ( masses AVANT melange )
+    TF plancher = 0;          ///< la densite uniforme de `rho` ( avant melange )
     TF s        = 0;          ///< la largeur de la convolution ( 0 : la densite elle-meme )
+    TF t        = 1;          ///< le melange `( 1 - t ) + t rho` ( 1 : la densite elle-meme )
+    int chemin  = CONV;       ///< ce que `mesure` derive : `s` ou `t`
     TF seuil    = 40;         ///< `exp( -seuil )` : en deca, on ne calcule pas
 
     TF sigma_eff( SI k ) const { return std::sqrt( g[ k ].sigma * g[ k ].sigma + s * s ); }
+    TF masse_eff( SI k ) const { return t * g[ k ].masse; }
+    TF plancher_eff() const { return ( 1 - t ) + t * plancher; }
 
     /// la densite en un point
     TF rho( TF x, TF y ) const {
-        TF r = plancher;
+        TF r = plancher_eff();
         for ( SI k = 0; k < SI( g.size() ); ++k ) {
             const TF sig = sigma_eff( k ), ex = x - g[ k ].cx, ey = y - g[ k ].cy;
             const TF q = ( ex * ex + ey * ey ) / ( 2 * sig * sig );
-            if ( q < seuil ) r += g[ k ].masse * std::exp( -q ) / ( 2 * M_PI * sig * sig );
+            if ( q < seuil ) r += masse_eff( k ) * std::exp( -q ) / ( 2 * M_PI * sig * sig );
         }
         return r;
+    }
+
+    /// la masse EXACTE sur le carre unite ( convolution et melange compris )
+    TF masse_carre() const {
+        TF m = plancher;
+        for ( SI k = 0; k < SI( g.size() ); ++k ) {
+            const TF sig = sigma_eff( k ) * M_SQRT2;
+            m += g[ k ].masse * TF( 0.25 ) * ( std::erf( ( 1 - g[ k ].cx ) / sig ) + std::erf( g[ k ].cx / sig ) )
+                                           * ( std::erf( ( 1 - g[ k ].cy ) / sig ) + std::erf( g[ k ].cy / sig ) );
+        }
+        return ( 1 - t ) + t * m;
     }
 
     TF max_rho() const {
@@ -72,19 +93,20 @@ struct Densite {
     }
 
     /// LA MASSE d'une cellule 2D ( `cel.nb`, `cel.vx`, `cel.vy`, `cel.cid` ), ses facettes contre
-    /// les autres germes ( `facette( j, masse_de_la_facette )` ), et si `dds` n'est pas nul la derivee
-    /// de la masse par rapport a `s`.
+    /// les autres germes ( `facette( j, masse_de_la_facette )` ), et si `dl` n'est pas nul la derivee
+    /// de la masse par rapport au parametre du chemin ( `s` ou `t` ).
     template<class Cel, class Facette>
-    TF mesure( const Cel &cel, Facette &&facette, TF *dds = nullptr ) const {
+    TF mesure( const Cel &cel, Facette &&facette, TF *dl = nullptr ) const {
         const int nb = cel.nb;
-        if ( nb <= 0 ) { if ( dds ) *dds = 0; return 0; }
+        if ( nb <= 0 ) { if ( dl ) *dl = 0; return 0; }
 
         TF a2 = 0;                                       // l'aire signee, deux fois : l'orientation
         for ( int i = 0, j = nb - 1; i < nb; j = i++ )
             a2 += TF( cel.vx[ j ] ) * TF( cel.vy[ i ] ) - TF( cel.vx[ i ] ) * TF( cel.vy[ j ] );
         const TF sgn = a2 >= 0 ? 1 : -1;
+        const TF aire = TF( 0.5 ) * std::fabs( a2 ), pl = plancher_eff();
 
-        TF masse = plancher * TF( 0.5 ) * std::fabs( a2 ), dm = 0;
+        TF gauss = 0, dm = 0;                            // `gauss` : sum_k m_k circ_k, AVANT melange
         for ( int i = 0, j = nb - 1; i < nb; j = i++ ) {  // l'arete [ v_j, v_i ], portee par `cid[ j ]`
             const TF xj = TF( cel.vx[ j ] ), yj = TF( cel.vy[ j ] );
             const TF ex = TF( cel.vx[ i ] ) - xj, ey = TF( cel.vy[ i ] ) - yj;
@@ -92,27 +114,27 @@ struct Densite {
             if ( ! ( L > 0 ) ) continue;
             const TF ux = ex / L, uy = ey / L;           // la tangente, et la normale SORTANTE
             const TF nx = sgn * uy, ny = -sgn * ux;
-            TF fac = plancher * L;
+            TF fac = pl * L;
             for ( SI k = 0; k < SI( g.size() ); ++k ) {
                 const TF sig = sigma_eff( k ), m = g[ k ].masse;
                 const TF px = xj - g[ k ].cx, py = yj - g[ k ].cy;
                 const TF d = px * nx + py * ny;          // > 0 : le centre du cote interieur
                 const TF t0 = px * ux + py * uy, t1 = t0 + L;
-                // la facette, et la derivee : la meme exponentielle, le meme erf
+                // la facette, et la derivee en `s` : la meme exponentielle, le meme erf
                 const TF qd = d * d / ( 2 * sig * sig );
                 if ( qd < seuil ) {
                     const TF e = std::exp( -qd );
                     const TF E = std::erf( t1 / ( sig * M_SQRT2 ) ) - std::erf( t0 / ( sig * M_SQRT2 ) );
-                    fac += m * e * E / ( 2 * sig * std::sqrt( 2 * M_PI ) );
-                    if ( dds && s > 0 )
-                        dm += ( s / sig ) * ( -m / ( 2 * sig * sig * std::sqrt( 2 * M_PI ) ) ) * d * e * E;
+                    fac += t * m * e * E / ( 2 * sig * std::sqrt( 2 * M_PI ) );
+                    if ( dl && chemin == CONV && s > 0 )
+                        dm += ( s / sig ) * ( -t * m / ( 2 * sig * sig * std::sqrt( 2 * M_PI ) ) ) * d * e * E;
                 }
-                masse += m * circulation( d, t0, t1, sig );
+                gauss += m * circulation( d, t0, t1, sig );
             }
             if ( cel.cid[ j ] >= 0 ) facette( cel.cid[ j ], fac );
         }
-        if ( dds ) *dds = dm;
-        return masse;
+        if ( dl ) *dl = chemin == CONV ? dm : ( plancher - 1 ) * aire + gauss;   // `d / d t` : rho - 1
+        return pl * aire + t * gauss;
     }
 
     /// `d int_t0^t1 ( 1 - exp( -( d^2 + t^2 ) / 2 s^2 ) ) / ( 2 pi ( d^2 + t^2 ) ) dt`, le `d` compris
