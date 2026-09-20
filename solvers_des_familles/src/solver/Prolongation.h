@@ -318,7 +318,7 @@ SI rattrape( PD &pd, const TF *const *P, const Laplacien &Lvor, std::vector<TF> 
         pd.measures( a, par );
         std::vector<SI> vides;
         for ( SI i = 0; i < n; ++i ) if ( a[ i ] < plancher ) vides.push_back( i );
-        if ( vides.empty() ) { cellules = nb_cel.load(); return 0; }
+        if ( vides.empty() ) return 0;
         std::vector<TF> neuf( vides.size() );
         parallel_for( SI( vides.size() ), par, [ & ]( SI q, int ) {
             const SI i = vides[ q ];

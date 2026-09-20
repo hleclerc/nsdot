@@ -18,6 +18,8 @@ int dispatch( const Args &a, F &&f ) {
     auto avec = [ & ]( auto tk ) {
         using TK = typename decltype( tk )::type;
         if constexpr ( D == 2 ) {
+            if ( nv > 256 ) return f( std::type_identity<PowerDiagram<2,TK,512>>{} );
+            if ( nv > 128 ) return f( std::type_identity<PowerDiagram<2,TK,256>>{} );
             if ( nv > 64 ) return f( std::type_identity<PowerDiagram<2,TK,128>>{} );
             return f( std::type_identity<PowerDiagram<2,TK,64>>{} );
         } else {

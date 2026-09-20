@@ -53,6 +53,8 @@ src/solver/    Laplacien.h        c_ij = |facette| / ( 2 |p_i - p_j| ), assembl�
                Lineaire.h         Amg (AMGCL, trois hiérarchies) et Cholesky (Eigen) -- même surface
                Newton.h           Newton amorti (KMT), jauge w_0 = 0, le temps par poste
                Ecrasement.h       le polynôme d'une cellule le long de w + alpha d, à combinatoire figée
+               Prolongation.h     le multi-échelle : paquets, prolongations, relèvement minimal (§ 8)
+               Densite.h          plancher + gaussiennes : la masse d'une cellule par circulation (§ 9)
 
 src/bench/     Nuages.h/.cpp      uniforme, lecture/écriture de cases/, la suite
                Direction.h        un nuage + des poids + une direction de Newton, sauvés dans directions/
@@ -64,6 +66,7 @@ src/mains/     main_check.cpp     l'exactitude
                main_newton.cpp    le solveur
                main_ecrasement.cpp les cellules qui se vident le long d'une direction (§ 7)
                main_multiechelle.cpp la prolongation du multi-échelle, mesurée (§ 8)
+               main_densite.cpp   les densités hétérogènes, la continuation en largeur (§ 9)
 
 directions/    les directions « à problème » sauvées, leurs CSV et leurs figures
 scripts/       ecrasement_plot.py, les figures depuis les CSV
@@ -666,3 +669,125 @@ Le cas dur reste hors de portée : à `s = 0.005` les germes comprimés à `S ~ 
 milliers, leurs naissances interfèrent, et le relèvement cascade. Le relèvement pourrait ne
 re-mesurer que le voisinage de ce qu'il relève, et les niveaux grossiers s'arrêter plus tôt
 (`--n-min`) : à faire si la piste est retenue.
+
+---
+
+# 9. LES DENSITÉS HÉTÉROGÈNES : LA CONTINUATION EN LARGEUR (`densite`)
+
+Jusqu'ici la mesure était Lebesgue sur le carré. `src/solver/Densite.h` ajoute un plancher
+uniforme plus une somme de gaussiennes isotropes, `ρ = f + Σ_k m_k G_{σ_k}(x − c_k)`, et la
+**convolution** par une gaussienne de largeur `s` — qui, sur une somme de gaussiennes, ne change
+que les largeurs : `σ_k' = √(σ_k² + s²)`, le plancher invariant, le support (le carré) inchangé.
+`xmake run densite --help` ; 2D seulement.
+
+**La masse d'une cellule sans quadrature de surface.** Le flux `F = f(r)(x − c)` avec
+`f(r) = m(1 − e^{−r²/2σ²})/(2π r²)` vérifie `div F = m G_σ`, donc la masse d'un polygone est la
+circulation de `F·n` sur son bord, et le long d'une arête `(x − c)·n = d` est constant : la
+distance signée du centre à la droite. Reste une intégrale 1D par arête et par gaussienne, d'un
+intégrande *lisse* (c'est `−expm1`, à l'échelle `max(|d|, σ)` près du pied de la perpendiculaire,
+puis `1/t²`) : des morceaux géométriques depuis le pied, huit points de Gauss chacun, et là où
+l'exponentielle est négligeable (`e^{−40}` — « l'amplitude en deçà de laquelle on ne calcule
+pas ») la forme close `atan`. La **facette** (l'entrée de la hessienne) est un `erf`, et la
+**dérivée de la masse par rapport à `s`** aussi : `∂f/∂σ = −m e^{−r²/2σ²}/(2πσ³)`. `--check` :
+la masse contre une quadrature de surface (7 points par triangle, subdivisée à `σ/8`) à
+**4e-10** (la limite de la règle de surface), la somme des masses contre la masse exacte du carré
+à **1e-15**, la dérivée contre des différences finies à **1e-8**.
+
+Le jeu par défaut : 4 gaussiennes de largeurs `σ × {1, 0.7, 1.3, 1}`, masses `0.35, 0.25, 0.25,
+0.15`, centres écartés du bord ; les germes **uniformes** sur le carré (`--diracs rho` : tirés
+selon `ρ`). `n = 10⁵`, `--threads 8`, `--maxnv 512` (les cellules autour d'un pic reçoivent les
+pointes de centaines d'aiguilles), Cholesky. Avec une densité, `--pas essai-limites` est ramené
+aux essais : les limites parlent en aires.
+
+## 9.1 Newton direct : ça casse à `σ = 0.05`
+
+| σ | Newton depuis Voronoï |
+|---|---|
+| 0.2  | 6 it, 11 diag, 3.1 s |
+| 0.1  | 27 it, 155 diag (127 reculs), 22 s |
+| 0.05 | **STAGNATION** à la première itération (35 diagrammes) |
+
+Un diagramme coûte **0.09–0.13 s** contre 0.02 en Lebesgue : la circulation (exp, erf, atan par
+arête et par gaussienne) pèse cinq fois la géométrie. Pas optimisé (4 points de Gauss au lieu de
+8 donnent la même précision et ne changent pas le temps : ce sont les `erf` et les `exp`).
+
+À `σ = 0.05` les cellules loin des pics ont une masse numériquement nulle au départ de Voronoï :
+le plancher de l'amortissement est nul, la hessienne a des lignes vides, et la direction est
+inutilisable — Newton recule 34 fois et s'arrête. *Ce sont les queues exponentielles qui tuent,
+pas l'hétérogénéité* : avec les germes tirés selon `ρ` (Voronoï presque juste), `σ = 0.02`
+échoue aussi (100 itérations, 1 062 diagrammes, des pas de `1e-8`) ; le même avec un plancher de
+1 % de la masse converge en **37 it, 151 diag**. Une cellule dont la masse est une exponentielle
+de sa position n'a pas de linéarisation utile.
+
+## 9.2 La continuation en largeur de convolution
+
+`--conv 0.5 --conv-ratio R` : la densité convolée à `s = 0.5` (presque uniforme : Voronoï est
+presque la solution), résolue, puis `s / R`, ... jusqu'à `σ/4`, puis `s = 0`. À chaque étape la
+cible est `M(s)/n` avec `M(s)` la masse exacte sur le carré, et le départ est la solution
+précédente. `σ = 0.05` :
+
+| ratio | départ de l'étape | it | diag (reculs) | temps |
+|---|---|---|---|---|
+| 2 | poids précédents | 63 | 188 (118) | 44 s |
+| √2 | poids précédents | 72 | **123 (39)** | 39 s |
+| 2^¼ | poids précédents | 110 | 149 (16) | 52 s |
+| 2 | extrapolés par `dw/ds`, sans garde | 83 | 364 (274) | 74 s |
+| √2 | extrapolés, sans garde | 111 | 406 (283) | 92 s |
+| 2^¼ | extrapolés, sans garde | 107 | 237 (107) | 67 s |
+| √2 | extrapolés, **gardés** (en `s`) | 60 | **107 (17)** | 36 s |
+| √2 | extrapolés, gardés (en `s²`) | 61 | 107 (18) | 36 s |
+
+Et là où le direct est hors de portée, `ratio √2` :
+
+| σ | poids précédents | extrapolés, gardés |
+|---|---|---|
+| 0.02 | 139 it, 400 diag (246), 93 s | 117 it, **332 diag** (168), 70 s |
+| 0.01 | 192 it, 645 diag (436), 153 s | 175 it, **606 diag** (368), 149 s |
+
+(`ratio 2` à `σ = 0.02` : 862 diagrammes ; sauter de `s = 0.1` à `0.02` : échec.)
+
+**La dérivée `dw/ds`.** À la solution, `L dw/ds = dν/ds − ∂a/∂s` : une résolution linéaire avec la
+hessienne du dernier diagramme, `∂a/∂s` calculé par la formule close à chaque diagramme. La
+tangente est juste — sur un petit pas (`0.0625 → 0.055`) le résidu ℓ² du départ tombe de
+`4.4e-4` à `3.4e-5`, 13 fois — mais **elle vide des cellules** : sur un pas `√2`, le départ
+extrapolé a 15 cellules vides là où le départ sans en a zéro, Newton limpe 13 itérations à
+`t ~ 1e-3` et coûte 79 diagrammes au lieu de 18. Le max du résidu est fait de quelques cellules
+dont la masse tient à la pointe d'une aiguille, que la tangente pince au second ordre. La
+**garde** : `w + θ dw`, `θ = 1, ½, ¼ ... 1/16`, retenu dès qu'aucune cellule ne passe sous la
+moitié de la plus petite masse du départ sans extrapolation (le plancher de l'amortissement) et
+que le résidu ℓ² est meilleur ; sinon le départ sans. Un diagramme par essai, celui du départ
+retenu réutilisé par Newton (`resout( w, deja_mesure )`). En `s` ou en `s²` (la variable naturelle,
+`σ'² = σ² + s²`), même chose. Le gain est de **13 % à 20 %** : `θ = 1` passe hors de la zone dure,
+et y tombe à `1/16`.
+
+## 9.3 Où ça coûte : la naissance des aiguilles, à `s` fixe
+
+`figures/densite_pic.png` (`scripts/densite_figure.py`, depuis `--dump`) : les cellules autour
+du pic `(0.72, 0.26)` aux étapes `s = 0.5, 0.0625, 0.031, 0`. À `s = 0.5` un Voronoï à peine
+déformé ; à `0.031` le rebord des aiguilles ; à `0` **25 000 cellules** — le quart des germes du
+carré, la masse du pic — convergent sur une fenêtre de `0.2 × 0.2`, en aiguilles venues de tout
+le carré.
+
+Le coût par étape, `σ = 0.02` et `0.01`, `ratio √2`, poids précédents :
+
+| s | 0.5 … 0.088 | 0.0625 | 0.044 | 0.031 | 0.022 | 0.0156 | 0.011 | 0.0078 | … 0 |
+|---|---|---|---|---|---|---|---|---|---|
+| σ = 0.02 : diag | 4–11 | 31 | **92** | **79** | 58 | 47 | 26 | 12 | 7–9 |
+| σ = 0.01 : diag | 4–12 | 37 | **130** | **115** | **105** | 84 | 44 | 31 | 9–23 |
+
+La zone dure est **`s ∈ [0.016, 0.06]`, la même pour `σ = 0.05, 0.02, 0.01`** : elle ne dépend
+pas de `σ` mais de `σ_eff = √(σ² + s²)` — c'est là que les queues des cellules lointaines
+s'éteignent (`e^{−0.3²/2σ_eff²}`) et qu'elles doivent devenir des aiguilles pour atteindre les
+pics. Avant, les cellules sont des blobs ; après, les aiguilles ne font que s'affiner et chaque
+étape retombe à 10 diagrammes. Dans la zone, Newton fait 20 itérations dont les deux tiers en
+reculs (`t = 1/8 … 1e-3`) : les changements de combinatoire — une aiguille a des voisins sur
+toute sa longueur — rendent la linéarisation courte, et ni des pas plus petits en `s` (`2^¼`)
+ni la tangente ne l'abrègent. Le plancher aide en direct (`σ = 0.05`, 10 % de la masse : 36 it,
+175 diag ; 1 % : échec) mais change le problème.
+
+**Ce que ça dit.** La continuation rend résoluble ce que Newton direct ne résout pas, pour un
+coût à peu près constant en `σ` (330 à 600 diagrammes, 70 à 150 s, contre 10 diagrammes en
+Lebesgue) concentré dans une zone de `s` qui ne bouge pas. La dérivée `dw/ds` est correcte et
+utile hors de cette zone, nuisible dedans sans garde. Le levier suivant n'est pas dans le pas en
+`s` mais dans Newton lui-même sur la naissance des aiguilles — le pendant, pour une masse, du
+pas par les limites de § 7.

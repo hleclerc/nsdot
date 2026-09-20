@@ -40,6 +40,7 @@
 // =====================================================================================
 
 #include "diagram/PowerDiagram.h"
+#include "solver/Densite.h"
 #include "solver/Ecrasement.h"
 #include "solver/Laplacien.h"
 #include <algorithm>
@@ -75,6 +76,7 @@ struct NewtonOptions {
 struct NewtonStats {
     const char *fin = "?";     ///< pourquoi la boucle s'est arretee
     TF     reste = 0;          ///< le `max_i |a_i - nu_i| / nu_i` atteint
+    TF     reste0 = 0;         ///< le meme AU DEPART ( ce que vaut le point de depart )
     int    nb_iter = 0, nb_diag = 0, nb_recul = 0;
     SI     nb_deborde = 0;     ///< cellules qui ont deborde `MaxNv`, en tout ( mesure fausse )
     SI     nb_cell_lim = 0;    ///< cellules calculees par la passe des limites, en tout
@@ -98,14 +100,21 @@ struct Newton {
     std::vector<TF> w;         ///< les poids courants, `w[ 0 ] == 0`
     std::vector<TF> a;         ///< les mesures courantes
     std::vector<TF> d;         ///< la derniere direction de Newton ( `d[ 0 ] == 0` )
+    std::vector<Facette> fa;   ///< les facettes du diagramme courant ( celui de `w` )
     NewtonStats     st;
+
+    /// UNE DENSITE au lieu de Lebesgue ( 2D ) : la mesure d'une cellule est sa masse. Le pas par les
+    /// limites parle en aires, il est alors ramene aux ESSAIS.
+    const Densite  *rho = nullptr;
+    bool            derivee = false; ///< avec `rho` : calculer aussi `da = d a / d s` a chaque diagramme
+    std::vector<TF> da;        ///< `d a_i / d s` pour `w` ( la largeur de convolution de `rho` )
 
     Newton( PD &pd, Lin &lin, const TF *const *P, Parallel par, NewtonOptions o = {} )
         : pd( pd ), lin( lin ), P( P ), par( par ), o( o ) {}
 
     /// LES MESURES ET LES FACETTES pour les poids `W` : un diagramme, et la conversion
     /// `c_ij = |facette| / ( 2 |p_i - p_j| )` faite par le thread qui a mesure la cellule.
-    void mesures_et_facettes( const std::vector<TF> &W, std::vector<TF> &res, std::vector<Facette> &fa ) {
+    void mesures_et_facettes( const std::vector<TF> &W, std::vector<TF> &res, std::vector<Facette> &fa, std::vector<TF> *dres = nullptr ) {
         constexpr int D = PD::dim;
         double t0 = now();
         pd.set_weights( W.data(), par );
@@ -113,7 +122,7 @@ struct Newton {
 
         t0 = now();
         std::vector<std::vector<Facette>> par_th( std::max( par.threads, 1 ) );
-        st.nb_deborde += pd.measures_and_facets( res, par, [ & ]( int t, SI i, SI j, TF mes ) {
+        auto facette = [ & ]( int t, SI i, SI j, TF mes ) {
             TF d2 = 0;
             for ( int d = 0; d < D; ++d ) {
                 const TF e = P[ d ][ j ] - P[ d ][ i ];
@@ -121,7 +130,16 @@ struct Newton {
             }
             if ( d2 > 0 )
                 par_th[ t ].push_back( Facette{ i, j, mes / ( 2 * std::sqrt( d2 ) ) } );
-        } );
+        };
+        if ( rho ) {
+            if constexpr ( D == 2 ) {
+                if ( dres ) dres->assign( pd.n, TF( 0 ) );
+                st.nb_deborde += pd.measures_and_facets_avec( res, par, facette, [ & ]( const typename PD::Cell &cel, auto &&fac, SI i ) {
+                    return rho->mesure( cel, fac, dres ? &( *dres )[ i ] : nullptr );
+                } );
+            }
+        } else
+            st.nb_deborde += pd.measures_and_facets( res, par, facette );
         fa.clear();
         for ( auto &v : par_th )
             fa.insert( fa.end(), v.begin(), v.end() );
@@ -136,18 +154,23 @@ struct Newton {
     }
 
     /// LA BOUCLE, depuis `w_init` ( zero : Voronoi ). Rend `true` si le critere d'arret est atteint.
-    bool resout( const std::vector<TF> &w_init ) {
+    /// `deja_mesure` : `a`, `fa` ( et `da` ) sont DEJA ceux de `w_init` ( qui porte la jauge ) --
+    /// l'appelant les a calcules en choisissant son depart, on ne refait pas ce diagramme.
+    bool resout( const std::vector<TF> &w_init, bool deja_mesure = false ) {
         const SI n = pd.n;
-        std::vector<TF> a2, b, w2;
-        std::vector<Facette> fa, fa2;
+        std::vector<TF> a2, b, w2, da2;
+        std::vector<Facette> fa2;
         std::vector<LimiteCellule> lim;
         Laplacien L;
+        std::vector<TF> *pda = rho && derivee ? &da : nullptr, *pda2 = pda ? &da2 : nullptr;
+        if ( rho && o.pas == NewtonOptions::ESSAI_LIMITES ) o.pas = NewtonOptions::ESSAIS;
 
         w = w_init;
         const TF g = w[ 0 ];
         for ( SI i = 0; i < n; ++i )                     // la jauge, imposee ici et maintenue par
             w[ i ] -= g;                                 // `d[ 0 ] = 0` ensuite
-        mesures_et_facettes( w, a, fa );
+        if ( ! deja_mesure )
+            mesures_et_facettes( w, a, fa, pda );
         if ( o.apres_pas ) o.apres_pas( -1, 0, 0 );
 
         TF eps = 0, t_prec = 0, beta = o.beta0;
@@ -167,6 +190,7 @@ struct Newton {
             }
             const TF nr = norme2( b );
             st.reste = pire;
+            if ( it == 0 ) st.reste0 = pire;
 
             if ( pire <= o.tol ) {
                 if ( o.trace )
@@ -317,7 +341,7 @@ struct Newton {
                 if ( ! ( essai == 0 && o.pas == NewtonOptions::ESSAI_LIMITES ) ) {   // deja fait en `t`
                     for ( SI i = 0; i < n; ++i ) w2[ i ] = w[ i ] + t * d[ i ];
                     w2[ 0 ] = 0;                         // la jauge, imposee et non esperee
-                    mesures_et_facettes( w2, a2, fa2 );
+                    mesures_et_facettes( w2, a2, fa2, pda2 );
                 }
                 TF m2 = a2[ 0 ], n2 = 0;                 // le plancher `eps` est une aire ABSOLUE
                 for ( SI i = 0; i < n; ++i ) {
@@ -352,6 +376,7 @@ struct Newton {
             w.swap( w2 );
             a.swap( a2 );
             fa.swap( fa2 );
+            if ( pda ) da.swap( da2 );
             if ( o.apres_pas ) o.apres_pas( it, t, st.nb_recul );
         }
         st.fin = "MAX ITERATIONS";

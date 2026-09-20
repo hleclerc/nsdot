@@ -127,13 +127,20 @@ struct PowerDiagram {
     /// depuis le thread `t` -- chaque paire est vue DEUX fois, une par cellule.
     template<class Facette>
     SI measures_and_facets( std::vector<TF> &res, const Parallel &par, Facette &&facette ) const {
+        return measures_and_facets_avec( res, par, facette, []( const Cell &cel, auto &&fac, SI ) { return mesure( cel, fac ); } );
+    }
+
+    /// Le meme, avec UNE AUTRE MESURE que Lebesgue : `mes( cel, facette( j, mes ), i )` rend la mesure
+    /// de la cellule `i` et appelle `facette` pour chacune de ses facettes ( `Densite.h` ).
+    template<class Facette, class Mesure>
+    SI measures_and_facets_avec( std::vector<TF> &res, const Parallel &par, Facette &&facette, Mesure &&mes ) const {
         res.assign( n, TF( 0 ) );
         std::atomic<SI> deborde{ 0 };
         parallel_for( n, par, [ & ]( SI k, int t ) {
             Cell cel;
             const d2::SI32 i = ids[ k ];
             if ( ! cellule( k, cel ) ) { ++deborde; return; }
-            res[ i ] = mesure( cel, [ & ]( d2::SI32 j, TF mes ) { facette( t, i, j, mes ); } );
+            res[ i ] = mes( cel, [ & ]( d2::SI32 j, TF m ) { facette( t, i, j, m ); }, SI( i ) );
         } );
         return deborde.load();
     }
