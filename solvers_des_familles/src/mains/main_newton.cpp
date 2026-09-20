@@ -183,6 +183,10 @@ int main( int argc, char **argv ) {
         else if ( s == "--lim-tol" )    o.newton.lim.tol = std::atof( val() );
         else if ( s == "--lim-coeff" )  o.newton.lim.coeff = std::atof( val() );
         else if ( s == "--t-min" )      o.newton.t_min = std::atof( val() );
+        else if ( s == "--residu" ) {
+            const std::string v = val();
+            o.newton.residu = v == "barriere" ? NewtonOptions::BARRIERE : v == "log" ? NewtonOptions::LOG : NewtonOptions::LIN;
+        }
         else {
             std::printf( "usage: newton [options]\n" );
             Args::usage();
@@ -203,7 +207,8 @@ int main( int argc, char **argv ) {
                 "  --facteur F     t = F * alpha* en mode facteur                (0.9)\n"
                 "  --lim-tol T     precision relative des limites               (1e-2)\n"
                 "  --lim-coeff C   ou verifier la prediction                    (0.99)\n"
-                "  --t-min T       sous ce pas, STAGNATION                      (1e-10)\n" );
+                "  --t-min T       sous ce pas, STAGNATION                      (1e-10)\n"
+                "  --residu R      lin ( a - nu ) | barriere ( x - 1/x, x = a/nu ) | log  (lin)\n" );
             return s == "--help" || s == "-h" ? 0 : 1;
         }
     }

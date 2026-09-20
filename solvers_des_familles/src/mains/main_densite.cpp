@@ -221,7 +221,7 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu, Lin &lin ) {
     int tot_it = 0, tot_diag = 0, tot_recul = 0, tot_extra = 0;
     bool ok = true;
     std::vector<std::string> lignes;
-    auto norme_res = [ & ]( const std::vector<TF> &a ) { TF r = 0; for ( SI i = 0; i < n; ++i ) r += ( a[ i ] - nw.nu[ i ] ) * ( a[ i ] - nw.nu[ i ] ); return std::sqrt( r ); };
+    auto norme_res = [ & ]( const std::vector<TF> &a ) { return nw.merite( a ); };   // le merite de Newton ( --residu )
     for ( SI e = 0; e < SI( o.liste.size() ); ++e ) {
         const TF lam = o.liste[ e ];
         regle( lam );
@@ -414,6 +414,10 @@ int main( int argc, char **argv ) {
         else if ( s == "--variable" )   o.variable = val();
         else if ( s == "--fd" )         o.fd = std::atof( val() );
         else if ( s == "--garde" )      o.garde = val();
+        else if ( s == "--residu" ) {
+            const std::string v = val();
+            o.newton.residu = v == "barriere" ? NewtonOptions::BARRIERE : v == "log" ? NewtonOptions::LOG : NewtonOptions::LIN;
+        }
         else if ( s == "--passes" )     o.passes = std::atoi( val() );
         else if ( s == "--check" )      o.check = true;
         else if ( s == "--solver" )     o.solver = val();
@@ -443,6 +447,7 @@ int main( int argc, char **argv ) {
                 "  --ordre K       l'extrapolation vers l'etape suivante : 0 | 1 ( tangente ) | 2 ( + derivee seconde, 2 diagrammes )  (0)\n"
                 "  --variable V    s | s2 : la variable de l'extrapolation ( chemin conv )     (s)\n"
                 "  --fd F          ordre 2 : le pas des differences finies, en fraction du pas   (0.25)\n"
+                "  --residu R      lin ( a - nu ) | barriere ( x - 1/x, x = a/nu ) | log : le residu de Newton et le merite  (lin)\n"
                 "  --garde G       global ( theta = 1, 1/2, ... ) | cellule ( les pincees relevees seules, puis theta )  (global)\n"
                 "  --passes K      garde par cellule : passes de relevement au plus              (6)\n"
                 "  --check         verifier la mesure ( circulation contre surface, derivee contre differences finies )\n"

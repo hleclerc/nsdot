@@ -69,6 +69,12 @@ struct NewtonOptions {
     TF   beta0      = 0.25;    ///< ESSAI_LIMITES : le tout premier essai ( 1 : un diagramme a moitie vide sur Voronoi )
     TF   mult_ok    = 2;       ///< ESSAI_LIMITES : apres un essai passe DIRECT, `beta *= mult_ok` ( plafonne a 1 )
     OptionsLimites lim;        ///< les reglages de la passe des limites ( `niveau` est mis ici )
+    /// LE RESIDU : `g( a_i / nu_i )` au lieu de `a_i - nu_i`. Meme solution, autre Newton et autre
+    /// merite pour l'amortissement. BARRIERE `g = x - 1/x` : une cellule minuscule ( `x << 1` ) recoit
+    /// `x -> 2x` au lieu de sa masse entiere d'un coup, et `|g| ~ 1/x` refuse les pas qui la pincent ;
+    /// LOG `g = log x` : `x -> x ( 1 - log x )`.
+    enum Residu : int { LIN = 0, BARRIERE, LOG };
+    int  residu     = LIN;
     /// appele apres chaque pas ACCEPTE ( et au depart, `it = -1` ) : `pd` porte alors `w`
     std::function<void( int it, TF t, int reculs )> apres_pas;
 };
@@ -153,6 +159,36 @@ struct Newton {
         return std::sqrt( s );
     }
 
+    /// `g( x )` et `g'( x )` du residu choisi, `x = a / nu` borne loin de zero
+    TF g( TF x ) const {
+        x = std::max( x, TF( 1e-8 ) );
+        return o.residu == NewtonOptions::BARRIERE ? x - 1 / x : o.residu == NewtonOptions::LOG ? std::log( x ) : x - 1;
+    }
+    TF gp( TF x ) const {
+        x = std::max( x, TF( 1e-8 ) );
+        return o.residu == NewtonOptions::BARRIERE ? 1 + 1 / ( x * x ) : o.residu == NewtonOptions::LOG ? 1 / x : 1;
+    }
+    /// LE MERITE de l'amortissement : `| a - nu |_2` pour LIN ( les chiffres de reference ), et la norme
+    /// SANS DIMENSION `| g( a / nu ) - moyenne |_2` pour les autres. La moyenne : `sum a = sum nu` est
+    /// automatique, donc `g( x_i ) = 0` pour tout `i` fait `n` equations pour `n - 1` inconnues ; c'est
+    /// `g( x_i ) = c` pour tout `i` qu'on resout ( qui force `x_i = 1` puisque la moyenne des `x` est 1 ),
+    /// et le second membre projete somme a zero comme il faut ( sans ca, la ligne rayee par la jauge
+    /// porte toute l'incoherence : mesure, le germe 0 explose et Newton stagne a la premiere etape ).
+    TF merite( const std::vector<TF> &A ) const {
+        const SI n = SI( A.size() );
+        if ( o.residu == NewtonOptions::LIN ) {
+            TF s = 0;
+            for ( SI i = 0; i < n; ++i ) s += ( nu[ i ] - A[ i ] ) * ( nu[ i ] - A[ i ] );
+            return std::sqrt( s );
+        }
+        TF m = 0;
+        for ( SI i = 0; i < n; ++i ) m += g( A[ i ] / nu[ i ] );
+        m /= n;
+        TF s = 0;
+        for ( SI i = 0; i < n; ++i ) { const TF e = g( A[ i ] / nu[ i ] ) - m; s += e * e; }
+        return std::sqrt( s );
+    }
+
     /// LA BOUCLE, depuis `w_init` ( zero : Voronoi ). Rend `true` si le critere d'arret est atteint.
     /// `deja_mesure` : `a`, `fa` ( et `da` ) sont DEJA ceux de `w_init` ( qui porte la jauge ) --
     /// l'appelant les a calcules en choisissant son depart, on ne refait pas ce diagramme.
@@ -166,9 +202,9 @@ struct Newton {
         if ( rho && o.pas == NewtonOptions::ESSAI_LIMITES ) o.pas = NewtonOptions::ESSAIS;
 
         w = w_init;
-        const TF g = w[ 0 ];
+        const TF jauge = w[ 0 ];
         for ( SI i = 0; i < n; ++i )                     // la jauge, imposee ici et maintenue par
-            w[ i ] -= g;                                 // `d[ 0 ] = 0` ensuite
+            w[ i ] -= jauge;                             // `d[ 0 ] = 0` ensuite
         if ( ! deja_mesure )
             mesures_et_facettes( w, a, fa, pda );
         if ( o.apres_pas ) o.apres_pas( -1, 0, 0 );
@@ -180,15 +216,27 @@ struct Newton {
             b.assign( n, TF( 0 ) );
             for ( SI i = 0; i < n; ++i ) {
                 nvide += ! ( a[ i ] > 0 );
+                pire = std::max( pire, std::fabs( nu[ i ] - a[ i ] ) / nu[ i ] );
                 b[ i ] = nu[ i ] - a[ i ];               // `-r`, le second membre de Newton
-                pire = std::max( pire, std::fabs( b[ i ] ) / nu[ i ] );
+            }
+            if ( o.residu != NewtonOptions::LIN ) {      // `J = diag( g' / nu ) L` : `L d = ( nu / g' ) ( c - g )`,
+                TF su = 0, sug = 0;                      // `c` la moyenne ponderee qui fait sommer `b` a zero
+                for ( SI i = 0; i < n; ++i ) {
+                    const TF x = a[ i ] / nu[ i ], u = nu[ i ] / gp( x );
+                    su += u; sug += u * g( x );
+                }
+                const TF c = sug / su;
+                for ( SI i = 0; i < n; ++i ) {
+                    const TF x = a[ i ] / nu[ i ];
+                    b[ i ] = nu[ i ] / gp( x ) * ( c - g( x ) );
+                }
             }
             if ( it == 0 ) {                             // le plancher d'aire de l'amortissement
                 TF am = a[ 0 ], nm = nu[ 0 ];
                 for ( SI i = 0; i < n; ++i ) { am = std::min( am, a[ i ] ); nm = std::min( nm, nu[ i ] ); }
                 eps = TF( 0.5 ) * std::min( nm, am );
             }
-            const TF nr = norme2( b );
+            const TF nr = merite( a );
             st.reste = pire;
             if ( it == 0 ) st.reste0 = pire;
 
@@ -343,13 +391,9 @@ struct Newton {
                     w2[ 0 ] = 0;                         // la jauge, imposee et non esperee
                     mesures_et_facettes( w2, a2, fa2, pda2 );
                 }
-                TF m2 = a2[ 0 ], n2 = 0;                 // le plancher `eps` est une aire ABSOLUE
-                for ( SI i = 0; i < n; ++i ) {
-                    m2 = std::min( m2, a2[ i ] );
-                    const TF e = nu[ i ] - a2[ i ];
-                    n2 += e * e;
-                }
-                const TF n2r = std::sqrt( n2 );
+                TF m2 = a2[ 0 ];                         // le plancher `eps` est une aire ABSOLUE
+                for ( SI i = 0; i < n; ++i ) m2 = std::min( m2, a2[ i ] );
+                const TF n2r = merite( a2 );
                 if ( m2 >= eps && n2r <= ( 1 - gain * t / 2 ) * nr && n2r < nr ) { pris = true; break; }
                 t /= 2;
                 ++st.nb_recul;

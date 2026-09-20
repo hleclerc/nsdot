@@ -865,3 +865,34 @@ Là, la tangente ne dit rien d'utile : `s ↦ w(s)` a un pli — des milliers de
 régime entre deux étapes — et aucune garde ne répare une prédiction fausse. Un relèvement
 séquentiel avec re-mesure locale (la leçon de la 1D, § 8.4) demanderait de rafraîchir l'arbre à
 chaque cellule : 600 rafraîchissements, le prix de 100 diagrammes.
+
+## 9.6 Pénaliser les petites masses : le résidu barrière
+
+`--residu barriere | log` (dans `newton` aussi) : Newton sur `g(a_i/ν_i)` au lieu de `a_i − ν_i`,
+`g(x) = x − 1/x` (ou `log x`). Même solution, autre direction et autre mérite : une cellule
+minuscule reçoit `x → 2x` au lieu de sa masse entière d'un coup, et `|g| ~ 1/x` refuse les pas qui
+la pincent. Un détail qui compte : `Σ a = Σ ν` est automatique, donc `g(x_i) = 0` fait `n`
+équations pour `n − 1` inconnues — sans projection, la ligne rayée par la jauge porte toute
+l'incohérence, le germe 0 explose et Newton stagne dès `s = 0.5` (mesuré : 220 diagrammes). On
+résout `g(x_i) = c` avec `c` la moyenne pondérée qui fait sommer le second membre à zéro, et le
+mérite est `|g − moyenne(g)|₂`. Continuation `√2`, `σ = 0.05`, diagrammes en tout :
+
+| | `a − ν` | `x − 1/x` | `log x` |
+|---|---|---|---|
+| direct, `σ = 0.1` | 155 | 284, pas convergé en 60 it | 358, stagne |
+| continuation, ordre 0 | **123** | 1 391 | 915 |
+| continuation, ordre 1 | **107** | 505 | — |
+
+Hors de la zone dure, la barrière est propre — pas un recul, 4 à 9 diagrammes par étape, comme
+`a − ν`. Dans la zone, elle coûte dix fois plus (235, 489, 277 diagrammes aux étapes `s = 0.044,
+0.031, 0.022`, contre 19, 18, 12) : le mérite part à `434` (des centaines de cellules à
+`x ~ 1e-3`), le pas plein le fait *monter*, et l'itération accepte `t = 1/128 … 1/8` pour un pour
+cent de baisse — quarante itérations à ce régime. Le mécanisme est exactement l'inverse de ce
+qu'on espérait : avec des milliers de cellules en transition, un pas plein en pince toujours
+quelques-unes un peu plus qu'il n'en répare, et `1/x` en fait un minimax où la pire cellule
+décide de tout. Le résidu `a − ν`, lui, borne la contribution d'une cellule pincée à `ν` et
+accepte ces pas : les cellules pincées se relèvent aux itérations suivantes. Dit autrement, **le
+pincement transitoire fait partie du chemin** — une aiguille est une cellule pincée qui a
+trouvé sa masse — et pénaliser les petites masses pénalise la transition elle-même. Avec la
+tangente (ordre 1, garde sur le mérite barrière), même chose : `θ = 1` partout sauf dans la
+zone, et 198 diagrammes à `s = 0.031`.
