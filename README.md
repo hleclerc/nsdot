@@ -355,3 +355,9 @@ imposer un ; `-O3 -march=native`), `nvcc` autour de lui pour CUDA (en cours de p
 device dit avec quoi il se compile (`Device.compiler`, voir `loom/src/loom/compilation/Compiler.py`) ;
 le runtime C++ d'un device est sa queue (`loom/include/loom/support/kernels/CpuQueue.h`), qui porte
 le lancement des noyaux -- `run_parallel` ne connaît aucun device.
+
+La compilation passe par un graphe ninja (`loom/src/loom/compilation/build.py`, `build/build.ninja`
+réécrit depuis `build/ninja/manifest.json`) : une unité n'est refaite que si l'un de SES en-têtes a
+changé (depfiles du compilateur). `libloom_runtime` (la file de threads, une par processus) est liée
+par chaque noyau ; `FfiCode( sources = [ ( "x.cpp", { "DEF": "v" } ) ] )` compile une source de
+domaine une fois par configuration et la lie. `SDOT_FORCE_BUILD=1` force la cible demandée.
