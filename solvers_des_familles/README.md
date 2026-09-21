@@ -1146,9 +1146,9 @@ pour *confirmer* qu'il n'y a personne d'autre — et ça, la mémoire ne peut pa
 
 ## 11.4 Comment se souvenir : les rangs, les feuilles et leurs bits, ou la frontière
 
-Trois formes de mémoire, mesurées sur les mêmes souvenirs exacts (uniforme 10⁵, 8 fils sur les
-cœurs 8–15, `scripts/banc.sh`, minimum de 10 ; la machine était partagée, les *comptes* sont
-exacts, les temps indicatifs) :
+Trois formes de mémoire, mesurées sur les mêmes souvenirs exacts (uniforme 10⁵, 8 fils, minimum
+de 10 ; la machine était partagée — d'où le lanceur `scripts/job` à la racine, `-b` pour un
+benchmark seul sur la machine — les *comptes* sont exacts, les temps indicatifs) :
 
 * **A. les rangs des voisins** (ce que § 11.1 mesurait) : une liste triée par germe, proposée
   d'abord, et au parcours un octet par rang, « déjà proposé », posé et retiré par la cellule.

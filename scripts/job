@@ -1,0 +1,75 @@
+#!/bin/bash
+# =====================================================================================
+# LE LANCEUR DE TRAVAUX de la machine : tout ce qui dure passe par ici, quelle que soit la session.
+#
+#   scripts/job [options] -- <commande...>      un travail GENERIQUE : partage la machine
+#   scripts/job -b [options] -- <commande...>   un BENCHMARK : la machine pour lui seul
+#   scripts/job ls                              ce qui tourne et ce qui attend
+#   scripts/job wait                            attendre que plus rien ne tourne
+#
+# Deux classes, un verrou lecteurs / redacteur ( flock ) a preference REDACTEUR :
+#   - un travail generique prend `queue` en partage, puis `main` en partage, et rend `queue` ;
+#   - un benchmark prend `queue` en exclusif ( des lors plus aucun travail generique ne passe ),
+#     attend `main` en exclusif ( ceux qui tournent finissent ), rend `queue` et tourne seul.
+# Donc : un benchmark demande => les nouveaux travaux attendent, il part des que les anciens ont
+# fini, et il ne se fait pas doubler. Deux benchmarks se suivent.
+#
+# Options : -m MEM ( MemoryMax du scope systemd : 8G par defaut, 24G pour un benchmark ),
+#           -n NOM ( pour `ls` ), -l FICHIER ( stdout+stderr y vont ), -q ( pas de bandeau ).
+# Un travail generique est `nice 5`. L'environnement recoit JOB_CLASS=generic|bench.
+# =====================================================================================
+set -u
+DIR=/tmp/job; mkdir -p $DIR; chmod 1777 $DIR 2>/dev/null
+cls=generic; mem=""; nom=""; log=""; quiet=0
+case "${1:-}" in
+    ls)
+        printf "%-8s %-8s %-10s %-20s %s\n" PID CLASSE ETAT DEPUIS COMMANDE
+        for f in $DIR/*.job; do
+            [ -e "$f" ] || continue
+            pid=$(basename "$f" .job)
+            if kill -0 "$pid" 2>/dev/null; then IFS='|' read -r c e t n <"$f"; printf "%-8s %-8s %-10s %-20s %s\n" "$pid" "$c" "$e" "$t" "$n"; else rm -f "$f"; fi
+        done
+        exit 0 ;;
+    wait)
+        exec 8>$DIR/main.lock; flock -x 8; exit 0 ;;
+esac
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -b|--bench) cls=bench ;;
+        -m) mem="$2"; shift ;;
+        -n) nom="$2"; shift ;;
+        -l) log="$2"; shift ;;
+        -q) quiet=1 ;;
+        --) shift; break ;;
+        -h|--help) sed -n 2,20p "$0"; exit 0 ;;
+        *) echo "job : option inconnue '$1' ( -h )" >&2; exit 2 ;;
+    esac
+    shift
+done
+[ $# -gt 0 ] || { echo "job : pas de commande ( job [-b] -- cmd... )" >&2; exit 2; }
+[ -n "$mem" ] || mem=$([ $cls = bench ] && echo 24G || echo 8G)
+[ -n "$nom" ] || nom="$*"
+me=$$
+reg=$DIR/$me.job
+etat() { printf '%s|%s|%s|%s\n' "$cls" "$1" "$(date +%H:%M:%S)" "$nom" >"$reg"; }
+trap 'rm -f "$reg"' EXIT
+
+exec 9>$DIR/queue.lock 8>$DIR/main.lock
+if [ $cls = bench ]; then
+    etat "attend"
+    flock -x 9                                           # plus personne ne passe la file
+    flock -x 8                                           # ceux qui tournent finissent
+    flock -u 9
+else
+    etat "attend"
+    flock -s 9; flock -s 8; flock -u 9
+fi
+etat "tourne"
+[ $quiet = 1 ] || echo "[job $me $cls] $nom" >&2
+export JOB_CLASS=$cls
+run=( systemd-run --user --scope -q -p MemoryMax="$mem" )
+[ $cls = bench ] || run+=( nice -n 5 )
+if [ -n "$log" ]; then "${run[@]}" "$@" >"$log" 2>&1; else "${run[@]}" "$@"; fi
+rc=$?
+[ $quiet = 1 ] || echo "[job $me $cls] fin, code $rc" >&2
+exit $rc
