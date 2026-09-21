@@ -215,12 +215,63 @@ if test( "the_limits_step_reaches_the_same_plan_with_fewer_diagrams" ):
     pos = rng.uniform( 0.1, 0.9, size = ( 60, 2 ) )
     src = SumOfDiracs( pos )
     dst = _scattered_target( 2, 4, seed = 6 )
-    a = OtPlan( src, dst, boundaries = box_half_spaces( *_BOX ), max_iter = 200, mass_tol = 1e-12, step = "trials" )
-    b = OtPlan( src, dst, boundaries = box_half_spaces( *_BOX ), max_iter = 200, mass_tol = 1e-12, step = "limits" )
+    # ( sans la continuation : c'est le Newton direct, et ses reculs, qu'on compare ici )
+    a = OtPlan( src, dst, boundaries = box_half_spaces( *_BOX ), max_iter = 200, mass_tol = 1e-12, step = "trials", continuation = "never" )
+    b = OtPlan( src, dst, boundaries = box_half_spaces( *_BOX ), max_iter = 200, mass_tol = 1e-12, step = "limits", continuation = "never" )
     assert a.converged and b.converged, ( a.stats, b.stats )
     assert numpy.allclose( numpy.asarray( a.weights ), numpy.asarray( b.weights ), atol = 1e-9 )
     assert b.stats[ "nb_diag" ] <= a.stats[ "nb_diag" ], ( a.stats[ "nb_diag" ], b.stats[ "nb_diag" ] )
     assert b.stats[ "nb_cell_lim" ] > 0 and b.stats[ "nb_recul" ] == 0, b.stats
+
+
+if test( "the_continuation_solves_what_direct_newton_cannot" ):
+    # des bosses ÉTROITES ( le cas dur du banc, `solvers_des_familles` README § 9 ) : des cellules sans
+    # masse au départ, Newton direct STAGNE ; la continuation en largeur ( `otplan/Continuation.h` )
+    # converge, et `"auto"` la déclenche toute seule sur la plus petite masse du départ
+    rng = numpy.random.default_rng( 91 )
+    pos = rng.uniform( 0, 1, size = ( 400, 2 ) )
+    centres = numpy.array( [ [ 0.3, 0.3 ], [ 0.7, 0.35 ], [ 0.4, 0.75 ], [ 0.75, 0.7 ] ] )
+    dst = SumOfGaussians( centres, 0.04 * numpy.array( [ 1, 0.7, 1.3, 1 ] ), weights = numpy.array( [ 0.35, 0.25, 0.25, 0.15 ] ) )
+    box = box_half_spaces( [ 0, 0 ], [ 1, 1 ] )
+    direct = OtPlan( SumOfDiracs( pos ), dst, boundaries = box, max_iter = 100, mass_rtol = 1e-6, continuation = "never" )
+    assert not direct.converged, direct.stats
+    plan = OtPlan( SumOfDiracs( pos ), dst, boundaries = box, max_iter = 100, mass_rtol = 1e-6 )
+    assert plan.converged and plan.stats[ "nb_etapes" ] > 1, plan.stats
+    got = numpy.asarray( plan.cell_masses ).reshape( -1 )
+    assert numpy.allclose( got, _target_masses( plan ), rtol = 1e-5 ), numpy.abs( got / _target_masses( plan ) - 1 ).max()
+    # l'historique porte la largeur de chaque pas, décroissante jusqu'à 0
+    ss = [ h[ "s" ] for h in plan.history ]
+    assert ss[ 0 ] > 0 and ss[ -1 ] == 0 and all( b <= a for a, b in zip( ss, ss[ 1: ] ) )
+
+    # une IMAGE aussi ( floutée sur sa grille ) : une image presque vide, sauf deux taches
+    values = numpy.full( ( 32, 32 ), 1e-6 )
+    values[ 6:10, 6:10 ] = 1.0
+    values[ 20:26, 18:24 ] = 0.7
+    img = Image( values = values, origin = [ 0.0, 0.0 ], frame = [ [ 1 / 32, 0 ], [ 0, 1 / 32 ] ] )
+    plan = OtPlan( SumOfDiracs( pos ), img, max_iter = 100, mass_rtol = 1e-6 )
+    assert plan.converged and plan.stats[ "nb_etapes" ] > 1, plan.stats
+    got = numpy.asarray( plan.cell_masses ).reshape( -1 )
+    assert numpy.allclose( got, _target_masses( plan ), rtol = 1e-5 ), numpy.abs( got / _target_masses( plan ) - 1 ).max()
+
+
+if test( "an_unbounded_domain_is_closed_by_the_hull_of_the_diracs" ):
+    # des gaussiennes SANS `boundaries` : le domaine est l'enveloppe des diracs ( `hull.py`, seize
+    # demi-plans qui s'appuient sur le nuage, les axes compris -> un pavé de départ et douze coupes ),
+    # chaque dirac y est, le transport est celui vers la gaussienne restreinte à ce domaine
+    rng = numpy.random.default_rng( 3 )
+    pos = rng.uniform( 0.15, 0.85, size = ( 60, 2 ) )
+    dst = SumOfGaussians( numpy.array( [ [ 0.5, 0.5 ] ] ), numpy.array( [ 0.15 ] ), weights = numpy.array( [ 1.0 ] ) )
+    plan = OtPlan( SumOfDiracs( pos ), dst, max_iter = 100, mass_tol = 1e-12 )
+    assert plan.converged, plan.stats
+    pd = plan._pd
+    assert pd.box_min.is_defined and int( pd.bnd_offsets.shape[ 0 ] ) == 12
+    assert numpy.allclose( numpy.asarray( pd.box_min ), pos.min( axis = 0 ) ) and numpy.allclose( numpy.asarray( pd.box_max ), pos.max( axis = 0 ) )
+    assert 0.9 < plan.stats[ "masse_domaine" ] < 1.0
+    got = numpy.asarray( plan.cell_masses ).reshape( -1 )
+    assert numpy.allclose( got, _target_masses( plan ), atol = 1e-10 )
+    # une marge écarte le domaine, qui contient alors plus de masse
+    wide = OtPlan( SumOfDiracs( pos ), dst, max_iter = 100, mass_tol = 1e-12, domain_margin = 0.2 )
+    assert wide.converged and wide.stats[ "masse_domaine" ] > plan.stats[ "masse_domaine" ]
 
 
 if test( "the_plain_storage_gives_the_same_plan" ):

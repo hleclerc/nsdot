@@ -29,6 +29,17 @@ struct SumOfGaussians {
     static constexpr int ct_dim = DECAYED_TYPE_OF( nb_dims )::value;
     using TF = DECAYED_TYPE_OF( positions )::TF;
 
+    /// LA CONVOLUTION par une gaussienne de largeur `conv_s` ( `with_convolution` ) : sur une somme de
+    /// gaussiennes elle ne change que les largeurs, `sigma_i' = sqrt( sigma_i^2 + conv_s^2 )`, rien
+    /// d'autre -- ce que la continuation en largeur de `OtPlan` parcourt ( `otplan/Continuation.h` ).
+    /// Un membre A PART des attributs generes : `0` par defaut, donc absent de tout appel ordinaire.
+    TF conv_s = 0;
+
+    HD TF sigma_of( SI i ) const { const TF s = TF( sigmas( i ) ); return conv_s > 0 ? sdot::sqrt( s * s + conv_s * conv_s ) : s; }
+    HD SumOfGaussians with_convolution( TF s ) const { SumOfGaussians r( *this ); r.conv_s = s; return r; }
+    /// la plus petite largeur ( avant convolution ) : l'echelle en dessous de laquelle la continuation s'arrete
+    HD TF smallest_sigma() const { TF r = TF( sigmas( 0 ) ); for ( SI i = 1; i < SI( sigmas.shape( 0 ) ); ++i ) r = sdot::fmin( r, TF( sigmas( i ) ) ); return r; }
+
     /// Un seul morceau, la cellule elle-même, et pas une coupe : rien à découper quand la densité
     /// est définie partout par la même formule. Le scratch de découpe n'est donc pas touché (et
     /// `extra_cuts_per_piece` rend 0, donc il n'est même pas alloué).

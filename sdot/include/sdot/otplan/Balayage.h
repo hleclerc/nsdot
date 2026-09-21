@@ -125,7 +125,7 @@ struct Balayage {
     const CpuQueue &queue;
     PD             &pd;                                  ///< les poids y sont ecrits ( vues de sortie )
     const Dom      &dom;
-    const Dist     &dist;
+    const Dist     *dist;                                ///< la densite courante ( elle change d'une etape a l'autre )
     int             nt;                                  ///< fils virtuels ( tranches contigues )
     SI              cap;                                 ///< sommets par cellule locale
     SI              words = 0;
@@ -138,7 +138,7 @@ struct Balayage {
     double t_maj = 0, t_diag = 0;
 
     Balayage( const CpuQueue &queue, PD &pd, const Dom &dom, const Dist &dist, SI cap0 )
-        : queue( queue ), pd( pd ), dom( dom ), dist( dist ), nt( std::max( queue.nb_workers(), 1 ) ), cap( std::max<SI>( cap0, 8 ) ) {
+        : queue( queue ), pd( pd ), dom( dom ), dist( &dist ), nt( std::max( queue.nb_workers(), 1 ) ), cap( std::max<SI>( cap0, 8 ) ) {
         const SI n = pd.nb_seeds();
         scratch.resize( nt );
         fa_th.resize( nt );
@@ -212,7 +212,7 @@ struct Balayage {
                 tranche( n, t, nt, b, e );
                 for ( SI k = b; k < e; ++k ) {
                     const SI i = pd.user_id( k );
-                    if ( ! mesure_et_facettes( pd, k, c, piece, dom, dist, a[ i ],
+                    if ( ! mesure_et_facettes( pd, k, c, piece, dom, *dist, a[ i ],
                                                [&]( SI j, double cij ) { fv.push_back( Facette{ i, pd.user_id( j ), cij } ); },
                                                fa != nullptr ) ) {
                         deborde = true;

@@ -52,6 +52,21 @@ def provoke( device = None ):
             np.asarray( pd.measures.tensor )
             _vjp( lambda p: PowerDiagram( p, boundaries = box, distribution = sog ).measures, pos )
 
+    # LE TRANSPORT ( `OtPlan` ) : un noyau par ( dimension, stockage, densité ) -- sur CPU seulement,
+    # le solveur y vit ( `sdot/otplan/` ) ; une image et des gaussiennes en 2D, une image en 3D
+    from sdot import OtPlan, SumOfDiracs
+    if driver.device.is_cpu:
+        for d in ( 2, 3 ):
+            pos = rng.uniform( 0.05, 0.95, size = ( 100, d ) )
+            img = Image( values = rng.uniform( 0.5, 1.5, size = ( 8, ) * d ), origin = [ 0.0 ] * d, frame = ( np.eye( d ) / 8 ).tolist() )
+            for acc in ( None, "plain" ):
+                plan = OtPlan( SumOfDiracs( pos ), img, accelerator = acc, max_iter = 20 )
+                plan.cost_and_position_grad()
+            if d == 2:
+                sog = SumOfGaussians( positions = pos[ :4 ], sigmas = [ 0.1 ] * 4, weights = [ 1.0 ] * 4 )
+                OtPlan( SumOfDiracs( pos ), sog, boundaries = box_half_spaces( [ 0 ] * d, [ 1 ] * d ), max_iter = 20 )
+                OtPlan( SumOfDiracs( pos ), None, boundaries = box_half_spaces( [ 0 ] * d, [ 1 ] * d ), max_iter = 20 )
+
     # la cellule seule, ce que `Cell` expose
     for d in ( 2, 3 ):
         c = Cell.make_hypercube( d, [ 0 ] * d, np.eye( d ).tolist() )

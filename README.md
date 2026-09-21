@@ -4,7 +4,7 @@ Monorepo — 3 projets indépendants :
 
 ```
 loom/     Interface agnostique Jax/Torch → noyaux C++ (tensor, Aggregate, drivers, compilation)
-sdot/     Transport optimal semi-discret (Cell, OtPlan1d, distributions)
+sdot/     Transport optimal semi-discret (Cell, PowerDiagram, OtPlan, OtPlan1d, distributions)
 otrec/    Application de reconstruction CT (Reconstruction, Sinogram)
 ```
 
@@ -369,6 +369,14 @@ variante : `cpu-x86-64-v3`, `cuda`, ...) : l'usage standard n'y compile rien. Le
 `python -m sdot.catalogue` ; la compilation par variante est `build_catalogue.py compile`, ce que
 fait `.github/workflows/wheels.yml`. `SDOT_KERNELS=auto|catalogue|atelier`. Voir
 `loom/src/loom/compilation/catalogue.py`.
+
+Le transport semi-discret (`sdot.OtPlan`) est résolu **en un appel**, tout en C++
+(`sdot/include/sdot/otplan/`) : le Newton amorti du banc `solvers_des_familles`, le laplacien
+assemblé sans tri, Cholesky (Eigen) / AMG (AMGCL) / CG en unité de domaine, le pas par les limites
+en 2D, la continuation en largeur pour les densités qui se concentrent, l'enveloppe des diracs quand
+rien ne borne le domaine. Eigen et AMGCL sont pris là où ils sont (`<eigen3/...>`, `<amgcl/...>`,
+`libeigen3-dev libamgcl-dev`) ; sans eux, le gradient conjugué maison. Voir
+`notes/2026-09-22-otplan-cpp.md`.
 
 La compilation passe par un graphe ninja (`loom/src/loom/compilation/build.py`, `build/build.ninja`
 réécrit depuis `build/ninja/manifest.json`) : une unité n'est refaite que si l'un de SES en-têtes a

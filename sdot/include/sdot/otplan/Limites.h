@@ -282,7 +282,7 @@ struct Limites2D {
     using Local = typename Bal::Local;
     using TK    = typename Local::TKernel;
     using TF    = typename PD::TF;
-    using Dist  = DECAYED_TYPE_OF( std::declval<Bal>().dist );
+    using Dist  = DECAYED_TYPE_OF( *std::declval<Bal>().dist );
     static constexpr bool bsp = requires( const PD &p ) { p.tree; };
     static constexpr bool polynome = std::is_same_v<Dist,UnitDensity>;
     using PDA = std::conditional_t<bsp,PdAlphaBsp<PD>,PdAlphaPlain<PD>>;
@@ -370,7 +370,7 @@ struct Limites2D {
     double masse( Local &c, Local &piece ) const {
         if ( c.nb == 0 ) return 0;
         TF m = 0;
-        if ( ! diagram::integrate_into<TF>( m, c, piece, bal.dist ) ) return 0;
+        if ( ! diagram::integrate_into<TF>( m, c, piece, *bal.dist ) ) return 0;
         return double( m );
     }
 

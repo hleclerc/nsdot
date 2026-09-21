@@ -119,8 +119,10 @@ struct Newton {
     NewtonStats         st;
     double              t_dernier = 1;   ///< le dernier pas accepte
     int                 nb_evals_dernier = 0;
+    double              beta;            ///< ESSAI_LIMITES : le prochain essai -- GARDE d'un `resout` a l'autre ( les
+                                         ///< etapes d'une continuation : un depart proche accepte `t = 1` d'emblee )
 
-    Newton( Bal &bal, SolveurLineaire &lin, NewtonOptions o = {} ) : bal( bal ), lin( lin ), o( o ) {}
+    Newton( Bal &bal, SolveurLineaire &lin, NewtonOptions o = {} ) : bal( bal ), lin( lin ), o( o ), beta( o.beta0 ) {}
 
     static double norme2( const std::vector<double> &v ) {
         double s = 0;
@@ -159,7 +161,7 @@ struct Newton {
         nb_evals_dernier = 1;
         if ( o.apres_pas ) o.apres_pas( 0, 0, 1 );
 
-        double eps = 0, beta = o.beta0;
+        double eps = 0;
         for ( int it = 0; it < o.maxit; ++it ) {
             double pire = 0, pire_rel = 0;
             SI nvide = 0;

@@ -43,24 +43,30 @@ majorants ) sont des SORTIES de l'appel, reprises par le diagramme après coup :
 appel sont en lecture seule.
 """
 
+import numpy as np                  # les seuls tableaux hôtes d'ici : les quelques plans du domaine
+
 from loom.compilation.FfiCode import FfiCode
 from loom.drivers.driver import driver
 from loom.tensor import Axis, CtShapeVar, IntTensor, RealTensor, ShapeVar, Tensor
 from loom.util import Aggregate
 
+from .Cell import Cell
 from .CellScratch import fp_size
-from .PowerDiagram import PowerDiagram
+from .PowerDiagram import PowerDiagram, axis_aligned_box
+from .hull import supporting_half_spaces
 
 
 # ce que `stats` porte, dans l'ordre de `otplan/Solve.h::Stat`
 _STATS = [ "fin", "reste", "reste0", "nb_iter", "nb_diag", "nb_recul", "t_maj", "t_diag", "t_asm", "t_lin", "t_lim", "eps",
-           "masse_domaine", "nb_deborde", "nb_cell_lim", "nb_tours_essai", "lin_nb_hier", "lin_nb_iter", "lin_pire", "depart", "t_total" ]
+           "masse_domaine", "nb_deborde", "nb_cell_lim", "nb_tours_essai", "lin_nb_hier", "lin_nb_iter", "lin_pire", "depart", "t_total",
+           "nb_etapes", "min_masse_depart" ]
 # une ligne de `history`, dans l'ordre de `otplan/Solve.h::Hist`
-_HISTORY = [ "step", "t", "residual_l2", "min_measure", "max_abs_residual", "nb_diag", "nb_evals" ]
+_HISTORY = [ "step", "t", "residual_l2", "min_measure", "max_abs_residual", "nb_diag", "nb_evals", "s" ]
 _FIN = { 0: "en cours", 1: "converge", 2: "max iterations", 3: "stagnation", 4: "solveur lineaire en echec" }
 _DEPART = { 0: "weights0", 1: "voronoi", 2: "similitude" }
 _LIN = { "auto": 0, "cholesky": 1, "amg": 2, "cg": 3 }
 _PAS = { "trials": 0, "limits": 1 }
+_CONTINUATION = { "never": 0, "auto": 1, "always": 2 }
 
 
 class _Options( Aggregate ):
@@ -73,11 +79,17 @@ class _Options( Aggregate ):
     beta0          : RealTensor
     mult_lim       : RealTensor
     confiance      : RealTensor
+    conv_s0        : RealTensor
+    conv_ratio     : RealTensor
+    conv_min       : RealTensor
+    conv_seuil     : RealTensor
     max_iter       : IntTensor
     max_reculs     : IntTensor
     lin            : IntTensor
     pas            : IntTensor
     trace          : IntTensor
+    continuation   : IntTensor
+    cap0           : IntTensor
     kernel_fp_size : CtShapeVar
 
 
@@ -100,15 +112,21 @@ class OtPlan:
     def __init__( self, src_dist, dst_dist, boundaries = None, accelerator = None, kernel_dtype = None,
                   weights0 = None, max_iter = 100, mass_tol = 1e-8, mass_rtol = 0.0, step = "auto",
                   linear_solver = "auto", keep_weights = False, verbose = False, t_min = 1e-10,
-                  max_backtracks = 60, restart_factor = 4.0, memory = None ):
+                  max_backtracks = 60, restart_factor = 4.0, memory = None,
+                  continuation = "auto", conv_start = None, conv_ratio = 2 ** 0.5, conv_min = None, conv_threshold = 1e-2,
+                  domain_margin = 0.0 ):
         """`src_dist` : une `SumOfDiracs` ( ses `weights`, normalisés, sont les masses cibles ).
-        `dst_dist` : la distribution CONTINUE contre laquelle intégrer ( `Image`, `SumOfGaussians`,
+        `dst_dist` : la distribution CONTINUE contre laquelle intégrer ( `Image`, `SumOfGaussians`, ou `None` : la mesure de Lebesgue sur le domaine,
         ... ), normalisée -- puis remise à l'échelle de ce que le DOMAINE en contient ( voir
         `otplan/Solve.h` : ce qu'on résout est le transport vers la densité restreinte au domaine ).
 
         `boundaries` / `accelerator` / `memory` : transmis tels quels au `PowerDiagram` ( voir
-        `PowerDiagram.__init__` ). Le domaine doit être BORNÉ : le support de `dst_dist` ( une image )
-        ou `boundaries` ( pour des gaussiennes ).
+        `PowerDiagram.__init__` ). Le domaine est le support de `dst_dist` ( une image ) intersecté
+        avec `boundaries` ; s'il n'est PAS BORNÉ ( des gaussiennes sans `boundaries` ), il est
+        complété par l'ENVELOPPE des diracs -- l'intersection de demi-espaces qui s'appuient sur le
+        nuage ( `hull.supporting_half_spaces` ), écartés de `domain_margin` : chaque dirac est dedans,
+        donc chaque cellule de Voronoï a une mesure positive, et le transport est celui vers la
+        densité restreinte à ce domaine ( `stats[ "masse_domaine" ]` dit ce qu'il en contient ).
 
         `kernel_dtype` : le flottant dans lequel la géométrie se coupe -- `FP64` par défaut ICI, et
         non `FP32` comme pour un diagramme seul : le banc l'a mesuré ( README § 4 ), l'amortissement
@@ -128,16 +146,37 @@ class OtPlan:
         s'écrasent, quand la passe sera là ) ou `"auto"`. `linear_solver` : `"auto"`, `"cholesky"`,
         `"amg"`, `"cg"` ( voir `otplan/Lineaire.h` ).
 
+        `continuation` : la CONTINUATION EN LARGEUR ( `otplan/Continuation.h` ) -- résoudre d'abord
+        pour la densité convolée par une gaussienne large, puis de plus en plus étroite, chaque
+        étape partant des poids de la précédente : ce qu'il faut à une densité qui se concentre
+        ( des bosses étroites, des déserts où des cellules n'ont pas de masse, et où Newton direct
+        stagne ). `"auto"` ( défaut ) la déclenche quand le départ laisse une cellule sous
+        `conv_threshold` fois la plus petite masse cible ; `"always"` / `"never"`. `conv_start` : la
+        première largeur ( défaut : la moitié du diamètre du domaine ) ; `conv_ratio` : le facteur
+        entre deux largeurs ( `sqrt( 2 )`, le meilleur mesuré ) ; `conv_min` : la dernière avant la
+        densité elle-même ( défaut : le quart de la plus petite largeur des gaussiennes, ou du pas
+        de l'image ). Une image se convole sur sa grille, des gaussiennes par leurs largeurs.
+
         `keep_weights` : garder les poids de CHAQUE pas dans `history` ( pour rejouer la descente --
         un tableau `[ pas, n ]` ). `verbose` : la trace du C++, une ligne par pas.
         """
+        # le solveur est du code HOTE sur la file CPU ( `otplan/Balayage.h` ) : un driver dont le device
+        # est un GPU ne peut pas l'appeler aujourd'hui -- `SDOT_DEVICE=cpu`, ou un driver CPU
+        if not driver.device.is_cpu:
+            raise NotImplementedError( "OtPlan : le solveur tourne sur le CPU pour l'instant ( les balayages et le solveur "
+                                       "lineaire sont du code hote ) ; choisir le device CPU ( SDOT_DEVICE=cpu )" )
         src_dist = src_dist.normalized_version()
         self.src_dist = src_dist
-        self.dst_dist = dst_dist.normalized_version()
+        #: la densité cible, normalisée -- ou `None` : la mesure de Lebesgue sur le domaine ( borné )
+        self.dst_dist = None if dst_dist is None else dst_dist.normalized_version()
 
         d = int( src_dist.nb_dims.value )
         if kernel_dtype is None:
             kernel_dtype = "FP64"
+
+        # le domaine, borné : le support de la densité et `boundaries` -- ou, s'ils ne bornent rien,
+        # l'enveloppe des diracs ( voir `hull.py` )
+        boundaries = self._bounded_domain( d, boundaries, float( domain_margin ) )
 
         # LE diagramme, bâti une fois sur les positions ( voir la docstring du module ) ; les poids
         # qu'il porte à un instant donné sont les derniers posés
@@ -158,12 +197,17 @@ class OtPlan:
             raise ValueError( f"step inconnu : { step !r } ( 'auto', 'trials' ou 'limits' )" )
         if linear_solver not in _LIN:
             raise ValueError( f"linear_solver inconnu : { linear_solver !r } ( { ', '.join( _LIN ) } )" )
+        if continuation not in _CONTINUATION:
+            raise ValueError( f"continuation inconnue : { continuation !r } ( 'auto', 'always' ou 'never' )" )
 
         options = _Options(
             mass_tol = float( mass_tol ), mass_rtol = float( mass_rtol ), t_min = float( t_min ),
             mult_ok = float( restart_factor ), facteur = 0.9, beta0 = 0.25, mult_lim = 2.0, confiance = 0.0,
+            conv_s0 = float( conv_start or 0.0 ), conv_ratio = float( conv_ratio ), conv_min = float( conv_min or 0.0 ),
+            conv_seuil = float( conv_threshold ),
             max_iter = int( max_iter ), max_reculs = int( max_backtracks ), lin = _LIN[ linear_solver ],
-            pas = _PAS[ step ], trace = int( bool( verbose ) ),
+            pas = _PAS[ step ], trace = int( bool( verbose ) ), continuation = _CONTINUATION[ continuation ],
+            cap0 = int( pd._scratch_capacity ),
             kernel_fp_size = fp_size( pd.kernel_dtype ),
         )
 
@@ -184,14 +228,17 @@ class OtPlan:
                 fwd_code = "\n".join( [
                     "using TK_otplan = std::conditional_t<CT_VALUE( options.kernel_fp_size ) == 64, double, float>;",
                     f"auto pd_otplan = { pd_expr };",
-                    "otplan::NewtonOptions no;",
+                    "otplan::OptionsSolveur os;",
+                    "otplan::NewtonOptions &no = os.newton;",
                     "no.tol_abs = double( options.mass_tol ); no.tol_rel = double( options.mass_rtol ); no.t_min = double( options.t_min );",
                     "no.mult_ok = double( options.mult_ok ); no.facteur = double( options.facteur ); no.beta0 = double( options.beta0 );",
                     "no.mult_lim = double( options.mult_lim ); no.confiance = double( options.confiance );",
                     "no.maxit = int( SI( options.max_iter ) ); no.max_reculs = int( SI( options.max_reculs ) );",
                     "no.pas = int( SI( options.pas ) ); no.trace = SI( options.trace ) != 0;",
-                    f"otplan::resoudre<TK_otplan>( queue, pd_otplan, dom_cell, { dist_expr }, nu, w0, no, otplan::Lin( int( SI( options.lin ) ) ), "
-                    f"{ int( pd._scratch_capacity ) }, weights, history, stats );",
+                    "os.lin = otplan::Lin( int( SI( options.lin ) ) ); os.cap0 = SI( options.cap0 );",
+                    "os.continuation = int( SI( options.continuation ) ); os.seuil_continuation = double( options.conv_seuil );",
+                    "os.conv_s0 = double( options.conv_s0 ); os.conv_ratio = double( options.conv_ratio ); os.conv_min = double( options.conv_min );",
+                    f"otplan::resoudre<TK_otplan>( queue, pd_otplan, dom_cell, { dist_expr }, nu, w0, os, weights, history, stats );",
                 ] ) ),
             output_attributes = out,
             output_exceptions = [] if keep_weights else [ "history.weights" ],
@@ -217,7 +264,7 @@ class OtPlan:
         self.stats = { name: float( st[ k ] ) for k, name in enumerate( _STATS ) }
         self.stats[ "fin" ] = _FIN.get( int( self.stats[ "fin" ] ), "?" )
         self.stats[ "depart" ] = _DEPART.get( int( self.stats[ "depart" ] ), "?" )
-        for name in ( "nb_iter", "nb_diag", "nb_recul", "nb_deborde", "nb_cell_lim", "nb_tours_essai", "lin_nb_hier", "lin_nb_iter" ):
+        for name in ( "nb_iter", "nb_diag", "nb_recul", "nb_deborde", "nb_cell_lim", "nb_tours_essai", "lin_nb_hier", "lin_nb_iter", "nb_etapes" ):
             self.stats[ name ] = int( self.stats[ name ] )
 
         #: un dict par pas ACCEPTÉ -- `step = 0` est le point de départ : `t`, `residual_l2`,
@@ -232,6 +279,31 @@ class OtPlan:
             if keep_weights:
                 entry[ "weights" ] = RealTensor[ pd.num_point ]( history.weights.raw[ s ] )
             self.history.append( entry )
+
+    def _bounded_domain( self, d, boundaries, margin ):
+        """`boundaries`, complétées par l'enveloppe des diracs si, avec le support de la densité,
+        elles ne bornent pas le domaine ( voir `__init__` )"""
+        planes = [] if boundaries is None else [ ( boundaries[ 0 ], boundaries[ 1 ] ) ]
+        support = None if self.dst_dist is None else self.dst_dist.bounding_half_spaces()
+        if support is not None:
+            planes.append( support )
+        if planes:
+            dirs = [ d_ for d_, _ in planes ]
+            offs = [ o_ for _, o_ in planes ]
+            all_dirs = np.concatenate( [ np.asarray( x, dtype = float ).reshape( -1, d ) for x in dirs ] )
+            all_offs = np.concatenate( [ np.asarray( x, dtype = float ).reshape( -1 ) for x in offs ] )
+            if axis_aligned_box( all_dirs, all_offs ) is not None:
+                return boundaries                                    # un pavé : borné
+            dom = Cell.make_unbounded( d, kernel_dtype = "FP64" )   # un polytope quelconque : on le construit
+            for k in range( len( all_offs ) ):
+                dom.cut( all_dirs[ k ], float( all_offs[ k ] ) )
+            if dom.is_bounded:
+                return boundaries
+        hd, ho = supporting_half_spaces( self.src_dist.positions, margin = margin )
+        if boundaries is None:
+            return hd, ho
+        return ( np.concatenate( [ np.asarray( boundaries[ 0 ], dtype = float ).reshape( -1, d ), hd ] ),
+                 np.concatenate( [ np.asarray( boundaries[ 1 ], dtype = float ).reshape( -1 ), ho ] ) )
 
     @property
     def converged( self ):

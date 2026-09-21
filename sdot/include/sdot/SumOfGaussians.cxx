@@ -23,7 +23,7 @@ namespace sdot {
 UTP HD auto DTP::kernel_at( SI i, const auto &x ) const {
     struct Kernel { TF phi; TF r2; TF s; };
 
-    const TF s = TF( sigmas( i ) );
+    const TF s = sigma_of( i );
     TF r2 = 0;
     for ( PI c = 0; c < ct_dim; ++c ) {
         const TF e = TF( x[ c ] ) - TF( positions( i, c ) );
@@ -95,7 +95,7 @@ UTP HD void DTP::add_value_grad_at( auto &&grad_dist, const auto &x, TF g ) cons
             // d rho / d s_i = w_i * phi * ( r^2 / s^3 - d / s ) : le premier terme vient de
             // l'exponentielle, le second de la constante de normalisation `s^-d`.
             add_to( grad_dist.sigmas( i ),
-                    g * w * k.phi * ( k.r2 / ( k.s * k.s * k.s ) - TF( ct_dim ) / k.s ) );
+                    g * w * k.phi * ( k.r2 / ( k.s * k.s * k.s ) - TF( ct_dim ) / k.s ) * ( TF( sigmas( i ) ) / k.s ) );
         }
     }
 }
@@ -131,7 +131,7 @@ UTP HD typename DTP::TF DTP::facet_mass( const auto &pc, int cut ) const {
     TF res = 0;
     const SI ng = SI( sigmas.shape( 0 ) );
     for ( SI i = 0; i < ng; ++i ) {
-        const TF s = TF( sigmas( i ) ), m = TF( weights( i ) );
+        const TF s = sigma_of( i ), m = TF( weights( i ) );
         const TF px = ax - TF( positions( i, 0 ) ), py = ay - TF( positions( i, 1 ) );
         const TF d = px * nx + py * ny;                   // la distance signee du centre a la droite
         const TF t0 = px * ux + py * uy, t1 = t0 + L;
@@ -258,7 +258,7 @@ UTP HD typename DTP::TF DTP::integrate_over_simplex( const auto &pts ) const {
     const SI n = nb_gaussians;
     TF res = 0;
     for ( SI i = 0; i < n; ++i ) {
-        const TF s = TF( sigmas( i ) );
+        const TF s = sigma_of( i );
         const auto ys = Vector<Vector<TF,2>,3>( Function(), [&]( PI k ) {
             return Vector<TF,2>( Function(), [&]( PI c ) { return ( pts[ k ][ c ] - TF( positions( i, c ) ) ) / s; } );
         } );
@@ -277,7 +277,7 @@ UTP HD void DTP::integrate_over_simplex_bwd( const auto &pts, TF g, auto &&grad_
 
     const SI n = nb_gaussians;
     for ( SI i = 0; i < n; ++i ) {
-        const TF s = TF( sigmas( i ) );
+        const TF s = sigma_of( i );
         const TF w = TF( weights( i ) );
         const auto ys = Vector<Vector<TF,2>,3>( Function(), [&]( PI k ) {
             return Vector<TF,2>( Function(), [&]( PI c ) { return ( pts[ k ][ c ] - TF( positions( i, c ) ) ) / s; } );
@@ -312,7 +312,7 @@ UTP HD void DTP::integrate_over_simplex_bwd( const auto &pts, TF g, auto &&grad_
             for ( PI c = 0; c < 2; ++c )
                 add_to( grad_dist.positions( i, c ), dc[ c ] );
 
-        add_to( grad_dist.sigmas( i ), - f * dsig );
+        add_to( grad_dist.sigmas( i ), - f * dsig * ( TF( sigmas( i ) ) / s ) );   // `d sigma' / d sigma`
         add_to( grad_dist.weights( i ), g * std_triangle_measure( ys ) );
     }
 }
