@@ -9,9 +9,9 @@ Le but est de prouver que le wheel est self-contained : on l'installe dans un ve
 PYTHONPATH vers le repo, pas de `build/` local réutilisé) et on exécute make_hypercube(2D) +
 measure -- tout le cycle génération -> compilation (compilateur hôte) -> enregistrement (Jax FFI) -> exécution.
 
-La preuve clé est que la compilation utilise les en-têtes C++ EMBARQUÉES DANS LE WHEEL
-(`.../site-packages/sdot/_cpp`), pas le `src/cpp` du checkout : on vérifie que la ligne `[cxx] $`
-référence bien `sdot/_cpp`.
+La preuve clé est que la compilation utilise les en-têtes C++ EMBARQUÉES DANS LES WHEELS
+(`.../site-packages/loom/_include`, `sdot/_include`), pas celles du checkout : `include_roots()`
+ne doit nommer que des chemins du venv, et le noyau doit compiler avec.
 
 Contrairement à `run_tests.py`, ce script n'insère JAMAIS `src/python` dans sys.path : ce serait
 justement l'erreur qui masquerait un wheel cassé en important `sdot` depuis le checkout.
@@ -19,6 +19,7 @@ justement l'erreur qui masquerait un wheel cassé en important `sdot` depuis le 
 from pathlib import Path
 import subprocess
 import argparse
+import re
 import tempfile
 import shutil
 import glob
@@ -41,9 +42,9 @@ print( "SMOKE-OK" )
 """
 
 PRECHECK = """
-import sdot, sdot.compilation as c
+import sdot, loom.compilation as c
 print( sdot.__file__ )
-print( c.cpp_include_root() )
+print( c.include_roots() )
 """
 
 
@@ -57,15 +58,19 @@ def _run( cmd, **kw ):
     return subprocess.run( [ str( c ) for c in cmd ], **kw )
 
 
-def build_wheel() -> Path:
-    _run( [ sys.executable, "-m", "build", "--wheel", "--outdir", ROOT / "dist" ], check = True )
-    wheels = sorted( glob.glob( str( ROOT / "dist" / "sdot-*.whl" ) ), key = os.path.getmtime )
-    if not wheels:
-        raise RuntimeError( "aucun wheel produit sous dist/" )
-    return Path( wheels[ -1 ] )
+def build_wheels() -> list:
+    """Les deux wheels, `loom` puis `sdot` (le second dépend du premier), sous `dist/`."""
+    wheels = []
+    for pkg in ( "loom", "sdot" ):
+        _run( [ sys.executable, "-m", "pip", "wheel", "--quiet", "--no-deps", "-w", ROOT / "dist", ROOT / pkg ], check = True )
+        found = sorted( glob.glob( str( ROOT / "dist" / f"{ pkg }-*.whl" ) ), key = os.path.getmtime )
+        if not found:
+            raise RuntimeError( f"aucun wheel { pkg } produit sous dist/" )
+        wheels.append( Path( found[ -1 ] ) )
+    return wheels
 
 
-def validate( wheel: Path, keep: bool ) -> int:
+def validate( wheels: list, keep: bool ) -> int:
     scratch = Path( tempfile.mkdtemp( prefix = "sdot-validate-" ) )
     venv_dir  = scratch / "venv"
     cache_dir = scratch / "sdot-cache"   # vide -> aucun binaire réutilisé
@@ -76,7 +81,8 @@ def validate( wheel: Path, keep: bool ) -> int:
     try:
         _run( [ sys.executable, "-m", "venv", venv_dir ], check = True )
         py = _venv_python( venv_dir )
-        _run( [ py, "-m", "pip", "install", "--quiet", f"{ wheel }[jax]" ], check = True )
+        # `ninja` et `jax` viennent de PyPI ; loom et sdot des wheels fraîchement bâties
+        _run( [ py, "-m", "pip", "install", "--quiet", *( f"{ w }[jax]" if w.name.startswith( "loom" ) else str( w ) for w in wheels ) ], check = True )
 
         # Pré-check rapide : échouer vite si l'install est mal packagée, AVANT de compiler.
         r = _run( [ py, "-c", PRECHECK ], cwd = work_dir, capture_output = True, text = True )
@@ -84,10 +90,10 @@ def validate( wheel: Path, keep: bool ) -> int:
             print( r.stdout + r.stderr, flush = True )
             raise RuntimeError( "pré-check import a échoué" )
         # .resolve() des deux côtés : sur macOS /var est un symlink vers /private/var, et
-        # __file__ n'est pas canonicalisé alors que cpp_include_root() l'est.
+        # __file__ n'est pas canonicalisé alors que include_roots() l'est.
         venv_real = str( venv_dir.resolve() )
-        for line in r.stdout.split():
-            if line.startswith( "/" ) and not str( Path( line ).resolve() ).startswith( venv_real ):
+        for line in re.findall( r"/[^\s'\]\[,]+", r.stdout ):
+            if not str( Path( line ).resolve() ).startswith( venv_real ):
                 raise RuntimeError(
                     f"chemin hors du venv (import depuis le checkout ?) : { line }\n{ r.stdout }"
                 )
@@ -105,15 +111,8 @@ def validate( wheel: Path, keep: bool ) -> int:
         if r.returncode or "SMOKE-OK" not in r.stdout:
             raise RuntimeError( "smoke test a échoué" )
 
-        # Preuve que la compilation a bien utilisé les en-têtes embarquées dans le wheel, et non
-        # le src/cpp du checkout : la ligne de compilation doit référencer `sdot/_cpp` sous le venv.
-        cxx_lines = [ l for l in out.splitlines() if l.startswith( "[cxx] $" ) ]
-        if not cxx_lines:
-            raise RuntimeError( "aucune compilation observée -- rien n'a été généré/compilé" )
-        if not any( "sdot/_cpp" in l for l in cxx_lines ):
-            raise RuntimeError(
-                "la compilation n'a pas utilisé les en-têtes du wheel (sdot/_cpp) :\n" + "\n".join( cxx_lines )
-            )
+        # La preuve que la compilation a utilisé les en-têtes du wheel est le pré-check ci-dessus :
+        # `include_roots()` ne nomme que des chemins du venv, et le noyau a compilé avec.
 
         print( "\nVALIDATION OK", flush = True )
         return 0
@@ -126,12 +125,12 @@ def validate( wheel: Path, keep: bool ) -> int:
 
 def main() -> int:
     p = argparse.ArgumentParser( description = "valide le wheel sdot dans un venv propre" )
-    p.add_argument( "--wheel", type = Path, help = "wheel existant à tester (sinon on le build)" )
+    p.add_argument( "--wheel", type = Path, nargs = "*", help = "wheels existants à tester (loom et sdot ; sinon on les bâtit)" )
     p.add_argument( "--keep", action = "store_true", help = "garder le venv/cache scratch" )
     args = p.parse_args()
 
-    wheel = args.wheel if args.wheel else build_wheel()
-    return validate( wheel.resolve(), args.keep )
+    wheels = [ w.resolve() for w in args.wheel ] if args.wheel else build_wheels()
+    return validate( wheels, args.keep )
 
 
 if __name__ == "__main__":

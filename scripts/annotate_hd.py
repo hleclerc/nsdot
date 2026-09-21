@@ -43,6 +43,11 @@ DEFAULT_TREES = [
 
 INCLUDE_DIRS = [ ROOT / "sdot" / "include", ROOT / "loom" / "include", ROOT / "build" / "include" ]
 
+# ce qui n'a RIEN à faire sur un device : le noyau à registres (asimd, x86) et ce qui ne sert
+# qu'à lui -- un `__m256` dans une signature `__host__ __device__` est une erreur nvcc
+EXCLUDED_FILES = { ROOT / "sdot" / "include" / "sdot" / "cell" / "Moteur2Reg.h" }
+EXCLUDED_NAMES = { "peut_couper_boite_reg" }
+
 
 def _resource_include() -> list:
     """Le libclang du paquet pip n'a pas ses en-têtes de ressources (`stddef.h`) : on prend ceux
@@ -136,7 +141,13 @@ def insertion_offset( cursor, text: str ):
     head = spell[ i: i + 4 ]
     if head[ 0 ] in ( "HD", "HD_INLINE", "__host__", "__device__", "LOOM_EXPORT" ):
         return None
-    return tokens[ i ][ 1 ]
+    # `HD` est vide pour libclang (pas nvcc) : un extent commence APRÈS lui, il faut regarder ce
+    # qui précède sur la ligne
+    off = tokens[ i ][ 1 ]
+    before = text[ text.rfind( "\n", 0, off ) + 1:off ]
+    if re.search( r"\b(HD|HD_INLINE|__host__|__device__)\b", before ):
+        return None
+    return off
 
 
 def annotate_file( path: Path, dry_run: bool ) -> int:
@@ -154,6 +165,8 @@ def annotate_file( path: Path, dry_run: bool ) -> int:
             loc = c.location
             if c.kind in FUNCTION_KINDS:
                 if loc.file is not None and Path( loc.file.name ).resolve() == path.resolve():
+                    if c.spelling in EXCLUDED_NAMES:
+                        continue
                     off = insertion_offset( c, text )
                     if off is None:
                         skipped.append( ( loc.line, c.spelling ) )
@@ -238,6 +251,8 @@ def main():
             files.append( r )
     total = 0
     for f in files:
+        if f.resolve() in EXCLUDED_FILES:
+            continue
         n = annotate_file( f, a.dry_run )
         total += n
         print( f"{ f.relative_to( ROOT ) }: { n }" )
