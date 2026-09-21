@@ -3,10 +3,10 @@
 #include <loom/support/common_macros.h>
 #include <loom/support/containers/Matrix.h>
 #include <loom/support/containers/Vector.h>
-#include <SYCL/sycl.hpp>
+#include <loom/support/math.h>
 
-// `sycl::` et non `std::` pour les mathématiques -- voir `SumOfGaussians.cxx` pour ce que `std::`
-// coûte sur la cible CUDA AOT.
+// `sdot::` et non `std::` pour les mathématiques -- voir `SumOfGaussians.cxx` et
+// `loom/support/math.h` : c'est le device qui choisit l'implémentation.
 
 namespace sdot {
 
@@ -220,7 +220,7 @@ struct PointwiseDensity {
 
     static auto barycentric() {
         const TF d = ct_dim;
-        const TF alpha = ( 1 + sycl::sqrt( 1 - ( d + 1 ) * ( 2 - d ) / ( d + 2 ) ) ) / ( d + 1 );
+        const TF alpha = ( 1 + sdot::sqrt( 1 - ( d + 1 ) * ( 2 - d ) / ( d + 2 ) ) ) / ( d + 1 );
         return Vector<TF,2>( Values(), alpha, ( 1 - alpha ) / d );
     }
 

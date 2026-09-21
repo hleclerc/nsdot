@@ -1,7 +1,6 @@
 #pragma once
 
-#include <loom/support/kernels/CudaQueue.h> // IWYU pragma: keep -- SDOT_QUEUE peut la désigner
-#include <loom/support/kernels/CpuQueue.h> // IWYU pragma: keep -- idem
+#include <loom/support/kernels/CpuQueue.h> // IWYU pragma: keep -- la queue par défaut
 
 namespace sdot {
 
@@ -9,8 +8,9 @@ namespace sdot {
 ///
 /// Le choix du device est un TYPEDEF, pas un test runtime : la zone mémoire dans laquelle vit un
 /// pointeur fait partie de son type (voir `Ptr.h`), donc c'est le device qui décide du type des
-/// vues que le kernel manipule. Le source généré fixe `SDOT_QUEUE` (voir `Device.cpp_queue_type`
-/// côté python) ; par défaut, le CPU.
+/// vues que le kernel manipule. Le source généré inclut l'en-tête de SA queue et fixe `SDOT_QUEUE`
+/// avant d'inclure celui-ci (voir `Device.cpp_queue_include` / `cpp_queue_type` côté python) ;
+/// par défaut, le CPU -- ce qu'un source compilé à la main sans rien définir obtient.
 ///
 /// `run_parallel` accepte cette queue seule, ou une liste de queues quand il y a un contexte à
 /// choisir (il prend alors le moins coûteux, transferts compris).

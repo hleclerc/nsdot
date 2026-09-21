@@ -1,6 +1,6 @@
 # The FFI boundary
 
-This page is about internals: how a Python tensor becomes something a C++ SYCL kernel can read.
+This page is about internals: how a Python tensor becomes something a C++ kernel can read.
 Nothing here is needed to *use* loom — see [Tensors](./tensors.md) for that. It is here because the
 choices it describes are the ones that decide performance, and because a new kind of value has to
 slot into them.

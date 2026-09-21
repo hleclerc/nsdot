@@ -3,7 +3,7 @@
 Monorepo — 3 projets indépendants :
 
 ```
-loom/     Interface agnostique Jax/Torch → SYCL (tensor, Aggregate, drivers, compilation)
+loom/     Interface agnostique Jax/Torch → noyaux C++ (tensor, Aggregate, drivers, compilation)
 sdot/     Transport optimal semi-discret (Cell, OtPlan1d, distributions)
 otrec/    Application de reconstruction CT (Reconstruction, Sinogram)
 ```
@@ -45,11 +45,11 @@ d'activer quoi que ce soit pour lancer `./run env`, `./run env create` ou `./run
 
 | Commande | Description |
 |---|---|
-| `./run test [pattern]` | Tests C++ (via acpp) + Python (tous les projets) |
+| `./run test [pattern]` | Tests C++ + Python (tous les projets) |
 | `./run bench [pattern]` | Benchmarks Python (même mécanisme que `test`) |
 | `./run experiment [pattern]` | Expériences Python (même mécanisme que `test`), avec balayage de params |
 | `./run install` | `pip install -e` des 3 projets dans l'ordre |
-| `./run toolchain` | Diagnostic (acpp, LLVM, CUDA) |
+| `./run toolchain` | Diagnostic (compilateur hôte, nvcc) |
 | `./run build-sif` | Build des images Apptainer (.sif depuis .def) |
 | `./run env` | Lister les environnements configurés |
 | `./run env create` | Fabriquer les envs micromamba déclarés (no-op sur ceux qui existent déjà) |
@@ -350,4 +350,8 @@ Les headers C++ sont dans `loom/include/loom/support/` (runtime générique)
 et `sdot/include/sdot/` (transport optimal). Les headers générés (JIT)
 atterrissent dans `build/include/`.
 
-Compilation : AdaptiveCpp (`acpp`), téléchargé automatiquement au premier `driver.call`.
+Compilation : le compilateur C++ hôte pour le CPU (`c++`/`clang++`/`g++`, `SDOT_CXX` pour en
+imposer un ; `-O3 -march=native`), `nvcc` autour de lui pour CUDA (en cours de portage). Chaque
+device dit avec quoi il se compile (`Device.compiler`, voir `loom/src/loom/compilation/Compiler.py`) ;
+le runtime C++ d'un device est sa queue (`loom/include/loom/support/kernels/CpuQueue.h`), qui porte
+le lancement des noyaux -- `run_parallel` ne connaît aucun device.

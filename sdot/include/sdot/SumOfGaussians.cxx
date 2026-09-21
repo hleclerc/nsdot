@@ -3,18 +3,17 @@
 #include <loom/support/common_macros.h>
 #include <loom/support/containers/Vector.h>
 #include "SumOfGaussians.h"
-#include <SYCL/sycl.hpp>
+#include <loom/support/math.h>
 
-// Les mathématiques passent par `sycl::`, JAMAIS par `std::`.
+// Les mathématiques passent par `sdot::` (`loom/support/math.h`), JAMAIS par `std::`.
 //
 // Ce n'est pas une préférence de style : `std::exp` / `std::atan` / `std::erf` sur un `float`
-// abaissent vers des intrinsèques LLVM que la cible CUDA AOT ne sait pas résoudre --
-// `error: no libcall available for fexp` / `fatan`, et la compilation s'arrête là. Le JIT
-// `generic` et le CPU y arrivent, eux, ce qui rend le piège invisible tant qu'on ne compile pas
-// en AOT (`LOOM_GPU_AOT=1`). Les surcharges SYCL, elles, sont définies pour tous les backends.
+// n'existent pas dans du code device CUDA (ils abaissent vers des intrinsèques que le compilateur
+// device ne sait pas résoudre), là où les surcharges du toolkit, elles, existent. `sdot::` désigne
+// l'une ou l'autre selon la cible, en un seul endroit.
 //
-// `sqrt` y est inclus bien qu'il passe (c'est une instruction native) : une règle qui souffre une
-// exception n'est pas une règle qu'on suit.
+// `sqrt` y est inclus bien qu'il passe partout (c'est une instruction native) : une règle qui
+// souffre une exception n'est pas une règle qu'on suit.
 
 #define UTP SDOT_TEMPLATE_DECL_FOR_SumOfGaussians
 #define DTP SumOfGaussians<SDOT_TEMPLATE_ARGS_FOR_SumOfGaussians>
@@ -35,12 +34,12 @@ UTP auto DTP::kernel_at( SI i, const auto &x ) const {
     // multiplications au lieu d'un `pow`, et `ct_dim` étant connu à la compilation la boucle
     // disparaît.
     const TF two_pi = TF( 6.283185307179586476925286766559 );
-    const TF inv = TF( 1 ) / ( s * sycl::sqrt( two_pi ) );
+    const TF inv = TF( 1 ) / ( s * sdot::sqrt( two_pi ) );
     TF norm = 1;
     for ( int k = 0; k < ct_dim; ++k )
         norm *= inv;
 
-    return Kernel{ norm * sycl::exp( - r2 / ( 2 * s * s ) ), r2, s };
+    return Kernel{ norm * sdot::exp( - r2 / ( 2 * s * s ) ), r2, s };
 }
 
 UTP typename DTP::TF DTP::value_at( const auto &x ) const {
@@ -114,7 +113,7 @@ namespace detail {
 
     // `Phi`, la fonction de répartition normale standard
     template<class TF> TF std_normal_cdf( TF u ) {
-        return TF( 0.5 ) * ( 1 + sycl::erf( u * TF( 0.70710678118654752440 ) ) );
+        return TF( 0.5 ) * ( 1 + sdot::erf( u * TF( 0.70710678118654752440 ) ) );
     }
 }
 
@@ -123,7 +122,7 @@ UTP typename DTP::TF DTP::wedge_measure( const auto &P, const auto &Q ) const {
     const TF two_pi = TF( 6.283185307179586476925286766559 );
 
     const TF dx = Q[ 0 ] - P[ 0 ], dy = Q[ 1 ] - P[ 1 ];
-    const TF L = sycl::sqrt( dx * dx + dy * dy );
+    const TF L = sdot::sqrt( dx * dx + dy * dy );
     if ( ! ( L > 0 ) )
         return 0;
 
@@ -142,7 +141,7 @@ UTP typename DTP::TF DTP::wedge_measure( const auto &P, const auto &Q ) const {
     TF acc = 0;
     if ( ap >= tail_cut ) {
         // la gaussienne ne vaut plus rien sur toute la droite : il ne reste que la lorentzienne
-        acc = sycl::atan( t1 / ap ) - sycl::atan( t0 / ap );
+        acc = sdot::atan( t1 / ap ) - sdot::atan( t0 / ap );
     } else {
         // Les QUEUES d'abord, chacune bornée par le segment lui-même : un segment entièrement
         // au-delà de `tail_cut` d'un seul côté n'a pas de coeur du tout, et sa queue va de `t0` à
@@ -150,11 +149,11 @@ UTP typename DTP::TF DTP::wedge_measure( const auto &P, const auto &Q ) const {
         // en trop -- une part d'angle bien visible quand l'arête est longue et rase l'origine.
         if ( t0 < -tail_cut ) {
             const TF e = t1 < -tail_cut ? t1 : -tail_cut;
-            acc += sycl::atan( e / ap ) - sycl::atan( t0 / ap );
+            acc += sdot::atan( e / ap ) - sdot::atan( t0 / ap );
         }
         if ( t1 > tail_cut ) {
             const TF b = t0 > tail_cut ? t0 : tail_cut;
-            acc += sycl::atan( t1 / ap ) - sycl::atan( b / ap );
+            acc += sdot::atan( t1 / ap ) - sdot::atan( b / ap );
         }
 
         const TF c0 = t0 > -tail_cut ? t0 : -tail_cut;
@@ -171,7 +170,7 @@ UTP typename DTP::TF DTP::wedge_measure( const auto &P, const auto &Q ) const {
                     for ( int sg = -1; sg <= 1; sg += 2 ) {
                         const TF t = m + sg * h * TF( detail::gl8_x[ j ] );
                         const TF r2 = ap * ap + t * t;
-                        acc += h * TF( detail::gl8_w[ j ] ) * ( 1 - sycl::exp( - r2 / 2 ) ) * ap / r2;
+                        acc += h * TF( detail::gl8_w[ j ] ) * ( 1 - sdot::exp( - r2 / 2 ) ) * ap / r2;
                     }
                 }
             }
@@ -199,7 +198,7 @@ UTP typename DTP::EdgeInfo DTP::edge_info( const auto &A, const auto &B, const a
     const TF L2 = dx * dx + dy * dy;
     if ( ! ( L2 > 0 ) )
         return res;
-    const TF L = sycl::sqrt( L2 );
+    const TF L = sdot::sqrt( L2 );
 
     // la normale SORTANTE : celle qui s'éloigne du troisième sommet
     TF nx = dy / L, ny = -dx / L;
@@ -217,11 +216,11 @@ UTP typename DTP::EdgeInfo DTP::edge_info( const auto &A, const auto &B, const a
 
     const TF u0 = - L * s0, u1 = L * ( 1 - s0 );
     const TF d_phi = detail::std_normal_cdf( u1 ) - detail::std_normal_cdf( u0 );
-    const TF e = sycl::exp( - p2 / 2 );
+    const TF e = sdot::exp( - p2 / 2 );
 
     res.j0  = e * d_phi / sq_2pi;
     res.j1a = ( e / two_pi ) * ( ( 1 - s0 ) * sq_2pi * d_phi
-                               - ( sycl::exp( - u0 * u0 / 2 ) - sycl::exp( - u1 * u1 / 2 ) ) / L );
+                               - ( sdot::exp( - u0 * u0 / 2 ) - sdot::exp( - u1 * u1 / 2 ) ) / L );
     return res;
 }
 

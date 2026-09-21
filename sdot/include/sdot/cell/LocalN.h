@@ -36,6 +36,7 @@
 // C'est le `Cellule3D.h` du banc, la dimension en parametre.
 // =====================================================================================
 
+#include <loom/support/math.h>
 #include <loom/support/common_types.h>
 #include <loom/support/containers/Matrix.h>
 #include <loom/support/containers/Vector.h>
@@ -708,7 +709,7 @@ struct LocalN {
             if ( v0[ k ] < 0 )
                 continue;
             const TF sx = TF( s[0][k] ), sy = TF( s[1][k] ), sz = TF( s[2][k] );
-            func( k, sycl::sqrt( sx * sx + sy * sy + sz * sz ) / 2 );
+            func( k, sdot::sqrt( sx * sx + sy * sy + sz * sz ) / 2 );
         }
     }
 

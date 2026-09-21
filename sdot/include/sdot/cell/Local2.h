@@ -35,6 +35,7 @@
 // 17.1 ns par coupe en une passe, 13.2 en deux.
 // =====================================================================================
 
+#include <loom/support/math.h>
 #include <loom/support/common_types.h>
 #include <loom/support/containers/Vector.h>
 #include "Scratch.h"
@@ -391,7 +392,7 @@ struct Local2 {
         for ( int i = 0; i < nb; ++i ) {
             const int j = i + 1 < nb ? i + 1 : 0;
             const TF dx = TF( vx[ j ] ) - TF( vx[ i ] ), dy = TF( vy[ j ] ) - TF( vy[ i ] );
-            func( i, sycl::sqrt( dx * dx + dy * dy ) );
+            func( i, sdot::sqrt( dx * dx + dy * dy ) );
         }
     }
 

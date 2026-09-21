@@ -1,5 +1,6 @@
 #pragma once
 
+#include <loom/support/math.h>
 #include <loom/support/common_macros.h>
 #include <loom/support/containers/Vector.h>
 
@@ -130,9 +131,9 @@ void bsp_weight_majorant( const auto &pos, const auto &w, SI b, SI e, auto &&wa_
         for ( int c = 0; c < ct_dim && ok; ++c ) {
             int p = c;
             for ( int i = c + 1; i < ct_dim; ++i )
-                if ( sycl::fabs( A[ i ][ c ] ) > sycl::fabs( A[ p ][ c ] ) )
+                if ( sdot::fabs( A[ i ][ c ] ) > sdot::fabs( A[ p ][ c ] ) )
                     p = i;
-            if ( ! ( sycl::fabs( A[ p ][ c ] ) > 0 ) ) {     // colonne nulle -> pas d'ajustement
+            if ( ! ( sdot::fabs( A[ p ][ c ] ) > 0 ) ) {     // colonne nulle -> pas d'ajustement
                 ok = false;
                 break;
             }
@@ -169,15 +170,15 @@ void bsp_weight_majorant( const auto &pos, const auto &w, SI b, SI e, auto &&wa_
             // cette correction un noeud de poids purement aleatoires retiendrait l'affine une fois
             // sur trois. Voir `AaBsp.py::_weight_majorant`.
             const TF u = TF( 1 ) - TF( ct_dim ) / TF( m - 1 );
-            const TF by_chance = sycl::sqrt( u > 0 ? u : TF( 0 ) );
+            const TF by_chance = sdot::sqrt( u > 0 ? u : TF( 0 ) );
             // et une pente qui, sur l'etendue du noeud, depasse de loin l'etalement des poids
             // est un artefact du conditionnement ( germes alignes a 1e-8 pres ), pas un
             // ajustement : elle ferait un `b` a 1e9 qui ne majore plus rien d'utile. Voir
             // `AaBsp.py::_weight_majorant`.
             bool sage = true;
             for ( int d = 0; d < ct_dim; ++d ) {
-                const TF reach = sycl::fabs( plo[ d ] ) > sycl::fabs( phi[ d ] ) ? sycl::fabs( plo[ d ] ) : sycl::fabs( phi[ d ] );
-                if ( sycl::fabs( fit[ d ] ) * ( phi[ d ] - plo[ d ] ) > 8 * spread || sycl::fabs( fit[ d ] ) * reach > TF( 100 ) * spread )
+                const TF reach = sdot::fabs( plo[ d ] ) > sdot::fabs( phi[ d ] ) ? sdot::fabs( plo[ d ] ) : sdot::fabs( phi[ d ] );
+                if ( sdot::fabs( fit[ d ] ) * ( phi[ d ] - plo[ d ] ) > 8 * spread || sdot::fabs( fit[ d ] ) * reach > TF( 100 ) * spread )
                     sage = false;                        // la marge sur `b`, relative a `|a . y|`, doit rester negligeable
             }
             if ( sage && rmax - rmin < TF( 0.85 ) * by_chance * spread )
@@ -192,7 +193,7 @@ void bsp_weight_majorant( const auto &pos, const auto &w, SI b, SI e, auto &&wa_
             ay += a[ d ] * TF( pos( k, d ) );
         const TF v = TF( w( k ) ) - ay;
         if ( k == b ) bb = v; else bb = v > bb ? v : bb;
-        amax = sycl::fabs( ay ) > amax ? sycl::fabs( ay ) : amax;
+        amax = sdot::fabs( ay ) > amax ? sdot::fabs( ay ) : amax;
     }
 
     for ( int d = 0; d < ct_dim; ++d )
@@ -201,7 +202,7 @@ void bsp_weight_majorant( const auto &pos, const auto &w, SI b, SI e, auto &&wa_
     // une MARGE d'arrondi sur la constante, et sur elle seule -- voir `_weight_majorant` : `b` est
     // le seul terme que l'hote et le kernel calculeraient differemment, et un `b` arrondi vers le
     // bas cesserait de majorer.
-    wb_out = bb + TF( 1e-6 ) * ( sycl::fabs( bb ) + spread + amax );
+    wb_out = bb + TF( 1e-6 ) * ( sdot::fabs( bb ) + spread + amax );
 }
 
 /// le majorant d'UN noeud, refait sur des poids neufs ( `AaBsp.refresh_weight_majorants` ) : la

@@ -28,6 +28,7 @@
 // -- une mesure, une cellule gardee et ses `cut_ids` -- est ecrit a l'indice `user_id( k )`.
 // =====================================================================================
 
+#include <loom/support/math.h>
 #include <loom/support/common_macros.h>
 #include <loom/support/containers/Matrix.h>
 #include <loom/support/containers/Vector.h>
@@ -459,7 +460,7 @@ void hessian_row( const PD &pd, SI k, const auto &dom, auto &&res, auto &&scratc
             TF d2 = 0;
             for ( int d = 0; d < D; ++d )
                 d2 += ( pj[ d ] - p0[ d ] ) * ( pj[ d ] - p0[ d ] );
-            const TF val = rho * mes / ( 2 * sycl::sqrt( d2 ) );
+            const TF val = rho * mes / ( 2 * sdot::sqrt( d2 ) );
             for ( int q = 0; q < nc; ++q )
                 if ( c.cid[ q ] == id ) {
                     res.vals( q ) += val;
