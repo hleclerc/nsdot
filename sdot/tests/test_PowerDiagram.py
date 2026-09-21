@@ -274,6 +274,32 @@ if test( "a_big_enough_weight_swallows_the_domain" ):
     assert abs( float( m[ 1 ] ) - 1 ) < 1e-12, m
     assert float( m[ 0 ] ) + float( m[ 2 ] ) < 1e-14, m
 
+if test( "the_memory_changes_nothing_but_the_cost" ):
+    # les voisins d'hier proposés en premier ( `memory` ) : mêmes cellules, exactement -- une coupe
+    # de plus ou de moins dans l'ordre ne change que les arrondis --, les souvenirs se remplissent au
+    # premier `measures`, survivent à des poids neufs, et s'effacent avec l'arbre.
+    for d in ( 2, 3 ):
+        rng = numpy.random.default_rng( 5 + d )
+        n = 400
+        pos = rng.uniform( 0.05, 0.95, size = ( n, d ) )
+        h = n ** ( -1.0 / d )
+        w = rng.uniform( -0.3, 0.3, n ) * h * h
+        box = box_half_spaces( numpy.zeros( d ), numpy.ones( d ) )
+        ref = PowerDiagram( pos, weights = w, boundaries = box, memory = 0 )
+        pd = PowerDiagram( pos, weights = w, boundaries = box, memory = 32 )
+        assert not numpy.asarray( pd.memo_counts ).any()          # rien encore
+        assert numpy.abs( _measures( pd ) - _measures( ref ) ).max() < 1e-12
+        counts = numpy.asarray( pd.memo_counts ).reshape( -1 )
+        assert counts.mean() > ( 4 if d == 2 else 10 )             # remplie au premier appel
+        assert numpy.abs( _measures( pd ) - _measures( ref ) ).max() < 1e-12
+        ref.weights = 2 * w
+        pd.weights = 2 * w                                         # les souvenirs, périmés, restent utiles
+        assert numpy.abs( _measures( pd ) - _measures( ref ) ).max() < 1e-12
+        pd.positions = pos[ ::-1 ]                                  # l'arbre est rebâti : la mémoire part
+        assert not numpy.asarray( pd.memo_counts ).any()
+        ref.positions = pos[ ::-1 ]
+        assert numpy.abs( _measures( pd ) - _measures( ref ) ).max() < 1e-12
+
 if test( "voronoi_is_the_power_diagram_without_weights" ):
     # `Voronoi` n'est pas une classe : c'est `PowerDiagram` sans le membre `weights` (voir
     # `Voronoi.py`). Il en construit donc bien un, il refuse les poids, et il rend le même
@@ -868,6 +894,7 @@ if p := bench( "pd accelerated",
                nb_dims   = Param( 2, help = "dimension" ),
                leaf_size = Param( 10, help = "germes par feuille du BSP" ),
                weights   = Param( 0, help = "1 pour un diagramme de puissance" ),
+               memory    = Param( -1, help = "souvenirs par germe ( -1 : le défaut de la dimension, 0 : sans )" ),
                plain     = Param( 1, help = "0 pour ne PAS chronométrer le balayage complet" ),
                reps      = Param( 3, help = "répétitions chronométrées (on garde le minimum)" ),
                seed      = Param( 0, help = "graine du tirage" ),
@@ -905,7 +932,7 @@ if p := bench( "pd accelerated",
         # les poids et mesurer -- sans poids, mesurer seulement.
         t = time.perf_counter()
         pd = PowerDiagram( pos, weights = w, boundaries = box_half_spaces( *box ), accelerator = acc,
-                           kernel_dtype = p.kernel )
+                           kernel_dtype = p.kernel, memory = None if p.memory < 0 else p.memory )
         p.results[ f"t_ctor_{ acc if isinstance( acc, str ) else 'bsp' }" ] = time.perf_counter() - t
         def once():
             t = time.perf_counter()
@@ -914,6 +941,7 @@ if p := bench( "pd accelerated",
             m = numpy.asarray( pd.measures.tensor )
             return time.perf_counter() - t, m.reshape( -1 )
         once()                                          # chauffe : c'est celui-là qui compile
+        once()                                          # et celui-ci qui remplit la mémoire ( `memory` )
         best, m = once()
         for _ in range( p.reps - 1 ):
             best = min( best, once()[ 0 ] )

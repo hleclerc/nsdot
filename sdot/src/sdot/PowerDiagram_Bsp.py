@@ -12,12 +12,20 @@ backend, DÉRIVABLE : une dérivée par rapport à `sorted_positions` revient su
 Changer les POIDS ne change pas l'arbre, seulement le majorant affine que chaque nœud porte
 ( `refresh_weight_majorants` ) : c'est ce qui rend un diagramme réutilisable d'un pas à l'autre
 d'un ajustement ( `OtPlan` ). Changer les POSITIONS le rebâtit.
+
+LA MÉMOIRE ( `memo_nbrs [ n, K ]`, `memo_counts [ n ]`, en rangs de l'arbre ) : les voisins de
+chaque cellule au dernier `measures`, que le fournisseur propose en premier au suivant
+( `cell/Fournisseurs.h`, `MEMO` ). Écrite par le kernel de `measures` dans deux tenseurs neufs,
+repris ici après l'appel ( les entrées et les sorties d'un appel sont disjointes ) -- sauf sous une
+trace, où ce qui sort est un traceur : la mémoire d'avant reste, elle vaut toujours. Effacée avec
+l'arbre, quand les positions changent. `memory = 0` ne la nomme pas : `NoneTensor` côté C++, et le
+chemin ordinaire à la compilation.
 """
 
 import numpy as np
 
 from loom.drivers.driver import driver
-from loom.tensor import IntTensor, RealTensor
+from loom.tensor import Axis, IntTensor, RealTensor, ShapeVar
 
 from .AaBsp import AaBsp
 from .PowerDiagram import PowerDiagram
@@ -28,6 +36,11 @@ class PowerDiagram_Bsp( PowerDiagram ):
 
     sorted_positions : RealTensor[ "num_point", "dim" ]
     sorted_weights   : RealTensor[ "num_point" ]
+
+    memo_nbrs        : IntTensor[ "num_point", "num_memo", dict( size = 32 ) ]
+    memo_counts      : IntTensor[ "num_point", dict( size = 32 ) ]
+    num_memo         : Axis[ "nb_memo" ]
+    nb_memo          : ShapeVar
 
     def _init_seeds( self, positions, weights, accelerator ):
         tree = accelerator if isinstance( accelerator, AaBsp ) else AaBsp( positions, weights )
@@ -43,7 +56,31 @@ class PowerDiagram_Bsp( PowerDiagram ):
             # est refait sur CEUX-CI ( bâti ici, il les a déjà )
             if tree is accelerator:
                 tree.refresh_weight_majorants( res[ "sorted_positions" ], res[ "sorted_weights" ] )
+        # la mémoire part vide ( aucun souvenir : le chemin ordinaire, en attendant le premier `measures` )
+        K = int( getattr( self, "_memory", 0 ) )
+        res[ "nb_memo" ] = K
+        if K > 0:
+            res[ "memo_nbrs" ] = np.zeros( ( n, K ), dtype = np.int32 )
+            res[ "memo_counts" ] = np.zeros( n, dtype = np.int32 )
         return res
+
+    def _memo_for_call( self ):
+        if not self.memo_counts.is_defined:
+            return "0, 0", {}, None
+        nbrs = IntTensor[ self.num_point, self.num_memo, dict( size = 32 ) ]()
+        counts = IntTensor[ self.num_point, dict( size = 32 ) ]()
+        return "memo_nbrs_out, memo_counts_out", dict(
+            call = dict( output_attributes = [ "memo_nbrs_out", "memo_counts_out" ] ),
+            args = dict( memo_nbrs_out = nbrs, memo_counts_out = counts ) ), ( nbrs, counts )
+
+    def _memo_after_call( self, produced ):
+        if produced is None:
+            return
+        nbrs, counts = produced
+        if driver.is_traced( counts.raw ):          # sous une trace : on garde les souvenirs d'avant
+            return
+        self.memo_nbrs = nbrs.raw
+        self.memo_counts = counts.raw
 
     def _gather( self, seeds ):
         """`seeds[ seed_indices ]`, par le backend : un traceur y reste un traceur, et la dérivée

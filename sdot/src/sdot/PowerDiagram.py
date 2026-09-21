@@ -87,7 +87,7 @@ class PowerDiagram( Aggregate ):
         return super().__new__( cls )
 
     def __init__( self, positions, weights = None, boundaries = None, accelerator = None,
-                  distribution = None, kernel_dtype = None, scratch_capacity = None ):
+                  distribution = None, kernel_dtype = None, scratch_capacity = None, memory = None ):
         """`positions` : `[ n, d ]`. `weights` : `[ n ]`, ou rien ( le cas euclidien ). Le domaine :
 
         - `boundaries = ( directions, offsets )` -- les demi-espaces `direction . x <= offset`.
@@ -106,6 +106,13 @@ class PowerDiagram( Aggregate ):
         `SDOT_KTYPE` pour changer le défaut ). `scratch_capacity` : pour combien de sommets par
         cellule le scratch d'un work-item est taillé au départ -- une supposition, que loom double
         sur débordement.
+
+        `memory` : avec l'arbre BSP, le diagramme SE SOUVIENT, par germe, des voisins de sa cellule
+        au dernier `measures` et les propose en premier au suivant ( `FournisseurBsp`, `MEMO` ) --
+        ce qui épargne les coupes transitoires, un quart à un tiers du diagramme en 3D, et reste
+        exact quels que soient les poids qui ont bougé entre-temps. `memory` est la capacité par
+        germe ( 32 par défaut en 3D et au-delà, 0 en 2D où ça ne rend rien de mesurable ) ; un germe
+        qui a plus de voisins que ça n'a simplement pas de souvenir. `0` pour éteindre.
         """
         # le SUPPORT de la distribution borne le domaine, gratuitement et sans rien changer au
         # résultat : ce qui dépasse n'apporte aucune masse. Le domaine de l'appelant est INTERSECTÉ
@@ -141,6 +148,7 @@ class PowerDiagram( Aggregate ):
 
         self._kernel_dtype = kernel_dtype
         self._scratch_capacity = int( scratch_capacity or { 2: 64, 3: 128 }.get( d, 256 ) )
+        self._memory = int( ( 0 if d <= 2 else 32 ) if memory is None else memory )
         self.__base_init__( nb_dims = d, nb_points = n, **self._init_seeds( pos, weights, accelerator ), **kwargs )
 
         # PAS un champ : la distribution est un argument d'APPEL, normalisée DÈS ICI plutôt qu'à
@@ -197,6 +205,16 @@ class PowerDiagram( Aggregate ):
             return "power_diagram.unit_density()", "0", {}
         return "distribution", "grad_for_distribution", { "distribution": self.distribution }
 
+    # ---- la mémoire ( `PowerDiagram_Bsp` seulement ) --------------------------------------------------
+
+    def _memo_for_call( self ):
+        """`( expression C++ des deux tenseurs de sortie, kwargs de l'appel, ce qu'il faut reprendre
+        après )` -- rien pour un stockage qui n'a pas de mémoire"""
+        return "0, 0", {}, None
+
+    def _memo_after_call( self, produced ):
+        pass
+
     # ---- le scratch --------------------------------------------------------------------------------
 
     def _scratch_words( self, cap, nb_cells, with_grad ):
@@ -239,24 +257,27 @@ class PowerDiagram( Aggregate ):
 
         res = RealTensor[ self.num_point ]()
         dist_expr, grad_dist_expr, dist_kwargs = self._dist_for()
+        memo_expr, memo_kwargs, memo_produced = self._memo_for_call()
 
         driver.call(
             FfiCodeParallel( name = "power_diagram_measures",
                 fwd_code = "power_diagram.measures( res, dom_cell, scratch( batch_index ), "
-                           f"{ dist_expr }, thread_index, nb_threads );",
+                           f"{ dist_expr }, { memo_expr }, thread_index, nb_threads );",
                 # les gradients sur les germes sont PARTAGÉS par tous les items : chaque work-item y
                 # accumule ( `atomic_add` côté C++ ), et la plateforme les met à zéro avant le corps
                 bwd_code = "power_diagram.measures_bwd( res, dom_cell, grad_for_res, "
                            f"{ self._grad_seeds_expr() }, "
                            f"scratch( batch_index ), { dist_expr }, { grad_dist_expr }, "
                            "thread_index, nb_threads );" ),
-            **merge_call( dict( output_attributes = [ "res" ] ), sc_kwargs ),
+            **merge_call( merge_call( dict( output_attributes = [ "res" ] ), sc_kwargs ), memo_kwargs.get( "call", {} ) ),
             power_diagram = self,
             dom_cell = dom,
             res = res,
             scratch = scratch,
             **dist_kwargs,
+            **memo_kwargs.get( "args", {} ),
         )
+        self._memo_after_call( memo_produced )
         return res
 
     @property

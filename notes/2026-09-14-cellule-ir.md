@@ -138,3 +138,27 @@ d'autres calculs sur la machine ) 0.264 s en Voronoï, 0.344 s en Laguerre, la c
   ( `LocalN::measure_3d` ) ; son adjoint reste l'éventail ;
 * les états jumeaux non bornés en registres, si le régime sans domaine devient courant ;
 * la construction de l'arbre ( 0.6 à 0.7 s à 10⁶ germes ) pèse maintenant TROIS fois le diagramme.
+
+## 2026-09-21 : la mémoire (`memory`)
+
+Le banc (`solvers_des_familles`, README § 11) a montré qu'en 3D proposer d'abord les voisins de
+la cellule au dernier diagramme épargne la moitié des coupes effectives -- les transitoires, celles
+qu'un germe proche fait avant qu'un vrai voisin ne le supplante -- pour -25 à -42 % du diagramme,
+et que des souvenirs périmés (ceux de Voronoï sur un Laguerre) rendent encore -18 %. Porté ici :
+
+* `PowerDiagram_Bsp` porte `memo_nbrs [ n, K ]` / `memo_counts [ n ]` en rangs de l'arbre,
+  `num_memo` / `nb_memo` ; `PowerDiagram( ..., memory = K )`, défaut 32 en 3D+ et 0 en 2D
+  (mesuré +13 % à 10⁶ en 2D : le polygone en registres se coupe pour moins que la pré-passe) ;
+* `cell/Fournisseurs.h::FournisseurBsp<..., MEMO>` : la pré-passe (`ipre`), puis le parcours avec
+  un curseur de saut par feuille (`isaut`, une recherche dichotomique à l'ouverture) -- pas de
+  tableau par work-item, donc rien qui ne passe pas au GPU. Les deux curseurs sont DISTINCTS :
+  un seul compteur pour les deux rôles fait re-proposer un souvenir à chaque feuille, et `cut`
+  n'étant pas idempotente la cellule enfle jusqu'au débordement (mesuré : 140 sommets) ;
+* `diagram/Ops.h::memorise` : après `integrate_into`, `tidy()` et les coupes vivantes ≥ 0 en
+  insertion triée dans `memo_nbrs_out( k, . )` ; `memo_counts_out( k ) = 0` au-delà de `K`.
+  Écrit dans deux tenseurs de SORTIE (entrées et sorties disjointes), repris par
+  `_memo_after_call` -- sauf sous une trace, où l'ancienne mémoire reste ;
+* `has_memo` est une constante de compilation (`memo_counts.is_valid()`), comme `has_weights`.
+
+Mesuré : 3D 2·10⁵, Laguerre 0.450 → 0.337 s, Voronoï 0.436 → 0.307 s. Test :
+`the_memory_changes_nothing_but_the_cost`.

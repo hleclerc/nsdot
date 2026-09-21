@@ -62,7 +62,19 @@ struct FournisseurTous {
 /// `pd.point( k )`, et l'identifiant d'une coupe est ce rang `k`. `POIDS` : diagramme de Laguerre
 /// ( le majorant affine des poids entre dans l'elagage ) -- une constante de compilation, pour que
 /// le cas euclidien ne paie ni les pentes ni les termes en `a . y`.
-template<class PD,class TK,int D,bool POIDS>
+///
+/// `MEMO` : LA MEMOIRE ( `PowerDiagram_Bsp.memo_nbrs / memo_counts` ). Le stockage se souvient,
+/// par germe, des RANGS des voisins de sa cellule au dernier `measures` ( tries croissant ) ; ils
+/// sont proposes EN PREMIER, avant toute descente, puis le parcours ordinaire les SAUTE ( aucun
+/// plan deux fois : `cut` n'est pas idempotente ). Ce que ca epargne, ce ne sont pas les boites --
+/// une boite qui contient un vrai voisin passe l'elagage quoi qu'il arrive -- ce sont les coupes
+/// TRANSITOIRES, celles qu'un germe proche fait avant qu'un vrai voisin ne le supplante : la
+/// moitie des coupes effectives en 3D, chacune une mise a jour du polytope. Mesure sur le banc
+/// ( `solvers_des_familles`, README § 11 ) : -25 a -42 % du diagramme 3D, et les souvenirs
+/// perimes -- ceux de Voronoi sur un diagramme de Laguerre -- rendent encore -18 % : un faux
+/// souvenir ne coute qu'une premiere passe. Un germe sans souvenir ( `memo_counts == 0` ) prend
+/// le chemin ordinaire, a la comparaison pres.
+template<class PD,class TK,int D,bool POIDS,bool MEMO = false>
 struct FournisseurBsp {
     using TF = typename PD::TF;
 
@@ -74,11 +86,14 @@ struct FournisseurBsp {
         int  haut = 0;
         SI   k = 0, fin = 0;                             ///< la tranche de la feuille ouverte
         bool amorce = false;
+        int  ipre = 0;                                   ///< MEMO : ou en est la pre-passe des souvenirs
+        int  isaut = 0;                                  ///< MEMO : le curseur de saut dans la feuille ouverte
     };
 
     const PD &pd;
     SI  k0;
     SI  depth;                                           ///< `nb_nodes == 2^depth - 1`
+    int npre = 0;                                        ///< MEMO : combien de souvenirs pour `k0`
     TF  p0[ D ], w0;
     TK  q0[ D ], v0;                                     ///< les memes, pour l'elagage
 
@@ -94,6 +109,23 @@ struct FournisseurBsp {
         depth = 0;
         for ( SI m = SI( pd.tree.node_begin.shape( 0 ) ); m; m >>= 1 )
             ++depth;
+
+        if constexpr ( MEMO )
+            npre = int( pd.memo_counts( k0 ) );
+    }
+
+    /// MEMO : le `q`-ieme souvenir de `k0`, un rang
+    HD SI souvenir( int q ) const {
+        if constexpr ( MEMO ) return SI( pd.memo_nbrs( k0, q ) );
+        else return 0;
+    }
+
+    HD void plan_du_rang( SI k, Plane<TK,D> &p ) const {
+        const auto pj = pd.point( k );
+        TF p1[ D ];
+        for ( int d = 0; d < D; ++d )
+            p1[ d ] = pj[ d ];
+        p = bisector<TK,D>( p0, w0, p1, pd.weight( k ), int( k ) );
     }
 
     /// la boite du noeud, et le majorant de ses poids, dans le flottant du noyau
@@ -132,17 +164,24 @@ struct FournisseurBsp {
             l.amorce = true;
         }
 
+        if constexpr ( MEMO ) {                          // la pre-passe : les voisins d'hier, sans descendre
+            if ( l.ipre < npre ) {
+                plan_du_rang( souvenir( l.ipre++ ), p );
+                return true;
+            }
+        }
+
         for ( ;; ) {
             // ---- une feuille est ouverte : on rend le germe suivant de sa tranche
             while ( l.k < l.fin ) {
                 const SI k = l.k++;
                 if ( k == k0 )
                     continue;
-                const auto pj = pd.point( k );
-                TF p1[ D ];
-                for ( int d = 0; d < D; ++d )
-                    p1[ d ] = pj[ d ];
-                p = bisector<TK,D>( p0, w0, p1, pd.weight( k ), int( k ) );
+                if constexpr ( MEMO ) {                  // deja propose ? le curseur avance avec `k`
+                    while ( l.isaut < npre && souvenir( l.isaut ) < k ) ++l.isaut;
+                    if ( l.isaut < npre && souvenir( l.isaut ) == k ) { ++l.isaut; continue; }
+                }
+                plan_du_rang( k, p );
                 return true;
             }
 
@@ -168,6 +207,11 @@ struct FournisseurBsp {
             if ( h <= 1 ) {                              // une feuille
                 l.k = beg;
                 l.fin = end;
+                if constexpr ( MEMO ) {                  // le curseur de saut : le premier souvenir >= beg
+                    int lo = 0, hi = npre;
+                    while ( lo < hi ) { const int m = ( lo + hi ) / 2; if ( souvenir( m ) < beg ) lo = m + 1; else hi = m; }
+                    l.isaut = lo;
+                }
                 continue;
             }
 

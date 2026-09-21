@@ -22,8 +22,8 @@
     \
     UnitDensity unit_density() const { return {}; } \
     \
-    void measures( auto &&res, const auto &dom, auto &&scratch, const auto &dist, SI thread_index, SI nb_threads ) const { \
-        diagram::measures( *this, res, dom, scratch, dist, thread_index, nb_threads ); \
+    void measures( auto &&res, const auto &dom, auto &&scratch, const auto &dist, auto &&memo_nbrs, auto &&memo_counts, SI thread_index, SI nb_threads ) const { \
+        diagram::measures( *this, res, dom, scratch, dist, memo_nbrs, memo_counts, thread_index, nb_threads ); \
     } \
     void measures_bwd( auto &&res, const auto &dom, auto &&grad_res, auto &&grad_positions, auto &&grad_weights, \
                        auto &&scratch, const auto &dist, auto &&grad_dist, SI thread_index, SI nb_threads ) const { \

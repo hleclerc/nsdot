@@ -204,9 +204,30 @@ bool integrate_moments_into( auto &&mass, auto &&first, auto &&second, const Loc
 /// `nb_threads` work-items se partagent les cellules, dans l'ordre du stockage ( deux germes
 /// consecutifs y sont voisins dans l'espace ). `scratch` est le tenseur de travail du work-item --
 /// et ou l'on dit qu'il a manque.
+/// LA MEMOIRE d'une cellule ( `FournisseurBsp`, `MEMO` ) : ses voisins, en rangs tries, ecrits dans
+/// `memo_nbrs( k, . )` / `memo_counts( k )` -- ou rien ( `0` : compte nul ) s'ils depassent la
+/// capacite. `memo_*` valent `0` quand l'appel n'en veut pas.
+template<class Local>
+void memorise( Local &c, SI k, auto &&memo_nbrs, auto &&memo_counts ) {
+    if constexpr ( requires { memo_nbrs( k, 0 ); } ) {
+        c.tidy();
+        const int nc = c.nb_cuts(), cap = int( memo_nbrs.shape( 1 ) );
+        int m = 0;
+        for ( int q = 0; q < nc && m <= cap; ++q ) {
+            const int id = c.cid[ q ];
+            if ( id < 0 ) continue;                      // le domaine
+            if ( m == cap ) { m = cap + 1; break; }      // trop pour la capacite : pas de souvenir
+            int r = m++;                                 // insertion, trie croissant
+            while ( r > 0 && int( memo_nbrs( k, r - 1 ) ) > id ) { memo_nbrs( k, r ) = memo_nbrs( k, r - 1 ); --r; }
+            memo_nbrs( k, r ) = id;
+        }
+        memo_counts( k ) = m > cap ? 0 : m;
+    }
+}
+
 template<class PD>
 void measures( const PD &pd, auto &&res, const auto &dom, auto &&scratch, const auto &dist,
-               SI thread_index, SI nb_threads ) {
+               auto &&memo_nbrs, auto &&memo_counts, SI thread_index, SI nb_threads ) {
     using TF    = typename PD::TF;
     using TK    = KernelType<DECAYED_TYPE_OF( scratch )>;
     using Local = typename DECAYED_TYPE_OF( dom )::template Local<TK>;
@@ -224,6 +245,7 @@ void measures( const PD &pd, auto &&res, const auto &dom, auto &&scratch, const 
             ask_more( scratch, cv );
             return;
         }
+        memorise( c, k, memo_nbrs, memo_counts );
     }
 }
 
