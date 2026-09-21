@@ -42,7 +42,7 @@ src/cell/      L'ENGIN. La cellule DIRIGE : elle demande un plan à un fournisse
                Contrat3D.h        Plan3, l'état que le fournisseur voit
                Cellule3D.h        le polytope simple porté par ses sommets (3 coupes, 3 voisins chacun)
                Elagage3D.h        le même test, un axe de plus, sur des sommets en mémoire
-               FournisseurBsp3D.h le même parcours
+               FournisseurBsp3D.h le même parcours ; `MEMO` : les voisins d'hier proposés d'abord (§ 11)
                Noyau3D.h          la boucle 3D
                Balayage.h         le TÉMOIN : tous les autres germes, sans élagage
 
@@ -68,6 +68,7 @@ src/mains/     main_check.cpp     l'exactitude
                main_ecrasement.cpp les cellules qui se vident le long d'une direction (§ 7)
                main_multiechelle.cpp la prolongation du multi-échelle, mesurée (§ 8)
                main_densite.cpp   les densités hétérogènes, la continuation en largeur (§ 9)
+               main_memo.cpp      la mémoire en 3D, sa borne supérieure et ses souvenirs périmés (§ 11)
 
 directions/    les directions « à problème » sauvées, leurs CSV et leurs figures
 courbes/       le résidu contre les diagrammes, méthode par méthode (`--courbe`, § 10)
@@ -1066,3 +1067,79 @@ Ce qui reste ouvert, si on y revient : une recherche linéaire à la KMT (couper
 le premier pas admissible) rendrait `refacto 1` égal à Newton ; et la 3D d'une densité
 hétérogène (flux d'un champ radial à travers des faces polygonales, un niveau d'imbrication de
 plus que § 9) n'est pas écrite.
+
+---
+
+# 11. LA MÉMOIRE EN 3D : PROPOSER D'ABORD LES VOISINS D'HIER (`memo`, `newton --memo`)
+
+La question laissée ouverte par `2d_des_familles` (journal, `--memo`) : par germe, se souvenir des
+diracs qui portaient une face de la cellule à la passe précédente, les proposer **en premier**,
+puis parcourir l'arbre en **complément** (aucun dirac deux fois — `cut` n'est pas idempotente).
+En 2D la borne supérieure valait −19 % et la boucle de Newton n'en rendait rien ; en 3D, jamais
+mesuré. `FournisseurBsp3<…, MEMO>` (compilé à part : le chemin sans mémoire ne porte ni pointeur
+ni compteur de plus), `PowerDiagram::cellule_memo`, `memorise( i, j )` / `oublie()`, et
+`main_memo.cpp`.
+
+## 11.1 La borne supérieure : deux passes aux mêmes poids
+
+n = 10⁵, 8 fils, minimum de 10 répétitions. Le *témoin* est le chemin MEMO à vide (le prix du
+code) ; *les voisins seuls* ne parcourent pas l'arbre du tout — c'est le plancher, le prix des
+seules coupes utiles.
+
+| par cellule | plans proposés | boîtes testées | **coupes effectives** | temps |
+|---|---|---|---|---|
+| uniforme, sans mémoire | 87.4 | 95.2 | 30.1 | 0.305 s |
+| uniforme, témoin | 87.4 | 95.2 | 30.1 | 0.313 s |
+| uniforme, **avec mémoire** | 67.9 | 83.9 | **15.1** | **0.211 s (−31 %)** |
+| uniforme, les voisins seuls | 15.1 | 0 | 15.1 | 0.118 s (−61 %) |
+| plans / Voronoï, sans | 88.5 | 95.6 | 30.5 | 0.306 s |
+| plans / Voronoï, **avec** | 67.8 | 83.9 | **15.1** | **0.179 s (−42 %)** |
+| plans / volumes égaux (Laguerre), sans | 270 | 258 | 32.0 | 0.499 s |
+| plans / volumes égaux, **avec** | 253 | 251 | **15.5** | **0.395 s (−21 %)** |
+| uniforme 10⁶, sans | 106 | 101 | 32.3 | 3.16 s |
+| uniforme 10⁶, **avec** | 81.6 | 89.4 | **15.3** | **2.04 s (−36 %)** |
+
+**Ce qui est différent de la 2D, et pourquoi.** Les boîtes testées baissent peu (95 → 84) et les
+plans proposés de 20 % : l'argument de 2D tient — une boîte qui contient un vrai voisin passe
+`peut_couper` quoi qu'il arrive, on ne peut pas élaguer ce qu'on doit regarder. Ce qui change,
+c'est la colonne des **coupes effectives : 30 → 15**. Sans mémoire, la moitié des coupes qui
+modifient la cellule sont *transitoires* — un dirac proche coupe, puis un vrai voisin le
+supplante — et en 3D chaque coupe effective est une mise à jour combinatoire du polyèdre
+(`Cellule3D::coupe`, 54 % du diagramme). Avec la mémoire, les quinze coupes effectives sont
+exactement les quinze finales, et tout le reste n'est que des premières passes `s = d·v − off`
+sans sommet dehors. En 2D la coupe transitoire d'un polygone en registres ne coûte rien de plus
+qu'un test ; en 3D elle coûte le diagramme.
+
+## 11.2 Les souvenirs périmés : ce que Newton fait subir à la mémoire
+
+`--perime T` : les souvenirs pris à `T·W`, le diagramme mesuré à `W`, sur les plans / volumes
+égaux (Laguerre, 0.5 s sans mémoire) :
+
+| souvenirs pris à | voisins retrouvés | coupes effectives | temps |
+|---|---|---|---|
+| `W` (exacts) | 15.50 | 15.5 | −21 % |
+| `0.9 W` | 15.48 | 15.9 | −18 % |
+| `0.5 W` | 15.34 | 17.3 | −18 % |
+| `0` (Voronoï) | 15.09 | 20.0 | −18 % |
+
+Même les souvenirs de Voronoï rendent 18 % sur le diagramme final : les voisinages changent
+peu, et un souvenir faux ne coûte qu'une première passe. C'est le point que la 2D ne pouvait pas
+montrer.
+
+## 11.3 Dans la boucle de Newton
+
+`newton --3d --memo` : les facettes du dernier diagramme **accepté** (que Newton a de toute façon,
+pour le laplacien) deviennent la mémoire du suivant, essais compris — `memorise` coûte 10 ms par
+diagramme. Mêmes itérations, mêmes diagrammes, mêmes résidus au chiffre près (l'ordre des coupes
+n'a pas changé les arrondis, contrairement aux lignes en 2D) :
+
+| n = 10⁵, AMG RS+GS | diagrammes | total |
+|---|---|---|
+| uniforme, 9 diagrammes | 2.92 → **2.07 s (−29 %)** | 7.08 → 6.30 s (−11 %) |
+| plans, 27 diagrammes | 11.8 → **8.8 s (−25 %)** | 21.8 → 19.1 s (−12 %) |
+
+Le quart du diagramme 3D, pour soixante octets par germe et une passe sur les facettes. C'est
+le contraire de la conclusion 2D, pour une raison qu'on peut nommer : ce que la mémoire épargne
+n'est pas du parcours, ce sont les coupes transitoires, et elles n'ont de prix qu'en 3D. Reste le
+plancher : les voisins seuls font −61 %, la moitié du diagramme est encore le parcours de l'arbre
+pour *confirmer* qu'il n'y a personne d'autre — et ça, la mémoire ne peut pas le savoir.

@@ -9,6 +9,7 @@
 --   xmake run ecrasement --help      jusqu'ou une direction de Newton peut aller avant une cellule vide
 --   xmake run multiechelle --help    resoudre sur des representants, prolonger, resoudre en dessous
 --   xmake run densite --help         une somme de gaussiennes pour densite, la continuation en largeur
+--   xmake run memo                   la memoire en 3D : les voisins d'hier proposes d'abord, borne superieure
 --
 -- OU EST QUOI :
 --   src/util/      les types, l'horloge, les fils
@@ -55,7 +56,7 @@ local function reglages()
     add_syslinks( "pthread" )
 end
 
-for _, nom in ipairs( { "check", "diagramme", "newton", "ecrasement", "glissement", "homotopie", "multiechelle", "densite" } ) do
+for _, nom in ipairs( { "check", "diagramme", "newton", "ecrasement", "glissement", "homotopie", "multiechelle", "densite", "memo" } ) do
     target( nom )
         set_kind( "binary" )
         add_files( "src/mains/main_" .. nom .. ".cpp" )

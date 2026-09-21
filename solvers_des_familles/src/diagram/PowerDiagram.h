@@ -50,6 +50,27 @@ struct PowerDiagram {
     std::vector<d2::SI32> ids;      ///< rang dans l'arbre -> identifiant de l'appelant
     SI               n = 0;
 
+    /// LA MEMOIRE ( 3D, § 11 ) : par rang, les rangs des voisins du DERNIER diagramme, proposes en
+    /// premier par `measures_and_facets*` tant qu'elle est la ( `oublie()` pour l'eteindre ).
+    std::vector<SI>       rang;     ///< identifiant -> rang, bati au premier `memorise`
+    std::vector<SI>       memo_beg;
+    std::vector<d2::SI32> memo_pre;
+    mutable std::vector<std::vector<unsigned char>> memo_saute;   ///< par fil : « deja propose »
+    mutable SI            memo_coupees = 0;                         ///< coupes effectives, en tout, au dernier diagramme
+
+    /// les paires ( identifiant, identifiant ) des facettes d'un diagramme deviennent la memoire
+    void memorise( const d2::SI32 *ii, const d2::SI32 *jj, SI nb ) {
+        if ( SI( rang.size() ) != n ) { rang.resize( n ); for ( SI k = 0; k < n; ++k ) rang[ ids[ k ] ] = k; }
+        memo_beg.assign( n + 1, 0 );
+        for ( SI q = 0; q < nb; ++q ) ++memo_beg[ rang[ ii[ q ] ] + 1 ];
+        for ( SI k = 0; k < n; ++k ) memo_beg[ k + 1 ] += memo_beg[ k ];
+        memo_pre.resize( nb );
+        std::vector<SI> at( memo_beg.begin(), memo_beg.end() - 1 );
+        for ( SI q = 0; q < nb; ++q ) memo_pre[ at[ rang[ ii[ q ] ] ]++ ] = d2::SI32( rang[ jj[ q ] ] );
+    }
+    void oublie() { memo_beg.clear(); memo_pre.clear(); }
+    bool memoire() const { return ! memo_beg.empty(); }
+
     // ------------------------------------------------------------------ construction, poids
     void build( const TF *const *P, const TF *W, SI nb, SI leaf ) {
         n = nb;
@@ -90,6 +111,15 @@ struct PowerDiagram {
             d3::FournisseurBsp3<TK,true> f( &arbre, c[ 0 ][ k ], c[ 1 ][ k ], c[ 2 ][ k ], TK( wk ), ids[ k ] );
             return d3::moteur( &f, &cel ) == 0;
         }
+    }
+
+    /// LA CELLULE AVEC MEMOIRE ( 3D, `main_memo.cpp` ) : les rangs `pre[ 0 .. npre )` proposes en
+    /// premier, ceux marques dans `saute` ( par rang ) sautes au parcours. `prop` et `boites` rendent
+    /// ce que le fournisseur a propose et teste. Rend `false` sur debordement.
+    bool cellule_memo( SI k, Cell &cel, const d2::SI32 *pre, int npre, const unsigned char *saute, int &prop, int &boites, int &coupees, bool parcours = true ) const {
+        static_assert( D == 3, "la memoire n'est ecrite qu'en 3D" );
+        return laguerre() ? cellule_memo_<true>( k, cel, pre, npre, saute, prop, boites, coupees, parcours )
+                          : cellule_memo_<false>( k, cel, pre, npre, saute, prop, boites, coupees, parcours );
     }
 
     /// La mesure de la cellule, et ses facettes contre d'autres germes : `facette( j, mes )`
@@ -136,6 +166,30 @@ struct PowerDiagram {
     SI measures_and_facets_avec( std::vector<TF> &res, const Parallel &par, Facette &&facette, Mesure &&mes ) const {
         res.assign( n, TF( 0 ) );
         std::atomic<SI> deborde{ 0 };
+        if constexpr ( D == 3 ) {
+            if ( memoire() ) {
+                const int nth = std::max( par.threads, 1 );
+                if ( SI( memo_saute.size() ) < nth ) memo_saute.resize( nth );
+                for ( auto &v : memo_saute ) if ( SI( v.size() ) != n ) v.assign( n, 0 );
+                std::atomic<SI> coupees{ 0 };
+                parallel_for( n, par, [ & ]( SI k, int t ) {
+                    Cell cel;
+                    const d2::SI32 i = ids[ k ];
+                    const d2::SI32 *p = memo_pre.data() + memo_beg[ k ];
+                    const int np = int( memo_beg[ k + 1 ] - memo_beg[ k ] );
+                    unsigned char *sa = memo_saute[ t ].data();
+                    for ( int q = 0; q < np; ++q ) sa[ p[ q ] ] = 1;
+                    int prop = 0, boites = 0, coup = 0;
+                    const bool ok = cellule_memo( k, cel, p, np, sa, prop, boites, coup );
+                    for ( int q = 0; q < np; ++q ) sa[ p[ q ] ] = 0;
+                    coupees += coup;
+                    if ( ! ok ) { ++deborde; return; }
+                    res[ i ] = mes( cel, [ & ]( d2::SI32 j, TF m ) { facette( t, i, j, m ); }, SI( i ) );
+                } );
+                memo_coupees = coupees.load();
+                return deborde.load();
+            }
+        }
         parallel_for( n, par, [ & ]( SI k, int t ) {
             Cell cel;
             const d2::SI32 i = ids[ k ];
@@ -149,6 +203,20 @@ private:
     void copie_poids() {
         w.resize( n );
         for ( SI k = 0; k < n; ++k ) w[ k ] = TK( arbre.seed_w( k ) );
+    }
+
+    template<bool POIDS>
+    bool cellule_memo_( SI k, Cell &cel, const d2::SI32 *pre, int npre, const unsigned char *saute, int &prop, int &boites, int &coupees, bool parcours ) const {
+        if constexpr ( D == 3 ) {
+            using F = d3::FournisseurBsp3<TK,POIDS,8,true>;
+            F f( &arbre, c[ 0 ][ k ], c[ 1 ][ k ], c[ 2 ][ k ], POIDS ? w[ k ] : TK( 0 ), ids[ k ] );
+            f.pre = pre; f.npre = npre; f.saute = saute; f.parcours = parcours;
+            typename F::Local loc;
+            const int r = d3::moteur( &f, &cel, &loc );
+            prop = loc.nb_prop; boites = loc.nb_boites; coupees = loc.nb_coupees;
+            return r == 0;
+        } else
+            return false;
     }
 
     template<bool POIDS>

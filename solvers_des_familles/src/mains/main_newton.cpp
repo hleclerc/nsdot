@@ -95,8 +95,9 @@ int lance( const Args &a, const Opts &o, const Nuage<PD::dim> &nu, Lin &lin ) {
                  int( a.leaf ), st.nb_iter, st.nb_diag - ( o.methode != "newton" ? po.st.nb_diag : 0 ), st.nb_recul, lin.nom(),
                  sl.nb_iter ? ( " ( " + std::to_string( sl.nb_iter ) + " iterations )" ).c_str() : "" );
     std::printf( "         arbre %.3f | majorants %.3f | diagrammes %.3f | assemblage %.3f"
-                 " | resolution %.3f | limites %.3f | reste %.3f | TOTAL %.3f s\n",
-                 t_arbre, st.t_maj, st.t_diag, st.t_asm, st.t_lin, st.t_lim, autre, total );
+                 " | resolution %.3f | limites %.3f | reste %.3f | TOTAL %.3f s%s\n",
+                 t_arbre, st.t_maj, st.t_diag, st.t_asm, st.t_lin, st.t_lim, autre, total,
+                 o.newton.memo ? ( "   ( memoire " + std::to_string( st.t_memo ).substr( 0, 5 ) + " s, dans reste )" ).c_str() : "" );
     if ( st.nb_cell_lim )
         std::printf( "         limites : %d cellules calculees ( %.2f par germe et par iteration ), %d pas refuses par le diagramme\n",
                      int( st.nb_cell_lim ), double( st.nb_cell_lim ) / n / std::max( st.nb_iter, 1 ), st.nb_lim_refus );
@@ -217,6 +218,7 @@ int main( int argc, char **argv ) {
         else if ( s == "--bascule" )    o.po.bascule = std::atof( val() );
         else if ( s == "--bascule-it" ) o.po.bascule_it = std::atoi( val() );
         else if ( s == "--courbe" )     o.courbe = val();
+        else if ( s == "--memo" )       o.newton.memo = true;
         else if ( s == "--lim-tol" )    o.newton.lim.tol = std::atof( val() );
         else if ( s == "--lim-coeff" )  o.newton.lim.coeff = std::atof( val() );
         else if ( s == "--t-min" )      o.newton.t_min = std::atof( val() );
@@ -258,7 +260,8 @@ int main( int argc, char **argv ) {
                 "  --max-ls K      diagrammes par recherche lineaire, au plus                     (12)\n"
                 "  --bascule R     passer a Newton des que max|a-nu|/nu <= R                     (0 : jamais)\n"
                 "  --bascule-it K  passer a Newton apres K iterations                            (0 : jamais)\n"
-                "  --courbe FILE   CSV ( ajoute ) : methode;cas;dim;it;diagrammes;temps;max|a-nu|/nu;|r|_2 apres chaque pas\n" );
+                "  --courbe FILE   CSV ( ajoute ) : methode;cas;dim;it;diagrammes;temps;max|a-nu|/nu;|r|_2 apres chaque pas\n"
+                "  --memo          3D : les facettes du dernier diagramme accepte proposees en premier au suivant\n" );
             return s == "--help" || s == "-h" ? 0 : 1;
         }
     }

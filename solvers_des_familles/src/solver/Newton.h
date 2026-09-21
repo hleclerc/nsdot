@@ -75,6 +75,7 @@ struct NewtonOptions {
     /// LOG `g = log x` : `x -> x ( 1 - log x )`.
     enum Residu : int { LIN = 0, BARRIERE, LOG };
     int  residu     = LIN;
+    bool memo       = false;   ///< 3D : les facettes du dernier diagramme ACCEPTE proposees en premier au suivant ( § 11 )
     /// appele apres chaque pas ACCEPTE ( et au depart, `it = -1` ) : `pd` porte alors `w`
     std::function<void( int it, TF t, int reculs )> apres_pas;
 };
@@ -91,7 +92,7 @@ struct NewtonStats {
     SI     nb_cell_mauvaises = 0; ///< ESSAI_LIMITES : cellules trouvees sous `eps` par les essais, en tout
     int    nb_tours_essai = 0;    ///< ESSAI_LIMITES : essais corriges par des limites locales
     int    nb_lim_refus = 0;   ///< pas proposes par les limites et refuses par le diagramme
-    double t_maj = 0, t_diag = 0, t_asm = 0, t_lin = 0, t_lim = 0;
+    double t_maj = 0, t_diag = 0, t_asm = 0, t_lin = 0, t_lim = 0, t_memo = 0;
 };
 
 template<class PD, class Lin>
@@ -125,6 +126,16 @@ struct Newton {
         double t0 = now();
         pd.set_weights( W.data(), par );
         st.t_maj += now() - t0;
+        if constexpr ( D == 3 ) {                        // la memoire : les facettes du diagramme accepte
+            if ( o.memo && ! this->fa.empty() ) {
+                t0 = now();
+                std::vector<d2::SI32> ii( this->fa.size() ), jj( this->fa.size() );
+                for ( SI q = 0; q < SI( this->fa.size() ); ++q ) { ii[ q ] = d2::SI32( this->fa[ q ].i ); jj[ q ] = d2::SI32( this->fa[ q ].j ); }
+                pd.memorise( ii.data(), jj.data(), SI( ii.size() ) );
+                st.t_memo += now() - t0;
+            } else
+                pd.oublie();
+        }
 
         t0 = now();
         std::vector<std::vector<Facette>> par_th( std::max( par.threads, 1 ) );

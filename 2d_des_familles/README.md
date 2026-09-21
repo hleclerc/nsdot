@@ -241,8 +241,9 @@ contre-mesures, ce qui a été essayé avant d'abandonner — est dans le journa
 
 ## Ce qui est ouvert
 
-`--memo` (l'arbre qui se souvient des coupes) : borne supérieure mesurée à **−19 %** en 2D, jamais
-essayé en 3D. Le multi-échelle dans Newton : écrit, mesuré, pas abouti. Et les accélérateurs
+`--memo` (l'arbre qui se souvient des coupes) : borne supérieure mesurée à **−19 %** en 2D ; en 3D
+elle vaut **−31 à −42 %** et survit aux souvenirs périmés (−25 % sur les diagrammes de Newton,
+`solvers_des_familles` § 11). Le multi-échelle dans Newton : écrit, mesuré, pas abouti. Et les accélérateurs
 d'étude (`pack`, `hull`, `front`) ne sont pas portés en 3D.
 
 ---

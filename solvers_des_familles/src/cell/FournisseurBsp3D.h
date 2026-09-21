@@ -28,7 +28,12 @@ inline void bissect3( TK xj, TK yj, TK zj, TK wj, TK x0, TK y0, TK z0, TK w0, SI
     p.id = id;
 }
 
-template<class TK, bool POIDS, int W = 8>
+/// `MEMO` : LA MEMOIRE ( `main_memo.cpp`, la borne superieure de `--memo` en 3D ). Le fournisseur
+/// propose d'abord les rangs de `pre[ 0 .. npre )` -- les voisins de la cellule finale, connus
+/// d'une passe precedente -- puis le parcours ordinaire, en SAUTANT les rangs marques dans
+/// `saute` ( le complement : aucun dirac deux fois, `cut` n'est pas idempotente ). Compile a part
+/// pour que le chemin sans memoire ne porte ni pointeur ni compteur de plus.
+template<class TK, bool POIDS, int W = 8, bool MEMO = false>
 struct FournisseurBsp3 {
     using Arbre = AaBspT<3>;
 
@@ -37,11 +42,17 @@ struct FournisseurBsp3 {
         int  haut = 0;
         int  k = 0, fin = 0;
         bool amorce = false;
+        int  ipre = 0;                                   ///< MEMO : ou on en est dans `pre`
+        int  nb_prop = 0, nb_boites = 0, nb_coupees = 0; ///< MEMO : plans proposes, boites testees, coupes EFFECTIVES
     };
 
     const Arbre *arbre;
     TK   x0, y0, z0, w0;
     SI32 i0;
+    const SI32          *pre = nullptr;                  ///< MEMO : les rangs a proposer d'abord
+    int                  npre = 0;
+    const unsigned char *saute = nullptr;                ///< MEMO : par rang, 1 = deja propose
+    bool                 parcours = true;                ///< MEMO : `false` = les souvenirs seuls, sans parcours ( le plancher )
 
     FournisseurBsp3( const Arbre *arbre, TK x0, TK y0, TK z0, TK w0, SI32 i0 )
         : arbre( arbre ), x0( x0 ), y0( y0 ), z0( z0 ), w0( w0 ), i0( i0 ) {}
@@ -73,11 +84,24 @@ struct FournisseurBsp3 {
     bool suivant( const Etat &e, Local &l, Plan3<TK> &p ) {
         if ( ! l.amorce ) { l.pile[ l.haut++ ] = 0; l.amorce = true; }
 
+        if constexpr ( MEMO ) {                          // la pre-passe : les voisins d'hier
+            if ( l.ipre < npre ) {
+                const int k = pre[ l.ipre++ ];
+                ++l.nb_prop;
+                bissect3<POIDS>( TK( arbre->seed_c( k, 0 ) ), TK( arbre->seed_c( k, 1 ) ),
+                                 TK( arbre->seed_c( k, 2 ) ), POIDS ? TK( arbre->seed_w( k ) ) : TK( 0 ),
+                                 x0, y0, z0, w0, SI32( arbre->order[ k ] ), p );
+                return true;
+            }
+            if ( ! parcours ) return false;
+        }
+
         for ( ;; ) {
             while ( l.k < l.fin ) {
                 const int k = l.k++;
                 const SI32 id = SI32( arbre->order[ k ] );
                 if ( id == i0 ) continue;
+                if constexpr ( MEMO ) { if ( saute && saute[ k ] ) continue; ++l.nb_prop; }
                 bissect3<POIDS>( TK( arbre->seed_c( k, 0 ) ), TK( arbre->seed_c( k, 1 ) ),
                                  TK( arbre->seed_c( k, 2 ) ), POIDS ? TK( arbre->seed_w( k ) ) : TK( 0 ),
                                  x0, y0, z0, w0, id, p );
@@ -89,6 +113,7 @@ struct FournisseurBsp3 {
 
             const int h = l.pile[ --l.haut ];
             const auto &nd = arbre->nodes[ h ];
+            if constexpr ( MEMO ) ++l.nb_boites;
             if ( ! peut_couper( nd, e ) )
                 continue;
             if ( nd.right < 0 ) { l.k = int( nd.beg ); l.fin = int( nd.end ); continue; }
