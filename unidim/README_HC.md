@@ -52,19 +52,19 @@ pip install tqdm nvidia-ml-py3 matplotlib  pandas mlflow
    et mem_budget calculé dans le script directement via jax.device.memory_stats()
 - `reconstruction_torch.py` une 1ere version : 
   - instrumentée avec ml_flow et torch_profiler 
-  - `torch.searchsorted()`: input value tensor is non-contiguous , this will lower the performance
+  - Warning : `torch.searchsorted()`: input value tensor is non-contiguous , this will lower the performance
 
 ## décomposition du pipeline
 - `W2_precision_and_bench_batchsize.py`: 
-  - influence de la précission sur le calcul de W2, en float32 parfois w0
+  - influence de la précission sur le calcul de la distance W2, en float32 parfois W2 < 0
   - Mesurer l'effet de batch_size, compromis mémoire ↔ parallélisme ↔ temps de calcul.
-- `lab_jax_device.py` : comprendre la gestion de la mémoire jax notamment via jax_device.memory_stats(), préallocation, pool_bytes, used_bytes
-- `lab_wasser.py` : chgt sur w2 : _w2_1d_new a plus de code compilé, mais moins de mémoire temporaire.
+- `lab_jax_device.py` : comprendre la gestion de la mémoire jax notamment via `jax_device.memory_stats()`, préallocation, pool_bytes, used_bytes
+- `lab_wasser.py` : chgt sur w2 : `_w2_1d_new` a plus de code compilé, mais moins de mémoire temporaire.
 - `lab_jax_map` : à cette échelle, les trois implémentations de W2 sont quasiment identiques en coût d'exécution et en mémoire pour
-- `lab_lgbfs2_compare_optax_jax.py` : comparaison optax.value_and_grad_from_state à jax.value_and_grad,
+- `lab_lgbfs2_compare_optax_jax.py` : comparaison `optax.value_and_grad_from_state` à `jax.value_and_grad`,
   la version optax plus l"gérement plus rapide en compilation
 - `lab_lgbfs_linesearch_optim.py` : rapidité → `max_linesearch_steps`=1, meilleure convergence → `max_linesearch_steps`=4
 
 ## optimisations monoscale
 - `lab_lgbfs2_jax.py` : optim avec optax sur N points, mesure gpu et temps , reporting dans mlflow
-- `lab_lgbfs2_toch.py` : optim avec torch.optim.LBFGS sur N points, mesure gpu et temps , reporting dans mlflow
+- `lab_lgbfs2_torch.py` : optim avec torch.optim.LBFGS sur N points, mesure gpu et temps , reporting dans mlflow
