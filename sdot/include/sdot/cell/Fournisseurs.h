@@ -1,5 +1,7 @@
 #pragma once
 
+#include <loom/support/common_macros.h> // HD
+
 // =====================================================================================
 // LES FOURNISSEURS D'UN DIAGRAMME DE PUISSANCE -- « quel demi-espace couper maintenant ? »
 //
@@ -36,7 +38,7 @@ struct FournisseurTous {
     SI  n, k0, k = 0;
     TF  p0[ D ], w0;
 
-    FournisseurTous( const PD &pd, SI k0 ) : pd( pd ), n( pd.nb_seeds() ), k0( k0 ) {
+    HD FournisseurTous( const PD &pd, SI k0 ) : pd( pd ), n( pd.nb_seeds() ), k0( k0 ) {
         const auto p = pd.point( k0 );
         for ( int d = 0; d < D; ++d )
             p0[ d ] = p[ d ];
@@ -44,7 +46,7 @@ struct FournisseurTous {
     }
 
     template<class Etat>
-    bool suivant( const Etat &, RienDeLocal &, Plane<TK,D> &p ) {
+    HD bool suivant( const Etat &, RienDeLocal &, Plane<TK,D> &p ) {
         if ( k == k0 ) ++k;                              // on ne se coupe pas soi-meme
         if ( k >= n ) return false;
         const SI j = k++;
@@ -97,7 +99,7 @@ struct FournisseurBsp {
     TF  p0[ D ], w0;
     TK  q0[ D ], v0;                                     ///< les memes, pour l'elagage
 
-    FournisseurBsp( const PD &pd, SI k0 ) : pd( pd ), k0( k0 ) {
+    HD FournisseurBsp( const PD &pd, SI k0 ) : pd( pd ), k0( k0 ) {
         const auto p = pd.point( k0 );
         for ( int d = 0; d < D; ++d ) {
             p0[ d ] = p[ d ];
@@ -129,7 +131,7 @@ struct FournisseurBsp {
     }
 
     /// la boite du noeud, et le majorant de ses poids, dans le flottant du noyau
-    Boite<TK,D> boite( SI n ) const {
+    HD Boite<TK,D> boite( SI n ) const {
         Boite<TK,D> B;
         for ( int d = 0; d < D; ++d ) {
             B.lo[ d ] = TK( pd.tree.node_box( n, 0, d ) );
@@ -147,7 +149,7 @@ struct FournisseurBsp {
 
     /// le carre de la distance du germe a la boite du noeud `n` -- une CLEF D'ORDRE seulement, pour
     /// visiter le fils le plus proche en premier, donc les coupes qui mordent le plus en premier.
-    TF proximite( SI n ) const {
+    HD TF proximite( SI n ) const {
         TF res = 0;
         for ( int d = 0; d < D; ++d ) {
             const TF lo = TF( pd.tree.node_box( n, 0, d ) ), hi = TF( pd.tree.node_box( n, 1, d ) );
@@ -158,7 +160,7 @@ struct FournisseurBsp {
     }
 
     template<class Etat>
-    bool suivant( const Etat &e, Local &l, Plane<TK,D> &p ) {
+    HD bool suivant( const Etat &e, Local &l, Plane<TK,D> &p ) {
         if ( ! l.amorce ) {                              // la racine : indice 0, hauteur `depth`
             l.pile[ l.haut++ ] = depth;
             l.amorce = true;

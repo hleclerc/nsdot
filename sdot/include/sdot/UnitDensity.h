@@ -15,7 +15,7 @@ namespace sdot {
 // coupe. `measures` sans distribution calcule donc exactement ce qu'il calculait avant, à
 // l'instruction près (le `TF( 1 ) *` se replie à la compilation).
 struct UnitDensity {
-    void for_each_piece( const auto &cell, auto &&/*ws*/, auto &&func ) const {
+    HD void for_each_piece( const auto &cell, auto &&/*ws*/, auto &&func ) const {
         // constante, et non paramétrée : le puits de gradient ne mène nulle part (voir
         // `ConstantDensity`). Le `TF( 1 ) *` de l'intégrateur se replie à la compilation.
         using TF = typename DECAYED_TYPE_OF( cell )::TKernel;

@@ -24,7 +24,7 @@ struct PieceWorkspace {
     bool  overflow = false;   ///< une coupe n'a pas tenu : l'appelant le signale, le resultat sera jete
 
     /// ouvre un morceau : `src` coupe par `direction . x <= offset`. Rend `false` s'il n'a pas tenu.
-    bool start( const Local &src, const auto &direction, auto offset ) {
+    HD bool start( const Local &src, const auto &direction, auto offset ) {
         if ( ! piece.copy_from( src ) ) {
             overflow = true;
             return false;
@@ -33,7 +33,7 @@ struct PieceWorkspace {
     }
 
     /// une coupe de plus sur le morceau en cours
-    bool cut( const auto &direction, auto offset ) {
+    HD bool cut( const auto &direction, auto offset ) {
         typename Local::PlaneT p;
         for ( int d = 0; d < D; ++d )
             p.dir[ d ] = TK( direction[ d ] );
@@ -47,10 +47,10 @@ struct PieceWorkspace {
     }
 
     /// le morceau courant
-    void with_current( auto &&func ) const { func( piece ); }
+    HD void with_current( auto &&func ) const { func( piece ); }
 
     /// 0 = le morceau est vide ( le pave ne rencontre pas la cellule ) -- pas une anomalie
-    SI nb_vertices() const { return piece.nb_vertices(); }
+    HD SI nb_vertices() const { return piece.nb_vertices(); }
 };
 
 } // namespace sdot

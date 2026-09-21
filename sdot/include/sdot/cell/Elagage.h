@@ -1,5 +1,7 @@
 #pragma once
 
+#include <loom/support/common_macros.h> // HD
+
 // =====================================================================================
 // LE TEST D'ELAGAGE, UNE FOIS POUR TOUTES.
 //
@@ -39,7 +41,7 @@ struct Boite {
 
 /// le test, pour un etat en MEMOIRE ( `nb` sommets, `D` tableaux )
 template<bool POIDS,class TK,int D>
-inline bool peut_couper_boite( int nb, const TK *const *v, const TK *p0, TK w0, const Boite<TK,D> &B ) {
+HD inline bool peut_couper_boite( int nb, const TK *const *v, const TK *p0, TK w0, const Boite<TK,D> &B ) {
     const TK cb = POIDS ? w0 - B.b : TK( 0 );
     for ( int i = 0; i < nb; ++i ) {
         TK s = cb;
@@ -81,7 +83,7 @@ inline bool peut_couper_boite_reg( const Etat &e, const TK *p0, TK w0, const Boi
 
 /// LA PORTE UNIQUE : quel que soit l'etat, la meme question.
 template<bool POIDS,class TK,int D,class Etat>
-inline bool peut_couper( const Etat &e, const TK *p0, TK w0, const Boite<TK,D> &B ) {
+HD inline bool peut_couper( const Etat &e, const TK *p0, TK w0, const Boite<TK,D> &B ) {
     // une cellule NON BORNEE est un simplexe de remplacement dont les coins sont inventes : rien
     // a elaguer contre, et la reponse honnete est « peut-etre ». L'accelerateur degenere alors en
     // balayage complet, ce qui est la bonne reponse et non un chemin lent que quelqu'un a choisi.

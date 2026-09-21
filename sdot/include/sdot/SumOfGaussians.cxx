@@ -20,7 +20,7 @@
 
 namespace sdot {
 
-UTP auto DTP::kernel_at( SI i, const auto &x ) const {
+UTP HD auto DTP::kernel_at( SI i, const auto &x ) const {
     struct Kernel { TF phi; TF r2; TF s; };
 
     const TF s = TF( sigmas( i ) );
@@ -42,7 +42,7 @@ UTP auto DTP::kernel_at( SI i, const auto &x ) const {
     return Kernel{ norm * sdot::exp( - r2 / ( 2 * s * s ) ), r2, s };
 }
 
-UTP typename DTP::TF DTP::value_at( const auto &x ) const {
+UTP HD typename DTP::TF DTP::value_at( const auto &x ) const {
     const SI n = nb_gaussians;
     TF res = 0;
     for ( SI i = 0; i < n; ++i )
@@ -50,7 +50,7 @@ UTP typename DTP::TF DTP::value_at( const auto &x ) const {
     return res;
 }
 
-UTP auto DTP::gradient_at( const auto &x ) const {
+UTP HD auto DTP::gradient_at( const auto &x ) const {
     // `d/dx exp( -r^2 / 2s^2 ) = - ( x - c ) / s^2 * ...` : le gradient d'une gaussienne pointe vers
     // son centre, avec le facteur `1 / s^2`.
     const SI n = nb_gaussians;
@@ -64,7 +64,7 @@ UTP auto DTP::gradient_at( const auto &x ) const {
     return res;
 }
 
-UTP void DTP::add_value_grad_at( auto &&grad_dist, const auto &x, TF g ) const {
+UTP HD void DTP::add_value_grad_at( auto &&grad_dist, const auto &x, TF g ) const {
     auto add_to = []( auto &&dst, TF v ) {
         if constexpr ( ! CT_VALUE( dst.surely_null() ) )
             atomic_add( dst.ref(), v );
@@ -106,18 +106,18 @@ UTP void DTP::add_value_grad_at( auto &&grad_dist, const auto &x, TF g ) const {
 
 namespace detail {
     // Gauss-Legendre à 8 points sur [ -1, 1 ], moitié positive
-    inline constexpr double gl8_x[ 4 ] = { 0.1834346424956498, 0.5255324099163290,
+    LOOM_CONSTANT( double gl8_x[ 4 ] ) = { 0.1834346424956498, 0.5255324099163290,
                                            0.7966664774136267, 0.9602898564975363 };
-    inline constexpr double gl8_w[ 4 ] = { 0.3626837833783620, 0.3137066458778873,
+    LOOM_CONSTANT( double gl8_w[ 4 ] ) = { 0.3626837833783620, 0.3137066458778873,
                                            0.2223810344533745, 0.1012285362903763 };
 
     // `Phi`, la fonction de répartition normale standard
-    template<class TF> TF std_normal_cdf( TF u ) {
+    template<class TF> HD TF std_normal_cdf( TF u ) {
         return TF( 0.5 ) * ( 1 + sdot::erf( u * TF( 0.70710678118654752440 ) ) );
     }
 }
 
-UTP typename DTP::TF DTP::wedge_measure( const auto &P, const auto &Q ) const {
+UTP HD typename DTP::TF DTP::wedge_measure( const auto &P, const auto &Q ) const {
     static_assert( ct_dim == 2, "le coin polaire est la réduction 2D (voir SumOfGaussians.h)" );
     const TF two_pi = TF( 6.283185307179586476925286766559 );
 
@@ -180,7 +180,7 @@ UTP typename DTP::TF DTP::wedge_measure( const auto &P, const auto &Q ) const {
     return ( p < 0 ? -acc : acc ) / two_pi;
 }
 
-UTP typename DTP::TF DTP::std_triangle_measure( const auto &ys ) const {
+UTP HD typename DTP::TF DTP::std_triangle_measure( const auto &ys ) const {
     const TF s = wedge_measure( ys[ 0 ], ys[ 1 ] )
                + wedge_measure( ys[ 1 ], ys[ 2 ] )
                + wedge_measure( ys[ 2 ], ys[ 0 ] );
@@ -188,7 +188,7 @@ UTP typename DTP::TF DTP::std_triangle_measure( const auto &ys ) const {
     return s < 0 ? -s : s;
 }
 
-UTP typename DTP::EdgeInfo DTP::edge_info( const auto &A, const auto &B, const auto &C ) const {
+UTP HD typename DTP::EdgeInfo DTP::edge_info( const auto &A, const auto &B, const auto &C ) const {
     const TF two_pi = TF( 6.283185307179586476925286766559 );
     const TF sq_2pi = TF( 2.5066282746310005024157652848110 );
 
@@ -224,7 +224,7 @@ UTP typename DTP::EdgeInfo DTP::edge_info( const auto &A, const auto &B, const a
     return res;
 }
 
-UTP typename DTP::TF DTP::integrate_over_simplex( const auto &pts ) const {
+UTP HD typename DTP::TF DTP::integrate_over_simplex( const auto &pts ) const {
     static_assert( ct_dim == 2, "le chemin exact est le 2D ; au-delà on passe par PointwiseDensity" );
 
     const SI n = nb_gaussians;
@@ -239,7 +239,7 @@ UTP typename DTP::TF DTP::integrate_over_simplex( const auto &pts ) const {
     return res;
 }
 
-UTP void DTP::integrate_over_simplex_bwd( const auto &pts, TF g, auto &&grad_pts, auto &&grad_dist ) const {
+UTP HD void DTP::integrate_over_simplex_bwd( const auto &pts, TF g, auto &&grad_pts, auto &&grad_dist ) const {
     static_assert( ct_dim == 2, "le chemin exact est le 2D ; au-delà on passe par PointwiseDensity" );
 
     auto add_to = []( auto &&dst, TF v ) {

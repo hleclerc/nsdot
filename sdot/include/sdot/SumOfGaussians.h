@@ -38,7 +38,7 @@ struct SumOfGaussians {
     ///   * en 2D on SAIT le faire (voir `wedge_measure`), donc on se passe soi-même ;
     ///   * au-delà on ne sait pas, donc on se déclare BOÎTE NOIRE en s'emballant dans
     ///     `PointwiseDensity`, qui n'a besoin que de `value_at` / `gradient_at`.
-    void for_each_piece( const auto &cell, auto &&/*ws*/, auto &&func ) const {
+    HD void for_each_piece( const auto &cell, auto &&/*ws*/, auto &&func ) const {
         if constexpr ( ct_dim == 2 )
             func( cell, *this );
         else
@@ -70,7 +70,7 @@ struct SumOfGaussians {
 
     /// les moments ( `diagram::integrate_moments_into` ) : la réduction exacte ne les donne pas, c'est
     /// la quadrature adaptative de `PointwiseDensity` qui les accumule, en 2D comme ailleurs.
-    void integrate_moments_over_simplex( const auto &pts, TF &m, auto &mx, TF &m2 ) const {
+    HD void integrate_moments_over_simplex( const auto &pts, TF &m, auto &mx, TF &m2 ) const {
         PointwiseDensity{ *this }.integrate_moments_over_simplex( pts, m, mx, m2 );
     }
 
@@ -78,13 +78,13 @@ struct SumOfGaussians {
     static constexpr int nb_panels  = 4;    ///< panneaux de Gauss-Legendre sur le coeur
 
     /// La mesure normale standard SIGNÉE du triangle `( 0, P, Q )` -- le coin.
-    TF wedge_measure( const auto &P, const auto &Q ) const;
+    HD TF wedge_measure( const auto &P, const auto &Q ) const;
 
     /// La mesure normale standard du triangle `ys` (positive, orientation quelconque).
-    TF std_triangle_measure( const auto &ys ) const;
+    HD TF std_triangle_measure( const auto &ys ) const;
 
     /// `Int_T rho`, exact. `pts` : les 3 sommets.
-    TF integrate_over_simplex( const auto &pts ) const;
+    HD TF integrate_over_simplex( const auto &pts ) const;
 
     /// L'adjoint, ÉLÉMENTAIRE -- c'est le point remarquable : la valeur demande une fonction
     /// spéciale, ses dérivées non. Tout se ramène à des intégrales de BORD, qui pour une gaussienne
@@ -95,19 +95,19 @@ struct SumOfGaussians {
     ///   * sigma : `d rho / d sigma = sigma * laplacien( rho )` (identité de la chaleur, `t = sigma^2/2`),
     ///     donc encore un flux au bord, et `y . n` y est CONSTANT le long d'une arête ;
     ///   * le poids : la mesure elle-même, déjà calculée.
-    void integrate_over_simplex_bwd( const auto &pts, TF g, auto &&grad_pts, auto &&grad_dist ) const;
+    HD void integrate_over_simplex_bwd( const auto &pts, TF g, auto &&grad_pts, auto &&grad_dist ) const;
 
     /// Pour une arête `A -> B` du triangle `A, B, C`, en repère standard : la normale SORTANTE, la
     /// distance signée `y . n` (constante le long de l'arête), `Int phi ds`, et `Int phi lambda_A ds`.
     struct EdgeInfo { Vector<TF,2> n; TF p; TF j0; TF j1a; };
-    EdgeInfo edge_info( const auto &A, const auto &B, const auto &C ) const;
+    HD EdgeInfo edge_info( const auto &A, const auto &B, const auto &C ) const;
 
     /// Le noyau NORMALISÉ de la gaussienne `i` en `x` (masse 1), et le carré de la distance --
     /// les deux quantités dont tout le reste se déduit, calculées une fois.
-    auto kernel_at( SI i, const auto &x ) const;
+    HD auto kernel_at( SI i, const auto &x ) const;
 
-    TF   value_at         ( const auto &x ) const;   ///< rho( x )
-    auto gradient_at      ( const auto &x ) const;   ///< grad rho( x ), un `Vector<TF,ct_dim>`
+    HD TF   value_at      ( const auto &x ) const;   ///< rho( x )
+    HD auto gradient_at   ( const auto &x ) const;   ///< grad rho( x ), un `Vector<TF,ct_dim>`
 
     /// Accumule `g * d rho( x ) / d paramètre` dans la cotangente de chaque paramètre.
     ///
@@ -116,7 +116,7 @@ struct SumOfGaussians {
     /// ajouts sont ATOMIQUES -- une gaussienne large est vue par les work-items de beaucoup de
     /// cellules à la fois -- et chacun est gardé par la validité de sa cible, un paramètre non
     /// dérivé arrivant en `NoneTensor`.
-    void add_value_grad_at( auto &&grad_dist, const auto &x, TF g ) const;
+    HD void add_value_grad_at( auto &&grad_dist, const auto &x, TF g ) const;
 };
 
 }

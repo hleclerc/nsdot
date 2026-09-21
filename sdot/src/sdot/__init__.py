@@ -1,3 +1,11 @@
+# the C++ of this package (`sdot/`, `asimd/`): `<repo>/sdot/include` from a checkout, the
+# `sdot/_include` tree the wheel ships next to the package otherwise -- registered with loom,
+# which compiles the kernels and does not know its users by name
+from pathlib import Path as _Path
+import loom.compilation as _compilation
+_here = _Path( __file__ ).resolve().parent
+_compilation.register_include_root( _here / "_include" if ( _here / "_include" ).is_dir() else _here.parents[ 1 ] / "include" )
+
 from .AaBsp import AaBsp as AaBsp
 from .Cell import Cell as Cell
 from .Cell_1 import Cell_1 as Cell_1

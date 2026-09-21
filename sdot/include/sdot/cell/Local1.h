@@ -1,5 +1,7 @@
 #pragma once
 
+#include <loom/support/common_macros.h> // HD
+
 // =====================================================================================
 // LA CELLULE 1D : un SEGMENT, ou une demi-droite, ou la droite entiere.
 //
@@ -35,9 +37,9 @@ struct Local1 {
     TK  *vx  = nullptr;
     int *cid = nullptr;
 
-    static constexpr SI words_for( SI cap ) { return words_of<TK>( cap ) + words_of<int>( cap ); }
+    HD static constexpr SI words_for( SI cap ) { return words_of<TK>( cap ) + words_of<int>( cap ); }
 
-    bool attach( Carver &c, SI capacity ) {
+    HD bool attach( Carver &c, SI capacity ) {
         cap = int( capacity );
         vx = c.take<TK>( cap );
         cid = c.take<int>( cap );
@@ -45,20 +47,20 @@ struct Local1 {
         return ! c.overflow && cap >= 2;
     }
 
-    bool copy_from( const Local1 &o ) {
+    HD bool copy_from( const Local1 &o ) {
         nb = o.nb;
         for ( int i = 0; i < nb; ++i ) { vx[ i ] = o.vx[ i ]; cid[ i ] = o.cid[ i ]; }
         return true;
     }
 
-    int  nb_vertices() const { return nb; }
-    int  nb_cuts    () const { return nb; }
-    bool unbounded_at( int i ) const { return cid[ i ] == cell_ids::INFINITE; }
-    bool bounded    () const { return nb == 0 || ( ! unbounded_at( 0 ) && ! unbounded_at( 1 ) ); }
-    TK   coord      ( int i, int ) const { return vx[ i ]; }
-    int  vertex_cut ( int i, int ) const { return i; }
+    HD int  nb_vertices() const { return nb; }
+    HD int  nb_cuts () const { return nb; }
+    HD bool unbounded_at( int i ) const { return cid[ i ] == cell_ids::INFINITE; }
+    HD bool bounded () const { return nb == 0 || ( ! unbounded_at( 0 ) && ! unbounded_at( 1 ) ); }
+    HD TK   coord   ( int i, int ) const { return vx[ i ]; }
+    HD int  vertex_cut ( int i, int ) const { return i; }
 
-    bool init_hypercube( const auto &origin, const auto &axes, int cut_id ) {
+    HD bool init_hypercube( const auto &origin, const auto &axes, int cut_id ) {
         const TK a = TK( origin[ 0 ] ), b = a + TK( axes( 0, 0 ) );
         vx[ 0 ] = a < b ? a : b;
         vx[ 1 ] = a < b ? b : a;
@@ -67,18 +69,18 @@ struct Local1 {
         return true;
     }
 
-    bool init_unbounded() {
+    HD bool init_unbounded() {
         vx[ 0 ] = 0; vx[ 1 ] = 1;
         cid[ 0 ] = cid[ 1 ] = cell_ids::INFINITE;
         nb = 2;
         return true;
     }
 
-    void make_empty() { nb = 0; }
-    void tidy() {}
+    HD void make_empty() { nb = 0; }
+    HD void tidy() {}
 
     /// `dir * x <= off`
-    int cut( const PlaneT &p ) {
+    HD int cut( const PlaneT &p ) {
         if ( nb == 0 || p.dir[ 0 ] == 0 )
             return p.dir[ 0 ] == 0 && p.off < 0 ? ( nb = 0, CutStatus::EMPTY ) : CutStatus::UNCHANGED;
         const TK x = p.off / p.dir[ 0 ];
@@ -100,7 +102,7 @@ struct Local1 {
     }
 
     template<class TF>
-    TF measure() const {
+    HD TF measure() const {
         if ( nb == 0 )
             return 0;
         if ( ! bounded() )
@@ -109,14 +111,14 @@ struct Local1 {
     }
 
     template<class TF>
-    void measure_bwd( TF grad_res, auto &&grad_vp ) const {
+    HD void measure_bwd( TF grad_res, auto &&grad_vp ) const {
         if ( nb == 0 || ! bounded() )
             return;
         grad_vp( 0, 0 ) = - grad_res;
         grad_vp( 1, 0 ) = grad_res;
     }
 
-    void for_each_simplex( auto &&func ) const {
+    HD void for_each_simplex( auto &&func ) const {
         if ( nb == 2 ) {
             Vector<SI,2> chain;
             chain[ 0 ] = 0; chain[ 1 ] = 1;
@@ -125,14 +127,14 @@ struct Local1 {
     }
 
     template<class T>
-    void plane( int i, T *dir, T &off ) const {
+    HD void plane( int i, T *dir, T &off ) const {
         dir[ 0 ] = i ? T( 1 ) : T( -1 );
         off = dir[ 0 ] * T( vx[ i ] );
     }
 
-    void bbox( TK *lo, TK *hi ) const { lo[ 0 ] = nb ? vx[ 0 ] : TK( 0 ); hi[ 0 ] = nb ? vx[ 1 ] : TK( 0 ); }
+    HD void bbox( TK *lo, TK *hi ) const { lo[ 0 ] = nb ? vx[ 0 ] : TK( 0 ); hi[ 0 ] = nb ? vx[ 1 ] : TK( 0 ); }
 
-    bool load( const auto &c ) {
+    HD bool load( const auto &c ) {
         nb = int( SI( c.nb_vertices ) );
         for ( int i = 0; i < nb; ++i ) {
             vx[ i ] = TK( c.vertex_positions( i, 0 ) );
@@ -141,7 +143,7 @@ struct Local1 {
         return true;
     }
 
-    bool store( auto &&c ) const {
+    HD bool store( auto &&c ) const {
         if ( ! c.nb_vertices.set( nb ) )
             return false;
         c.nb_cuts.set( nb );

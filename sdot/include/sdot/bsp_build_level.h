@@ -40,7 +40,7 @@ namespace sdot {
 // kernels d'ici, et l'introselect en ferait dependre la compilation device. La cle est lue par
 // indirection (`pos( perm( k ), ax )`), mais `perm` part de l'identite et les deux balayages de
 // Hoare sont lineaires, donc les acces restent quasi sequentiels dans la tranche du noeud.
-void bsp_select( auto &&perm, const auto &pos, SI b, SI e, SI t, int ax ) {
+HD void bsp_select( auto &&perm, const auto &pos, SI b, SI e, SI t, int ax ) {
     using TF = typename DECAYED_TYPE_OF( pos )::TF;
 
     auto key = [&]( SI k ) { return TF( pos( SI( perm( k ) ), ax ) ); };
@@ -81,7 +81,7 @@ void bsp_select( auto &&perm, const auto &pos, SI b, SI e, SI t, int ax ) {
 // `AaBsp.py::_weight_majorant` pour POURQUOI le majorant est affine et comment le candidat est
 // retenu. Meme regle, meme seuil ; seul l'ajustement differe (voir plus bas).
 template<int ct_dim>
-void bsp_weight_majorant( const auto &pos, const auto &w, SI b, SI e, auto &&wa_out, auto &&wb_out ) {
+HD void bsp_weight_majorant( const auto &pos, const auto &w, SI b, SI e, auto &&wa_out, auto &&wb_out ) {
     using TF = typename DECAYED_TYPE_OF( pos )::TF;
 
     const SI m = e - b;
@@ -208,7 +208,7 @@ void bsp_weight_majorant( const auto &pos, const auto &w, SI b, SI e, auto &&wa_
 /// le majorant d'UN noeud, refait sur des poids neufs ( `AaBsp.refresh_weight_majorants` ) : la
 /// tranche `[ b, e )` du nuage `src` -- les germes DANS L'ORDRE DE L'ARBRE. Ne prend que ce dont il
 /// a besoin, et surtout PAS l'arbre entier : ses majorants courants sont ce qu'on remplace.
-void bsp_refresh_majorant( const auto &src, const auto &beg, const auto &end, auto &&wa_out, auto &&wb_out ) {
+HD void bsp_refresh_majorant( const auto &src, const auto &beg, const auto &end, auto &&wa_out, auto &&wb_out ) {
     constexpr int ct_dim = CT_VALUE( src.nb_dims );
     const SI b = SI( beg ), e = SI( end );
     if ( e <= b ) {
@@ -227,7 +227,7 @@ void bsp_refresh_majorant( const auto &src, const auto &beg, const auto &end, au
 // noeud qui n'a plus rien a couper rend `mid = end`, donc passe tout a gauche -- c'est la
 // PROPAGATION decrite dans `AaBsp.py`, ce qui garde la partition de `[ 0, n )` d'un niveau au
 // suivant, donc l'ecriture disjointe.
-void bsp_build_level( const auto &src, auto &&dst, auto &&perm,
+HD void bsp_build_level( const auto &src, auto &&dst, auto &&perm,
                       const auto &beg_in, const auto &end_in,
                       auto &&box_out, auto &&wa_out, auto &&wb_out, auto &&mid_out,
                       SI leaf_size ) {

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <loom/support/common_macros.h> // HD
+
 #include <climits>
 
 namespace sdot {
@@ -30,10 +32,10 @@ namespace cell_ids {
         BOUNDARY = -1,
     };
 
-    constexpr int  domain_id ( int k  ) { return -1 - k; }
-    constexpr bool is_seed   ( int id ) { return id >= 0; }
-    constexpr bool is_domain ( int id ) { return id < 0 && id > PIECE; }
-    constexpr int  domain_num( int id ) { return -1 - id; }
+    HD constexpr int  domain_id ( int k  ) { return -1 - k; }
+    HD constexpr bool is_seed   ( int id ) { return id >= 0; }
+    HD constexpr bool is_domain ( int id ) { return id < 0 && id > PIECE; }
+    HD constexpr int  domain_num( int id ) { return -1 - id; }
 }
 
 /// ce qu'une coupe a fait de la cellule

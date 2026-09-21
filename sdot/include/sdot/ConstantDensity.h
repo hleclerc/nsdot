@@ -23,7 +23,7 @@ struct ConstantDensity {
     TF   value;
     Sink sink;
 
-    void add_value_grad( auto &&grad_dist, TF g ) const { sink( grad_dist, g ); }
+    HD void add_value_grad( auto &&grad_dist, TF g ) const { sink( grad_dist, g ); }
 };
 
 } // namespace sdot

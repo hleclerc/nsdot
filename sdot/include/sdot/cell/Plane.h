@@ -1,5 +1,7 @@
 #pragma once
 
+#include <loom/support/common_macros.h> // HD
+
 #include <loom/support/common_types.h>
 
 namespace sdot {
@@ -17,7 +19,7 @@ struct Plane {
     int id;
 
     /// `dir . x - off` : positif DEHORS
-    TK dist( const TK *x ) const {
+    HD TK dist( const TK *x ) const {
         TK s = - off;
         for ( int d = 0; d < D; ++d )
             s += dir[ d ] * x[ d ];
@@ -34,7 +36,7 @@ struct Plane {
 /// DECALEE le long de sa normale par l'ecart des poids. Ecrite non normalisee, ce qui est aussi
 /// pourquoi le terme de poids est divise par deux et non par `|p1 - p0|`.
 template<class TK,int D,class TF>
-Plane<TK,D> bisector( const TF *p0, TF w0, const TF *p1, TF w1, int id ) {
+HD Plane<TK,D> bisector( const TF *p0, TF w0, const TF *p1, TF w1, int id ) {
     Plane<TK,D> res;
     TF off = ( w0 - w1 ) / 2;
     for ( int d = 0; d < D; ++d ) {

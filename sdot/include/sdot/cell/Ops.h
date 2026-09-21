@@ -26,7 +26,7 @@ template<class Scr>
 using KernelType = std::conditional_t<DECAYED_TYPE_OF( std::declval<Scr>().kernel_fp_size )::value == 64, double, float>;
 
 /// le plus grand `cap` tel que `words( cap ) <= nb_words` ( `words` croissante )
-SI cap_for_words( SI nb_words, auto &&words ) {
+HD SI cap_for_words( SI nb_words, auto &&words ) {
     SI lo = 0, hi = 1;
     while ( words( hi ) <= nb_words )
         hi *= 2;
@@ -40,13 +40,13 @@ SI cap_for_words( SI nb_words, auto &&words ) {
 
 /// le plus grand `cap` tel que `Local::words_for( cap ) <= nb_words`
 template<class Local>
-SI cap_for( SI nb_words ) {
+HD SI cap_for( SI nb_words ) {
     return cap_for_words( nb_words, []( SI c ) { return Local::words_for( c ); } );
 }
 
 /// une cellule locale posee sur le scratch d'un item ( `Local` attache, `cap` deduit )
 template<class Local,class Scr>
-Local local_on( Scr &sc, Carver &cv ) {
+HD Local local_on( Scr &sc, Carver &cv ) {
     Local c;
     c.attach( cv, cap_for<Local>( cv.nb_words ) );
     return c;
@@ -55,14 +55,14 @@ Local local_on( Scr &sc, Carver &cv ) {
 /// la ligne `row` du scratch ( `words` est `[ nb_threads, nb_words ]` : une ligne par work-item,
 /// ou une seule quand l'appel est batche sur les cellules )
 template<class Scr>
-Carver carver_of( Scr &sc, SI row = 0 ) {
+HD Carver carver_of( Scr &sc, SI row = 0 ) {
     auto w = sc.words( row );
     return Carver{ w.data().raw, SI( w.shape( 0 ) ) };
 }
 
 /// le scratch n'a pas suffi : on le dit ( loom double et relance ), sans rien ecrire
 template<class Scr>
-void ask_more( Scr &sc, const Carver &cv ) {
+HD void ask_more( Scr &sc, const Carver &cv ) {
     sc.nb_words.set( 2 * cv.nb_words + 64 );
 }
 
@@ -71,7 +71,7 @@ void ask_more( Scr &sc, const Carver &cv ) {
 namespace cell_ops {
 
 template<class Local>
-void init_as_hypercube( auto &&cell, auto &&scratch, auto &&origin, auto &&axes, SI cut_id ) {
+HD void init_as_hypercube( auto &&cell, auto &&scratch, auto &&origin, auto &&axes, SI cut_id ) {
     Carver cv = carver_of( scratch );
     Local c = local_on<Local>( scratch, cv );
     if ( ! c.init_hypercube( origin, axes, int( cut_id ) ) ) { ask_more( scratch, cv ); return; }
@@ -80,7 +80,7 @@ void init_as_hypercube( auto &&cell, auto &&scratch, auto &&origin, auto &&axes,
 }
 
 template<class Local>
-void init_as_unbounded( auto &&cell, auto &&scratch ) {
+HD void init_as_unbounded( auto &&cell, auto &&scratch ) {
     Carver cv = carver_of( scratch );
     Local c = local_on<Local>( scratch, cv );
     if ( ! c.init_unbounded() ) { ask_more( scratch, cv ); return; }
@@ -90,7 +90,7 @@ void init_as_unbounded( auto &&cell, auto &&scratch ) {
 /// intersecte avec `direction . x <= offset`, le resultat allant dans `res` ( les entrees et
 /// les sorties d'un appel sont disjointes ). Un debordement est signale sur `res.nb_vertices`.
 template<class Local>
-void cut( const auto &cell, auto &&res, auto &&scratch, auto &&direction, auto &&offset, SI cut_id ) {
+HD void cut( const auto &cell, auto &&res, auto &&scratch, auto &&direction, auto &&offset, SI cut_id ) {
     using TK = typename Local::TKernel;
     constexpr int D = Local::ct_dim;
     Carver cv = carver_of( scratch );
@@ -107,7 +107,7 @@ void cut( const auto &cell, auto &&res, auto &&scratch, auto &&direction, auto &
 }
 
 template<class Local>
-void measure( const auto &cell, auto &&res, auto &&scratch ) {
+HD void measure( const auto &cell, auto &&res, auto &&scratch ) {
     using TF = DECAYED_TYPE_OF( res )::TF;
     Carver cv = carver_of( scratch );
     Local c = local_on<Local>( scratch, cv );
@@ -116,7 +116,7 @@ void measure( const auto &cell, auto &&res, auto &&scratch ) {
 }
 
 template<class Local>
-void measure_bwd( const auto &cell, auto &&res, auto &&grad_res, auto &&grad_vertex_positions, auto &&scratch ) {
+HD void measure_bwd( const auto &cell, auto &&res, auto &&grad_res, auto &&grad_vertex_positions, auto &&scratch ) {
     if constexpr ( ! CT_VALUE( grad_vertex_positions.surely_null() ) ) {
         using TF = DECAYED_TYPE_OF( grad_res )::TF;
         constexpr int D = Local::ct_dim;

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <loom/support/common_macros.h> // HD
+
 // =====================================================================================
 // LA CELLULE EN DIMENSION `D >= 3` : un polytope SIMPLE qui se coupe lui-meme.
 //
@@ -77,11 +79,11 @@ struct LocalN {
 
     /// ce qu'il faut de mots pour `cap` sommets ( et autant de coupes ) -- LA MEME FORMULE que
     /// `Cell_N.scratch_words`
-    static constexpr SI words_for( SI cap ) {
+    HD static constexpr SI words_for( SI cap ) {
         return ( 4 * D + 5 ) * words_of<TK>( cap ) + ( 5 * D + 10 ) * words_of<int>( cap );
     }
 
-    bool attach( Carver &c, SI capacity ) {
+    HD bool attach( Carver &c, SI capacity ) {
         cap = int( capacity );
         for ( int d = 0; d < D; ++d ) { v[ d ] = c.take<TK>( cap ); vk[ d ] = c.take<int>( cap ); vn[ d ] = c.take<int>( cap ); }
         cid = c.take<int>( cap );
@@ -101,7 +103,7 @@ struct LocalN {
         return ! c.overflow;
     }
 
-    bool copy_from( const LocalN &o ) {
+    HD bool copy_from( const LocalN &o ) {
         if ( o.nv > cap || o.nc > cap )
             return false;
         nv = o.nv; nc = o.nc; unbounded = o.unbounded; has_planes = o.has_planes;
@@ -115,13 +117,13 @@ struct LocalN {
     }
 
     // ---- ce que tout le monde lit ------------------------------------------------------------
-    int  nb_vertices() const { return nv; }
-    int  nb_cuts    () const { return nc; }
-    bool bounded    () const { return ! unbounded; }
-    TK   coord      ( int i, int d ) const { return v[ d ][ i ]; }
-    int  vertex_cut ( int i, int r ) const { return vk[ r ][ i ]; }
+    HD int  nb_vertices() const { return nv; }
+    HD int  nb_cuts () const { return nc; }
+    HD bool bounded () const { return ! unbounded; }
+    HD TK   coord   ( int i, int d ) const { return v[ d ][ i ]; }
+    HD int  vertex_cut ( int i, int r ) const { return vk[ r ][ i ]; }
 
-    EtatMemN<TK,D> etat() const {
+    HD EtatMemN<TK,D> etat() const {
         EtatMemN<TK,D> e;
         e.nb = nv;
         for ( int d = 0; d < D; ++d )
@@ -135,7 +137,7 @@ struct LocalN {
     /// le parallelotope `origin + sum_j t_j axes( j )`, `t` dans `[ 0, 1 ]^D`. Le sommet `b` a pour
     /// coordonnees les bits de `b` ; la coupe `2 j + bit_j( b )` le porte, et son voisin en face
     /// de cette coupe est `b ^ ( 1 << j )`. Les coupes sont dans l'ordre des axes, donc triees.
-    bool init_hypercube( const auto &origin, const auto &axes, int cut_id ) {
+    HD bool init_hypercube( const auto &origin, const auto &axes, int cut_id ) {
         if ( ( 1 << D ) > cap )
             return false;
         nv = 1 << D;
@@ -165,7 +167,7 @@ struct LocalN {
     /// « TOUT L'ESPACE » : le simplexe unite, dont les `D + 1` parois sont marquees `INFINITE`. Le
     /// sommet 0 est l'origine, sur les coupes `0 .. D-1` ( `x_c >= 0` ) ; le sommet `n >= 1` est
     /// `e_{n-1}`, sur les memes privees de `n-1`, plus la coupe `D` ( `sum x <= 1` ).
-    bool init_unbounded() {
+    HD bool init_unbounded() {
         if ( D + 1 > cap )
             return false;
         nv = D + 1;
@@ -201,7 +203,7 @@ struct LocalN {
         return true;
     }
 
-    void make_empty() { nv = 0; nc = 0; unbounded = false; has_planes = false; }
+    HD void make_empty() { nv = 0; nc = 0; unbounded = false; has_planes = false; }
 
     // ---- les plans, relus sur la geometrie ---------------------------------------------------
 
@@ -213,7 +215,7 @@ struct LocalN {
     /// ( une coupe passee par un sommet ) sont le cas courant. On construit donc une base
     /// ORTHONORMEE de l'espace engendre par `p - p0`, par Gram-Schmidt, en ne gardant qu'un point
     /// dont le residu est franc ; la normale est le produit vectoriel generalise de cette base.
-    bool plane_of_cut( int k, TK *dir, TK &off ) const {
+    HD bool plane_of_cut( int k, TK *dir, TK &off ) const {
         int p0 = -1;
         TK  base[ D - 1 ][ D ];
         TK  scale = 0;
@@ -282,7 +284,7 @@ struct LocalN {
         return true;
     }
 
-    void planes_from_vertices() {
+    HD void planes_from_vertices() {
         for ( int k = 0; k < nc; ++k ) {
             TK dir[ D ], off;
             if ( ! plane_of_cut( k, dir, off ) ) {
@@ -297,7 +299,7 @@ struct LocalN {
     }
 
     template<class T>
-    void plane( int k, T *dir, T &off ) const {
+    HD void plane( int k, T *dir, T &off ) const {
         if ( has_planes ) {
             for ( int d = 0; d < D; ++d ) dir[ d ] = T( pd[ d ][ k ] );
             off = T( po[ k ] );
@@ -312,13 +314,13 @@ struct LocalN {
 
     // ---- la coupe ----------------------------------------------------------------------------
 
-    int cut( const PlaneT &p ) {
+    HD int cut( const PlaneT &p ) {
         if ( unbounded )
             grow_for( p );
         return cut_impl( p );
     }
 
-    int nb_outside( const PlaneT &p ) const {
+    HD int nb_outside( const PlaneT &p ) const {
         int res = 0;
         for ( int i = 0; i < nv; ++i ) {
             TK s = - p.off;
@@ -329,7 +331,7 @@ struct LocalN {
         return res;
     }
 
-    int cut_impl( const PlaneT &p ) {
+    HD int cut_impl( const PlaneT &p ) {
         int nb_out = 0;
         for ( int i = 0; i < nv; ++i ) {
             TK si = - p.off;
@@ -490,10 +492,10 @@ struct LocalN {
     }
 
     /// avant de poser la cellule en memoire : les coupes mortes ne sortent pas d'ici
-    void tidy() { compacte(); }
+    HD void tidy() { compacte(); }
 
     /// ENLEVER LES COUPES MORTES. La renumerotation est MONOTONE, donc les listes restent triees.
-    void compacte() {
+    HD void compacte() {
         for ( int k = 0; k < nc; ++k ) m[ k ] = -1;
         for ( int i = 0; i < nv; ++i )
             for ( int r = 0; r < D; ++r )
@@ -519,7 +521,7 @@ struct LocalN {
 
     /// la vitesse du sommet `i` quand on repousse les parois `INFINITE` : il resout le `D x D` de
     /// ses coupes avec les indicatrices `INFINITE` en second membre
-    void growth_rate( int i, TK *rate ) const {
+    HD void growth_rate( int i, TK *rate ) const {
         bool any = false;
         for ( int r = 0; r < D; ++r )
             any |= cid[ vk[ r ][ i ] ] == cell_ids::INFINITE;
@@ -534,7 +536,7 @@ struct LocalN {
             rate[ d ] = x[ d ];
     }
 
-    void grow_for( const PlaneT &p ) {
+    HD void grow_for( const PlaneT &p ) {
         if ( ! has_planes )
             planes_from_vertices();
 
@@ -599,7 +601,7 @@ struct LocalN {
 
     // ---- la mesure : un eventail de simplexes sur le treillis des faces ----------------------
 
-    bool has_cut( int i, int k ) const {
+    HD bool has_cut( int i, int k ) const {
         for ( int r = 0; r < D; ++r )
             if ( vk[ r ][ i ] == k )
                 return true;
@@ -612,7 +614,7 @@ struct LocalN {
     /// une ligne par profondeur et une case par coupe, remplie d'un seul passage sur les sommets
     /// de la face -- `D * nc` mots, la ou indexer les faces par leur ENSEMBLE de coupes coute
     /// `nc^( D - 1 )`.
-    void for_each_simplex( auto &&func ) const {
+    HD void for_each_simplex( auto &&func ) const {
         if ( nv == 0 )
             return;
         Vector<SI,D+1> chain;
@@ -622,7 +624,7 @@ struct LocalN {
     }
 
     template<int K>
-    void for_each_simplex_rec( Vector<SI,D+1> &chain, Vector<SI,D> &face_cuts, auto &&func, Ct<int,K> ) const {
+    HD void for_each_simplex_rec( Vector<SI,D+1> &chain, Vector<SI,D> &face_cuts, auto &&func, Ct<int,K> ) const {
         constexpr int depth = D - K;                     // le nombre de coupes qui definissent la face
         if constexpr ( K == 0 ) {
             func( chain );
@@ -668,7 +670,7 @@ struct LocalN {
     /// EN 3D : par coupe `f`, UN sommet `v0[ f ]` et la somme `s3[ . ][ f ]` des produits vectoriels
     /// de ses aretes vues depuis lui -- deux fois le vecteur aire de la face. Ce que `measure_3d` et
     /// `for_each_facet` lisent tous deux ( voir `measure_3d` pour pourquoi accumuler plutot qu'ordonner ).
-    void accumulate_faces_3d() const {
+    HD void accumulate_faces_3d() const {
         static_assert( D == 3 );
         TK *const *s = s3;
         for ( int k = 0; k < nc; ++k ) { v0[ k ] = -1; s[ 0 ][ k ] = s[ 1 ][ k ] = s[ 2 ][ k ] = 0; }
@@ -699,7 +701,7 @@ struct LocalN {
 
     /// `func( c, mesure )` pour chaque coupe `c` qui porte une face : son AIRE ( 3D seulement )
     template<class TF>
-    void for_each_facet( auto &&func ) const {
+    HD void for_each_facet( auto &&func ) const {
         static_assert( D == 3, "for_each_facet : 3D seulement au-dela du plan" );
         if ( nv < 4 )
             return;
@@ -714,7 +716,7 @@ struct LocalN {
     }
 
     template<class TF>
-    TF measure_3d() const {
+    HD TF measure_3d() const {
         static_assert( D == 3 );
         if ( nv < 4 )
             return 0;
@@ -742,7 +744,7 @@ struct LocalN {
     }
 
     template<class TF>
-    TF measure() const {
+    HD TF measure() const {
         if ( unbounded )
             return std::numeric_limits<TF>::max();
         if constexpr ( D == 3 )
@@ -764,7 +766,7 @@ struct LocalN {
     /// l'adjoint : `grad_vp( i, d )` ACCUMULE ( un sommet est dans plusieurs simplexes ), donc il
     /// est mis a zero d'abord, sur les `nv` sommets.
     template<class TF>
-    void measure_bwd( TF grad_res, auto &&grad_vp ) const {
+    HD void measure_bwd( TF grad_res, auto &&grad_vp ) const {
         for ( int i = 0; i < nv; ++i )
             for ( int d = 0; d < D; ++d )
                 grad_vp( i, d ) = 0;
@@ -797,7 +799,7 @@ struct LocalN {
         } );
     }
 
-    void bbox( TK *lo, TK *hi ) const {
+    HD void bbox( TK *lo, TK *hi ) const {
         for ( int d = 0; d < D; ++d )
             lo[ d ] = hi[ d ] = nv ? v[ d ][ 0 ] : TK( 0 );
         for ( int i = 1; i < nv; ++i )
@@ -811,7 +813,7 @@ struct LocalN {
 
     /// depuis une vue `Cell_N` : `vertex_positions [ nv, D ]`, `vertex_cuts` / `vertex_nbrs`
     /// `[ nv, D ]`, `cut_ids [ nc ]`. `false` si elle ne tient pas dans `cap`.
-    bool load( const auto &c ) {
+    HD bool load( const auto &c ) {
         const int n = int( SI( c.nb_vertices ) ), k = int( SI( c.nb_cuts ) );
         if ( n > cap || k > cap )
             return false;
@@ -834,7 +836,7 @@ struct LocalN {
         return true;
     }
 
-    bool store( auto &&c ) const {
+    HD bool store( auto &&c ) const {
         if ( ! c.nb_vertices.set( nv ) )
             return false;
         if ( ! c.nb_cuts.set( nc ) )

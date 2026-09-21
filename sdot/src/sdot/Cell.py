@@ -263,9 +263,12 @@ class Cell( Aggregate ):
         return int( v[ b ] if v.size == self.nb_items else v[ 0 ] )
 
     def _rows( self, tensor, b, count ):
-        """les `count` premières lignes de l'item `b` du tenseur `tensor` ( `[ items..., cap, ... ]` )"""
+        """les `count` premières lignes de l'item `b` du tenseur `tensor` ( `[ items..., cap, ... ]` ).
+        Les axes de batch sont aplatis, et RIEN d'autre : sur un GPU le batch est rembourré à
+        l'alignement du device (`Device.batch_alignment`), l'item `b` est à la ligne `b` d'un
+        tampon qui en a plus que `nb_items`."""
         raw = np.asarray( tensor.raw )
-        return raw.reshape( ( self.nb_items, -1 ) + raw.shape[ len( self.batch_axes ) + 1 : ] )[ b ][ : count ]
+        return raw.reshape( ( -1, ) + raw.shape[ len( self.batch_axes ) : ] )[ b ][ : count ]
 
     def _items( self ):
         return [ self._item( b ) for b in range( self.nb_items ) ]

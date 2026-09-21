@@ -1,5 +1,7 @@
 #pragma once
 
+#include <loom/support/common_macros.h> // HD
+
 #include "OtPlan1d.h"
 #include <loom/support/atomic_add.h>
 #include <cstdint>
@@ -10,7 +12,7 @@
 
 namespace sdot {
 
-UTP void DTP::sort_diracs( auto &&sorted_indices, auto &&radix_tmp, auto &&sorted_pos,
+UTP HD void DTP::sort_diracs( auto &&sorted_indices, auto &&radix_tmp, auto &&sorted_pos,
                             int local_index, int local_size, auto &&group, auto &&local_scratch, auto &&sub_group ) const {
     // Sort the diracs by position INTO `sorted_indices` (a per-GROUP scratch row, shared by every
     // work-item of the group). We do NOT argsort (`std::sort` on indices with a comparator that reads
@@ -232,7 +234,7 @@ UTP void DTP::sort_diracs( auto &&sorted_indices, auto &&radix_tmp, auto &&sorte
     group_barrier( group );
 }
 
-UTP typename DTP::TF DTP::chunked_weight_prefix( auto &&sorted_indices, auto &&group_scan, SI lo, SI hi,
+UTP HD typename DTP::TF DTP::chunked_weight_prefix( auto &&sorted_indices, auto &&group_scan, SI lo, SI hi,
                                                    int local_index, int local_size, auto &&group ) const {
     // This work-item's cumulative SOURCE weight at its OWN chunk start `lo` (sorted order) -- the
     // `Image::udp_at` argument letting it jump straight to its chunk's starting `Udp` state. Much
@@ -262,7 +264,7 @@ UTP typename DTP::TF DTP::chunked_weight_prefix( auto &&sorted_indices, auto &&g
 // `update_outputs_presorted` (order already provided -- e.g. computed by `jnp.argsort` upstream of
 // this kernel, see `OtPlan1d.py`'s `update_outputs_presorted`; see [[jax-sort-lax-scan]]). Kept as
 // its own method (not inlined into both callers) so the two entry points cannot drift apart.
-UTP void DTP::sweep_outputs( auto &&sorted_indices, auto &&sorted_pos, auto &&group_scan,
+UTP HD void DTP::sweep_outputs( auto &&sorted_indices, auto &&sorted_pos, auto &&group_scan,
                               int local_index, int local_size, auto &&group ) {
     // Forward = COST, plus the barycenters ONLY when `barycenters` is a bound output (the caller set
     // `with_barycenters`). When it is not, it is a NoneTensor (no `operator=`) so the guarded write
@@ -315,7 +317,7 @@ UTP void DTP::sweep_outputs( auto &&sorted_indices, auto &&sorted_pos, auto &&gr
     group_barrier( group );
 }
 
-UTP void DTP::update_outputs( auto &&sorted_indices, auto &&radix_tmp, auto &&sorted_pos,
+UTP HD void DTP::update_outputs( auto &&sorted_indices, auto &&radix_tmp, auto &&sorted_pos,
                                auto &&group_scan,
                                int local_index, int local_size, auto &&group, auto &&local_scratch, auto &&sub_group ) {
     sort_diracs( sorted_indices, radix_tmp, sorted_pos, local_index, local_size, group, local_scratch, sub_group );
@@ -325,7 +327,7 @@ UTP void DTP::update_outputs( auto &&sorted_indices, auto &&radix_tmp, auto &&so
 // Entry point for a PRE-sorted order (`sorted_indices`/`sorted_pos` already filled by the caller --
 // no `sort_diracs`/`radix_tmp`/`local_scratch`/`sub_group`, none of which the sweep itself needs).
 // See [[jax-sort-lax-scan]].
-UTP void DTP::update_outputs_presorted( auto &&sorted_indices, auto &&sorted_pos, auto &&group_scan,
+UTP HD void DTP::update_outputs_presorted( auto &&sorted_indices, auto &&sorted_pos, auto &&group_scan,
                                          int local_index, int local_size, auto &&group ) {
     sweep_outputs( sorted_indices, sorted_pos, group_scan, local_index, local_size, group );
 }
@@ -342,7 +344,7 @@ UTP void DTP::update_outputs_presorted( auto &&sorted_indices, auto &&sorted_pos
 // us as a `NoneTensor` (no `operator=`), so its block must vanish -- see [[differentiation]].
 // Everything runs inside a SYCL kernel, so NO std::vector / dynamic allocation: the per-dirac
 // suffix sum is carried by two scalars instead of an array.
-UTP void DTP::sweep_outputs_bwd( auto &&grad_plan, auto &&sorted_indices, auto &&sorted_pos, auto &&group_scan,
+UTP HD void DTP::sweep_outputs_bwd( auto &&grad_plan, auto &&sorted_indices, auto &&sorted_pos, auto &&group_scan,
                                   int local_index, int local_size, auto &&group ) const {
     const TF g = grad_plan.cost; // scalar cotangent seeding `cost`
     const SI nb = src_dist.weights.size();
@@ -502,7 +504,7 @@ UTP void DTP::sweep_outputs_bwd( auto &&grad_plan, auto &&sorted_indices, auto &
     group_barrier( group );
 }
 
-UTP void DTP::update_outputs_bwd( auto &&grad_plan, auto &&sorted_indices, auto &&radix_tmp, auto &&sorted_pos,
+UTP HD void DTP::update_outputs_bwd( auto &&grad_plan, auto &&sorted_indices, auto &&radix_tmp, auto &&sorted_pos,
                                    auto &&group_scan,
                                    int local_index, int local_size, auto &&group, auto &&local_scratch, auto &&sub_group ) const {
     // The scratch is PER-GROUP and transient (not a forward residual), so the order is RE-DERIVED
@@ -521,7 +523,7 @@ UTP void DTP::update_outputs_bwd( auto &&grad_plan, auto &&sorted_indices, auto 
 }
 
 // Entry point for a PRE-sorted order -- see `update_outputs_presorted`'s docstring, [[jax-sort-lax-scan]].
-UTP void DTP::update_outputs_bwd_presorted( auto &&grad_plan, auto &&sorted_indices, auto &&sorted_pos, auto &&group_scan,
+UTP HD void DTP::update_outputs_bwd_presorted( auto &&grad_plan, auto &&sorted_indices, auto &&sorted_pos, auto &&group_scan,
                                              int local_index, int local_size, auto &&group ) const {
     sweep_outputs_bwd( grad_plan, sorted_indices, sorted_pos, group_scan, local_index, local_size, group );
 }

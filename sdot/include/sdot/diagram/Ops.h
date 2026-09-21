@@ -49,14 +49,14 @@ template<class TF>
 struct GradVp {
     TF *g;
     SI  cap;
-    TF &operator()( int i, int d ) { return g[ d * cap + i ]; }
-    TF  operator()( int i, int d ) const { return g[ d * cap + i ]; }
+    HD TF &operator()( int i, int d ) { return g[ d * cap + i ]; }
+    HD TF  operator()( int i, int d ) const { return g[ d * cap + i ]; }
 };
 
 /// une distribution qui DECOUPE demande une seconde cellule ; `UnitDensity` et les densites
 /// lisses n'en demandent pas
 template<class Dist>
-constexpr int nb_work_cells() {
+HD constexpr int nb_work_cells() {
     if constexpr ( requires { Dist::cuts_pieces; } ) return Dist::cuts_pieces ? 2 : 1;
     else return 1;
 }
@@ -64,19 +64,19 @@ constexpr int nb_work_cells() {
 /// LE DECOUPAGE DU SCRATCH d'un work-item : `nb_cells` cellules locales de `cap` sommets, et ( pour
 /// l'adjoint ) une cotangente par sommet -- LA MEME FORMULE que `PowerDiagram._scratch_words`.
 template<class Local,class TF>
-SI words_for( SI cap, int nb_cells, bool with_grad ) {
+HD SI words_for( SI cap, int nb_cells, bool with_grad ) {
     return nb_cells * Local::words_for( cap ) + ( with_grad ? words_of<TF>( Local::ct_dim * cap ) : 0 );
 }
 
 template<class Local,class TF>
-SI cap_in( SI nb_words, int nb_cells, bool with_grad ) {
+HD SI cap_in( SI nb_words, int nb_cells, bool with_grad ) {
     return cap_for_words( nb_words, [&]( SI c ) { return words_for<Local,TF>( c, nb_cells, with_grad ); } );
 }
 
 /// La cellule de `k0`, construite dans `c` a partir du domaine `dom`. Rend `false` si le scratch
 /// n'a pas suffi -- la cellule est alors restee au dernier etat valide.
 template<class PD,class Local>
-bool make_cell( const PD &pd, Local &c, SI k0, const auto &dom ) {
+HD bool make_cell( const PD &pd, Local &c, SI k0, const auto &dom ) {
     using TK = typename Local::TKernel;
     if ( ! c.load( dom ) )
         return false;
@@ -87,7 +87,7 @@ bool make_cell( const PD &pd, Local &c, SI k0, const auto &dom ) {
 /// le plan de la coupe `k` de `cell`, dans le flottant des positions : la bissectrice REFAITE
 /// depuis les germes quand la coupe fait face a un germe, le plan relu sur la geometrie sinon
 template<class PD>
-void plane_of( const PD &pd, const auto &cell, SI k0, int k, auto &dir, typename PD::TF &off ) {
+HD void plane_of( const PD &pd, const auto &cell, SI k0, int k, auto &dir, typename PD::TF &off ) {
     using TF = typename PD::TF;
     constexpr int D = PD::ct_dim;
     const int id = cell.cid[ k ];
@@ -110,7 +110,7 @@ void plane_of( const PD &pd, const auto &cell, SI k0, int k, auto &dir, typename
 
 /// les `D + 1` sommets du simplexe `chain`, comme points -- ce qu'une densite recoit
 template<class TF,int D>
-auto simplex_points( const auto &cell, const auto &chain ) {
+HD auto simplex_points( const auto &cell, const auto &chain ) {
     return Vector<Vector<TF,D>,D+1>( Function(), [&]( PI k ) {
         return Vector<TF,D>::with_func( [&]( PI c ) { return TF( cell.coord( int( chain[ k ] ), int( c ) ) ); } );
     } );
@@ -120,7 +120,7 @@ auto simplex_points( const auto &cell, const auto &chain ) {
 /// densite constante, `valeur * mesure` ; sinon le morceau part en simplexes et c'est la densite
 /// qui s'integre sur chacun. Rend `false` si un morceau n'a pas tenu.
 template<class TF,class Local>
-bool integrate_into( auto &&res, const Local &cell, Local &piece, const auto &dist ) {
+HD bool integrate_into( auto &&res, const Local &cell, Local &piece, const auto &dist ) {
     constexpr int D = Local::ct_dim;
     PieceWorkspace<Local> ws{ piece };
     TF sum = 0;
@@ -144,7 +144,7 @@ bool integrate_into( auto &&res, const Local &cell, Local &piece, const auto &di
 
 /// le volume du simplexe `pts` : `| det( p_i - p_0 ) | / D!`
 template<class TF,int D>
-TF simplex_volume( const auto &pts ) {
+HD TF simplex_volume( const auto &pts ) {
     const auto M = Matrix<TF,D>::with_func( [&]( auto r, auto c ) { return pts[ int( c ) + 1 ][ int( r ) ] - pts[ 0 ][ int( r ) ]; } );
     TF det = M.determinant();
     if ( det < 0 ) det = - det;
@@ -160,7 +160,7 @@ TF simplex_volume( const auto &pts ) {
 /// `int_T |x|^2 = |T| ( sum_i |v_i|^2 + |sum_i v_i|^2 ) / ( ( D + 1 )( D + 2 ) )` -- sinon c'est la
 /// quadrature de la densite qui les accumule ( `PointwiseDensity::integrate_moments_over_simplex` ).
 template<class TF,class Local>
-bool integrate_moments_into( auto &&mass, auto &&first, auto &&second, const Local &cell, Local &piece, const auto &dist ) {
+HD bool integrate_moments_into( auto &&mass, auto &&first, auto &&second, const Local &cell, Local &piece, const auto &dist ) {
     constexpr int D = Local::ct_dim;
     PieceWorkspace<Local> ws{ piece };
     TF m = 0, m2 = 0;
@@ -208,7 +208,7 @@ bool integrate_moments_into( auto &&mass, auto &&first, auto &&second, const Loc
 /// `memo_nbrs( k, . )` / `memo_counts( k )` -- ou rien ( `0` : compte nul ) s'ils depassent la
 /// capacite. `memo_*` valent `0` quand l'appel n'en veut pas.
 template<class Local>
-void memorise( Local &c, SI k, auto &&memo_nbrs, auto &&memo_counts ) {
+HD void memorise( Local &c, SI k, auto &&memo_nbrs, auto &&memo_counts ) {
     if constexpr ( requires { memo_nbrs( k, 0 ); } ) {
         c.tidy();
         const int nc = c.nb_cuts(), cap = int( memo_nbrs.shape( 1 ) );
@@ -226,7 +226,7 @@ void memorise( Local &c, SI k, auto &&memo_nbrs, auto &&memo_counts ) {
 }
 
 template<class PD>
-void measures( const PD &pd, auto &&res, const auto &dom, auto &&scratch, const auto &dist,
+HD void measures( const PD &pd, auto &&res, const auto &dom, auto &&scratch, const auto &dist,
                auto &&memo_nbrs, auto &&memo_counts, SI thread_index, SI nb_threads ) {
     using TF    = typename PD::TF;
     using TK    = KernelType<DECAYED_TYPE_OF( scratch )>;
@@ -251,7 +251,7 @@ void measures( const PD &pd, auto &&res, const auto &dom, auto &&scratch, const 
 
 /// les moments de chaque cellule ( voir `integrate_moments_into` ), meme balayage que `measures`
 template<class PD>
-void moments( const PD &pd, auto &&mass, auto &&first, auto &&second, const auto &dom, auto &&scratch, const auto &dist,
+HD void moments( const PD &pd, auto &&mass, auto &&first, auto &&second, const auto &dom, auto &&scratch, const auto &dist,
               SI thread_index, SI nb_threads ) {
     using TF    = typename PD::TF;
     using TK    = KernelType<DECAYED_TYPE_OF( scratch )>;
@@ -285,7 +285,7 @@ void moments( const PD &pd, auto &&mass, auto &&first, auto &&second, const auto
 /// touche recoit un ajout atomique ; la part de `k0`, a laquelle CHAQUE sommet contribue, est
 /// sommee en registre et ajoutee une fois.
 template<class PD>
-void scatter_cell_grad( const PD &pd, SI k0, const auto &cell, const auto &grad_vp, auto &&grad_positions, auto &&grad_weights ) {
+HD void scatter_cell_grad( const PD &pd, SI k0, const auto &cell, const auto &grad_vp, auto &&grad_positions, auto &&grad_weights ) {
     using TF = typename PD::TF;
     constexpr int D = PD::ct_dim;
     if constexpr ( CT_VALUE( grad_positions.surely_null() ) && CT_VALUE( grad_weights.surely_null() ) ) {
@@ -349,7 +349,7 @@ void scatter_cell_grad( const PD &pd, SI k0, const auto &cell, const auto &grad_
 }
 
 template<class PD,class Local>
-bool integrate_bwd_into( const PD &pd, SI k0, auto &&grad_res, const Local &cell, Local &piece,
+HD bool integrate_bwd_into( const PD &pd, SI k0, auto &&grad_res, const Local &cell, Local &piece,
                          GradVp<typename PD::TF> &grad_vp, auto &&grad_positions, auto &&grad_weights,
                          auto &&grad_dist, const auto &dist ) {
     using TF = typename PD::TF;
@@ -386,7 +386,7 @@ bool integrate_bwd_into( const PD &pd, SI k0, auto &&grad_res, const Local &cell
 }
 
 template<class PD>
-void measures_bwd( const PD &pd, auto &&res, const auto &dom, auto &&grad_res, auto &&grad_positions, auto &&grad_weights,
+HD void measures_bwd( const PD &pd, auto &&res, const auto &dom, auto &&grad_res, auto &&grad_positions, auto &&grad_weights,
                    auto &&scratch, const auto &dist, auto &&grad_dist, SI thread_index, SI nb_threads ) {
     using TF    = typename PD::TF;
     using TK    = KernelType<DECAYED_TYPE_OF( scratch )>;
@@ -414,7 +414,7 @@ void measures_bwd( const PD &pd, auto &&res, const auto &dom, auto &&grad_res, a
 /// identifiants de coupe traduits pour l'utilisateur. La seule requete dont la memoire est fonction
 /// du nombre de germes : ce qu'est un AFFICHAGE.
 template<class PD>
-void build_cell( const PD &pd, SI k, const auto &dom, auto &&res, auto &&scratch, SI thread_index ) {
+HD void build_cell( const PD &pd, SI k, const auto &dom, auto &&res, auto &&scratch, SI thread_index ) {
     using TK    = KernelType<DECAYED_TYPE_OF( scratch )>;
     using Local = typename DECAYED_TYPE_OF( dom )::template Local<TK>;
     Carver cv = carver_of( scratch, thread_index );
@@ -441,7 +441,7 @@ void build_cell( const PD &pd, SI k, const auto &dom, auto &&res, auto &&scratch
 /// A densite constante par morceau seulement ( `Image`, Lebesgue ) : la facette d'un morceau est
 /// plate et la densite y est un nombre.
 template<class PD>
-void hessian_row( const PD &pd, SI k, const auto &dom, auto &&res, auto &&scratch, SI thread_index, const auto &dist ) {
+HD void hessian_row( const PD &pd, SI k, const auto &dom, auto &&res, auto &&scratch, SI thread_index, const auto &dist ) {
     using TF    = typename PD::TF;
     using TK    = KernelType<DECAYED_TYPE_OF( scratch )>;
     using Local = typename DECAYED_TYPE_OF( dom )::template Local<TK>;

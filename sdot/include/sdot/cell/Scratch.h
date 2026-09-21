@@ -1,5 +1,7 @@
 #pragma once
 
+#include <loom/support/common_macros.h> // HD
+
 // =====================================================================================
 // LE SCRATCH : un seul tenseur de mots par work-item, decoupe par le C++ en ce dont il a besoin.
 //
@@ -27,7 +29,7 @@ static constexpr SI scratch_align = 32;
 
 /// arrondi de `n` elements de `T` a l'alignement, en MOTS de 32 bits
 template<class T>
-constexpr SI words_of( SI n ) {
+HD constexpr SI words_of( SI n ) {
     const SI bytes = n * SI( sizeof( T ) );
     return ( ( bytes + scratch_align - 1 ) / scratch_align ) * ( scratch_align / 4 );
 }
@@ -40,7 +42,7 @@ struct Carver {
     bool          overflow = false;
 
     template<class T>
-    T *take( SI n ) {
+    HD T *take( SI n ) {
         T *res = reinterpret_cast<T *>( base + used );
         used += words_of<T>( n );
         if ( used > nb_words )

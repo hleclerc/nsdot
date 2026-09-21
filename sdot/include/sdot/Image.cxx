@@ -1,5 +1,7 @@
 #pragma once
 
+#include <loom/support/common_macros.h> // HD
+
 #include <loom/support/algorithms/CartesianIndices.h> // iterate the (dynamic-rank) cell grid
 #include <loom/support/containers/IotaTensor.h>       // IotaTensor<TF> (knots = 0,1,2) -- default `knots`
 #include <loom/support/containers/Vector.h>           // Vector<TF,d>::zeros()          -- default `origin`
@@ -16,10 +18,10 @@
 
 namespace sdot {
 
-UTP auto DTP::with_defaults( auto &&cont ) const {
+UTP HD auto DTP::with_defaults( auto &&cont ) const {
     // Substitute one absent member per step, then recurse -- exactly the shape of
     // `Cell::init_as_hypercube`'s default handling, but rebuilding the WHOLE aggregate (a new
-    // template instantiation, deduced by C++20 aggregate CTAD, like the generated `make_available`)
+    // template instantiation, deduced by C++20 aggregate CTAD, like the generated `kernel_form`)
     // rather than passing individual defaults down. We must rebuild, not mutate: a `NoneTensor` has
     // a fixed type and no `operator=`, so replacing its VALUE means replacing its TYPE.
     //
@@ -38,7 +40,7 @@ UTP auto DTP::with_defaults( auto &&cont ) const {
         return cont( *this );
 }
 
-UTP typename DTP::TF DTP::measure() const {
+UTP HD typename DTP::TF DTP::measure() const {
     return with_defaults( []( auto &&img ) {
         using ImgT = DECAYED_TYPE_OF( img );
         using TF = typename ImgT::TF;
@@ -74,7 +76,7 @@ namespace detail {
     /// Un multi-indice RUNTIME (`Vector<SI,d>`) rendu en `Tuple`, que `TensorView::offset` déplie
     /// tout seul -- de quoi écrire `values( k )` avec un `k` dont les composantes sont calculées.
     /// Même récursion `Ct` que `unravel_index` (voir `CartesianIndices.h`).
-    auto image_index_tuple( const auto &k, auto &&acc, auto done ) {
+    HD auto image_index_tuple( const auto &k, auto &&acc, auto done ) {
         constexpr int i = DECAYED_TYPE_OF( done )::value;
         constexpr int n = DECAYED_TYPE_OF( k.size() )::value;
         if constexpr ( i == n )
@@ -84,7 +86,7 @@ namespace detail {
     }
 }
 
-UTP SI DTP::knot_index( SI axis, TF t, SI nb_cells ) const {
+UTP HD SI DTP::knot_index( SI axis, TF t, SI nb_cells ) const {
     SI b = 0, e = nb_cells;                 // on cherche dans [ b, e ), invariant : la réponse y est
     while ( e - b > 1 ) {
         const SI m = ( b + e ) / 2;
@@ -94,11 +96,11 @@ UTP SI DTP::knot_index( SI axis, TF t, SI nb_cells ) const {
     return b;
 }
 
-UTP void DTP::for_each_piece( const auto &cell, auto &&ws, auto &&func ) const {
+UTP HD void DTP::for_each_piece( const auto &cell, auto &&ws, auto &&func ) const {
     with_defaults( [&]( auto &&img ) { img._for_each_piece( cell, ws, func ); } );
 }
 
-UTP void DTP::_for_each_piece( const auto &cell, auto &&ws, auto &&func ) const {
+UTP HD void DTP::_for_each_piece( const auto &cell, auto &&ws, auto &&func ) const {
     constexpr int d = ct_dim;
     static_assert( d >= 1 );
 
@@ -213,7 +215,7 @@ UTP void DTP::_for_each_piece( const auto &cell, auto &&ws, auto &&func ) const 
     }
 }
 
-UTP void DTP::measure_bwd( auto &&grad_values, auto &&grad_mass ) const {
+UTP HD void DTP::measure_bwd( auto &&grad_values, auto &&grad_mass ) const {
     // `mass` is linear in `values` (see `measure`): mass = Sum_c values(c) * |det(frame)| * spacing(c),
     // so grad_values(c) = grad_mass * |det(frame)| * spacing(c). Guarded at compile time: an
     // unperturbed `values` arrives as a `NoneTensor` (no `operator=`), so the block must vanish.
@@ -249,7 +251,7 @@ UTP void DTP::measure_bwd( auto &&grad_values, auto &&grad_mass ) const {
 // origin=0 / frame=identity collapses `x(i)` back to `knots(i)`, reproducing the plain-knot walk.
 // Callers reach these through `with_defaults`, so `origin`/`frame`/`knots` are always populated.
 // Assumes `frame(0,0) > 0` (an increasing detector axis), like the sorted-by-position diracs.
-UTP auto DTP::udp_start() const {
+UTP HD auto DTP::udp_start() const {
     const TF sc = frame( 0, 0 );
     const TF of = origin( 0 );
     return Udp{
@@ -260,7 +262,7 @@ UTP auto DTP::udp_start() const {
     };
 }
 
-UTP auto DTP::udp_cont( auto &&udp, auto mass_to_take, auto &&cb_parts ) const {
+UTP HD auto DTP::udp_cont( auto &&udp, auto mass_to_take, auto &&cb_parts ) const {
     const SI nb_cells = values.size();
     const TF sc = frame( 0, 0 );
     const TF of = origin( 0 );
@@ -301,7 +303,7 @@ UTP auto DTP::udp_cont( auto &&udp, auto mass_to_take, auto &&cb_parts ) const {
     }
 }
 
-UTP auto DTP::udp_at( auto &&cell_cum_mass, auto target_mass ) const {
+UTP HD auto DTP::udp_at( auto &&cell_cum_mass, auto target_mass ) const {
     const SI nb_cells = values.size();
     const TF sc = frame( 0, 0 );
     const TF of = origin( 0 );
@@ -346,7 +348,7 @@ UTP auto DTP::udp_at( auto &&cell_cum_mass, auto target_mass ) const {
 // inline above, but walked once end-to-end and cached (see `Image.py`'s `cell_cum_mass`
 // `ComputedAttribute`) instead of being rebuilt by every `OtPlan1d` forward/backward call. One
 // thread does a whole angle -- `nb_cells` is small enough that no cooperative scan is worth it.
-UTP void DTP::fill_cell_cum_mass( auto &&cell_cum_mass ) const {
+UTP HD void DTP::fill_cell_cum_mass( auto &&cell_cum_mass ) const {
     with_defaults( [&]( auto &&img ) {
         const SI nb_cells = img.values.size();
         const TF sc = img.frame( 0, 0 );

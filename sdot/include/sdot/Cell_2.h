@@ -23,19 +23,19 @@ struct Cell_2 {
     using TF = DECAYED_TYPE_OF( vertex_positions )::TF;
     template<class TK> using Local = Local2<TK>;
 
-    void init_as_hypercube( auto &&scratch, auto &&origin, auto &&axes, SI cut_id ) {
+    HD void init_as_hypercube( auto &&scratch, auto &&origin, auto &&axes, SI cut_id ) {
         cell_ops::init_as_hypercube<Local<KernelType<DECAYED_TYPE_OF( scratch )>>>( *this, scratch, origin, axes, cut_id );
     }
-    void init_as_unbounded( auto &&scratch ) {
+    HD void init_as_unbounded( auto &&scratch ) {
         cell_ops::init_as_unbounded<Local<KernelType<DECAYED_TYPE_OF( scratch )>>>( *this, scratch );
     }
-    void cut( auto &&res, auto &&scratch, auto &&direction, auto &&offset, SI cut_id ) const {
+    HD void cut( auto &&res, auto &&scratch, auto &&direction, auto &&offset, SI cut_id ) const {
         cell_ops::cut<Local<KernelType<DECAYED_TYPE_OF( scratch )>>>( *this, res, scratch, direction, offset, cut_id );
     }
-    void measure( auto &&res, auto &&scratch ) const {
+    HD void measure( auto &&res, auto &&scratch ) const {
         cell_ops::measure<Local<KernelType<DECAYED_TYPE_OF( scratch )>>>( *this, res, scratch );
     }
-    void measure_bwd( auto &&res, auto &&grad_res, auto &&grad_vertex_positions, auto &&scratch ) const {
+    HD void measure_bwd( auto &&res, auto &&grad_res, auto &&grad_vertex_positions, auto &&scratch ) const {
         cell_ops::measure_bwd<Local<KernelType<DECAYED_TYPE_OF( scratch )>>>( *this, res, grad_res, grad_vertex_positions, scratch );
     }
 };

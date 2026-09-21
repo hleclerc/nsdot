@@ -1,5 +1,7 @@
 #pragma once
 
+#include <loom/support/common_macros.h> // HD
+
 // =====================================================================================
 // LE MOTEUR : la cellule dirige, le fournisseur repond.
 //
@@ -42,7 +44,7 @@ namespace sdot {
 /// si une coupe n'a pas tenu -- la cellule est alors restee au dernier etat valide, et l'appelant
 /// doit le signaler plutot que de la mesurer.
 template<class Cell,class Fourn>
-int run_memory( Cell &c, Fourn &f, LocalOf<Fourn> &loc ) {
+HD int run_memory( Cell &c, Fourn &f, LocalOf<Fourn> &loc ) {
     typename Cell::PlaneT p;
     for ( ;; ) {
         if ( c.nb_vertices() == 0 )
@@ -60,7 +62,7 @@ int run_memory( Cell &c, Fourn &f, LocalOf<Fourn> &loc ) {
 /// la meme boucle, qui S'ARRETE des que la cellule est bornee -- le relais est alors passe au
 /// noyau a registres ( voir `run` ). Meme convention de retour que `run_memory`.
 template<class Cell,class Fourn>
-int run_memory_while_unbounded( Cell &c, Fourn &f, LocalOf<Fourn> &loc ) {
+HD int run_memory_while_unbounded( Cell &c, Fourn &f, LocalOf<Fourn> &loc ) {
     typename Cell::PlaneT p;
     while ( ! c.bounded() ) {
         if ( c.nb_vertices() == 0 )
@@ -85,7 +87,7 @@ namespace sdot {
 /// LE POINT D'ENTREE. `ON_CPU` dit si le noyau a registres est disponible ( il est ecrit en
 /// asimd, ce qu'un kernel GPU ne sait pas compiler en registres ).
 template<bool ON_CPU,class Cell,class Fourn>
-int run( Cell &c, Fourn &f ) {
+HD int run( Cell &c, Fourn &f ) {
     LocalOf<Fourn> loc{};
     if constexpr ( ON_CPU && Cell::ct_dim == 2 ) {
         if ( c.bounded() )

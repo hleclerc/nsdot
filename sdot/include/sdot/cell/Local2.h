@@ -1,5 +1,7 @@
 #pragma once
 
+#include <loom/support/common_macros.h> // HD
+
 // =====================================================================================
 // LA CELLULE 2D EN MEMOIRE : la representation intermediaire, celle que les noyaux manipulent.
 //
@@ -69,10 +71,10 @@ struct Local2 {
     // ---- le scratch --------------------------------------------------------------------------
 
     /// ce qu'il faut de mots pour `cap` sommets -- LA MEME FORMULE que `Cell_2.scratch_words`
-    static constexpr SI words_for( SI cap ) { return 8 * words_of<TK>( cap ) + words_of<int>( cap ); }
+    HD static constexpr SI words_for( SI cap ) { return 8 * words_of<TK>( cap ) + words_of<int>( cap ); }
 
     /// pose les tableaux dans `c`. `false` s'il n'y a pas la place ( rien n'est alors utilisable )
-    bool attach( Carver &c, SI capacity ) {
+    HD bool attach( Carver &c, SI capacity ) {
         cap = int( capacity );
         vx = c.take<TK>( cap ); vy = c.take<TK>( cap ); cid = c.take<int>( cap );
         pdx = c.take<TK>( cap ); pdy = c.take<TK>( cap ); po = c.take<TK>( cap );
@@ -82,7 +84,7 @@ struct Local2 {
     }
 
     /// recopie `o` ( geometrie et etat ) : `cap` doit suffire
-    bool copy_from( const Local2 &o ) {
+    HD bool copy_from( const Local2 &o ) {
         if ( o.nb > cap )
             return false;
         nb = o.nb; unbounded = o.unbounded; has_planes = o.has_planes;
@@ -94,22 +96,22 @@ struct Local2 {
     }
 
     // ---- ce que tout le monde lit ------------------------------------------------------------
-    int  nb_vertices() const { return nb; }
-    int  nb_cuts    () const { return nb; }
-    bool bounded    () const { return ! unbounded; }
-    TK   coord      ( int i, int d ) const { return d ? vy[ i ] : vx[ i ]; }
+    HD int  nb_vertices() const { return nb; }
+    HD int  nb_cuts () const { return nb; }
+    HD bool bounded () const { return ! unbounded; }
+    HD TK   coord   ( int i, int d ) const { return d ? vy[ i ] : vx[ i ]; }
 
     /// les deux coupes du sommet `i`, dans l'ordre : `r == 0` -> la coupe `i-1`, `r == 1` -> `i`
-    int  vertex_cut ( int i, int r ) const { return r ? i : ( i ? i - 1 : nb - 1 ); }
+    HD int  vertex_cut ( int i, int r ) const { return r ? i : ( i ? i - 1 : nb - 1 ); }
 
     /// ce que le fournisseur voit ( voir `Moteur.h` )
-    EtatMem<TK> etat() const { return { nb, vx, vy, cid, ! unbounded }; }
+    HD EtatMem<TK> etat() const { return { nb, vx, vy, cid, ! unbounded }; }
 
     // ---- les etats de depart -----------------------------------------------------------------
 
     /// le parallelogramme `origin + s * axes( 0 ) + t * axes( 1 )`, `s, t` dans `[ 0, 1 ]`, en ordre
     /// cyclique direct si `axes` l'est. Toutes les coupes portent `cut_id`.
-    bool init_hypercube( const auto &origin, const auto &axes, int cut_id ) {
+    HD bool init_hypercube( const auto &origin, const auto &axes, int cut_id ) {
         if ( cap < 4 )
             return false;
         const TK ox = TK( origin[ 0 ] ), oy = TK( origin[ 1 ] );
@@ -131,7 +133,7 @@ struct Local2 {
 
     /// « TOUT LE PLAN » : le triangle `( 0, 0 ), ( 1, 0 ), ( 0, 1 )` dont les trois cotes sont
     /// marques `INFINITE`. Ses offsets sont inventes ; `grow_for` les repousse coupe apres coupe.
-    bool init_unbounded() {
+    HD bool init_unbounded() {
         if ( cap < 3 )
             return false;
         vx[ 0 ] = 0; vy[ 0 ] = 0;
@@ -145,22 +147,22 @@ struct Local2 {
         return true;
     }
 
-    void make_empty() { nb = 0; unbounded = false; has_planes = false; }
-    void tidy() {}                                       ///< rien a ranger : pas de coupe morte en 2D
+    HD void make_empty() { nb = 0; unbounded = false; has_planes = false; }
+    HD void tidy() {}                                 ///< rien a ranger : pas de coupe morte en 2D
 
     // ---- les plans, relus sur la geometrie ---------------------------------------------------
 
     /// le plan de l'arete `i` : la normale SORTANTE de `[ v_i, v_i+1 ]` pour un polygone direct,
     /// et l'offset lu sur `v_i`. Exact pour un plan reel comme pour une paroi repoussee -- les
     /// deux bouts d'une arete sont sur son plan.
-    void plane_of_edge( int i, TK &dx, TK &dy, TK &off ) const {
+    HD void plane_of_edge( int i, TK &dx, TK &dy, TK &off ) const {
         const int j = i + 1 < nb ? i + 1 : 0;
         dx  = vy[ j ] - vy[ i ];
         dy  = vx[ i ] - vx[ j ];
         off = dx * vx[ i ] + dy * vy[ i ];
     }
 
-    void planes_from_vertices() {
+    HD void planes_from_vertices() {
         for ( int i = 0; i < nb; ++i )
             plane_of_edge( i, pdx[ i ], pdy[ i ], po[ i ] );
         has_planes = true;
@@ -169,7 +171,7 @@ struct Local2 {
     /// le plan de la coupe `i`, dans le flottant `T` de l'appelant ( relu sur les sommets, ou
     /// pris dans la table quand elle est tenue )
     template<class T>
-    void plane( int i, T *dir, T &off ) const {
+    HD void plane( int i, T *dir, T &off ) const {
         if ( has_planes ) {
             dir[ 0 ] = T( pdx[ i ] ); dir[ 1 ] = T( pdy[ i ] ); off = T( po[ i ] );
         } else {
@@ -182,7 +184,7 @@ struct Local2 {
     // ---- la coupe ----------------------------------------------------------------------------
 
     /// Coupe par `p`, EN PLACE. Rend un `CutStatus` ; sur `OVERFLOW` la cellule est restee intacte.
-    int cut( const PlaneT &p ) {
+    HD int cut( const PlaneT &p ) {
         if ( unbounded ) {
             grow_for( p );
             return cut_impl<true>( p );
@@ -193,7 +195,7 @@ struct Local2 {
     /// Combien de sommets le demi-espace laisse DEHORS -- le test « rien a enlever », a part et
     /// petit : le predicat `s > 0` n'est ecrit qu'ici et dans `cut_impl`, donc les deux ne peuvent
     /// pas repondre differemment sur un sommet a l'epsilon du plan.
-    int nb_outside( const PlaneT &p ) const {
+    HD int nb_outside( const PlaneT &p ) const {
         int res = 0;
         for ( int i = 0; i < nb; ++i )
             res += ( p.dir[ 0 ] * vx[ i ] + p.dir[ 1 ] * vy[ i ] - p.off ) > 0;
@@ -201,7 +203,7 @@ struct Local2 {
     }
 
     template<bool PL>
-    int cut_impl( const PlaneT &p ) {
+    HD int cut_impl( const PlaneT &p ) {
         int nb_out = 0;
         for ( int i = 0; i < nb; ++i ) {                 // reduction pure : le vectoriseur la prend
             s[ i ] = p.dir[ 0 ] * vx[ i ] + p.dir[ 1 ] * vy[ i ] - p.off;
@@ -285,7 +287,7 @@ struct Local2 {
     /// La VITESSE du sommet `i` quand on repousse les parois `INFINITE` de `g` : il est le coin de
     /// ses deux coupes, donc il resout le meme 2x2 avec les indicatrices `INFINITE` en second
     /// membre. Nulle pour un sommet reel, qui ne bouge pas.
-    void growth_rate( int i, TK &rx, TK &ry ) const {
+    HD void growth_rate( int i, TK &rx, TK &ry ) const {
         const int c0 = vertex_cut( i, 0 ), c1 = vertex_cut( i, 1 );
         const TK f0 = cid[ c0 ] == cell_ids::INFINITE, f1 = cid[ c1 ] == cell_ids::INFINITE;
         if ( f0 == 0 && f1 == 0 ) { rx = 0; ry = 0; return; }
@@ -300,7 +302,7 @@ struct Local2 {
     /// qu'il a a l'infini. Chaque sommet voyage en ligne droite, donc sa distance signee au plan est
     /// AFFINE en la poussee et « quand changerait-il de cote ? » est une division ; on pousse
     /// au-dela du plus lointain, et un peu plus, pour qu'aucun sommet ne reste SUR le plan.
-    void grow_for( const PlaneT &p ) {
+    HD void grow_for( const PlaneT &p ) {
         if ( ! has_planes )
             planes_from_vertices();
 
@@ -358,7 +360,7 @@ struct Local2 {
     // ---- la mesure, dans le flottant `TF` de l'appelant ----------------------------------------
 
     template<class TF>
-    TF measure() const {
+    HD TF measure() const {
         if ( unbounded )
             return std::numeric_limits<TF>::max();
         TF sum = 0;
@@ -372,7 +374,7 @@ struct Local2 {
     /// l'adjoint du lacet : `grad_vp( i, d )` recoit la cotangente du sommet `i` ( ECRITE, pas
     /// accumulee ). Rien pour une cellule non bornee, dont la mesure est une constante.
     template<class TF>
-    void measure_bwd( TF grad_res, auto &&grad_vp ) const {
+    HD void measure_bwd( TF grad_res, auto &&grad_vp ) const {
         if ( unbounded )
             return;
         for ( int i = 0; i < nb; ++i ) {
@@ -388,7 +390,7 @@ struct Local2 {
     /// `func( c, mesure )` pour chaque coupe `c` qui porte une arete : sa LONGUEUR ( la coupe `i`
     /// porte l'arete `[ v_i, v_i+1 ]` ) -- ce que la hessienne d'un transport lit ( `diagram::hessian_row` )
     template<class TF>
-    void for_each_facet( auto &&func ) const {
+    HD void for_each_facet( auto &&func ) const {
         for ( int i = 0; i < nb; ++i ) {
             const int j = i + 1 < nb ? i + 1 : 0;
             const TF dx = TF( vx[ j ] ) - TF( vx[ i ] ), dy = TF( vy[ j ] ) - TF( vy[ i ] );
@@ -396,7 +398,7 @@ struct Local2 {
         }
     }
 
-    void for_each_simplex( auto &&func ) const {
+    HD void for_each_simplex( auto &&func ) const {
         Vector<SI,3> chain;
         chain[ 0 ] = 0;
         for ( int i = 1; i + 1 < nb; ++i ) {
@@ -406,7 +408,7 @@ struct Local2 {
         }
     }
 
-    void bbox( TK *lo, TK *hi ) const {
+    HD void bbox( TK *lo, TK *hi ) const {
         lo[ 0 ] = hi[ 0 ] = nb ? vx[ 0 ] : TK( 0 );
         lo[ 1 ] = hi[ 1 ] = nb ? vy[ 0 ] : TK( 0 );
         for ( int i = 1; i < nb; ++i ) {
@@ -419,7 +421,7 @@ struct Local2 {
 
     /// depuis une vue `Cell_2` ( un item deja indexe ) : `vertex_positions [ nv, 2 ]`, `cut_ids`.
     /// `false` si la cellule ne tient pas dans `cap`.
-    bool load( const auto &c ) {
+    HD bool load( const auto &c ) {
         const int n = int( SI( c.nb_vertices ) );
         if ( n > cap )
             return false;
@@ -437,7 +439,7 @@ struct Local2 {
 
     /// vers une vue `Cell_2`. Rend `false` si elle est trop petite : le compte voulu est alors
     /// enregistre ( `ShapeVarView::set` ) et RIEN n'est ecrit -- l'hote reserve plus et relance.
-    bool store( auto &&c ) const {
+    HD bool store( auto &&c ) const {
         if ( ! c.nb_vertices.set( nb ) )
             return false;
         c.nb_cuts.set( nb );

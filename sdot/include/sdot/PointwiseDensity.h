@@ -88,12 +88,12 @@ struct PointwiseDensity {
     /// sommets d'origine sans rien résoudre.
     using Bary = Vector<Vector<TF,ct_dim+1>,ct_dim+1>;
 
-    static Bary whole() {
+    HD static Bary whole() {
         return Bary( Function(), []( PI k ) {
             return Vector<TF,ct_dim+1>( Function(), [&]( PI j ) { return TF( j == k ); } ); } );
     }
 
-    static auto points_of( const Bary &b, const auto &pts ) {
+    HD static auto points_of( const Bary &b, const auto &pts ) {
         return Vector<Vector<TF,ct_dim>,ct_dim+1>( Function(), [&]( PI k ) {
             return Vector<TF,ct_dim>( Function(), [&]( PI c ) {
                 TF s = 0;
@@ -118,7 +118,7 @@ struct PointwiseDensity {
     /// Le roulement des sommets est ce qui borne la dégradation des formes (Maubach 1995). Mesuré
     /// sur 8 niveaux, la qualité minimale tient : 0.32 en 2D, 0.14 en 3D, 0.13 en 4D -- contre
     /// 0.50 / 0.22 / 0.18 pour la plus longue arête, et 0.13 / 0.09 / 0.08 pour un cyclique naïf.
-    static void bisect( const Bary &b, const auto &/*pts*/, Bary &lo, Bary &hi ) {
+    HD static void bisect( const Bary &b, const auto &/*pts*/, Bary &lo, Bary &hi ) {
         Vector<TF,ct_dim+1> mid;
         for ( SI j = 0; j <= ct_dim; ++j )
             mid[ j ] = ( b[ 0 ][ j ] + b[ ct_dim ][ j ] ) / 2;
@@ -135,7 +135,7 @@ struct PointwiseDensity {
 
     /// Les feuilles de la subdivision, avec la valeur de la règle sur chacune. Le forward les somme,
     /// le backward les redérive -- même parcours, donc mêmes feuilles.
-    void for_each_leaf( const auto &pts, auto &&func ) const {
+    HD void for_each_leaf( const auto &pts, auto &&func ) const {
         Vector<Bary,max_depth+2> stack;
         Vector<int,max_depth+2>  depth;
         Vector<TF,max_depth+2>   value;
@@ -177,7 +177,7 @@ struct PointwiseDensity {
         }
     }
 
-    TF integrate_over_simplex( const auto &pts ) const {
+    HD TF integrate_over_simplex( const auto &pts ) const {
         TF res = 0;
         for_each_leaf( pts, [&]( const Bary &, TF v ) { res += v; } );
         return res;
@@ -185,7 +185,7 @@ struct PointwiseDensity {
 
     /// les moments d'ordre 0, 1, 2 de la densité sur le simplexe, ACCUMULÉS dans `m` / `mx` / `m2`
     /// -- la même règle, sur les mêmes feuilles, chaque noeud pesant `vol / ( d + 1 ) * rho( x )`.
-    void integrate_moments_over_simplex( const auto &pts, TF &m, auto &mx, TF &m2 ) const {
+    HD void integrate_moments_over_simplex( const auto &pts, TF &m, auto &mx, TF &m2 ) const {
         for_each_leaf( pts, [&]( const Bary &b, TF ) {
             const auto P = points_of( b, pts );
             const TF det = edge_matrix( P ).determinant();
@@ -200,7 +200,7 @@ struct PointwiseDensity {
         } );
     }
 
-    void integrate_over_simplex_bwd( const auto &pts, TF g, auto &&grad_pts, auto &&grad_dist ) const {
+    HD void integrate_over_simplex_bwd( const auto &pts, TF g, auto &&grad_pts, auto &&grad_dist ) const {
         for_each_leaf( pts, [&]( const Bary &b, TF /*v*/ ) {
             auto gl = Vector<Vector<TF,ct_dim>,ct_dim+1>( Function(), []( PI ) {
                 return Vector<TF,ct_dim>::zeros(); } );
@@ -218,13 +218,13 @@ struct PointwiseDensity {
 
     // ---- la règle elle-même, sur UN simplexe donné par ses points ---------------------------------
 
-    static auto barycentric() {
+    HD static auto barycentric() {
         const TF d = ct_dim;
         const TF alpha = ( 1 + sdot::sqrt( 1 - ( d + 1 ) * ( 2 - d ) / ( d + 2 ) ) ) / ( d + 1 );
         return Vector<TF,2>( Values(), alpha, ( 1 - alpha ) / d );
     }
 
-    static TF factorial() {
+    HD static TF factorial() {
         TF res = 1;
         for ( int i = 2; i <= ct_dim; ++i )
             res *= i;
@@ -233,12 +233,12 @@ struct PointwiseDensity {
 
     /// `M` = les `d` arêtes issues de `P[ 0 ]`, en colonnes : son déterminant donne le volume, et
     /// ses cofacteurs la dérivée de ce volume.
-    static auto edge_matrix( const auto &P ) {
+    HD static auto edge_matrix( const auto &P ) {
         return Matrix<TF,ct_dim>::with_func( [&]( auto r, auto c ) { return P[ c + 1 ][ r ] - P[ 0 ][ r ]; } );
     }
 
     /// le noeud `q` : `beta` partout, `alpha` sur le sommet `q`.
-    static auto node( const auto &P, SI q ) {
+    HD static auto node( const auto &P, SI q ) {
         const auto ab = barycentric();
         auto tot = Vector<TF,ct_dim>::zeros();
         for ( SI k = 0; k <= ct_dim; ++k )
@@ -246,7 +246,7 @@ struct PointwiseDensity {
         return ab[ 1 ] * tot + ( ab[ 0 ] - ab[ 1 ] ) * P[ q ];
     }
 
-    TF rule( const auto &P ) const {
+    HD TF rule( const auto &P ) const {
         const TF det = edge_matrix( P ).determinant();
         const TF vol = ( det < 0 ? -det : det ) / factorial();
 
@@ -256,7 +256,7 @@ struct PointwiseDensity {
         return vol * s / ( ct_dim + 1 );
     }
 
-    void rule_bwd( const auto &P, TF g, auto &&gP, auto &&grad_dist ) const {
+    HD void rule_bwd( const auto &P, TF g, auto &&gP, auto &&grad_dist ) const {
         const auto ab = barycentric();
         const auto M = edge_matrix( P );
         const TF det = M.determinant();

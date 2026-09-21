@@ -17,10 +17,10 @@ struct PowerDiagram_Plain {
     SDOT_ATTRIBUTES_OF_PowerDiagram_Plain
     SDOT_DIAGRAM_COMMON( positions, weights )
 
-    SI user_id( SI k ) const { return k; }
+    HD SI user_id( SI k ) const { return k; }
 
     template<class TK>
-    auto fournisseur( SI k0 ) const { return FournisseurTous<PowerDiagram_Plain,TK,ct_dim>( *this, k0 ); }
+    HD auto fournisseur( SI k0 ) const { return FournisseurTous<PowerDiagram_Plain,TK,ct_dim>( *this, k0 ); }
 };
 
 }
