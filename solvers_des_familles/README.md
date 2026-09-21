@@ -1082,22 +1082,24 @@ ni compteur de plus), `PowerDiagram::cellule_memo`, `memorise( i, j )` / `oublie
 
 ## 11.1 La borne supérieure : deux passes aux mêmes poids
 
-n = 10⁵, 8 fils, minimum de 10 répétitions. Le *témoin* est le chemin MEMO à vide (le prix du
-code) ; *les voisins seuls* ne parcourent pas l'arbre du tout — c'est le plancher, le prix des
-seules coupes utiles.
+n = 10⁵, 8 fils, minimum de 10 répétitions, la machine pour le banc seul (`job -b`, § 11.6 —
+les premiers chiffres, pris sur une machine partagée, étaient gonflés de 30 à 75 % sur le
+*sans mémoire* ; ce sont ceux-ci qui comptent). Le *témoin* est le chemin MEMO à vide (le prix
+du code) ; *les voisins seuls* ne parcourent pas l'arbre du tout — c'est le plancher, le prix des
+seules coupes utiles. La mémoire ici est la forme A, les rangs des voisins (§ 11.4).
 
 | par cellule | plans proposés | boîtes testées | **coupes effectives** | temps |
 |---|---|---|---|---|
-| uniforme, sans mémoire | 87.4 | 95.2 | 30.1 | 0.305 s |
-| uniforme, témoin | 87.4 | 95.2 | 30.1 | 0.313 s |
-| uniforme, **avec mémoire** | 67.9 | 83.9 | **15.1** | **0.211 s (−31 %)** |
-| uniforme, les voisins seuls | 15.1 | 0 | 15.1 | 0.118 s (−61 %) |
-| plans / Voronoï, sans | 88.5 | 95.6 | 30.5 | 0.306 s |
-| plans / Voronoï, **avec** | 67.8 | 83.9 | **15.1** | **0.179 s (−42 %)** |
-| plans / volumes égaux (Laguerre), sans | 270 | 258 | 32.0 | 0.499 s |
-| plans / volumes égaux, **avec** | 253 | 251 | **15.5** | **0.395 s (−21 %)** |
-| uniforme 10⁶, sans | 106 | 101 | 32.3 | 3.16 s |
-| uniforme 10⁶, **avec** | 81.6 | 89.4 | **15.3** | **2.04 s (−36 %)** |
+| uniforme, sans mémoire | 87.4 | 95.2 | 30.1 | 0.174 s |
+| uniforme, témoin | 87.4 | 95.2 | 30.1 | 0.184 s |
+| uniforme, **avec mémoire** | 67.9 | 83.9 | **15.1** | **0.112 s (−35 %)** |
+| uniforme, les voisins seuls | 15.1 | 0 | 15.1 | 0.058 s (−67 %) |
+| plans / Voronoï, sans | 88.5 | 95.6 | 30.5 | 0.181 s |
+| plans / Voronoï, **avec** | 67.8 | 83.9 | **15.1** | **0.115 s (−36 %)** |
+| plans / volumes égaux (Laguerre), sans | 270 | 258 | 32.0 | 0.324 s |
+| plans / volumes égaux, **avec** | 253 | 251 | **15.5** | **0.266 s (−18 %)** |
+| uniforme 10⁶, sans | 106 | 101 | 32.3 | 1.88 s |
+| uniforme 10⁶, **avec** | 81.6 | 89.4 | **15.3** | **1.17 s (−38 %)** |
 
 **Ce qui est différent de la 2D, et pourquoi.** Les boîtes testées baissent peu (95 → 84) et les
 plans proposés de 20 % : l'argument de 2D tient — une boîte qui contient un vrai voisin passe
@@ -1113,30 +1115,31 @@ qu'un test ; en 3D elle coûte le diagramme.
 ## 11.2 Les souvenirs périmés : ce que Newton fait subir à la mémoire
 
 `--perime T` : les souvenirs pris à `T·W`, le diagramme mesuré à `W`, sur les plans / volumes
-égaux (Laguerre, 0.5 s sans mémoire) :
+égaux (Laguerre, 0.324 s sans mémoire) ; A = les rangs, C = la frontière (§ 11.4) :
 
-| souvenirs pris à | voisins retrouvés | coupes effectives | temps |
-|---|---|---|---|
-| `W` (exacts) | 15.50 | 15.5 | −21 % |
-| `0.9 W` | 15.48 | 15.9 | −18 % |
-| `0.5 W` | 15.34 | 17.3 | −18 % |
-| `0` (Voronoï) | 15.09 | 20.0 | −18 % |
+| souvenirs pris à | voisins retrouvés | coupes effectives | A | C |
+|---|---|---|---|---|
+| `W` (exacts) | 15.50 | 15.5 | −18 % | −24 % |
+| `0.99 W` | 15.50 | 15.5 | −18 % | −24 % |
+| `0.9 W` | 15.48 | 15.9 | −18 % | −24 % |
+| `0.5 W` | 15.34 | 17.3 | −16 % | −17 % |
+| `0` (Voronoï) | 15.09 | 20.0 | −12 % | −10 % |
 
-Même les souvenirs de Voronoï rendent 18 % sur le diagramme final : les voisinages changent
-peu, et un souvenir faux ne coûte qu'une première passe. C'est le point que la 2D ne pouvait pas
-montrer.
+Même les souvenirs de Voronoï rendent 10 à 12 % sur le diagramme final : les voisinages changent
+peu, et un souvenir faux ne coûte qu'une première passe. Entre deux itérations de Newton, c'est
+la ligne `0.9 W` ou mieux. C'est le point que la 2D ne pouvait pas montrer.
 
 ## 11.3 Dans la boucle de Newton
 
 `newton --3d --memo` : les facettes du dernier diagramme **accepté** (que Newton a de toute façon,
 pour le laplacien) deviennent la mémoire du suivant, essais compris — `memorise` coûte 10 ms par
 diagramme. Mêmes itérations, mêmes diagrammes, mêmes résidus au chiffre près (l'ordre des coupes
-n'a pas changé les arrondis, contrairement aux lignes en 2D) :
+n'a pas changé les arrondis, contrairement aux lignes en 2D) ; machine seule (`job -b`) :
 
 | n = 10⁵, AMG RS+GS | diagrammes | total |
 |---|---|---|
-| uniforme, 9 diagrammes | 2.92 → **2.07 s (−29 %)** | 7.08 → 6.30 s (−11 %) |
-| plans, 27 diagrammes | 11.8 → **8.8 s (−25 %)** | 21.8 → 19.1 s (−12 %) |
+| uniforme, 9 diagrammes | 2.06 → **1.45 s (−30 %)** | 5.78 → 5.23 s (−10 %) |
+| plans, 27 diagrammes | 8.17 → **6.40 s (−22 %)** | 17.1 → 15.6 s (−9 %) |
 
 Le quart du diagramme 3D, pour soixante octets par germe et une passe sur les facettes. C'est
 le contraire de la conclusion 2D, pour une raison qu'on peut nommer : ce que la mémoire épargne
@@ -1147,8 +1150,7 @@ pour *confirmer* qu'il n'y a personne d'autre — et ça, la mémoire ne peut pa
 ## 11.4 Comment se souvenir : les rangs, les feuilles et leurs bits, ou la frontière
 
 Trois formes de mémoire, mesurées sur les mêmes souvenirs exacts (uniforme 10⁵, 8 fils, minimum
-de 10 ; la machine était partagée — d'où le lanceur `scripts/job` à la racine, `-b` pour un
-benchmark seul sur la machine — les *comptes* sont exacts, les temps indicatifs) :
+de 10, machine seule) :
 
 * **A. les rangs des voisins** (ce que § 11.1 mesurait) : une liste triée par germe, proposée
   d'abord, et au parcours un octet par rang, « déjà proposé », posé et retiré par la cellule.
@@ -1169,19 +1171,20 @@ benchmark seul sur la machine — les *comptes* sont exacts, les temps indicatif
 
 | par cellule | plans proposés | boîtes testées | coupes effectives | temps |
 |---|---|---|---|---|
-| sans mémoire | 87 | 95 | 30 | 0.232 s |
-| A. rangs | 68 | 84 | 15 | 0.170 s (−27 %) |
-| B. feuilles + bits, tout testé | 68 | 84 | 15 | 0.183 s (−21 %) |
-| B. feuilles testées, pas les nœuds | 68 | 50 | 15 | 0.209 s (−10 %) |
-| B. rien de connu n'est testé | 87 | 35 | 15 | 0.213 s (−8 %) |
-| **C. la frontière, sans pile** | 68 | **48** | 15 | **0.164 s (−29 %)** |
-| les voisins seuls | 15 | 0 | 15 | 0.086 s (−63 %) |
+| sans mémoire | 87 | 95 | 30 | 0.174 s |
+| A. rangs | 68 | 84 | 15 | 0.112 s (−35 %) |
+| B. feuilles + bits, tout testé | 68 | 84 | 15 | 0.125 s (−28 %) |
+| B. feuilles testées, pas les nœuds | 68 | 50 | 15 | 0.140 s (−20 %) |
+| B. rien de connu n'est testé | 87 | 35 | 15 | 0.141 s (−19 %) |
+| **C. la frontière, sans pile** | 68 | **48** | 15 | **0.109 s (−38 %)** |
+| les voisins seuls | 15 | 0 | 15 | 0.058 s (−67 %) |
 
-Sur les plans / Voronoï : A −33 %, C −36 % ; sur les plans / volumes égaux (Laguerre, 43 feuilles
-entrées et 85 nœuds rejetés par cellule, 7.5 % de frontières au-delà des tampons de 64 / 256 et
-donc sans souvenir) : A −13 %, C −18 %. Avec des souvenirs périmés (`0.9 W` → `W`) : A −27 %,
-C −38 % ; depuis Voronoï : les deux −24 % (20 coupes effectives au lieu de 32, 209 boîtes
-testées au lieu de 251 pour C).
+Sur les plans / Voronoï : A −36 %, C −39 % ; à 10⁶ germes : A −38 %, C −39 % ; sur les plans /
+volumes égaux (Laguerre, 43 feuilles entrées et 85 nœuds rejetés par cellule, 7.5 % de frontières
+au-delà des tampons de 64 / 256 et donc sans souvenir) : A −18 %, **C −24 %**. Avec des souvenirs
+périmés (`0.9 W` → `W`) : A −18 %, C −24 % ; depuis Voronoï : A −12 %, C −10 % (20 coupes
+effectives au lieu de 32 ; 209 boîtes testées au lieu de 251 pour C — la frontière d'hier ne
+colle plus, on redescend).
 
 Ce que les colonnes disent. **Ne pas tester les feuilles qu'on sait entrées coûte** : avec la
 cellule finale dès le départ, 3 des 14.5 feuilles entrées hier sont *rejetées* aujourd'hui, et
@@ -1193,8 +1196,9 @@ rejets, et ce sont précisément ceux que l'exactitude oblige à refaire : une b
 couper aujourd'hui. **C les épargne sans les chercher** : la frontière *est* la liste de ce qu'il
 faut tester, 14.5 feuilles et 33.6 rejetés, et le reste de l'arbre n'existe plus pour cette
 cellule. C'est la forme la plus courte en travail (48 tests contre 84) ; elle coûte 48 entrées
-de 4 octets plus 14.5 masques par germe (~370 octets contre 60 pour A), et le gain sur A, de 3 à
-10 points selon le cas, est celui des tests d'ancêtres — les moins chers.
+de 4 octets plus 14.5 masques par germe (~370 octets contre 60 pour A), et le gain sur A, de 1 à
+6 points selon le cas (le plus sur le cas Laguerre, où la frontière compte 128 nœuds), est celui
+des tests d'ancêtres — les moins chers.
 
 (Ce que la 2D disait déjà : le masque limité à la feuille du germe ne peut rien gagner, la descente
 l'atteint en premier de toute façon. Ici la mémoire couvre *toutes* les feuilles entrées, et ce
@@ -1213,3 +1217,12 @@ Effacée quand les positions changent. Mesuré (`./run bench "test_PowerDiagram:
 0.450 → **0.337 s (−25 %)**, Voronoï 0.436 → **0.307 s (−30 %)** ; en 2D à 10⁶ la mémoire *coûte*
 +13 % (0.227 → 0.256 s : la coupe d'un polygone en registres ne vaut pas la pré-passe). D'où le
 défaut : `32` en 3D et au-delà, `0` en 2D.
+
+## 11.6 Comment ces chiffres sont pris
+
+`job -b -- <cmd>` (`scripts/job` à la racine du dépôt, `~/.local/bin/job` sur la machine) : le
+banc attend que les travaux en cours finissent, tient les nouveaux à la porte, et tourne seul.
+Les premiers chiffres de § 11 avaient été pris pendant que trois sessions et des compilations se
+partageaient les seize cœurs : le *sans mémoire* de l'uniforme y valait 0.232 à 0.305 s contre
+0.174 s seul, et les écarts relatifs bougeaient de ±15 %. Les *comptes* (plans, boîtes, coupes)
+ne dépendent pas de la charge ; les temps, si. Ne jamais chronométrer hors d'un `job -b`.
