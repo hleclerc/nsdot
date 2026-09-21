@@ -1,0 +1,1397 @@
+newton;densite sigma 0.02 s 0.5;2D;0;1;0.180;4.450341e+00;7.168240e-04
+newton;densite sigma 0.02 s 0.5;2D;1;4;0.941;3.380126e+00;5.330461e-04
+newton;densite sigma 0.02 s 0.5;2D;2;5;1.437;5.933526e-01;8.409003e-05
+newton;densite sigma 0.02 s 0.5;2D;3;6;1.986;1.026058e-01;2.748314e-06
+newton;densite sigma 0.02 s 0.5;2D;4;7;2.533;1.497013e-03;1.185367e-08
+newton;densite sigma 0.02 s 0.5;2D;5;8;3.045;4.253858e-07;2.243079e-12
+newton;densite sigma 0.02 s 0.353557;2D;0;9;3.192;3.738596e-01;1.914509e-04
+newton;densite sigma 0.02 s 0.353557;2D;1;10;3.593;6.171952e-02;1.288657e-05
+newton;densite sigma 0.02 s 0.353557;2D;2;11;4.115;7.794765e-04;1.018720e-07
+newton;densite sigma 0.02 s 0.353557;2D;3;12;4.626;1.623956e-07;1.453445e-11
+newton;densite sigma 0.02 s 0.250005;2D;0;13;4.779;4.195272e-01;2.420948e-04
+newton;densite sigma 0.02 s 0.250005;2D;1;14;5.286;7.854636e-02;1.858224e-05
+newton;densite sigma 0.02 s 0.250005;2D;2;15;5.885;1.536870e-03;2.163371e-07
+newton;densite sigma 0.02 s 0.250005;2D;3;16;6.477;6.789681e-07;6.761400e-11
+newton;densite sigma 0.02 s 0.176782;2D;0;17;6.756;6.066013e-01;4.729511e-04
+newton;densite sigma 0.02 s 0.176782;2D;1;18;7.378;2.867600e-01;5.768641e-05
+newton;densite sigma 0.02 s 0.176782;2D;2;19;7.918;1.977706e-02;1.649963e-06
+newton;densite sigma 0.02 s 0.176782;2D;3;20;8.450;1.181015e-04;6.109562e-09
+newton;densite sigma 0.02 s 0.176782;2D;4;21;9.138;4.223788e-09;1.618762e-13
+newton;densite sigma 0.02 s 0.125005;2D;0;22;9.302;8.687098e-01;1.093416e-03
+newton;densite sigma 0.02 s 0.125005;2D;1;23;9.858;4.947263e+00;5.211974e-04
+newton;densite sigma 0.02 s 0.125005;2D;2;24;10.583;1.452116e+00;9.594136e-05
+newton;densite sigma 0.02 s 0.125005;2D;3;25;11.310;3.104587e-01;1.265801e-05
+newton;densite sigma 0.02 s 0.125005;2D;4;26;12.021;2.661960e-02;7.768082e-07
+newton;densite sigma 0.02 s 0.125005;2D;5;27;12.622;2.316779e-04;4.971903e-09
+newton;densite sigma 0.02 s 0.125005;2D;6;28;13.106;1.565053e-08;2.381297e-13
+newton;densite sigma 0.02 s 0.0883926;2D;0;29;13.319;9.791039e-01;1.593207e-03
+newton;densite sigma 0.02 s 0.0883926;2D;1;33;14.387;8.510418e-01;1.385760e-03
+newton;densite sigma 0.02 s 0.0883926;2D;2;35;15.278;5.610827e-01;6.461983e-04
+newton;densite sigma 0.02 s 0.0883926;2D;3;36;15.897;1.783759e-01;5.686751e-05
+newton;densite sigma 0.02 s 0.0883926;2D;4;37;16.518;6.886909e-03;5.462149e-07
+newton;densite sigma 0.02 s 0.0883926;2D;5;38;17.060;1.357867e-05;2.819038e-10
+newton;densite sigma 0.02 s 0.0883926;2D;6;39;17.562;2.285826e-10;9.381593e-15
+newton;densite sigma 0.02 s 0.0625036;2D;0;40;17.716;9.975289e-01;1.693752e-03
+newton;densite sigma 0.02 s 0.0625036;2D;1;48;19.321;9.885348e-01;1.680456e-03
+newton;densite sigma 0.02 s 0.0625036;2D;2;53;20.690;9.312104e-01;1.571698e-03
+newton;densite sigma 0.02 s 0.0625036;2D;3;57;22.009;7.773655e-01;1.365236e-03
+newton;densite sigma 0.02 s 0.0625036;2D;4;60;22.851;6.827853e-01;1.003744e-03
+newton;densite sigma 0.02 s 0.0625036;2D;5;62;23.507;1.601139e+00;4.796579e-04
+newton;densite sigma 0.02 s 0.0625036;2D;6;63;23.966;2.770230e+00;5.038399e-05
+newton;densite sigma 0.02 s 0.0625036;2D;7;66;24.759;1.747146e+00;3.549936e-05
+newton;densite sigma 0.02 s 0.0625036;2D;8;67;25.241;3.319662e-01;3.950706e-06
+newton;densite sigma 0.02 s 0.0625036;2D;9;68;25.893;2.955780e-02;3.496280e-07
+newton;densite sigma 0.02 s 0.0625036;2D;10;69;26.489;2.980358e-04;3.677448e-09
+newton;densite sigma 0.02 s 0.0625036;2D;11;70;27.084;3.029862e-08;3.760158e-13
+newton;densite sigma 0.02 s 0.0441971;2D;0;71;27.365;9.987041e-01;1.606659e-03
+newton;densite sigma 0.02 s 0.0441971;2D;1;81;29.411;9.948480e-01;1.603517e-03
+newton;densite sigma 0.02 s 0.0441971;2D;2;89;31.244;9.947482e-01;1.590927e-03
+newton;densite sigma 0.02 s 0.0441971;2D;3;96;32.956;9.674958e-01;1.565837e-03
+newton;densite sigma 0.02 s 0.0441971;2D;4;103;34.770;9.474797e-01;1.541166e-03
+newton;densite sigma 0.02 s 0.0441971;2D;5;110;36.636;9.494916e-01;1.516901e-03
+newton;densite sigma 0.02 s 0.0441971;2D;6;117;38.567;9.344258e-01;1.493031e-03
+newton;densite sigma 0.02 s 0.0441971;2D;7;123;40.277;9.001695e-01;1.445750e-03
+newton;densite sigma 0.02 s 0.0441971;2D;8;129;42.055;8.681056e-01;1.400040e-03
+newton;densite sigma 0.02 s 0.0441971;2D;9;134;43.561;9.555999e-01;1.310695e-03
+newton;densite sigma 0.02 s 0.0441971;2D;10;138;44.729;9.744228e-01;1.141317e-03
+newton;densite sigma 0.02 s 0.0441971;2D;11;142;45.844;7.404106e-01;9.953789e-04
+newton;densite sigma 0.02 s 0.0441971;2D;12;145;46.770;8.607647e-01;7.385230e-04
+newton;densite sigma 0.02 s 0.0441971;2D;13;148;47.707;5.636785e-01;5.507171e-04
+newton;densite sigma 0.02 s 0.0441971;2D;14;152;48.825;4.884398e-01;4.814967e-04
+newton;densite sigma 0.02 s 0.0441971;2D;15;154;49.513;2.203396e+00;2.386674e-04
+newton;densite sigma 0.02 s 0.0441971;2D;16;157;50.389;1.937021e+00;1.793864e-04
+newton;densite sigma 0.02 s 0.0441971;2D;17;158;50.938;1.098518e+00;1.567086e-05
+newton;densite sigma 0.02 s 0.0441971;2D;18;159;51.413;1.357699e-01;2.328685e-06
+newton;densite sigma 0.02 s 0.0441971;2D;19;160;51.878;1.785573e-02;2.213706e-07
+newton;densite sigma 0.02 s 0.0441971;2D;20;161;52.255;4.606902e-04;5.697127e-09
+newton;densite sigma 0.02 s 0.0441971;2D;21;162;52.643;3.317819e-07;4.101871e-12
+newton;densite sigma 0.02 s 0.0312524;2D;0;163;52.864;9.976307e-01;1.445802e-03
+newton;densite sigma 0.02 s 0.0312524;2D;1;171;54.319;9.960888e-01;1.434457e-03
+newton;densite sigma 0.02 s 0.0312524;2D;2;179;56.035;9.836760e-01;1.423205e-03
+newton;densite sigma 0.02 s 0.0312524;2D;3;186;57.430;9.954611e-01;1.400791e-03
+newton;densite sigma 0.02 s 0.0312524;2D;4;192;58.786;9.971034e-01;1.356381e-03
+newton;densite sigma 0.02 s 0.0312524;2D;5;198;60.212;9.250062e-01;1.313462e-03
+newton;densite sigma 0.02 s 0.0312524;2D;6;203;61.526;8.726411e-01;1.229544e-03
+newton;densite sigma 0.02 s 0.0312524;2D;7;208;62.632;8.208948e-01;1.151338e-03
+newton;densite sigma 0.02 s 0.0312524;2D;8;213;63.782;7.973930e-01;1.078323e-03
+newton;densite sigma 0.02 s 0.0312524;2D;9;217;64.817;9.790425e-01;9.402421e-04
+newton;densite sigma 0.02 s 0.0312524;2D;10;223;66.238;9.354533e-01;9.107275e-04
+newton;densite sigma 0.02 s 0.0312524;2D;11;227;67.240;8.479947e-01;7.950087e-04
+newton;densite sigma 0.02 s 0.0312524;2D;12;230;68.039;8.190577e-01;5.913866e-04
+newton;densite sigma 0.02 s 0.0312524;2D;13;233;68.813;5.289401e-01;4.414655e-04
+newton;densite sigma 0.02 s 0.0312524;2D;14;236;69.585;8.390769e-01;3.303019e-04
+newton;densite sigma 0.02 s 0.0312524;2D;15;237;70.102;1.000435e+00;3.866775e-05
+newton;densite sigma 0.02 s 0.0312524;2D;16;238;70.598;2.298973e-01;6.031530e-06
+newton;densite sigma 0.02 s 0.0312524;2D;17;239;71.056;2.464105e-02;4.526276e-07
+newton;densite sigma 0.02 s 0.0312524;2D;18;240;71.569;3.448221e-04;4.965047e-09
+newton;densite sigma 0.02 s 0.0312524;2D;19;241;72.074;6.728157e-08;8.049913e-13
+newton;densite sigma 0.02 s 0.022099;2D;0;242;72.227;9.935468e-01;1.217658e-03
+newton;densite sigma 0.02 s 0.022099;2D;1;249;73.778;9.758050e-01;1.198497e-03
+newton;densite sigma 0.02 s 0.022099;2D;2;256;75.400;9.566754e-01;1.179650e-03
+newton;densite sigma 0.02 s 0.022099;2D;3;262;76.975;9.506552e-01;1.142341e-03
+newton;densite sigma 0.02 s 0.022099;2D;4;268;78.511;9.108072e-01;1.106263e-03
+newton;densite sigma 0.02 s 0.022099;2D;5;274;80.071;8.838667e-01;1.071363e-03
+newton;densite sigma 0.02 s 0.022099;2D;6;278;81.170;9.782796e-01;9.329052e-04
+newton;densite sigma 0.02 s 0.022099;2D;7;281;82.193;1.131615e+00;6.890776e-04
+newton;densite sigma 0.02 s 0.022099;2D;8;285;83.339;9.995944e-01;6.019734e-04
+newton;densite sigma 0.02 s 0.022099;2D;9;288;84.281;8.746707e-01;4.490736e-04
+newton;densite sigma 0.02 s 0.022099;2D;10;291;85.220;7.314125e-01;3.355787e-04
+newton;densite sigma 0.02 s 0.022099;2D;11;293;85.917;8.801348e-01;1.661426e-04
+newton;densite sigma 0.02 s 0.022099;2D;12;294;86.513;7.605232e-01;1.357770e-05
+newton;densite sigma 0.02 s 0.022099;2D;13;295;87.112;4.062692e-01;5.264625e-06
+newton;densite sigma 0.02 s 0.022099;2D;14;296;87.573;5.140146e-02;6.225101e-07
+newton;densite sigma 0.02 s 0.022099;2D;15;297;88.102;2.068111e-03;2.468421e-08
+newton;densite sigma 0.02 s 0.022099;2D;16;298;88.515;3.478703e-06;4.181608e-11
+newton;densite sigma 0.02 s 0.022099;2D;17;299;88.897;1.432068e-09;3.448350e-14
+newton;densite sigma 0.02 s 0.0156265;2D;0;300;89.091;9.802866e-01;9.421642e-04
+newton;densite sigma 0.02 s 0.0156265;2D;1;305;90.322;9.451632e-01;8.820687e-04
+newton;densite sigma 0.02 s 0.0156265;2D;2;310;91.696;8.730303e-01;8.260411e-04
+newton;densite sigma 0.02 s 0.0156265;2D;3;316;93.303;8.440385e-01;8.000517e-04
+newton;densite sigma 0.02 s 0.0156265;2D;4;321;94.762;7.854518e-01;7.494196e-04
+newton;densite sigma 0.02 s 0.0156265;2D;5;324;95.730;7.817498e-01;5.542411e-04
+newton;densite sigma 0.02 s 0.0156265;2D;6;329;97.040;7.276176e-01;5.193891e-04
+newton;densite sigma 0.02 s 0.0156265;2D;7;332;97.995;4.936303e-01;3.868944e-04
+newton;densite sigma 0.02 s 0.0156265;2D;8;335;98.913;5.096217e-01;2.889754e-04
+newton;densite sigma 0.02 s 0.0156265;2D;9;338;99.817;6.057163e-01;2.162723e-04
+newton;densite sigma 0.02 s 0.0156265;2D;10;341;100.776;4.322220e-01;1.619234e-04
+newton;densite sigma 0.02 s 0.0156265;2D;11;342;101.366;5.440393e-01;1.284135e-05
+newton;densite sigma 0.02 s 0.0156265;2D;12;343;101.820;1.493181e-01;2.255678e-06
+newton;densite sigma 0.02 s 0.0156265;2D;13;344;102.302;1.069132e-02;1.657102e-07
+newton;densite sigma 0.02 s 0.0156265;2D;14;345;102.857;1.314030e-04;1.852204e-09
+newton;densite sigma 0.02 s 0.0156265;2D;15;346;103.186;3.173282e-08;4.231342e-13
+newton;densite sigma 0.02 s 0.0110497;2D;0;347;103.368;9.343422e-01;6.624678e-04
+newton;densite sigma 0.02 s 0.0110497;2D;1;351;104.262;8.320202e-01;5.773731e-04
+newton;densite sigma 0.02 s 0.0110497;2D;2;356;105.814;8.772273e-01;5.409509e-04
+newton;densite sigma 0.02 s 0.0110497;2D;3;359;106.826;5.208532e-01;4.011285e-04
+newton;densite sigma 0.02 s 0.0110497;2D;4;362;107.849;5.278765e-01;2.989454e-04
+newton;densite sigma 0.02 s 0.0110497;2D;5;365;108.824;3.819904e-01;2.232927e-04
+newton;densite sigma 0.02 s 0.0110497;2D;6;367;109.574;2.653945e-01;1.099040e-04
+newton;densite sigma 0.02 s 0.0110497;2D;7;369;110.330;2.252079e-01;5.470866e-05
+newton;densite sigma 0.02 s 0.0110497;2D;8;370;110.814;3.755107e-02;9.807397e-07
+newton;densite sigma 0.02 s 0.0110497;2D;9;371;111.419;8.550483e-04;1.169532e-08
+newton;densite sigma 0.02 s 0.0110497;2D;10;372;111.985;3.473596e-07;4.898498e-12
+newton;densite sigma 0.02 s 0.0078134;2D;0;373;112.198;8.153178e-01;4.232910e-04
+newton;densite sigma 0.02 s 0.0078134;2D;1;377;113.390;6.822638e-01;3.694851e-04
+newton;densite sigma 0.02 s 0.0078134;2D;2;379;114.192;4.730395e-01;1.759865e-04
+newton;densite sigma 0.02 s 0.0078134;2D;3;380;114.805;5.938521e-01;1.350010e-05
+newton;densite sigma 0.02 s 0.0078134;2D;4;381;115.272;1.043386e-01;1.339963e-06
+newton;densite sigma 0.02 s 0.0078134;2D;5;382;115.906;5.088917e-03;5.786480e-08
+newton;densite sigma 0.02 s 0.0078134;2D;6;383;116.245;1.322771e-05;1.460128e-10
+newton;densite sigma 0.02 s 0.0078134;2D;7;384;116.722;5.035164e-10;4.028368e-14
+newton;densite sigma 0.02 s 0.00552496;2D;0;385;116.955;6.172089e-01;2.486305e-04
+newton;densite sigma 0.02 s 0.00552496;2D;1;386;117.422;1.845456e+00;6.133920e-05
+newton;densite sigma 0.02 s 0.00552496;2D;2;387;118.038;5.418904e-01;1.158111e-05
+newton;densite sigma 0.02 s 0.00552496;2D;3;388;118.643;1.007593e-01;1.926595e-06
+newton;densite sigma 0.02 s 0.00552496;2D;4;389;119.211;6.029481e-03;8.584075e-08
+newton;densite sigma 0.02 s 0.00552496;2D;5;390;119.763;2.442919e-05;2.867669e-10
+newton;densite sigma 0.02 s 0.00552496;2D;6;391;120.196;1.327299e-09;4.693262e-14
+newton;densite sigma 0.02 s 0;2D;0;392;120.437;6.702475e-01;2.755027e-04
+newton;densite sigma 0.02 s 0;2D;1;395;121.388;5.643425e-01;2.051511e-04
+newton;densite sigma 0.02 s 0;2D;2;396;121.990;1.449711e+00;3.412540e-05
+newton;densite sigma 0.02 s 0;2D;3;397;122.526;3.180627e-01;5.015121e-06
+newton;densite sigma 0.02 s 0;2D;4;398;123.062;2.973296e-02;3.633866e-07
+newton;densite sigma 0.02 s 0;2D;5;399;123.609;3.363590e-04;3.855556e-09
+newton;densite sigma 0.02 s 0;2D;6;400;124.164;4.430233e-08;5.080771e-13
+newton essai-limites;densite sigma 0.02 s 0.5;2D;0;1;0.247;4.450341e+00;7.168240e-04
+newton essai-limites;densite sigma 0.02 s 0.5;2D;1;3;1.145;2.890358e+00;4.418934e-04
+newton essai-limites;densite sigma 0.02 s 0.5;2D;2;4;1.754;1.156348e+00;5.140475e-05
+newton essai-limites;densite sigma 0.02 s 0.5;2D;3;5;2.413;1.850531e+00;8.899895e-06
+newton essai-limites;densite sigma 0.02 s 0.5;2D;4;6;3.073;6.636458e-01;3.721580e-06
+newton essai-limites;densite sigma 0.02 s 0.5;2D;5;7;3.588;2.815749e-01;1.366758e-06
+newton essai-limites;densite sigma 0.02 s 0.5;2D;6;8;4.329;5.056315e-03;2.473308e-08
+newton essai-limites;densite sigma 0.02 s 0.5;2D;7;9;4.891;6.369071e-06;3.273530e-11
+newton essai-limites;densite sigma 0.02 s 0.5;2D;8;10;5.384;1.632964e-10;1.075608e-15
+newton essai-limites;densite sigma 0.02 s 0.353557;2D;0;11;5.524;3.738596e-01;1.914509e-04
+newton essai-limites;densite sigma 0.02 s 0.353557;2D;1;12;6.015;6.171952e-02;1.288657e-05
+newton essai-limites;densite sigma 0.02 s 0.353557;2D;2;13;6.613;7.794765e-04;1.018720e-07
+newton essai-limites;densite sigma 0.02 s 0.353557;2D;3;14;7.123;1.623965e-07;1.453444e-11
+newton essai-limites;densite sigma 0.02 s 0.250005;2D;0;15;7.341;4.195272e-01;2.420948e-04
+newton essai-limites;densite sigma 0.02 s 0.250005;2D;1;16;8.090;7.854636e-02;1.858224e-05
+newton essai-limites;densite sigma 0.02 s 0.250005;2D;2;17;8.890;1.536870e-03;2.163371e-07
+newton essai-limites;densite sigma 0.02 s 0.250005;2D;3;18;9.639;6.789651e-07;6.761400e-11
+newton essai-limites;densite sigma 0.02 s 0.176782;2D;0;19;9.800;6.066013e-01;4.729511e-04
+newton essai-limites;densite sigma 0.02 s 0.176782;2D;1;20;10.606;2.867600e-01;5.768641e-05
+newton essai-limites;densite sigma 0.02 s 0.176782;2D;2;21;11.329;1.977706e-02;1.649963e-06
+newton essai-limites;densite sigma 0.02 s 0.176782;2D;3;22;12.112;1.181015e-04;6.109562e-09
+newton essai-limites;densite sigma 0.02 s 0.176782;2D;4;23;12.834;4.223835e-09;1.618686e-13
+newton essai-limites;densite sigma 0.02 s 0.125005;2D;0;24;13.088;8.687098e-01;1.093416e-03
+newton essai-limites;densite sigma 0.02 s 0.125005;2D;1;25;13.753;4.947263e+00;5.211974e-04
+newton essai-limites;densite sigma 0.02 s 0.125005;2D;2;26;14.427;1.452116e+00;9.594136e-05
+newton essai-limites;densite sigma 0.02 s 0.125005;2D;3;27;15.091;3.104587e-01;1.265801e-05
+newton essai-limites;densite sigma 0.02 s 0.125005;2D;4;28;15.766;2.661960e-02;7.768082e-07
+newton essai-limites;densite sigma 0.02 s 0.125005;2D;5;29;16.437;2.316779e-04;4.971903e-09
+newton essai-limites;densite sigma 0.02 s 0.125005;2D;6;30;17.012;1.565108e-08;2.381383e-13
+newton essai-limites;densite sigma 0.02 s 0.0883926;2D;0;31;17.214;9.791039e-01;1.593207e-03
+newton essai-limites;densite sigma 0.02 s 0.0883926;2D;1;33;18.041;3.556768e+00;1.329284e-03
+newton essai-limites;densite sigma 0.02 s 0.0883926;2D;2;35;19.013;1.938576e+00;6.212386e-04
+newton essai-limites;densite sigma 0.02 s 0.0883926;2D;3;36;19.705;4.581952e-01;5.258511e-05
+newton essai-limites;densite sigma 0.02 s 0.0883926;2D;4;37;20.365;5.129227e-02;7.568737e-07
+newton essai-limites;densite sigma 0.02 s 0.0883926;2D;5;38;21.025;7.777313e-04;8.873470e-09
+newton essai-limites;densite sigma 0.02 s 0.0883926;2D;6;39;21.688;1.895651e-07;2.192159e-12
+newton essai-limites;densite sigma 0.02 s 0.0625036;2D;0;40;21.972;9.975289e-01;1.693752e-03
+newton essai-limites;densite sigma 0.02 s 0.0625036;2D;1;42;22.992;9.938496e-01;1.676512e-03
+newton essai-limites;densite sigma 0.02 s 0.0625036;2D;2;44;24.164;9.566820e-01;1.521919e-03
+newton essai-limites;densite sigma 0.02 s 0.0625036;2D;3;46;25.225;9.501304e-01;1.191558e-03
+newton essai-limites;densite sigma 0.02 s 0.0625036;2D;4;48;26.262;1.220339e+00;6.911965e-04
+newton essai-limites;densite sigma 0.02 s 0.0625036;2D;5;50;27.274;1.386384e+00;2.040575e-04
+newton essai-limites;densite sigma 0.02 s 0.0625036;2D;6;51;28.016;5.283037e-01;9.362975e-06
+newton essai-limites;densite sigma 0.02 s 0.0625036;2D;7;52;28.749;6.383621e-02;8.474077e-07
+newton essai-limites;densite sigma 0.02 s 0.0625036;2D;8;53;29.476;1.337721e-03;1.749277e-08
+newton essai-limites;densite sigma 0.02 s 0.0625036;2D;9;54;30.062;6.224610e-07;8.123585e-12
+newton essai-limites;densite sigma 0.02 s 0.0441971;2D;0;55;30.313;9.987041e-01;1.606659e-03
+newton essai-limites;densite sigma 0.02 s 0.0441971;2D;1;57;31.262;9.975886e-01;1.602668e-03
+newton essai-limites;densite sigma 0.02 s 0.0441971;2D;2;59;32.353;9.943877e-01;1.590664e-03
+newton essai-limites;densite sigma 0.02 s 0.0441971;2D;3;61;33.425;9.907125e-01;1.545329e-03
+newton essai-limites;densite sigma 0.02 s 0.0441971;2D;4;63;34.466;9.746770e-01;1.494195e-03
+newton essai-limites;densite sigma 0.02 s 0.0441971;2D;5;65;35.466;9.585235e-01;1.446209e-03
+newton essai-limites;densite sigma 0.02 s 0.0441971;2D;6;67;36.391;9.125520e-01;1.338503e-03
+newton essai-limites;densite sigma 0.02 s 0.0441971;2D;7;69;37.337;9.240765e-01;1.194475e-03
+newton essai-limites;densite sigma 0.02 s 0.0441971;2D;8;71;38.265;9.374789e-01;1.059294e-03
+newton essai-limites;densite sigma 0.02 s 0.0441971;2D;9;73;39.223;8.635329e-01;9.945983e-04
+newton essai-limites;densite sigma 0.02 s 0.0441971;2D;10;75;40.160;9.333580e-01;7.269538e-04
+newton essai-limites;densite sigma 0.02 s 0.0441971;2D;11;77;41.088;8.210250e-01;4.710503e-04
+newton essai-limites;densite sigma 0.02 s 0.0441971;2D;12;79;42.014;1.183652e+00;2.807884e-04
+newton essai-limites;densite sigma 0.02 s 0.0441971;2D;13;81;42.952;9.121536e-01;2.073776e-04
+newton essai-limites;densite sigma 0.02 s 0.0441971;2D;14;82;43.611;7.824780e-01;1.501141e-05
+newton essai-limites;densite sigma 0.02 s 0.0441971;2D;15;83;44.240;1.721874e-01;2.640963e-06
+newton essai-limites;densite sigma 0.02 s 0.0441971;2D;16;84;44.851;2.586921e-02;3.193329e-07
+newton essai-limites;densite sigma 0.02 s 0.0441971;2D;17;85;45.512;9.397667e-04;1.162548e-08
+newton essai-limites;densite sigma 0.02 s 0.0441971;2D;18;86;46.006;1.379740e-06;1.705896e-11
+newton essai-limites;densite sigma 0.02 s 0.0441971;2D;19;87;46.537;3.834497e-10;1.781017e-14
+newton essai-limites;densite sigma 0.02 s 0.0312524;2D;0;88;46.797;9.976307e-01;1.445802e-03
+newton essai-limites;densite sigma 0.02 s 0.0312524;2D;1;90;47.706;9.929021e-01;1.435087e-03
+newton essai-limites;densite sigma 0.02 s 0.0312524;2D;2;92;48.746;9.816518e-01;1.416292e-03
+newton essai-limites;densite sigma 0.02 s 0.0312524;2D;3;94;49.735;9.836914e-01;1.383011e-03
+newton essai-limites;densite sigma 0.02 s 0.0312524;2D;4;96;50.703;9.619398e-01;1.340298e-03
+newton essai-limites;densite sigma 0.02 s 0.0312524;2D;5;98;51.630;9.306918e-01;1.235866e-03
+newton essai-limites;densite sigma 0.02 s 0.0312524;2D;6;100;52.559;9.340009e-01;1.113451e-03
+newton essai-limites;densite sigma 0.02 s 0.0312524;2D;7;102;53.417;9.348222e-01;1.024103e-03
+newton essai-limites;densite sigma 0.02 s 0.0312524;2D;8;104;54.329;9.436257e-01;9.219507e-04
+newton essai-limites;densite sigma 0.02 s 0.0312524;2D;9;106;55.247;9.145094e-01;8.117192e-04
+newton essai-limites;densite sigma 0.02 s 0.0312524;2D;10;108;56.154;9.147830e-01;5.945614e-04
+newton essai-limites;densite sigma 0.02 s 0.0312524;2D;11;110;57.066;7.118041e-01;4.065030e-04
+newton essai-limites;densite sigma 0.02 s 0.0312524;2D;12;112;58.000;1.282335e+00;2.686407e-04
+newton essai-limites;densite sigma 0.02 s 0.0312524;2D;13;113;58.647;8.187750e-01;2.374183e-05
+newton essai-limites;densite sigma 0.02 s 0.0312524;2D;14;114;59.286;1.342972e-01;2.820913e-06
+newton essai-limites;densite sigma 0.02 s 0.0312524;2D;15;115;59.909;9.817842e-03;1.580480e-07
+newton essai-limites;densite sigma 0.02 s 0.0312524;2D;16;116;60.524;9.860906e-05;1.303354e-09
+newton essai-limites;densite sigma 0.02 s 0.0312524;2D;17;117;61.096;1.019061e-08;1.333355e-13
+newton essai-limites;densite sigma 0.02 s 0.022099;2D;0;118;61.376;9.935468e-01;1.217658e-03
+newton essai-limites;densite sigma 0.02 s 0.022099;2D;1;120;62.304;9.895162e-01;1.191469e-03
+newton essai-limites;densite sigma 0.02 s 0.022099;2D;2;122;63.335;9.820961e-01;1.155148e-03
+newton essai-limites;densite sigma 0.02 s 0.022099;2D;3;124;64.325;9.083464e-01;1.090180e-03
+newton essai-limites;densite sigma 0.02 s 0.022099;2D;4;126;65.267;9.653883e-01;9.735231e-04
+newton essai-limites;densite sigma 0.02 s 0.022099;2D;5;128;66.230;9.618066e-01;8.566933e-04
+newton essai-limites;densite sigma 0.02 s 0.022099;2D;6;130;67.193;9.452313e-01;6.364883e-04
+newton essai-limites;densite sigma 0.02 s 0.022099;2D;7;132;68.122;9.528447e-01;4.809174e-04
+newton essai-limites;densite sigma 0.02 s 0.022099;2D;8;134;69.081;8.997505e-01;3.141781e-04
+newton essai-limites;densite sigma 0.02 s 0.022099;2D;9;136;70.007;2.200923e+00;2.492379e-04
+newton essai-limites;densite sigma 0.02 s 0.022099;2D;10;137;70.640;2.446812e+00;3.839452e-05
+newton essai-limites;densite sigma 0.02 s 0.022099;2D;11;139;71.670;7.512799e-01;1.707907e-05
+newton essai-limites;densite sigma 0.02 s 0.022099;2D;12;140;72.349;1.919996e-01;3.130913e-06
+newton essai-limites;densite sigma 0.02 s 0.022099;2D;13;141;72.981;1.901921e-02;2.516552e-07
+newton essai-limites;densite sigma 0.02 s 0.022099;2D;14;142;73.682;3.145570e-04;3.760884e-09
+newton essai-limites;densite sigma 0.02 s 0.022099;2D;15;143;74.201;8.207742e-08;9.959088e-13
+newton essai-limites;densite sigma 0.02 s 0.0156265;2D;0;144;74.506;9.802866e-01;9.421642e-04
+newton essai-limites;densite sigma 0.02 s 0.0156265;2D;1;146;75.435;9.626921e-01;8.778652e-04
+newton essai-limites;densite sigma 0.02 s 0.0156265;2D;2;148;76.432;9.012083e-01;8.102504e-04
+newton essai-limites;densite sigma 0.02 s 0.0156265;2D;3;150;77.440;8.836171e-01;7.692103e-04
+newton essai-limites;densite sigma 0.02 s 0.0156265;2D;4;152;78.427;1.495273e+00;5.158154e-04
+newton essai-limites;densite sigma 0.02 s 0.0156265;2D;5;154;79.398;1.370113e+00;4.717808e-04
+newton essai-limites;densite sigma 0.02 s 0.0156265;2D;6;156;80.408;7.956735e-01;2.619238e-04
+newton essai-limites;densite sigma 0.02 s 0.0156265;2D;7;158;81.382;8.576227e-01;1.799754e-04
+newton essai-limites;densite sigma 0.02 s 0.0156265;2D;8;160;82.401;9.762630e-01;1.056258e-04
+newton essai-limites;densite sigma 0.02 s 0.0156265;2D;9;161;83.080;2.853338e-01;6.213162e-06
+newton essai-limites;densite sigma 0.02 s 0.0156265;2D;10;162;83.752;8.481180e-02;1.235218e-06
+newton essai-limites;densite sigma 0.02 s 0.0156265;2D;11;163;84.448;4.111735e-03;6.825011e-08
+newton essai-limites;densite sigma 0.02 s 0.0156265;2D;12;164;85.106;3.212566e-05;4.315648e-10
+newton essai-limites;densite sigma 0.02 s 0.0156265;2D;13;165;85.649;1.873837e-09;4.239934e-14
+newton essai-limites;densite sigma 0.02 s 0.0110497;2D;0;166;85.986;9.343422e-01;6.624678e-04
+newton essai-limites;densite sigma 0.02 s 0.0110497;2D;1;168;86.896;8.886332e-01;5.670278e-04
+newton essai-limites;densite sigma 0.02 s 0.0110497;2D;2;170;87.923;8.840702e-01;5.305427e-04
+newton essai-limites;densite sigma 0.02 s 0.0110497;2D;3;172;88.966;5.813478e-01;4.116887e-04
+newton essai-limites;densite sigma 0.02 s 0.0110497;2D;4;174;90.006;5.133281e-01;2.262541e-04
+newton essai-limites;densite sigma 0.02 s 0.0110497;2D;5;176;91.083;8.110825e-01;4.472506e-05
+newton essai-limites;densite sigma 0.02 s 0.0110497;2D;6;177;91.776;9.006097e-02;2.007654e-06
+newton essai-limites;densite sigma 0.02 s 0.0110497;2D;7;178;92.472;8.027948e-03;1.198482e-07
+newton essai-limites;densite sigma 0.02 s 0.0110497;2D;8;179;93.192;1.065258e-04;1.311210e-09
+newton essai-limites;densite sigma 0.02 s 0.0110497;2D;9;180;93.759;1.881402e-08;2.321193e-13
+newton essai-limites;densite sigma 0.02 s 0.0078134;2D;0;181;94.096;8.153178e-01;4.232910e-04
+newton essai-limites;densite sigma 0.02 s 0.0078134;2D;1;183;95.054;8.074879e-01;3.474890e-04
+newton essai-limites;densite sigma 0.02 s 0.0078134;2D;2;185;96.165;1.287344e+00;6.534471e-05
+newton essai-limites;densite sigma 0.02 s 0.0078134;2D;3;186;96.873;2.597645e-01;5.441252e-06
+newton essai-limites;densite sigma 0.02 s 0.0078134;2D;4;187;97.556;2.337785e-02;3.866174e-07
+newton essai-limites;densite sigma 0.02 s 0.0078134;2D;5;188;98.275;2.507400e-04;3.940280e-09
+newton essai-limites;densite sigma 0.02 s 0.0078134;2D;6;189;98.876;3.022602e-08;5.146273e-13
+newton essai-limites;densite sigma 0.02 s 0.00552496;2D;0;190;99.233;6.172089e-01;2.486305e-04
+newton essai-limites;densite sigma 0.02 s 0.00552496;2D;1;191;99.808;1.845456e+00;6.133920e-05
+newton essai-limites;densite sigma 0.02 s 0.00552496;2D;2;192;100.530;5.418904e-01;1.158111e-05
+newton essai-limites;densite sigma 0.02 s 0.00552496;2D;3;193;101.246;1.007593e-01;1.926595e-06
+newton essai-limites;densite sigma 0.02 s 0.00552496;2D;4;194;101.929;6.029481e-03;8.584076e-08
+newton essai-limites;densite sigma 0.02 s 0.00552496;2D;5;195;102.648;2.442919e-05;2.867669e-10
+newton essai-limites;densite sigma 0.02 s 0.00552496;2D;6;196;103.251;6.399410e-10;4.242223e-14
+newton essai-limites;densite sigma 0.02 s 0;2D;0;197;103.620;6.702475e-01;2.755027e-04
+newton essai-limites;densite sigma 0.02 s 0;2D;1;199;104.549;7.278350e-01;1.938665e-04
+newton essai-limites;densite sigma 0.02 s 0;2D;2;200;105.275;1.012483e+00;2.818477e-05
+newton essai-limites;densite sigma 0.02 s 0;2D;3;201;106.026;2.557144e-01;4.865096e-06
+newton essai-limites;densite sigma 0.02 s 0;2D;4;202;106.768;2.003252e-02;3.027488e-07
+newton essai-limites;densite sigma 0.02 s 0;2D;5;203;107.469;3.769208e-04;5.208453e-09
+newton essai-limites;densite sigma 0.02 s 0;2D;6;204;108.054;1.436275e-07;1.972133e-12
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.5;2D;0;1;0.247;4.450341e+00;7.168240e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.5;2D;1;6;1.890;2.877101e+00;4.393809e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.5;2D;2;7;2.602;9.887999e-01;1.143746e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.5;2D;3;9;3.102;6.082940e-01;6.098786e-05
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.5;2D;4;10;3.836;7.184624e-02;1.937091e-06
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.5;2D;5;11;4.101;1.378298e-02;2.162290e-07
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.5;2D;6;12;4.383;2.717047e-03;2.972918e-08
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.5;2D;7;13;4.684;8.142827e-04;4.688967e-09
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.5;2D;8;14;4.963;1.490932e-04;8.348573e-10
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.5;2D;9;15;5.248;1.687529e-06;2.159337e-11
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.5;2D;10;16;5.504;2.769964e-07;2.791040e-12
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.353557;2D;0;17;5.783;3.738596e-01;1.914509e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.353557;2D;1;18;6.388;6.171952e-02;1.288657e-05
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.353557;2D;2;19;6.652;1.399730e-02;2.067440e-06
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.353557;2D;3;20;6.979;1.633991e-03;1.778755e-07
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.353557;2D;4;21;7.280;3.658111e-04;3.304636e-08
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.353557;2D;5;22;7.598;3.332413e-05;2.068542e-09
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.353557;2D;6;23;7.873;8.814430e-06;4.116149e-10
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.353557;2D;7;24;8.117;7.487412e-07;2.117035e-11
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.250005;2D;0;25;8.302;4.195272e-01;2.420948e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.250005;2D;1;26;9.068;7.854637e-02;1.858225e-05
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.250005;2D;2;27;9.408;2.391693e-02;3.772923e-06
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.250005;2D;3;28;9.646;3.625988e-03;4.641436e-07
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.250005;2D;4;29;9.842;1.019543e-03;9.802179e-08
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.250005;2D;5;30;10.023;1.495727e-04;9.081125e-09
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.250005;2D;6;31;10.214;4.193035e-05;2.056456e-09
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.250005;2D;7;32;10.478;4.757798e-06;1.674735e-10
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.250005;2D;8;33;10.807;1.440209e-06;4.287525e-11
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.250005;2D;9;34;11.001;1.684912e-07;3.844928e-12
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.176782;2D;0;35;11.157;6.066015e-01;4.729512e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.176782;2D;1;36;11.846;2.867605e-01;5.768643e-05
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.176782;2D;2;37;12.176;1.973875e-01;1.952120e-05
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.176782;2D;3;38;12.372;1.262938e-01;5.286073e-06
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.176782;2D;4;39;12.584;8.094332e-02;2.186681e-06
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.176782;2D;5;40;12.776;3.456118e-02;5.812463e-07
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.176782;2D;6;41;13.047;2.476526e-02;3.426937e-07
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.176782;2D;7;42;13.689;7.083159e-05;6.820190e-10
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.176782;2D;8;43;13.880;5.236734e-07;5.331211e-12
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.125005;2D;0;44;14.039;8.687098e-01;1.093416e-03
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.125005;2D;1;45;14.723;4.947263e+00;5.211974e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.125005;2D;2;51;15.916;1.472620e+00;2.780332e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.125005;2D;3;54;17.071;1.776418e+00;8.806100e-05
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.125005;2D;4;61;18.607;8.993793e-01;5.930122e-05
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.125005;2D;5;62;19.163;3.702466e-01;1.931179e-05
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.125005;2D;6;65;19.878;8.203115e-01;1.020682e-05
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.125005;2D;7;66;20.689;7.991599e-01;8.445936e-06
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.125005;2D;8;67;21.512;6.291774e-02;6.841063e-07
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.125005;2D;9;68;21.720;7.803924e-03;8.841251e-08
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.125005;2D;10;69;21.952;5.441553e-04;7.656003e-09
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.125005;2D;11;70;22.174;4.977530e-05;6.751127e-10
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.125005;2D;12;71;22.438;1.251966e-06;1.585737e-11
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.125005;2D;13;72;22.645;1.177616e-07;1.478072e-12
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0883926;2D;0;73;22.806;9.791039e-01;1.593207e-03
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0883926;2D;1;81;25.021;5.415887e+00;1.307142e-03
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0883926;2D;2;83;25.894;2.066791e+00;5.038969e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0883926;2D;3;87;27.221;1.352962e+00;2.114198e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0883926;2D;4;92;28.209;1.121330e+00;1.316434e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0883926;2D;5;93;28.838;5.584544e-01;5.805016e-05
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0883926;2D;6;94;29.088;1.265940e-01;2.035562e-06
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0883926;2D;7;95;29.382;4.802326e-02;6.249267e-07
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0883926;2D;8;96;29.731;1.860677e-02;2.316099e-07
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0883926;2D;9;97;29.937;1.199310e-03;2.524051e-08
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0883926;2D;10;98;30.133;5.499025e-04;9.779480e-09
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0883926;2D;11;99;30.325;1.387519e-04;1.937619e-09
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0883926;2D;12;100;30.546;1.380041e-05;2.820587e-10
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0883926;2D;13;101;30.787;3.157125e-06;4.771350e-11
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0883926;2D;14;102;30.990;2.037008e-07;3.810502e-12
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0625036;2D;0;103;31.183;9.975289e-01;1.693752e-03
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0625036;2D;1;116;34.104;9.986433e-01;1.674600e-03
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0625036;2D;2;123;35.941;9.986632e-01;1.570031e-03
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0625036;2D;3;129;37.565;9.986952e-01;1.485339e-03
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0625036;2D;4;136;39.184;9.899561e-01;1.322968e-03
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0625036;2D;5;141;40.467;1.487336e+00;7.627458e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0625036;2D;6;144;42.029;1.043505e+00;3.029279e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0625036;2D;7;145;42.513;7.328868e-01;6.177839e-05
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0625036;2D;8;146;43.098;1.212423e+00;2.925429e-05
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0625036;2D;9;148;44.182;5.091217e-01;1.065745e-05
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0625036;2D;10;149;44.493;1.316609e+00;2.267067e-05
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0625036;2D;11;150;45.248;1.253470e-01;2.690539e-06
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0625036;2D;12;151;45.563;8.949123e-02;1.237433e-06
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0625036;2D;13;152;45.817;1.257005e-02;1.926166e-07
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0625036;2D;14;153;46.095;1.458561e-03;2.443954e-08
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0625036;2D;15;154;46.473;2.045042e-04;3.171904e-09
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0625036;2D;16;155;46.733;2.604280e-05;5.212547e-10
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0625036;2D;17;156;46.948;8.476350e-06;1.068383e-10
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0625036;2D;18;157;47.150;8.756040e-07;1.525860e-11
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;0;158;47.303;9.987041e-01;1.606659e-03
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;1;172;50.257;9.989458e-01;1.602337e-03
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;2;183;52.965;9.991939e-01;1.589124e-03
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;3;190;54.546;9.939741e-01;1.547763e-03
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;4;197;56.778;9.925813e-01;1.489667e-03
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;5;201;57.760;9.557166e-01;1.433926e-03
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;6;205;59.115;8.764365e-01;1.353079e-03
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;7;212;60.923;9.644390e-01;1.198611e-03
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;8;216;61.890;9.380094e-01;1.063095e-03
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;9;221;63.526;8.714354e-01;1.003830e-03
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;10;228;65.006;9.623864e-01;7.191829e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;11;234;66.646;1.102021e+00;4.421841e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;12;239;68.006;1.971152e+00;2.328453e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;13;245;69.256;1.401367e+00;1.645479e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;14;246;69.918;7.329515e-01;6.749863e-05
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;15;247;70.192;3.105833e-01;5.130487e-06
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;16;248;70.454;2.127938e-01;3.061390e-06
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;17;249;71.119;1.977632e-02;2.391288e-07
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;18;250;71.329;2.082493e-03;2.888745e-08
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;19;251;71.538;8.934463e-05;1.849400e-09
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;20;252;71.731;8.314507e-06;1.484252e-10
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;21;253;71.983;1.065695e-06;1.802166e-11
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;22;254;72.154;9.565220e-08;1.571588e-12
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;0;255;72.281;9.976307e-01;1.445802e-03
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;1;265;74.635;9.960888e-01;1.434457e-03
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;2;270;75.696;9.920502e-01;1.414703e-03
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;3;276;77.162;9.979227e-01;1.377983e-03
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;4;282;78.882;9.859792e-01;1.328680e-03
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;5;289;80.238;8.896633e-01;1.232564e-03
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;6;293;81.556;9.939322e-01;1.098366e-03
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;7;299;82.965;9.975226e-01;9.948936e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;8;306;84.637;9.872802e-01;9.074071e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;9;310;85.653;8.970712e-01;7.873736e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;10;316;87.063;8.976263e-01;5.774725e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;11;321;88.186;9.005965e-01;3.867108e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;12;322;88.653;2.134614e+00;1.371329e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;13;324;88.985;9.947772e-01;6.987743e-05
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;14;331;90.545;4.693175e+00;6.734425e-05
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;15;332;91.034;1.568508e+00;2.412567e-05
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;16;334;91.344;1.282313e+00;1.828731e-05
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;17;335;91.963;2.697077e+00;2.943558e-05
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;18;336;92.420;7.051238e-01;8.585388e-06
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;19;338;92.786;1.512664e-01;2.377630e-06
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;20;339;92.950;3.710171e-02;6.666488e-07
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;21;340;93.113;8.313515e-03;1.355500e-07
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;22;341;93.322;1.457875e-03;2.270630e-08
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;23;342;93.603;1.455124e-04;2.292437e-09
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;24;343;93.874;3.934207e-05;6.005379e-10
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;25;344;94.039;3.382402e-06;5.954621e-11
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;26;345;94.216;5.936907e-07;1.100493e-11
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.022099;2D;0;346;94.371;9.935468e-01;1.217658e-03
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.022099;2D;1;355;96.170;9.959115e-01;1.188817e-03
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.022099;2D;2;359;97.133;9.797720e-01;1.146441e-03
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.022099;2D;3;363;98.453;9.679508e-01;1.084884e-03
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.022099;2D;4;370;99.759;9.677061e-01;9.670225e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.022099;2D;5;376;101.469;9.902777e-01;8.227479e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.022099;2D;6;380;102.419;9.132451e-01;6.385534e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.022099;2D;7;385;104.000;1.207062e+00;4.615531e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.022099;2D;8;390;105.571;1.252616e+00;3.027368e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.022099;2D;9;391;106.002;1.200724e+00;9.620845e-05
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.022099;2D;10;392;106.243;1.258318e+00;2.760609e-05
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.022099;2D;11;394;106.632;7.138802e-01;1.444383e-05
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.022099;2D;12;396;107.535;4.200161e-01;7.260364e-06
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.022099;2D;13;397;107.963;7.495120e-02;1.122303e-06
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.022099;2D;14;399;108.356;9.900941e-03;1.768992e-07
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.022099;2D;15;400;108.549;2.390340e-03;3.573579e-08
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.022099;2D;16;401;108.769;2.428922e-04;3.084454e-09
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.022099;2D;17;402;108.967;1.236528e-05;2.959558e-10
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.022099;2D;18;403;109.194;1.802125e-06;3.037263e-11
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.022099;2D;19;404;109.540;6.758073e-08;1.635019e-12
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0156265;2D;0;405;109.841;9.802866e-01;9.421642e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0156265;2D;1;412;111.481;9.451632e-01;8.820687e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0156265;2D;2;418;113.139;9.766008e-01;8.045810e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0156265;2D;3;423;114.242;9.660467e-01;7.162927e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0156265;2D;4;429;116.032;9.231494e-01;4.849436e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0156265;2D;5;437;117.952;8.922800e-01;4.521301e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0156265;2D;6;443;119.483;1.548027e+00;2.411670e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0156265;2D;7;451;121.695;1.313770e+00;1.624269e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0156265;2D;8;455;122.923;9.947571e-01;8.285980e-05
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0156265;2D;9;456;123.641;1.967277e+00;2.222284e-05
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0156265;2D;10;459;124.445;3.359969e-01;5.765485e-06
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0156265;2D;11;460;124.636;2.196408e-01;3.668710e-06
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0156265;2D;12;461;125.259;3.516214e-02;3.983286e-07
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0156265;2D;13;462;125.597;6.333336e-03;6.807993e-08
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0156265;2D;14;463;125.962;2.607865e-04;3.709511e-09
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0156265;2D;15;464;126.312;1.452621e-05;2.872763e-10
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0156265;2D;16;465;126.638;9.781550e-07;1.423333e-11
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0110497;2D;0;466;126.953;9.343422e-01;6.624678e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0110497;2D;1;472;128.410;8.320202e-01;5.773731e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0110497;2D;2;477;130.190;8.772279e-01;5.409509e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0110497;2D;3;484;132.505;9.540949e-01;3.801115e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0110497;2D;4;488;134.127;6.630757e-01;2.121479e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0110497;2D;5;489;134.620;1.383440e+00;3.322702e-05
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0110497;2D;6;490;134.941;1.827301e+00;2.659202e-05
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0110497;2D;7;494;136.414;1.210082e+00;1.850781e-05
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0110497;2D;8;495;136.996;5.389454e-01;6.353359e-06
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0110497;2D;9;497;137.708;3.146784e-01;3.956840e-06
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0110497;2D;10;501;138.837;1.508867e-01;1.818270e-06
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0110497;2D;11;503;139.430;4.909365e-02;6.042027e-07
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0110497;2D;12;505;140.128;1.078478e-02;1.300464e-07
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0110497;2D;13;506;140.351;6.961773e-04;7.895653e-09
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0110497;2D;14;507;140.556;7.626352e-05;1.057313e-09
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0110497;2D;15;508;140.774;8.765730e-06;1.177893e-10
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0110497;2D;16;509;141.171;7.034957e-08;1.024003e-12
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0078134;2D;0;510;141.502;8.153178e-01;4.232910e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0078134;2D;1;516;143.277;8.669593e-01;3.420184e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0078134;2D;2;519;144.217;4.002833e-01;1.004952e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0078134;2D;3;520;144.528;5.917657e-01;2.393051e-05
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0078134;2D;4;521;144.954;8.958061e-01;1.824344e-05
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0078134;2D;5;522;145.470;1.235611e+00;1.515542e-05
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0078134;2D;6;523;145.985;1.403868e-01;1.917369e-06
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0078134;2D;7;524;146.390;4.940626e-02;6.868529e-07
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0078134;2D;8;525;146.813;1.684681e-03;2.413741e-08
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0078134;2D;9;526;147.133;9.583157e-05;1.443581e-09
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0078134;2D;10;527;147.550;5.363402e-06;7.703153e-11
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.0078134;2D;11;528;147.800;2.456915e-07;3.402547e-12
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.00552496;2D;0;529;148.008;6.172089e-01;2.486305e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.00552496;2D;1;530;148.541;1.845456e+00;6.133920e-05
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.00552496;2D;2;534;149.397;7.718955e-01;2.538181e-05
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.00552496;2D;3;535;149.821;8.895030e-01;1.897776e-05
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.00552496;2D;4;536;150.408;1.981472e-01;3.601460e-06
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.00552496;2D;5;537;150.624;1.856403e-01;2.206025e-06
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.00552496;2D;6;538;151.106;8.627129e-03;1.204723e-07
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.00552496;2D;7;539;151.328;9.839192e-04;1.178441e-08
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.00552496;2D;8;540;151.572;8.297710e-06;1.108819e-10
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0.00552496;2D;9;541;151.796;7.022204e-08;1.035042e-12
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0;2D;0;542;151.992;6.702475e-01;2.755027e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0;2D;1;548;154.353;8.041601e-01;1.874061e-04
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0;2D;2;549;154.810;4.691133e-01;6.734491e-05
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0;2D;3;550;155.063;5.168128e-01;1.026469e-05
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0;2D;4;551;155.292;4.965943e-01;7.199385e-06
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0;2D;5;552;155.755;3.081479e-01;4.119885e-06
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0;2D;6;553;156.397;1.608283e-02;1.906981e-07
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0;2D;7;554;156.649;3.066397e-03;4.191669e-08
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0;2D;8;555;156.885;1.654298e-04;2.065454e-09
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0;2D;9;556;157.174;2.738660e-06;3.412165e-11
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0;2D;10;557;157.408;4.443631e-08;5.501868e-13
+lbfgs L0;densite sigma 0.02 s 0.5;2D;0;1;0.153;4.450341e+00;7.168240e-04
+lbfgs L0;densite sigma 0.02 s 0.5;2D;1;6;1.467;2.877101e+00;4.393809e-04
+lbfgs L0;densite sigma 0.02 s 0.5;2D;2;11;2.225;1.688651e+00;2.137402e-04
+lbfgs L0;densite sigma 0.02 s 0.5;2D;3;13;2.531;1.743700e+00;1.174745e-04
+lbfgs L0;densite sigma 0.02 s 0.5;2D;4;18;3.529;9.258023e-01;9.204229e-05
+lbfgs L0;densite sigma 0.02 s 0.5;2D;5;22;4.141;1.834187e+00;5.677337e-05
+lbfgs L0;densite sigma 0.02 s 0.5;2D;6;27;5.000;9.388932e-01;4.506850e-05
+lbfgs L0;densite sigma 0.02 s 0.5;2D;7;31;5.876;1.852942e+00;3.135210e-05
+lbfgs L0;densite sigma 0.02 s 0.5;2D;8;36;6.749;9.250335e-01;2.413077e-05
+lbfgs L0;densite sigma 0.02 s 0.5;2D;9;40;7.413;1.870774e+00;2.046750e-05
+lbfgs L0;densite sigma 0.02 s 0.5;2D;10;45;8.665;9.366804e-01;1.435991e-05
+lbfgs L0;densite sigma 0.02 s 0.5;2D;11;49;9.674;1.865517e+00;1.612505e-05
+lbfgs L0;densite sigma 0.02 s 0.5;2D;12;54;10.946;9.323832e-01;9.869055e-06
+lbfgs L0;densite sigma 0.02 s 0.5;2D;13;58;11.916;1.868661e+00;1.453130e-05
+lbfgs L0;densite sigma 0.02 s 0.5;2D;14;63;12.705;9.345342e-01;7.981017e-06
+lbfgs L0;densite sigma 0.02 s 0.5;2D;15;64;12.914;1.867415e+00;1.394336e-05
+lbfgs L0;densite sigma 0.02 s 0.5;2D;16;68;13.886;6.442070e-01;5.085635e-06
+lbfgs L0;densite sigma 0.02 s 0.5;2D;17;70;14.876;2.328081e-01;1.320626e-06
+lbfgs L0;densite sigma 0.02 s 0.5;2D;18;72;15.222;7.419865e-03;5.361963e-08
+lbfgs L0;densite sigma 0.02 s 0.5;2D;19;73;15.400;2.230302e-03;1.616087e-08
+lbfgs L0;densite sigma 0.02 s 0.5;2D;20;74;15.578;3.306829e-04;2.340454e-09
+lbfgs L0;densite sigma 0.02 s 0.5;2D;21;75;15.814;9.297473e-05;5.252674e-10
+lbfgs L0;densite sigma 0.02 s 0.5;2D;22;76;16.106;4.670895e-06;2.558201e-11
+lbfgs L0;densite sigma 0.02 s 0.5;2D;23;77;16.384;3.789832e-07;2.269762e-12
+lbfgs L0;densite sigma 0.02 s 0.353557;2D;0;78;16.651;3.738596e-01;1.914509e-04
+lbfgs L0;densite sigma 0.02 s 0.353557;2D;1;79;17.377;6.171952e-02;1.288657e-05
+lbfgs L0;densite sigma 0.02 s 0.353557;2D;2;80;17.586;1.399730e-02;2.067440e-06
+lbfgs L0;densite sigma 0.02 s 0.353557;2D;3;81;17.775;1.633991e-03;1.778755e-07
+lbfgs L0;densite sigma 0.02 s 0.353557;2D;4;82;17.969;3.658111e-04;3.304636e-08
+lbfgs L0;densite sigma 0.02 s 0.353557;2D;5;83;18.158;3.332413e-05;2.068542e-09
+lbfgs L0;densite sigma 0.02 s 0.353557;2D;6;84;18.349;8.814429e-06;4.116149e-10
+lbfgs L0;densite sigma 0.02 s 0.353557;2D;7;85;18.584;7.487404e-07;2.117035e-11
+lbfgs L0;densite sigma 0.02 s 0.250005;2D;0;86;18.825;4.195272e-01;2.420948e-04
+lbfgs L0;densite sigma 0.02 s 0.250005;2D;1;87;19.562;7.854637e-02;1.858225e-05
+lbfgs L0;densite sigma 0.02 s 0.250005;2D;2;88;19.839;2.391693e-02;3.772923e-06
+lbfgs L0;densite sigma 0.02 s 0.250005;2D;3;89;20.061;3.625988e-03;4.641436e-07
+lbfgs L0;densite sigma 0.02 s 0.250005;2D;4;90;20.272;1.019543e-03;9.802179e-08
+lbfgs L0;densite sigma 0.02 s 0.250005;2D;5;91;20.466;1.495727e-04;9.081125e-09
+lbfgs L0;densite sigma 0.02 s 0.250005;2D;6;92;20.729;4.193034e-05;2.056456e-09
+lbfgs L0;densite sigma 0.02 s 0.250005;2D;7;93;21.053;4.757797e-06;1.674735e-10
+lbfgs L0;densite sigma 0.02 s 0.250005;2D;8;94;21.361;1.440209e-06;4.287526e-11
+lbfgs L0;densite sigma 0.02 s 0.250005;2D;9;95;21.693;1.684906e-07;3.844945e-12
+lbfgs L0;densite sigma 0.02 s 0.176782;2D;0;96;21.981;6.066015e-01;4.729512e-04
+lbfgs L0;densite sigma 0.02 s 0.176782;2D;1;97;22.590;2.867605e-01;5.768643e-05
+lbfgs L0;densite sigma 0.02 s 0.176782;2D;2;98;22.792;1.973875e-01;1.952120e-05
+lbfgs L0;densite sigma 0.02 s 0.176782;2D;3;99;23.050;1.262938e-01;5.286073e-06
+lbfgs L0;densite sigma 0.02 s 0.176782;2D;4;100;23.401;8.094332e-02;2.186681e-06
+lbfgs L0;densite sigma 0.02 s 0.176782;2D;5;101;23.733;3.456118e-02;5.812463e-07
+lbfgs L0;densite sigma 0.02 s 0.176782;2D;6;102;24.056;2.476526e-02;3.426937e-07
+lbfgs L0;densite sigma 0.02 s 0.176782;2D;7;103;24.375;8.244557e-03;1.022124e-07
+lbfgs L0;densite sigma 0.02 s 0.176782;2D;8;105;24.756;1.012798e-03;1.503223e-08
+lbfgs L0;densite sigma 0.02 s 0.176782;2D;9;106;24.981;1.090706e-03;1.399074e-08
+lbfgs L0;densite sigma 0.02 s 0.176782;2D;10;107;25.220;2.172655e-04;3.010027e-09
+lbfgs L0;densite sigma 0.02 s 0.176782;2D;11;108;25.464;7.486081e-05;1.221075e-09
+lbfgs L0;densite sigma 0.02 s 0.176782;2D;12;109;25.821;2.617585e-05;3.710406e-10
+lbfgs L0;densite sigma 0.02 s 0.176782;2D;13;110;26.139;1.351925e-05;1.791700e-10
+lbfgs L0;densite sigma 0.02 s 0.176782;2D;14;111;26.339;1.889063e-06;2.569612e-11
+lbfgs L0;densite sigma 0.02 s 0.176782;2D;15;112;26.541;8.009257e-07;1.221946e-11
+lbfgs L0;densite sigma 0.02 s 0.125005;2D;0;113;26.695;8.687098e-01;1.093416e-03
+lbfgs L0;densite sigma 0.02 s 0.125005;2D;1;114;27.398;4.947262e+00;5.211974e-04
+lbfgs L0;densite sigma 0.02 s 0.125005;2D;2;120;28.598;1.472619e+00;2.780332e-04
+lbfgs L0;densite sigma 0.02 s 0.125005;2D;3;123;29.708;1.776417e+00;8.806100e-05
+lbfgs L0;densite sigma 0.02 s 0.125005;2D;4;130;31.276;8.993789e-01;5.930122e-05
+lbfgs L0;densite sigma 0.02 s 0.125005;2D;5;131;31.472;1.607225e+00;3.220131e-05
+lbfgs L0;densite sigma 0.02 s 0.125005;2D;6;139;33.247;9.183390e-01;2.203077e-05
+lbfgs L0;densite sigma 0.02 s 0.125005;2D;7;141;34.134;1.719564e+00;1.782759e-05
+lbfgs L0;densite sigma 0.02 s 0.125005;2D;8;144;34.738;3.431754e-01;4.562531e-06
+lbfgs L0;densite sigma 0.02 s 0.125005;2D;9;146;35.377;5.558188e-02;7.354910e-07
+lbfgs L0;densite sigma 0.02 s 0.125005;2D;10;147;35.598;1.468363e-02;1.709585e-07
+lbfgs L0;densite sigma 0.02 s 0.125005;2D;11;148;35.934;1.482101e-03;1.904795e-08
+lbfgs L0;densite sigma 0.02 s 0.125005;2D;12;149;36.165;1.469436e-04;2.334187e-09
+lbfgs L0;densite sigma 0.02 s 0.125005;2D;13;150;36.372;2.067432e-05;2.670912e-10
+lbfgs L0;densite sigma 0.02 s 0.125005;2D;14;151;36.564;1.084494e-06;1.757322e-11
+lbfgs L0;densite sigma 0.02 s 0.125005;2D;15;152;36.765;1.311341e-07;1.700879e-12
+lbfgs L0;densite sigma 0.02 s 0.0883926;2D;0;153;36.933;9.791039e-01;1.593207e-03
+lbfgs L0;densite sigma 0.02 s 0.0883926;2D;1;161;39.111;5.415887e+00;1.307142e-03
+lbfgs L0;densite sigma 0.02 s 0.0883926;2D;2;163;40.297;2.066791e+00;5.038969e-04
+lbfgs L0;densite sigma 0.02 s 0.0883926;2D;3;167;41.585;1.352962e+00;2.114198e-04
+lbfgs L0;densite sigma 0.02 s 0.0883926;2D;4;172;43.192;1.121330e+00;1.316434e-04
+lbfgs L0;densite sigma 0.02 s 0.0883926;2D;5;175;43.757;1.049437e+00;7.039952e-05
+lbfgs L0;densite sigma 0.02 s 0.0883926;2D;6;180;44.677;9.843917e-01;4.861919e-05
+lbfgs L0;densite sigma 0.02 s 0.0883926;2D;7;184;45.380;9.375775e-01;3.562685e-05
+lbfgs L0;densite sigma 0.02 s 0.0883926;2D;8;188;46.432;8.867868e-01;2.755548e-05
+lbfgs L0;densite sigma 0.02 s 0.0883926;2D;9;192;47.727;8.914045e-01;2.292327e-05
+lbfgs L0;densite sigma 0.02 s 0.0883926;2D;10;196;49.030;8.867028e-01;2.032731e-05
+lbfgs L0;densite sigma 0.02 s 0.0883926;2D;11;198;49.707;8.987498e-01;1.889856e-05
+lbfgs L0;densite sigma 0.02 s 0.0883926;2D;12;200;50.213;8.807199e-01;1.801324e-05
+lbfgs L0;densite sigma 0.02 s 0.0883926;2D;13;202;50.578;8.963223e-01;1.755049e-05
+lbfgs L0;densite sigma 0.02 s 0.0883926;2D;14;204;50.944;8.877762e-01;1.726624e-05
+lbfgs L0;densite sigma 0.02 s 0.0883926;2D;15;206;51.370;8.984793e-01;1.711830e-05
+lbfgs L0;densite sigma 0.02 s 0.0883926;2D;16;209;51.928;2.659272e-01;4.488379e-06
+lbfgs L0;densite sigma 0.02 s 0.0883926;2D;17;211;52.880;1.799640e-02;2.323182e-07
+lbfgs L0;densite sigma 0.02 s 0.0883926;2D;18;212;53.236;2.409118e-03;2.848147e-08
+lbfgs L0;densite sigma 0.02 s 0.0883926;2D;19;213;53.565;6.173901e-05;8.133518e-10
+lbfgs L0;densite sigma 0.02 s 0.0883926;2D;20;214;53.926;7.093361e-06;8.244609e-11
+lbfgs L0;densite sigma 0.02 s 0.0883926;2D;21;215;54.283;3.906770e-08;7.931106e-13
+lbfgs L0;densite sigma 0.02 s 0.0625036;2D;0;216;54.582;9.975289e-01;1.693752e-03
+lbfgs L0;densite sigma 0.02 s 0.0625036;2D;1;229;57.190;9.986433e-01;1.674600e-03
+lbfgs L0;densite sigma 0.02 s 0.0625036;2D;2;236;59.410;9.986632e-01;1.570031e-03
+lbfgs L0;densite sigma 0.02 s 0.0625036;2D;3;242;61.426;9.986952e-01;1.485339e-03
+lbfgs L0;densite sigma 0.02 s 0.0625036;2D;4;249;62.972;9.899561e-01;1.322968e-03
+lbfgs L0;densite sigma 0.02 s 0.0625036;2D;5;254;64.985;1.487336e+00;7.627458e-04
+lbfgs L0;densite sigma 0.02 s 0.0625036;2D;6;256;65.646;1.248823e+00;4.426301e-04
+lbfgs L0;densite sigma 0.02 s 0.0625036;2D;7;263;67.327;1.253091e+00;2.772315e-04
+lbfgs L0;densite sigma 0.02 s 0.0625036;2D;8;268;68.186;9.051943e-01;2.010047e-04
+lbfgs L0;densite sigma 0.02 s 0.0625036;2D;9;273;69.101;1.012149e+00;1.359957e-04
+lbfgs L0;densite sigma 0.02 s 0.0625036;2D;10;277;70.044;1.334616e+00;9.451905e-05
+lbfgs L0;densite sigma 0.02 s 0.0625036;2D;11;282;71.199;9.954278e-01;7.169813e-05
+lbfgs L0;densite sigma 0.02 s 0.0625036;2D;12;283;71.448;2.091455e+00;5.252912e-05
+lbfgs L0;densite sigma 0.02 s 0.0625036;2D;13;292;72.918;9.810353e-01;3.700421e-05
+lbfgs L0;densite sigma 0.02 s 0.0625036;2D;14;294;73.587;2.841282e+00;3.136931e-05
+lbfgs L0;densite sigma 0.02 s 0.0625036;2D;15;297;74.286;1.554797e-01;2.537458e-06
+lbfgs L0;densite sigma 0.02 s 0.0625036;2D;16;299;74.756;6.997743e-02;1.467170e-06
+lbfgs L0;densite sigma 0.02 s 0.0625036;2D;17;301;75.258;3.420504e-02;4.236894e-07
+lbfgs L0;densite sigma 0.02 s 0.0625036;2D;18;302;75.514;9.380268e-03;1.144146e-07
+lbfgs L0;densite sigma 0.02 s 0.0625036;2D;19;303;75.723;6.316531e-04;7.921890e-09
+lbfgs L0;densite sigma 0.02 s 0.0625036;2D;20;304;75.901;1.865283e-04;2.238558e-09
+lbfgs L0;densite sigma 0.02 s 0.0625036;2D;21;305;76.096;1.082888e-05;1.739088e-10
+lbfgs L0;densite sigma 0.02 s 0.0625036;2D;22;306;76.297;1.578530e-06;2.322089e-11
+lbfgs L0;densite sigma 0.02 s 0.0625036;2D;23;307;76.503;1.454697e-07;2.492056e-12
+lbfgs L0;densite sigma 0.02 s 0.0441971;2D;0;308;76.631;9.987041e-01;1.606659e-03
+lbfgs L0;densite sigma 0.02 s 0.0441971;2D;1;322;79.375;9.989458e-01;1.602337e-03
+lbfgs L0;densite sigma 0.02 s 0.0441971;2D;2;333;81.759;9.991939e-01;1.589124e-03
+lbfgs L0;densite sigma 0.02 s 0.0441971;2D;3;340;83.209;9.939741e-01;1.547763e-03
+lbfgs L0;densite sigma 0.02 s 0.0441971;2D;4;347;85.175;9.925813e-01;1.489667e-03
+lbfgs L0;densite sigma 0.02 s 0.0441971;2D;5;351;86.326;9.557166e-01;1.433926e-03
+lbfgs L0;densite sigma 0.02 s 0.0441971;2D;6;355;87.188;8.764365e-01;1.353079e-03
+lbfgs L0;densite sigma 0.02 s 0.0441971;2D;7;362;88.808;9.644390e-01;1.198611e-03
+lbfgs L0;densite sigma 0.02 s 0.0441971;2D;8;366;90.034;9.380094e-01;1.063095e-03
+lbfgs L0;densite sigma 0.02 s 0.0441971;2D;9;371;91.059;8.714354e-01;1.003830e-03
+lbfgs L0;densite sigma 0.02 s 0.0441971;2D;10;378;92.718;9.623864e-01;7.191829e-04
+lbfgs L0;densite sigma 0.02 s 0.0441971;2D;11;382;93.594;1.622867e+00;5.074723e-04
+lbfgs L0;densite sigma 0.02 s 0.0441971;2D;12;383;93.853;1.723745e+00;2.224580e-04
+lbfgs L0;densite sigma 0.02 s 0.0441971;2D;13;391;95.236;2.476611e+00;1.951504e-04
+lbfgs L0;densite sigma 0.02 s 0.0441971;2D;14;397;96.374;1.514296e+00;1.332856e-04
+lbfgs L0;densite sigma 0.02 s 0.0441971;2D;15;398;96.616;1.807776e+00;5.955228e-05
+lbfgs L0;densite sigma 0.02 s 0.0441971;2D;16;404;97.889;1.368271e+00;4.344297e-05
+lbfgs L0;densite sigma 0.02 s 0.0441971;2D;17;405;98.123;8.171069e-01;2.195488e-05
+lbfgs L0;densite sigma 0.02 s 0.0441971;2D;18;412;99.336;1.345264e+00;2.327085e-05
+lbfgs L0;densite sigma 0.02 s 0.0441971;2D;19;415;100.175;3.151264e+00;3.983834e-05
+lbfgs L0;densite sigma 0.02 s 0.0441971;2D;20;419;101.044;5.490828e-01;7.467408e-06
+lbfgs L0;densite sigma 0.02 s 0.0441971;2D;21;421;101.861;4.045219e-02;5.765329e-07
+lbfgs L0;densite sigma 0.02 s 0.0441971;2D;22;423;102.311;6.588125e-03;1.129872e-07
+lbfgs L0;densite sigma 0.02 s 0.0441971;2D;23;424;102.606;1.761713e-03;2.307011e-08
+lbfgs L0;densite sigma 0.02 s 0.0441971;2D;24;425;102.884;1.946872e-04;2.759115e-09
+lbfgs L0;densite sigma 0.02 s 0.0441971;2D;25;426;103.168;2.674823e-05;3.648104e-10
+lbfgs L0;densite sigma 0.02 s 0.0441971;2D;26;427;103.453;1.255760e-06;1.730585e-11
+lbfgs L0;densite sigma 0.02 s 0.0441971;2D;27;428;103.740;9.938679e-08;1.651763e-12
+lbfgs L0;densite sigma 0.02 s 0.0312524;2D;0;429;103.888;9.976307e-01;1.445802e-03
+lbfgs L0;densite sigma 0.02 s 0.0312524;2D;1;439;105.563;9.960888e-01;1.434457e-03
+lbfgs L0;densite sigma 0.02 s 0.0312524;2D;2;444;107.093;9.920502e-01;1.414703e-03
+lbfgs L0;densite sigma 0.02 s 0.0312524;2D;3;450;108.264;9.979227e-01;1.377983e-03
+lbfgs L0;densite sigma 0.02 s 0.0312524;2D;4;456;109.649;9.859792e-01;1.328680e-03
+lbfgs L0;densite sigma 0.02 s 0.0312524;2D;5;463;111.598;8.896633e-01;1.232564e-03
+lbfgs L0;densite sigma 0.02 s 0.0312524;2D;6;467;112.898;9.939322e-01;1.098366e-03
+lbfgs L0;densite sigma 0.02 s 0.0312524;2D;7;473;114.193;9.975226e-01;9.948936e-04
+lbfgs L0;densite sigma 0.02 s 0.0312524;2D;8;480;115.836;9.872802e-01;9.074071e-04
+lbfgs L0;densite sigma 0.02 s 0.0312524;2D;9;484;116.847;8.970712e-01;7.873736e-04
+lbfgs L0;densite sigma 0.02 s 0.0312524;2D;10;490;118.124;8.976263e-01;5.774725e-04
+lbfgs L0;densite sigma 0.02 s 0.0312524;2D;11;497;119.911;1.150983e+00;4.690193e-04
+lbfgs L0;densite sigma 0.02 s 0.0312524;2D;12;502;120.966;1.480675e+00;2.997521e-04
+lbfgs L0;densite sigma 0.02 s 0.0312524;2D;13;507;121.753;2.186702e+00;1.538367e-04
+lbfgs L0;densite sigma 0.02 s 0.0312524;2D;14;512;122.846;6.958813e-01;1.118693e-04
+lbfgs L0;densite sigma 0.02 s 0.0312524;2D;15;516;123.762;1.729822e+00;6.014583e-05
+lbfgs L0;densite sigma 0.02 s 0.0312524;2D;16;517;123.923;9.971744e-01;1.783446e-05
+lbfgs L0;densite sigma 0.02 s 0.0312524;2D;17;520;124.386;9.286506e-01;1.318913e-05
+lbfgs L0;densite sigma 0.02 s 0.0312524;2D;18;524;125.378;5.069409e-01;6.957707e-06
+lbfgs L0;densite sigma 0.02 s 0.0312524;2D;19;526;125.923;3.408513e-01;3.929511e-06
+lbfgs L0;densite sigma 0.02 s 0.0312524;2D;20;527;126.146;1.539134e-01;1.737712e-06
+lbfgs L0;densite sigma 0.02 s 0.0312524;2D;21;528;126.335;2.199844e-02;2.485535e-07
+lbfgs L0;densite sigma 0.02 s 0.0312524;2D;22;529;126.506;1.545040e-03;2.545501e-08
+lbfgs L0;densite sigma 0.02 s 0.0312524;2D;23;530;126.684;3.701312e-04;5.950468e-09
+lbfgs L0;densite sigma 0.02 s 0.0312524;2D;24;531;126.919;1.226298e-04;1.582060e-09
+lbfgs L0;densite sigma 0.02 s 0.0312524;2D;25;532;127.202;4.091550e-06;7.182209e-11
+lbfgs L0;densite sigma 0.02 s 0.0312524;2D;26;533;127.486;1.439250e-07;2.146405e-12
+lbfgs L0;densite sigma 0.02 s 0.022099;2D;0;534;127.718;9.935468e-01;1.217658e-03
+lbfgs L0;densite sigma 0.02 s 0.022099;2D;1;543;129.494;9.959115e-01;1.188817e-03
+lbfgs L0;densite sigma 0.02 s 0.022099;2D;2;547;130.695;9.797720e-01;1.146441e-03
+lbfgs L0;densite sigma 0.02 s 0.022099;2D;3;551;131.614;9.679508e-01;1.084884e-03
+lbfgs L0;densite sigma 0.02 s 0.022099;2D;4;558;133.333;9.677062e-01;9.670225e-04
+lbfgs L0;densite sigma 0.02 s 0.022099;2D;5;564;134.482;9.902777e-01;8.227479e-04
+lbfgs L0;densite sigma 0.02 s 0.022099;2D;6;568;135.622;9.132451e-01;6.385534e-04
+lbfgs L0;densite sigma 0.02 s 0.022099;2D;7;573;136.699;1.207062e+00;4.615531e-04
+lbfgs L0;densite sigma 0.02 s 0.022099;2D;8;583;138.581;1.442850e+00;4.136233e-04
+lbfgs L0;densite sigma 0.02 s 0.022099;2D;9;590;140.342;1.306730e+00;3.097693e-04
+lbfgs L0;densite sigma 0.02 s 0.022099;2D;10;591;140.817;6.058534e-01;1.537176e-04
+lbfgs L0;densite sigma 0.02 s 0.022099;2D;11;596;141.677;9.018351e-01;9.605472e-05
+lbfgs L0;densite sigma 0.02 s 0.022099;2D;12;597;141.970;3.725081e-01;2.486241e-05
+lbfgs L0;densite sigma 0.02 s 0.022099;2D;13;598;142.258;6.717232e-01;1.345217e-05
+lbfgs L0;densite sigma 0.02 s 0.022099;2D;14;600;142.675;2.734173e-01;6.246804e-06
+lbfgs L0;densite sigma 0.02 s 0.022099;2D;15;602;143.061;3.156330e-01;6.094482e-06
+lbfgs L0;densite sigma 0.02 s 0.022099;2D;16;603;143.299;1.853922e-01;4.125657e-06
+lbfgs L0;densite sigma 0.02 s 0.022099;2D;17;605;143.678;8.544600e-02;2.015321e-06
+lbfgs L0;densite sigma 0.02 s 0.022099;2D;18;606;143.862;6.997962e-02;1.470991e-06
+lbfgs L0;densite sigma 0.02 s 0.022099;2D;19;607;144.135;5.814771e-02;9.473507e-07
+lbfgs L0;densite sigma 0.02 s 0.022099;2D;20;608;144.436;4.171713e-02;7.517338e-07
+lbfgs L0;densite sigma 0.02 s 0.022099;2D;21;609;144.723;3.416048e-02;5.929240e-07
+lbfgs L0;densite sigma 0.02 s 0.022099;2D;22;610;144.941;2.061571e-02;3.815367e-07
+lbfgs L0;densite sigma 0.02 s 0.022099;2D;23;611;145.171;7.325899e-03;2.195107e-07
+lbfgs L0;densite sigma 0.02 s 0.022099;2D;24;612;145.357;5.101526e-03;1.181451e-07
+lbfgs L0;densite sigma 0.02 s 0.022099;2D;25;613;145.605;3.925280e-03;7.764241e-08
+lbfgs L0;densite sigma 0.02 s 0.022099;2D;26;614;145.870;2.059243e-03;3.819438e-08
+lbfgs L0;densite sigma 0.02 s 0.022099;2D;27;615;146.054;1.432094e-03;2.663086e-08
+lbfgs L0;densite sigma 0.02 s 0.022099;2D;28;617;146.504;4.396211e-04;1.223719e-08
+lbfgs L0;densite sigma 0.02 s 0.022099;2D;29;619;147.054;1.621426e-04;4.859667e-09
+lbfgs L0;densite sigma 0.02 s 0.022099;2D;30;620;147.261;8.303512e-05;2.731421e-09
+lbfgs L0;densite sigma 0.02 s 0.022099;2D;31;621;147.573;4.002309e-05;1.172176e-09
+lbfgs L0;densite sigma 0.02 s 0.022099;2D;32;623;147.989;1.519031e-05;4.652129e-10
+lbfgs L0;densite sigma 0.02 s 0.022099;2D;33;625;148.340;1.000456e-05;2.258261e-10
+lbfgs L0;densite sigma 0.02 s 0.022099;2D;34;626;148.526;9.710870e-06;1.640728e-10
+lbfgs L0;densite sigma 0.02 s 0.022099;2D;35;627;148.732;7.155109e-06;1.091475e-10
+lbfgs L0;densite sigma 0.02 s 0.022099;2D;36;628;148.953;2.798186e-06;6.275998e-11
+lbfgs L0;densite sigma 0.02 s 0.022099;2D;37;629;149.156;1.127541e-06;2.712588e-11
+lbfgs L0;densite sigma 0.02 s 0.022099;2D;38;630;149.334;6.945866e-07;1.862593e-11
+lbfgs L0;densite sigma 0.02 s 0.0156265;2D;0;631;149.491;9.802866e-01;9.421642e-04
+lbfgs L0;densite sigma 0.02 s 0.0156265;2D;1;638;151.362;9.451631e-01;8.820687e-04
+lbfgs L0;densite sigma 0.02 s 0.0156265;2D;2;644;153.247;9.766008e-01;8.045810e-04
+lbfgs L0;densite sigma 0.02 s 0.0156265;2D;3;649;154.892;9.660476e-01;7.162927e-04
+lbfgs L0;densite sigma 0.02 s 0.0156265;2D;4;655;156.181;9.231494e-01;4.849436e-04
+lbfgs L0;densite sigma 0.02 s 0.0156265;2D;5;661;157.240;1.613291e+00;3.424272e-04
+lbfgs L0;densite sigma 0.02 s 0.0156265;2D;6;662;157.496;2.729583e+00;1.584494e-04
+lbfgs L0;densite sigma 0.02 s 0.0156265;2D;7;668;159.161;1.122992e+00;1.286706e-04
+lbfgs L0;densite sigma 0.02 s 0.0156265;2D;8;674;161.060;1.334203e+00;8.613970e-05
+lbfgs L0;densite sigma 0.02 s 0.0156265;2D;9;679;162.155;1.498696e+00;5.281583e-05
+lbfgs L0;densite sigma 0.02 s 0.0156265;2D;10;683;162.926;2.017829e+00;3.433444e-05
+lbfgs L0;densite sigma 0.02 s 0.0156265;2D;11;689;163.992;9.872555e-01;1.942476e-05
+lbfgs L0;densite sigma 0.02 s 0.0156265;2D;12;694;165.388;9.868474e-01;2.197220e-05
+lbfgs L0;densite sigma 0.02 s 0.0156265;2D;13;696;166.208;3.098667e+00;3.690718e-05
+lbfgs L0;densite sigma 0.02 s 0.0156265;2D;14;698;166.977;2.183242e+00;2.513743e-05
+lbfgs L0;densite sigma 0.02 s 0.0156265;2D;15;701;167.518;2.436364e-01;4.443196e-06
+lbfgs L0;densite sigma 0.02 s 0.0156265;2D;16;702;167.717;2.524673e-01;3.054653e-06
+lbfgs L0;densite sigma 0.02 s 0.0156265;2D;17;703;167.950;1.092161e-01;1.673106e-06
+lbfgs L0;densite sigma 0.02 s 0.0156265;2D;18;705;168.306;2.181569e-02;3.775292e-07
+lbfgs L0;densite sigma 0.02 s 0.0156265;2D;19;706;168.510;4.015149e-03;9.398965e-08
+lbfgs L0;densite sigma 0.02 s 0.0156265;2D;20;707;168.723;1.813704e-03;3.166442e-08
+lbfgs L0;densite sigma 0.02 s 0.0156265;2D;21;708;168.935;5.833662e-04;9.370161e-09
+lbfgs L0;densite sigma 0.02 s 0.0156265;2D;22;709;169.130;1.462672e-04;2.868806e-09
+lbfgs L0;densite sigma 0.02 s 0.0156265;2D;23;710;169.380;4.117401e-05;9.083238e-10
+lbfgs L0;densite sigma 0.02 s 0.0156265;2D;24;711;169.692;8.801638e-06;1.492266e-10
+lbfgs L0;densite sigma 0.02 s 0.0156265;2D;25;712;169.985;1.081626e-06;2.416265e-11
+lbfgs L0;densite sigma 0.02 s 0.0156265;2D;26;713;170.296;1.719442e-07;3.958066e-12
+lbfgs L0;densite sigma 0.02 s 0.0110497;2D;0;714;170.575;9.343422e-01;6.624678e-04
+lbfgs L0;densite sigma 0.02 s 0.0110497;2D;1;720;172.604;8.320202e-01;5.773731e-04
+lbfgs L0;densite sigma 0.02 s 0.0110497;2D;2;725;173.796;8.772274e-01;5.409509e-04
+lbfgs L0;densite sigma 0.02 s 0.0110497;2D;3;732;175.666;9.540926e-01;3.801115e-04
+lbfgs L0;densite sigma 0.02 s 0.0110497;2D;4;736;176.811;1.008288e+00;2.628232e-04
+lbfgs L0;densite sigma 0.02 s 0.0110497;2D;5;742;178.489;1.081803e+00;2.316149e-04
+lbfgs L0;densite sigma 0.02 s 0.0110497;2D;6;745;179.337;5.764389e-01;8.988705e-05
+lbfgs L0;densite sigma 0.02 s 0.0110497;2D;7;747;179.877;3.883265e-01;4.415193e-05
+lbfgs L0;densite sigma 0.02 s 0.0110497;2D;8;748;180.107;3.140641e-01;8.478659e-06
+lbfgs L0;densite sigma 0.02 s 0.0110497;2D;9;750;180.528;2.095407e-01;5.753656e-06
+lbfgs L0;densite sigma 0.02 s 0.0110497;2D;10;751;180.930;6.175991e-01;1.016197e-05
+lbfgs L0;densite sigma 0.02 s 0.0110497;2D;11;753;181.681;2.462128e-01;4.424190e-06
+lbfgs L0;densite sigma 0.02 s 0.0110497;2D;12;757;183.158;1.199745e-01;2.676122e-06
+lbfgs L0;densite sigma 0.02 s 0.0110497;2D;13;759;184.239;1.822069e-02;2.434900e-07
+lbfgs L0;densite sigma 0.02 s 0.0110497;2D;14;760;184.506;7.154056e-03;8.787026e-08
+lbfgs L0;densite sigma 0.02 s 0.0110497;2D;15;761;184.724;1.819820e-04;2.840060e-09
+lbfgs L0;densite sigma 0.02 s 0.0110497;2D;16;762;184.936;7.881559e-06;1.425325e-10
+lbfgs L0;densite sigma 0.02 s 0.0110497;2D;17;763;185.164;4.578054e-07;8.004343e-12
+lbfgs L0;densite sigma 0.02 s 0.0078134;2D;0;764;185.389;8.153178e-01;4.232910e-04
+lbfgs L0;densite sigma 0.02 s 0.0078134;2D;1;770;187.415;8.669579e-01;3.420184e-04
+lbfgs L0;densite sigma 0.02 s 0.0078134;2D;2;773;188.823;4.002832e-01;1.004952e-04
+lbfgs L0;densite sigma 0.02 s 0.0078134;2D;3;774;189.187;5.917656e-01;2.393051e-05
+lbfgs L0;densite sigma 0.02 s 0.0078134;2D;4;775;189.422;8.958060e-01;1.824340e-05
+lbfgs L0;densite sigma 0.02 s 0.0078134;2D;5;776;189.644;8.797945e-01;1.907826e-05
+lbfgs L0;densite sigma 0.02 s 0.0078134;2D;6;778;190.075;3.571163e-01;5.995159e-06
+lbfgs L0;densite sigma 0.02 s 0.0078134;2D;7;780;190.511;1.581403e-01;3.183839e-06
+lbfgs L0;densite sigma 0.02 s 0.0078134;2D;8;782;190.972;1.411752e-01;2.103456e-06
+lbfgs L0;densite sigma 0.02 s 0.0078134;2D;9;783;191.267;1.304667e-01;2.112694e-06
+lbfgs L0;densite sigma 0.02 s 0.0078134;2D;10;784;191.703;9.676036e-02;1.778137e-06
+lbfgs L0;densite sigma 0.02 s 0.0078134;2D;11;785;192.096;3.576944e-02;8.578631e-07
+lbfgs L0;densite sigma 0.02 s 0.0078134;2D;12;786;192.527;4.420660e-02;7.873378e-07
+lbfgs L0;densite sigma 0.02 s 0.0078134;2D;13;787;192.936;4.144160e-02;6.172491e-07
+lbfgs L0;densite sigma 0.02 s 0.0078134;2D;14;789;193.732;1.189843e-02;2.465042e-07
+lbfgs L0;densite sigma 0.02 s 0.0078134;2D;15;791;194.532;4.724451e-03;8.781459e-08
+lbfgs L0;densite sigma 0.02 s 0.0078134;2D;16;792;194.937;4.147754e-03;6.814331e-08
+lbfgs L0;densite sigma 0.02 s 0.0078134;2D;17;793;195.370;2.161792e-03;3.445265e-08
+lbfgs L0;densite sigma 0.02 s 0.0078134;2D;18;795;196.149;4.144314e-04;1.079852e-08
+lbfgs L0;densite sigma 0.02 s 0.0078134;2D;19;797;196.949;1.931168e-04;3.326872e-09
+lbfgs L0;densite sigma 0.02 s 0.0078134;2D;20;799;197.475;4.325934e-05;1.168309e-09
+lbfgs L0;densite sigma 0.02 s 0.0078134;2D;21;801;197.969;5.137513e-05;1.005293e-09
+lbfgs L0;densite sigma 0.02 s 0.0078134;2D;22;803;198.399;1.115143e-05;3.324187e-10
+lbfgs L0;densite sigma 0.02 s 0.0078134;2D;23;805;198.877;5.272008e-06;1.483009e-10
+lbfgs L0;densite sigma 0.02 s 0.0078134;2D;24;807;199.671;4.008000e-06;8.515474e-11
+lbfgs L0;densite sigma 0.02 s 0.0078134;2D;25;808;200.089;2.806774e-06;6.161725e-11
+lbfgs L0;densite sigma 0.02 s 0.0078134;2D;26;809;200.516;4.551213e-06;6.562777e-11
+lbfgs L0;densite sigma 0.02 s 0.0078134;2D;27;811;201.308;5.282342e-07;1.637952e-11
+lbfgs L0;densite sigma 0.02 s 0.00552496;2D;0;812;201.679;6.172089e-01;2.486305e-04
+lbfgs L0;densite sigma 0.02 s 0.00552496;2D;1;813;202.491;1.845456e+00;6.133919e-05
+lbfgs L0;densite sigma 0.02 s 0.00552496;2D;2;817;203.872;7.718955e-01;2.538180e-05
+lbfgs L0;densite sigma 0.02 s 0.00552496;2D;3;818;204.098;8.895024e-01;1.897775e-05
+lbfgs L0;densite sigma 0.02 s 0.00552496;2D;4;820;204.539;5.474056e-01;8.652081e-06
+lbfgs L0;densite sigma 0.02 s 0.00552496;2D;5;821;204.810;2.491168e-01;5.144710e-06
+lbfgs L0;densite sigma 0.02 s 0.00552496;2D;6;822;205.055;9.077456e-02;2.390545e-06
+lbfgs L0;densite sigma 0.02 s 0.00552496;2D;7;824;205.496;3.071310e-02;6.523790e-07
+lbfgs L0;densite sigma 0.02 s 0.00552496;2D;8;826;206.232;1.348737e-02;2.513550e-07
+lbfgs L0;densite sigma 0.02 s 0.00552496;2D;9;828;207.047;3.724138e-03;9.093341e-08
+lbfgs L0;densite sigma 0.02 s 0.00552496;2D;10;829;207.477;1.852815e-03;5.698498e-08
+lbfgs L0;densite sigma 0.02 s 0.00552496;2D;11;830;207.886;6.368296e-04;1.812524e-08
+lbfgs L0;densite sigma 0.02 s 0.00552496;2D;12;831;208.330;3.850393e-04;9.835663e-09
+lbfgs L0;densite sigma 0.02 s 0.00552496;2D;13;832;208.742;1.936323e-04;3.792702e-09
+lbfgs L0;densite sigma 0.02 s 0.00552496;2D;14;833;209.178;8.391837e-05;2.326458e-09
+lbfgs L0;densite sigma 0.02 s 0.00552496;2D;15;834;209.512;3.437257e-05;8.711993e-10
+lbfgs L0;densite sigma 0.02 s 0.00552496;2D;16;836;209.955;9.214914e-06;2.783315e-10
+lbfgs L0;densite sigma 0.02 s 0.00552496;2D;17;838;210.406;3.822460e-06;1.214204e-10
+lbfgs L0;densite sigma 0.02 s 0.00552496;2D;18;840;210.838;1.200655e-06;3.618631e-11
+lbfgs L0;densite sigma 0.02 s 0.00552496;2D;19;841;211.086;1.271293e-06;2.357442e-11
+lbfgs L0;densite sigma 0.02 s 0.00552496;2D;20;842;211.532;2.197097e-07;8.480428e-12
+lbfgs L0;densite sigma 0.02 s 0;2D;0;843;211.909;6.702476e-01;2.755027e-04
+lbfgs L0;densite sigma 0.02 s 0;2D;1;849;214.682;8.041601e-01;1.874061e-04
+lbfgs L0;densite sigma 0.02 s 0;2D;2;853;215.566;1.840978e+00;9.751506e-05
+lbfgs L0;densite sigma 0.02 s 0;2D;3;855;216.019;7.706775e-01;5.219561e-05
+lbfgs L0;densite sigma 0.02 s 0;2D;4;862;218.281;1.427527e+00;3.446489e-05
+lbfgs L0;densite sigma 0.02 s 0;2D;5;864;219.126;8.327889e-01;2.598981e-05
+lbfgs L0;densite sigma 0.02 s 0;2D;6;873;222.197;9.130069e-01;1.885743e-05
+lbfgs L0;densite sigma 0.02 s 0;2D;7;875;222.986;5.583712e-01;6.910956e-06
+lbfgs L0;densite sigma 0.02 s 0;2D;8;877;223.498;6.046470e-02;8.213409e-07
+lbfgs L0;densite sigma 0.02 s 0;2D;9;878;223.946;9.183292e-03;1.652697e-07
+lbfgs L0;densite sigma 0.02 s 0;2D;10;879;224.389;4.125027e-03;5.110484e-08
+lbfgs L0;densite sigma 0.02 s 0;2D;11;880;224.823;2.057318e-03;2.744347e-08
+lbfgs L0;densite sigma 0.02 s 0;2D;12;881;225.275;6.528102e-05;1.311599e-09
+lbfgs L0;densite sigma 0.02 s 0;2D;13;882;225.702;1.322785e-05;2.610261e-10
+lbfgs L0;densite sigma 0.02 s 0;2D;14;883;226.166;1.967436e-06;2.910750e-11
+lbfgs L0;densite sigma 0.02 s 0;2D;15;884;226.606;2.555686e-07;5.783303e-12
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.5;2D;0;1;0.284;4.450341e+00;7.168240e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.5;2D;1;6;1.397;2.877101e+00;4.393809e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.5;2D;2;7;1.907;9.887999e-01;1.143746e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.5;2D;3;9;2.403;6.082940e-01;6.098786e-05
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.5;2D;4;10;3.136;7.184624e-02;1.937091e-06
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.5;2D;0;10;3.137;7.184624e-02;1.937091e-06
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.5;2D;1;11;4.306;6.322999e-04;8.673634e-09
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.5;2D;2;12;5.400;9.480442e-08;7.820837e-13
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.353557;2D;0;13;5.663;3.738596e-01;1.914509e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.353557;2D;0;13;5.664;3.738596e-01;1.914509e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.353557;2D;1;14;6.470;6.171952e-02;1.288657e-05
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.353557;2D;2;15;7.151;7.794765e-04;1.018720e-07
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.353557;2D;3;16;7.898;1.623959e-07;1.453444e-11
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.250005;2D;0;17;8.160;4.195272e-01;2.420948e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.250005;2D;0;17;8.161;4.195272e-01;2.420948e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.250005;2D;1;18;8.996;7.854636e-02;1.858224e-05
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.250005;2D;2;19;9.711;1.536870e-03;2.163371e-07
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.250005;2D;3;20;10.428;6.789667e-07;6.761400e-11
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.176782;2D;0;21;10.714;6.066013e-01;4.729511e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.176782;2D;1;22;11.431;2.867600e-01;5.768641e-05
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.176782;2D;0;22;11.432;2.867600e-01;5.768641e-05
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.176782;2D;1;23;12.141;1.977706e-02;1.649963e-06
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.176782;2D;2;24;12.754;1.181015e-04;6.109562e-09
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.176782;2D;3;25;13.397;4.224423e-09;1.618720e-13
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.125005;2D;0;26;13.556;8.687098e-01;1.093416e-03
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.125005;2D;1;27;14.242;4.947263e+00;5.211974e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.125005;2D;2;33;16.085;1.472620e+00;2.780332e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.125005;2D;3;36;17.553;1.776417e+00;8.806100e-05
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.125005;2D;4;43;19.305;8.993792e-01;5.930122e-05
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.125005;2D;5;44;19.843;3.702461e-01;1.931178e-05
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.125005;2D;0;44;19.844;3.702461e-01;1.931178e-05
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.125005;2D;1;45;20.400;3.560940e-02;4.496855e-07
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.125005;2D;2;46;21.218;1.737589e-04;1.972578e-09
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.125005;2D;3;47;21.888;5.710668e-09;6.556960e-14
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0883926;2D;0;48;22.198;9.791039e-01;1.593207e-03
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0883926;2D;1;56;24.406;5.415887e+00;1.307142e-03
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0883926;2D;2;58;25.202;2.066791e+00;5.038969e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0883926;2D;3;62;26.414;1.352962e+00;2.114198e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0883926;2D;4;67;27.976;1.121330e+00;1.316434e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0883926;2D;5;68;28.680;5.584544e-01;5.805016e-05
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0883926;2D;6;69;28.903;1.265940e-01;2.035562e-06
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0883926;2D;0;69;28.904;1.265940e-01;2.035562e-06
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0883926;2D;1;70;29.466;4.860425e-03;5.821861e-08
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0883926;2D;2;71;30.032;7.393570e-06;8.422131e-11
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0883926;2D;3;72;30.697;1.697548e-10;9.116946e-15
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0625036;2D;0;73;30.966;9.975289e-01;1.693752e-03
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0625036;2D;1;86;34.242;9.986433e-01;1.674600e-03
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0625036;2D;2;93;36.107;9.986632e-01;1.570031e-03
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0625036;2D;3;99;38.234;9.986952e-01;1.485339e-03
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0625036;2D;4;106;39.993;9.899561e-01;1.322968e-03
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0625036;2D;5;111;41.916;1.487336e+00;7.627458e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0625036;2D;6;114;43.247;1.043505e+00;3.029279e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0625036;2D;7;115;43.575;7.328868e-01;6.177839e-05
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0625036;2D;8;116;43.896;1.212423e+00;2.925429e-05
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0625036;2D;9;118;44.495;5.091217e-01;1.065745e-05
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0625036;2D;10;119;44.807;1.316609e+00;2.267067e-05
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0625036;2D;11;120;45.505;1.253470e-01;2.690539e-06
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0625036;2D;0;120;45.506;1.253470e-01;2.690539e-06
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0625036;2D;1;121;46.056;2.975402e-03;5.026052e-08
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0625036;2D;2;122;46.440;1.416243e-06;2.390183e-11
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0625036;2D;3;123;46.843;2.354547e-10;1.279220e-14
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0441971;2D;0;124;47.012;9.987041e-01;1.606659e-03
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0441971;2D;1;138;50.316;9.989458e-01;1.602337e-03
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0441971;2D;2;149;53.216;9.991939e-01;1.589124e-03
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0441971;2D;3;156;55.255;9.939741e-01;1.547763e-03
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0441971;2D;4;163;56.591;9.925813e-01;1.489667e-03
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0441971;2D;5;167;57.996;9.557166e-01;1.433926e-03
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0441971;2D;6;171;59.335;8.764365e-01;1.353079e-03
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0441971;2D;7;178;61.388;9.644390e-01;1.198611e-03
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0441971;2D;8;182;62.547;9.380094e-01;1.063095e-03
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0441971;2D;9;187;63.743;8.714354e-01;1.003830e-03
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0441971;2D;10;194;65.890;9.623864e-01;7.191829e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0441971;2D;11;200;67.754;1.102021e+00;4.421841e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0441971;2D;12;205;69.288;1.971152e+00;2.328453e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0441971;2D;13;211;70.535;1.401367e+00;1.645479e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0441971;2D;14;212;71.025;7.329515e-01;6.749863e-05
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0441971;2D;15;213;71.282;3.105833e-01;5.130487e-06
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0441971;2D;0;213;71.282;3.105833e-01;5.130487e-06
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0441971;2D;1;214;71.873;4.587423e-02;7.299234e-07
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0441971;2D;2;215;72.433;1.971278e-03;2.602815e-08
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0441971;2D;3;216;72.914;5.837988e-06;7.216705e-11
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0441971;2D;4;217;73.399;4.178446e-10;1.848664e-14
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0312524;2D;0;218;73.631;9.976307e-01;1.445802e-03
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0312524;2D;1;228;76.039;9.960888e-01;1.434457e-03
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0312524;2D;2;233;77.362;9.920502e-01;1.414703e-03
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0312524;2D;3;239;78.545;9.979227e-01;1.377983e-03
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0312524;2D;4;245;80.312;9.859792e-01;1.328680e-03
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0312524;2D;5;252;82.268;8.896633e-01;1.232564e-03
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0312524;2D;6;256;83.563;9.939322e-01;1.098366e-03
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0312524;2D;7;262;84.746;9.975226e-01;9.948936e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0312524;2D;8;269;86.670;9.872802e-01;9.074071e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0312524;2D;9;273;87.983;8.970712e-01;7.873736e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0312524;2D;10;279;89.780;8.976263e-01;5.774725e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0312524;2D;11;284;91.304;9.005965e-01;3.867108e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0312524;2D;12;285;91.856;2.134614e+00;1.371329e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0312524;2D;13;287;92.171;9.947772e-01;6.987743e-05
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0312524;2D;14;294;94.140;4.693175e+00;6.734425e-05
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0312524;2D;15;295;94.777;1.568509e+00;2.412566e-05
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0312524;2D;16;297;95.274;1.282313e+00;1.828731e-05
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0312524;2D;17;298;95.899;2.696983e+00;2.943460e-05
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0312524;2D;18;299;96.564;7.050357e-01;8.584472e-06
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0312524;2D;19;301;97.027;1.512510e-01;2.377407e-06
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0312524;2D;0;301;97.028;1.512510e-01;2.377407e-06
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0312524;2D;1;302;97.503;4.455958e-03;5.491371e-08
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0312524;2D;2;303;98.044;5.965407e-06;6.772645e-11
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0312524;2D;3;304;98.397;1.132454e-09;2.626915e-14
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.022099;2D;0;305;98.657;9.935468e-01;1.217658e-03
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.022099;2D;1;314;101.128;9.959115e-01;1.188817e-03
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.022099;2D;2;318;102.353;9.797720e-01;1.146441e-03
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.022099;2D;3;322;103.283;9.679508e-01;1.084884e-03
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.022099;2D;4;329;105.372;9.677062e-01;9.670225e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.022099;2D;5;335;106.788;9.902777e-01;8.227479e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.022099;2D;6;339;107.945;9.132451e-01;6.385534e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.022099;2D;7;344;109.650;1.207062e+00;4.615531e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.022099;2D;8;349;110.942;1.252617e+00;3.027368e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.022099;2D;9;350;111.389;1.200724e+00;9.620845e-05
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.022099;2D;10;351;111.561;1.258318e+00;2.760609e-05
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.022099;2D;11;353;112.101;7.138802e-01;1.444383e-05
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.022099;2D;12;355;112.992;4.200161e-01;7.260364e-06
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.022099;2D;0;355;112.994;4.200161e-01;7.260364e-06
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.022099;2D;1;356;113.388;7.495119e-02;1.122303e-06
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.022099;2D;2;357;113.802;3.929387e-03;5.412592e-08
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.022099;2D;3;358;114.156;1.584400e-05;2.088605e-10
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.022099;2D;4;359;114.485;6.741545e-10;3.059987e-14
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0156265;2D;0;360;114.671;9.802866e-01;9.421642e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0156265;2D;1;367;116.616;9.451632e-01;8.820687e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0156265;2D;2;373;118.402;9.766008e-01;8.045810e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0156265;2D;3;378;119.684;9.660467e-01;7.162927e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0156265;2D;4;384;121.352;9.231494e-01;4.849436e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0156265;2D;5;392;123.196;8.922799e-01;4.521301e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0156265;2D;6;398;124.794;1.548027e+00;2.411670e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0156265;2D;7;406;126.627;1.313770e+00;1.624269e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0156265;2D;8;410;127.961;9.947576e-01;8.285980e-05
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0156265;2D;9;411;128.517;1.967290e+00;2.222298e-05
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0156265;2D;10;414;129.059;3.359927e-01;5.765457e-06
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0156265;2D;0;414;129.060;3.359927e-01;5.765457e-06
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0156265;2D;1;415;129.560;5.761586e-02;9.189217e-07
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0156265;2D;2;416;130.068;1.466866e-03;2.041361e-08
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0156265;2D;3;417;130.664;9.466399e-07;1.167378e-11
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0110497;2D;0;418;130.935;9.343422e-01;6.624678e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0110497;2D;1;424;132.191;8.320202e-01;5.773731e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0110497;2D;2;429;133.653;8.772269e-01;5.409509e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0110497;2D;3;436;135.501;9.540901e-01;3.801115e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0110497;2D;4;440;136.994;6.630757e-01;2.121479e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0110497;2D;5;441;137.419;1.383439e+00;3.322701e-05
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0110497;2D;6;442;137.610;1.827300e+00;2.659200e-05
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0110497;2D;7;446;138.618;1.210080e+00;1.850778e-05
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0110497;2D;8;447;139.354;5.389429e-01;6.353336e-06
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0110497;2D;9;449;139.942;3.146779e-01;3.956832e-06
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0110497;2D;0;449;139.944;3.146779e-01;3.956832e-06
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0110497;2D;1;451;140.521;7.721042e-02;1.214854e-06
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0110497;2D;2;452;140.992;2.158863e-03;3.132845e-08
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0110497;2D;3;453;141.365;1.558431e-06;2.220739e-11
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0110497;2D;4;454;141.907;5.458616e-10;3.757695e-14
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0078134;2D;0;455;142.182;8.153178e-01;4.232910e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0078134;2D;1;461;144.117;8.669593e-01;3.420184e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0078134;2D;2;464;145.142;4.002833e-01;1.004952e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0078134;2D;0;464;145.143;4.002833e-01;1.004952e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0078134;2D;1;465;145.797;1.439883e-01;4.057400e-06
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0078134;2D;2;466;146.459;9.579431e-03;1.993122e-07
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0078134;2D;3;467;146.885;6.477301e-05;9.383090e-10
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.0078134;2D;4;468;147.287;2.615524e-09;5.113999e-14
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.00552496;2D;0;469;147.526;6.172089e-01;2.486305e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.00552496;2D;1;470;147.920;1.845456e+00;6.133920e-05
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.00552496;2D;2;474;149.156;7.718955e-01;2.538181e-05
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.00552496;2D;3;475;149.392;8.895029e-01;1.897776e-05
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.00552496;2D;4;476;149.897;1.981471e-01;3.601459e-06
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.00552496;2D;0;476;149.898;1.981471e-01;3.601459e-06
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.00552496;2D;1;477;150.589;1.905532e-02;2.342883e-07
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.00552496;2D;2;478;151.318;2.494720e-04;2.804772e-09
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0.00552496;2D;3;479;151.692;4.702164e-08;5.434873e-13
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0;2D;0;480;151.888;6.702475e-01;2.755027e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0;2D;1;486;153.752;8.041601e-01;1.874061e-04
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0;2D;2;487;154.210;4.691133e-01;6.734491e-05
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0;2D;0;487;154.211;4.691133e-01;6.734491e-05
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0;2D;1;488;154.731;1.014194e-01;2.784073e-06
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0;2D;2;489;155.187;5.059506e-03;7.804265e-08
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0;2D;3;490;155.956;1.099996e-05;1.847220e-10
+lbfgs L0 taux 0.5 +newton;densite sigma 0.02 s 0;2D;4;491;156.388;1.209797e-09;4.824827e-14
+cg L0 taux 0.5;densite sigma 0.02 s 0.5;2D;0;1;0.171;4.450341e+00;7.168240e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.5;2D;1;6;1.556;2.877101e+00;4.393809e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.5;2D;2;10;2.701;1.048629e+00;5.339483e-05
+cg L0 taux 0.5;densite sigma 0.02 s 0.5;2D;3;15;3.479;9.773342e-01;1.616371e-05
+cg L0 taux 0.5;densite sigma 0.02 s 0.5;2D;4;16;3.682;1.226306e+00;7.623634e-06
+cg L0 taux 0.5;densite sigma 0.02 s 0.5;2D;5;20;4.368;9.125393e-01;5.065006e-06
+cg L0 taux 0.5;densite sigma 0.02 s 0.5;2D;6;22;5.373;3.694967e-01;2.140038e-06
+cg L0 taux 0.5;densite sigma 0.02 s 0.5;2D;7;25;6.165;6.670390e-02;3.327128e-07
+cg L0 taux 0.5;densite sigma 0.02 s 0.5;2D;8;27;6.701;2.600477e-02;1.344202e-07
+cg L0 taux 0.5;densite sigma 0.02 s 0.5;2D;9;29;7.252;5.229837e-03;2.851237e-08
+cg L0 taux 0.5;densite sigma 0.02 s 0.5;2D;10;31;7.789;8.050339e-05;4.080242e-10
+cg L0 taux 0.5;densite sigma 0.02 s 0.5;2D;11;32;8.053;4.513437e-06;2.435580e-11
+cg L0 taux 0.5;densite sigma 0.02 s 0.5;2D;12;33;8.343;3.504681e-07;1.836250e-12
+cg L0 taux 0.5;densite sigma 0.02 s 0.353557;2D;0;34;8.623;3.738596e-01;1.914509e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.353557;2D;1;35;9.386;6.171952e-02;1.288657e-05
+cg L0 taux 0.5;densite sigma 0.02 s 0.353557;2D;2;37;9.836;9.945308e-03;3.289866e-06
+cg L0 taux 0.5;densite sigma 0.02 s 0.353557;2D;3;38;10.019;2.212666e-03;4.006902e-07
+cg L0 taux 0.5;densite sigma 0.02 s 0.353557;2D;4;40;10.454;3.917065e-04;1.376092e-07
+cg L0 taux 0.5;densite sigma 0.02 s 0.353557;2D;5;41;10.663;9.652876e-05;1.693612e-08
+cg L0 taux 0.5;densite sigma 0.02 s 0.353557;2D;6;43;11.065;2.739767e-05;7.746746e-09
+cg L0 taux 0.5;densite sigma 0.02 s 0.353557;2D;7;44;11.277;5.563756e-06;9.793893e-10
+cg L0 taux 0.5;densite sigma 0.02 s 0.353557;2D;8;46;11.597;2.361758e-06;5.682210e-10
+cg L0 taux 0.5;densite sigma 0.02 s 0.353557;2D;9;49;12.862;6.008751e-11;1.532905e-15
+cg L0 taux 0.5;densite sigma 0.02 s 0.250005;2D;0;50;13.148;4.195272e-01;2.420948e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.250005;2D;1;51;13.718;7.854636e-02;1.858225e-05
+cg L0 taux 0.5;densite sigma 0.02 s 0.250005;2D;2;53;14.324;1.652054e-02;5.482890e-06
+cg L0 taux 0.5;densite sigma 0.02 s 0.250005;2D;3;54;14.642;3.917775e-03;7.469233e-07
+cg L0 taux 0.5;densite sigma 0.02 s 0.250005;2D;4;56;15.225;8.156439e-04;2.987905e-07
+cg L0 taux 0.5;densite sigma 0.02 s 0.250005;2D;5;57;15.548;1.614759e-04;4.035249e-08
+cg L0 taux 0.5;densite sigma 0.02 s 0.250005;2D;6;59;15.944;6.449984e-05;2.146169e-08
+cg L0 taux 0.5;densite sigma 0.02 s 0.250005;2D;7;62;16.926;9.591399e-10;8.699008e-14
+cg L0 taux 0.5;densite sigma 0.02 s 0.176782;2D;0;63;17.131;6.066015e-01;4.729512e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.176782;2D;1;64;17.694;2.867605e-01;5.768643e-05
+cg L0 taux 0.5;densite sigma 0.02 s 0.176782;2D;2;67;18.517;1.660523e-01;1.887568e-05
+cg L0 taux 0.5;densite sigma 0.02 s 0.176782;2D;3;69;19.138;1.088051e-01;4.863549e-06
+cg L0 taux 0.5;densite sigma 0.02 s 0.176782;2D;4;71;19.747;5.379527e-02;1.494399e-06
+cg L0 taux 0.5;densite sigma 0.02 s 0.176782;2D;5;73;20.363;1.400301e-02;2.855870e-07
+cg L0 taux 0.5;densite sigma 0.02 s 0.176782;2D;6;75;20.885;6.255189e-03;8.702562e-08
+cg L0 taux 0.5;densite sigma 0.02 s 0.176782;2D;7;77;21.277;2.556311e-03;3.261162e-08
+cg L0 taux 0.5;densite sigma 0.02 s 0.176782;2D;8;79;21.621;1.081543e-03;1.328469e-08
+cg L0 taux 0.5;densite sigma 0.02 s 0.176782;2D;9;81;21.984;1.098463e-04;1.609844e-09
+cg L0 taux 0.5;densite sigma 0.02 s 0.176782;2D;10;83;22.453;2.888023e-05;4.904651e-10
+cg L0 taux 0.5;densite sigma 0.02 s 0.176782;2D;11;85;22.865;7.532954e-06;1.129336e-10
+cg L0 taux 0.5;densite sigma 0.02 s 0.176782;2D;12;87;23.227;1.746848e-06;2.368859e-11
+cg L0 taux 0.5;densite sigma 0.02 s 0.176782;2D;13;89;23.578;3.700109e-07;5.122439e-12
+cg L0 taux 0.5;densite sigma 0.02 s 0.125005;2D;0;90;23.740;8.687098e-01;1.093416e-03
+cg L0 taux 0.5;densite sigma 0.02 s 0.125005;2D;1;92;25.019;2.630976e+00;3.318827e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.125005;2D;2;99;27.059;8.149122e-01;1.881757e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.125005;2D;3;101;27.866;1.802467e+00;3.683095e-05
+cg L0 taux 0.5;densite sigma 0.02 s 0.125005;2D;4;107;29.027;6.660528e-01;1.301562e-05
+cg L0 taux 0.5;densite sigma 0.02 s 0.125005;2D;5;109;29.506;3.748446e-01;6.586637e-06
+cg L0 taux 0.5;densite sigma 0.02 s 0.125005;2D;6;110;30.314;1.806120e-02;2.838143e-07
+cg L0 taux 0.5;densite sigma 0.02 s 0.125005;2D;7;111;30.658;2.691584e-03;3.166059e-08
+cg L0 taux 0.5;densite sigma 0.02 s 0.125005;2D;8;114;31.558;1.250202e-04;2.182995e-09
+cg L0 taux 0.5;densite sigma 0.02 s 0.125005;2D;9;116;32.154;1.790569e-05;2.235481e-10
+cg L0 taux 0.5;densite sigma 0.02 s 0.125005;2D;10;118;32.634;5.963577e-07;8.311326e-12
+cg L0 taux 0.5;densite sigma 0.02 s 0.0883926;2D;0;119;32.812;9.791039e-01;1.593207e-03
+cg L0 taux 0.5;densite sigma 0.02 s 0.0883926;2D;1;127;34.579;5.415887e+00;1.307142e-03
+cg L0 taux 0.5;densite sigma 0.02 s 0.0883926;2D;2;130;35.794;1.854277e+00;3.865592e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.0883926;2D;3;137;37.312;1.585397e+00;1.812021e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.0883926;2D;4;147;38.934;1.229342e+00;1.095083e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.0883926;2D;5;150;40.089;2.339472e-01;5.514927e-06
+cg L0 taux 0.5;densite sigma 0.02 s 0.0883926;2D;6;152;40.543;1.009115e-01;2.069242e-06
+cg L0 taux 0.5;densite sigma 0.02 s 0.0883926;2D;7;154;41.001;3.102964e-02;6.085333e-07
+cg L0 taux 0.5;densite sigma 0.02 s 0.0883926;2D;8;156;41.402;2.101738e-02;2.783617e-07
+cg L0 taux 0.5;densite sigma 0.02 s 0.0883926;2D;9;158;41.730;3.511043e-03;6.597843e-08
+cg L0 taux 0.5;densite sigma 0.02 s 0.0883926;2D;10;160;42.098;1.415961e-03;1.983538e-08
+cg L0 taux 0.5;densite sigma 0.02 s 0.0883926;2D;11;162;42.410;2.986782e-04;5.005023e-09
+cg L0 taux 0.5;densite sigma 0.02 s 0.0883926;2D;12;164;42.765;6.648922e-05;1.291081e-09
+cg L0 taux 0.5;densite sigma 0.02 s 0.0883926;2D;13;166;43.193;2.764928e-05;4.769656e-10
+cg L0 taux 0.5;densite sigma 0.02 s 0.0883926;2D;14;168;43.647;5.074936e-06;1.085056e-10
+cg L0 taux 0.5;densite sigma 0.02 s 0.0883926;2D;15;170;44.110;1.274619e-06;2.450392e-11
+cg L0 taux 0.5;densite sigma 0.02 s 0.0883926;2D;16;172;44.578;3.594950e-07;7.212703e-12
+cg L0 taux 0.5;densite sigma 0.02 s 0.0625036;2D;0;173;44.815;9.975289e-01;1.693752e-03
+cg L0 taux 0.5;densite sigma 0.02 s 0.0625036;2D;1;186;47.543;9.986433e-01;1.674600e-03
+cg L0 taux 0.5;densite sigma 0.02 s 0.0625036;2D;2;193;49.319;9.986632e-01;1.570031e-03
+cg L0 taux 0.5;densite sigma 0.02 s 0.0625036;2D;3;199;51.081;9.986952e-01;1.485339e-03
+cg L0 taux 0.5;densite sigma 0.02 s 0.0625036;2D;4;206;52.770;9.899561e-01;1.322968e-03
+cg L0 taux 0.5;densite sigma 0.02 s 0.0625036;2D;5;211;54.025;1.487336e+00;7.627458e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.0625036;2D;6;216;55.629;1.653491e+00;2.276773e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.0625036;2D;7;220;56.402;9.173205e-01;6.362978e-05
+cg L0 taux 0.5;densite sigma 0.02 s 0.0625036;2D;8;224;57.207;1.379664e+00;2.890505e-05
+cg L0 taux 0.5;densite sigma 0.02 s 0.0625036;2D;9;228;57.881;8.369415e-01;1.614296e-05
+cg L0 taux 0.5;densite sigma 0.02 s 0.0625036;2D;10;229;58.561;2.964873e-01;3.649030e-06
+cg L0 taux 0.5;densite sigma 0.02 s 0.0625036;2D;11;233;59.471;1.526290e-02;2.253956e-07
+cg L0 taux 0.5;densite sigma 0.02 s 0.0625036;2D;12;235;59.926;1.541086e-03;2.447368e-08
+cg L0 taux 0.5;densite sigma 0.02 s 0.0625036;2D;13;237;60.368;4.291130e-04;6.822767e-09
+cg L0 taux 0.5;densite sigma 0.02 s 0.0625036;2D;14;239;60.697;5.134524e-05;7.588686e-10
+cg L0 taux 0.5;densite sigma 0.02 s 0.0625036;2D;15;241;61.028;6.153110e-06;7.520833e-11
+cg L0 taux 0.5;densite sigma 0.02 s 0.0625036;2D;16;243;61.373;7.959623e-07;1.131283e-11
+cg L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;0;244;61.517;9.987041e-01;1.606659e-03
+cg L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;1;258;64.321;9.989458e-01;1.602337e-03
+cg L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;2;269;66.631;9.991939e-01;1.589124e-03
+cg L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;3;276;68.840;9.939741e-01;1.547763e-03
+cg L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;4;283;70.566;9.925813e-01;1.489667e-03
+cg L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;5;287;71.408;9.557166e-01;1.433926e-03
+cg L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;6;291;72.824;8.764365e-01;1.353079e-03
+cg L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;7;298;74.537;9.644390e-01;1.198611e-03
+cg L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;8;302;75.550;9.380094e-01;1.063095e-03
+cg L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;9;307;77.314;8.714354e-01;1.003830e-03
+cg L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;10;314;79.511;9.623864e-01;7.191829e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;11;320;80.909;1.102021e+00;4.421841e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;12;325;82.350;1.971152e+00;2.328453e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;13;331;83.782;1.401367e+00;1.645479e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;14;334;84.772;4.127995e-01;9.894665e-06
+cg L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;15;335;85.105;2.543138e-01;5.441884e-06
+cg L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;16;338;86.293;6.433032e-02;1.000348e-06
+cg L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;17;340;86.924;1.158029e-02;2.521723e-07
+cg L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;18;342;87.294;3.420447e-03;6.213778e-08
+cg L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;19;344;87.669;7.374419e-04;1.186395e-08
+cg L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;20;346;88.139;1.413761e-04;2.470335e-09
+cg L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;21;348;88.475;2.178431e-05;4.121339e-10
+cg L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;22;350;88.792;2.214324e-06;5.244291e-11
+cg L0 taux 0.5;densite sigma 0.02 s 0.0441971;2D;23;352;89.290;3.379885e-07;8.160621e-12
+cg L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;0;353;89.536;9.976307e-01;1.445802e-03
+cg L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;1;363;91.239;9.960888e-01;1.434457e-03
+cg L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;2;368;92.602;9.920503e-01;1.414703e-03
+cg L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;3;374;93.899;9.979227e-01;1.377983e-03
+cg L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;4;380;95.468;9.859792e-01;1.328680e-03
+cg L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;5;387;97.134;8.896633e-01;1.232564e-03
+cg L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;6;391;98.231;9.939322e-01;1.098366e-03
+cg L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;7;397;99.692;9.975226e-01;9.948936e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;8;404;101.076;9.872802e-01;9.074071e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;9;408;102.290;8.970712e-01;7.873736e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;10;414;103.485;8.976263e-01;5.774725e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;11;419;105.149;9.005965e-01;3.867108e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;12;423;106.568;2.134614e+00;1.371329e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;13;424;106.876;1.546357e+00;3.889518e-05
+cg L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;14;429;108.243;1.034057e+00;2.873830e-05
+cg L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;15;430;108.781;1.061028e+00;1.374568e-05
+cg L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;16;436;109.771;1.621301e-01;3.947958e-06
+cg L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;17;437;110.062;1.094440e-01;2.108840e-06
+cg L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;18;438;110.745;6.440106e-03;9.396922e-08
+cg L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;19;439;111.036;7.515351e-04;9.787300e-09
+cg L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;20;441;111.604;1.692191e-04;2.362485e-09
+cg L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;21;442;111.907;1.922408e-05;2.444813e-10
+cg L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;22;444;112.484;7.583997e-06;1.019036e-10
+cg L0 taux 0.5;densite sigma 0.02 s 0.0312524;2D;23;445;112.771;8.619943e-07;1.068458e-11
+cg L0 taux 0.5;densite sigma 0.02 s 0.022099;2D;0;446;113.040;9.935468e-01;1.217658e-03
+cg L0 taux 0.5;densite sigma 0.02 s 0.022099;2D;1;455;114.840;9.959115e-01;1.188817e-03
+cg L0 taux 0.5;densite sigma 0.02 s 0.022099;2D;2;459;116.226;9.797720e-01;1.146441e-03
+cg L0 taux 0.5;densite sigma 0.02 s 0.022099;2D;3;463;117.288;9.679508e-01;1.084884e-03
+cg L0 taux 0.5;densite sigma 0.02 s 0.022099;2D;4;470;119.250;9.677061e-01;9.670225e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.022099;2D;5;476;121.242;9.902777e-01;8.227479e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.022099;2D;6;480;122.146;9.132451e-01;6.385534e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.022099;2D;7;485;123.285;1.207062e+00;4.615531e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.022099;2D;8;490;124.314;1.252617e+00;3.027368e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.022099;2D;9;495;125.364;2.017840e+00;4.508363e-05
+cg L0 taux 0.5;densite sigma 0.02 s 0.022099;2D;10;499;126.024;1.032631e+00;2.693407e-05
+cg L0 taux 0.5;densite sigma 0.02 s 0.022099;2D;11;501;126.598;2.154622e+00;2.430897e-05
+cg L0 taux 0.5;densite sigma 0.02 s 0.022099;2D;12;502;127.017;3.763582e-01;5.170685e-06
+cg L0 taux 0.5;densite sigma 0.02 s 0.022099;2D;13;506;127.674;2.487717e-01;2.828913e-06
+cg L0 taux 0.5;densite sigma 0.02 s 0.022099;2D;14;509;128.454;2.293268e-02;3.335339e-07
+cg L0 taux 0.5;densite sigma 0.02 s 0.022099;2D;15;510;128.638;2.657676e-03;3.256050e-08
+cg L0 taux 0.5;densite sigma 0.02 s 0.022099;2D;16;512;128.978;2.484480e-03;3.211810e-08
+cg L0 taux 0.5;densite sigma 0.02 s 0.022099;2D;17;513;129.394;4.936430e-06;6.086244e-11
+cg L0 taux 0.5;densite sigma 0.02 s 0.022099;2D;18;514;129.577;2.057097e-08;2.516012e-13
+cg L0 taux 0.5;densite sigma 0.02 s 0.0156265;2D;0;515;129.745;9.802866e-01;9.421642e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.0156265;2D;1;522;131.026;9.451632e-01;8.820687e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.0156265;2D;2;528;132.237;9.766008e-01;8.045810e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.0156265;2D;3;533;133.276;9.660467e-01;7.162927e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.0156265;2D;4;539;134.506;9.231494e-01;4.849436e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.0156265;2D;5;547;136.058;8.922798e-01;4.521301e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.0156265;2D;6;553;137.302;1.548027e+00;2.411670e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.0156265;2D;7;561;138.870;1.313770e+00;1.624269e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.0156265;2D;8;565;139.785;9.947572e-01;8.285980e-05
+cg L0 taux 0.5;densite sigma 0.02 s 0.0156265;2D;9;566;140.226;1.967281e+00;2.222288e-05
+cg L0 taux 0.5;densite sigma 0.02 s 0.0156265;2D;10;570;140.925;4.593567e-01;5.988142e-06
+cg L0 taux 0.5;densite sigma 0.02 s 0.0156265;2D;11;573;141.451;1.623921e-01;2.792470e-06
+cg L0 taux 0.5;densite sigma 0.02 s 0.0156265;2D;12;575;141.812;1.594916e-01;2.450039e-06
+cg L0 taux 0.5;densite sigma 0.02 s 0.0156265;2D;13;576;142.236;8.017454e-03;9.688060e-08
+cg L0 taux 0.5;densite sigma 0.02 s 0.0156265;2D;14;577;142.429;8.036108e-04;1.027784e-08
+cg L0 taux 0.5;densite sigma 0.02 s 0.0156265;2D;15;578;142.621;8.517883e-05;1.058828e-09
+cg L0 taux 0.5;densite sigma 0.02 s 0.0156265;2D;16;579;142.813;8.541656e-06;1.093312e-10
+cg L0 taux 0.5;densite sigma 0.02 s 0.0156265;2D;17;580;143.001;8.936443e-07;1.129264e-11
+cg L0 taux 0.5;densite sigma 0.02 s 0.0110497;2D;0;581;143.178;9.343422e-01;6.624678e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.0110497;2D;1;587;144.486;8.320202e-01;5.773731e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.0110497;2D;2;592;145.606;8.772268e-01;5.409509e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.0110497;2D;3;599;147.067;9.540870e-01;3.801115e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.0110497;2D;4;603;148.017;6.630757e-01;2.121479e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.0110497;2D;5;607;148.996;1.383438e+00;3.322701e-05
+cg L0 taux 0.5;densite sigma 0.02 s 0.0110497;2D;6;608;149.198;1.512984e+00;2.272225e-05
+cg L0 taux 0.5;densite sigma 0.02 s 0.0110497;2D;7;615;150.697;8.630927e-01;1.615374e-05
+cg L0 taux 0.5;densite sigma 0.02 s 0.0110497;2D;8;619;151.668;1.125123e+00;1.186751e-05
+cg L0 taux 0.5;densite sigma 0.02 s 0.0110497;2D;9;620;152.104;2.449728e-01;2.688743e-06
+cg L0 taux 0.5;densite sigma 0.02 s 0.0110497;2D;10;622;152.486;3.523383e-02;4.608241e-07
+cg L0 taux 0.5;densite sigma 0.02 s 0.0110497;2D;11;624;152.883;2.383786e-03;4.809579e-08
+cg L0 taux 0.5;densite sigma 0.02 s 0.0110497;2D;12;626;153.259;1.094751e-03;1.546024e-08
+cg L0 taux 0.5;densite sigma 0.02 s 0.0110497;2D;13;629;153.818;6.037435e-04;6.988813e-09
+cg L0 taux 0.5;densite sigma 0.02 s 0.0110497;2D;14;631;154.192;1.732266e-04;2.309886e-09
+cg L0 taux 0.5;densite sigma 0.02 s 0.0110497;2D;15;633;154.572;1.307719e-05;2.865118e-10
+cg L0 taux 0.5;densite sigma 0.02 s 0.0110497;2D;16;635;154.952;5.223346e-07;1.022430e-11
+cg L0 taux 0.5;densite sigma 0.02 s 0.0078134;2D;0;636;155.141;8.153178e-01;4.232910e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.0078134;2D;1;642;156.492;8.669595e-01;3.420184e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.0078134;2D;2;647;157.688;2.258299e+00;6.342868e-05
+cg L0 taux 0.5;densite sigma 0.02 s 0.0078134;2D;3;651;158.467;8.802691e-01;2.527516e-05
+cg L0 taux 0.5;densite sigma 0.02 s 0.0078134;2D;4;655;159.246;1.244150e+00;2.670949e-05
+cg L0 taux 0.5;densite sigma 0.02 s 0.0078134;2D;5;656;159.684;8.192588e-01;1.270632e-05
+cg L0 taux 0.5;densite sigma 0.02 s 0.0078134;2D;6;661;160.648;2.174426e-01;3.571293e-06
+cg L0 taux 0.5;densite sigma 0.02 s 0.0078134;2D;7;664;161.242;1.527758e-01;1.856813e-06
+cg L0 taux 0.5;densite sigma 0.02 s 0.0078134;2D;8;666;161.900;5.837209e-03;8.096317e-08
+cg L0 taux 0.5;densite sigma 0.02 s 0.0078134;2D;9;668;162.301;2.604226e-04;3.390074e-09
+cg L0 taux 0.5;densite sigma 0.02 s 0.0078134;2D;10;670;162.702;1.816766e-05;2.706241e-10
+cg L0 taux 0.5;densite sigma 0.02 s 0.0078134;2D;11;671;162.913;2.303179e-06;2.715476e-11
+cg L0 taux 0.5;densite sigma 0.02 s 0.0078134;2D;12;673;163.310;8.551030e-08;1.181795e-12
+cg L0 taux 0.5;densite sigma 0.02 s 0.00552496;2D;0;674;163.498;6.172089e-01;2.486305e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0.00552496;2D;1;675;163.856;1.845456e+00;6.133920e-05
+cg L0 taux 0.5;densite sigma 0.02 s 0.00552496;2D;2;682;165.251;7.973922e-01;2.859003e-05
+cg L0 taux 0.5;densite sigma 0.02 s 0.00552496;2D;3;683;165.473;6.947917e-01;1.660752e-05
+cg L0 taux 0.5;densite sigma 0.02 s 0.00552496;2D;4;684;165.914;1.799949e-01;2.515167e-06
+cg L0 taux 0.5;densite sigma 0.02 s 0.00552496;2D;5;687;166.524;8.888531e-02;1.267302e-06
+cg L0 taux 0.5;densite sigma 0.02 s 0.00552496;2D;6;690;167.355;2.544030e-03;3.685312e-08
+cg L0 taux 0.5;densite sigma 0.02 s 0.00552496;2D;7;692;167.771;4.899518e-04;7.165077e-09
+cg L0 taux 0.5;densite sigma 0.02 s 0.00552496;2D;8;695;168.382;3.394909e-05;5.805253e-10
+cg L0 taux 0.5;densite sigma 0.02 s 0.00552496;2D;9;697;168.796;9.552545e-07;1.599974e-11
+cg L0 taux 0.5;densite sigma 0.02 s 0;2D;0;698;169.000;6.702475e-01;2.755027e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0;2D;1;704;170.444;8.041603e-01;1.874061e-04
+cg L0 taux 0.5;densite sigma 0.02 s 0;2D;2;707;171.311;8.099262e-01;2.307360e-05
+cg L0 taux 0.5;densite sigma 0.02 s 0;2D;3;709;171.828;3.263918e-01;8.627777e-06
+cg L0 taux 0.5;densite sigma 0.02 s 0;2D;4;713;172.578;2.512419e-01;5.553484e-06
+cg L0 taux 0.5;densite sigma 0.02 s 0;2D;5;714;173.009;2.212940e-02;4.144961e-07
+cg L0 taux 0.5;densite sigma 0.02 s 0;2D;6;715;173.218;4.508547e-03;8.159996e-08
+cg L0 taux 0.5;densite sigma 0.02 s 0;2D;7;717;173.610;2.687440e-04;5.154381e-09
+cg L0 taux 0.5;densite sigma 0.02 s 0;2D;8;719;174.000;5.903290e-05;8.795902e-10
+cg L0 taux 0.5;densite sigma 0.02 s 0;2D;9;721;174.388;6.477392e-06;9.809861e-11
+cg L0 taux 0.5;densite sigma 0.02 s 0;2D;10;723;174.772;2.006633e-07;4.542772e-12
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.5;2D;0;1;0.164;4.450341e+00;7.168240e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.5;2D;1;6;1.176;2.877101e+00;4.393809e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.5;2D;2;7;1.644;9.887999e-01;1.143746e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.5;2D;3;8;2.139;2.082029e-01;5.194150e-06
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.5;2D;4;9;2.643;2.755608e-03;4.559855e-08
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.5;2D;5;10;3.142;1.895704e-06;1.812298e-11
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.5;2D;6;11;3.546;3.795674e-10;1.712712e-15
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.353557;2D;0;12;3.695;3.738596e-01;1.914509e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.353557;2D;1;13;4.103;6.171952e-02;1.288657e-05
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.353557;2D;2;14;4.636;7.794765e-04;1.018720e-07
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.353557;2D;3;15;5.119;1.623971e-07;1.453444e-11
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.250005;2D;0;16;5.276;4.195272e-01;2.420948e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.250005;2D;1;17;5.773;7.854636e-02;1.858224e-05
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.250005;2D;2;18;6.278;1.536870e-03;2.163371e-07
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.250005;2D;3;19;6.784;6.789670e-07;6.761401e-11
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.176782;2D;0;20;6.946;6.066013e-01;4.729511e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.176782;2D;1;21;7.462;2.867600e-01;5.768641e-05
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.176782;2D;2;22;7.962;1.977706e-02;1.649963e-06
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.176782;2D;3;23;8.484;1.181015e-04;6.109562e-09
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.176782;2D;4;24;9.013;4.224766e-09;1.618699e-13
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.125005;2D;0;25;9.173;8.687098e-01;1.093416e-03
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.125005;2D;1;26;9.612;4.947263e+00;5.211974e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.125005;2D;2;27;10.117;1.452116e+00;9.594136e-05
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.125005;2D;3;28;10.652;3.104587e-01;1.265801e-05
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.125005;2D;4;29;11.174;2.661960e-02;7.768082e-07
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.125005;2D;5;30;11.688;2.316779e-04;4.971903e-09
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.125005;2D;6;31;12.118;1.565096e-08;2.381223e-13
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0883926;2D;0;32;12.279;9.791039e-01;1.593207e-03
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0883926;2D;1;40;14.160;5.415887e+00;1.307142e-03
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0883926;2D;2;42;15.334;2.066791e+00;5.038969e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0883926;2D;3;43;16.284;1.621211e+00;6.294219e-05
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0883926;2D;4;44;17.231;3.988403e-01;5.600040e-06
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0883926;2D;5;45;18.222;1.033755e-02;1.512671e-07
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0883926;2D;6;46;19.170;1.477940e-05;2.445436e-10
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0883926;2D;7;47;19.947;1.313497e-10;8.342924e-15
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0625036;2D;0;48;20.246;9.975289e-01;1.693752e-03
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0625036;2D;1;61;23.976;9.986433e-01;1.674600e-03
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0625036;2D;2;68;26.467;9.986632e-01;1.570031e-03
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0625036;2D;3;74;28.481;9.986952e-01;1.485339e-03
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0625036;2D;4;81;30.833;9.899561e-01;1.322968e-03
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0625036;2D;5;86;32.571;1.487336e+00;7.627458e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0625036;2D;6;89;34.218;1.043505e+00;3.029279e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0625036;2D;7;90;35.095;7.184882e-01;1.659843e-05
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0625036;2D;8;91;35.979;1.017355e-01;1.395849e-06
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0625036;2D;9;92;36.835;3.322026e-03;4.467747e-08
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0625036;2D;10;93;37.425;3.835004e-06;5.042493e-11
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0625036;2D;11;94;38.033;2.598263e-10;1.212681e-14
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0441971;2D;0;95;38.257;9.987041e-01;1.606659e-03
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0441971;2D;1;109;41.562;9.989458e-01;1.602337e-03
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0441971;2D;2;120;44.416;9.991939e-01;1.589124e-03
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0441971;2D;3;127;46.705;9.939741e-01;1.547763e-03
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0441971;2D;4;134;49.055;9.925813e-01;1.489667e-03
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0441971;2D;5;138;50.472;9.557166e-01;1.433926e-03
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0441971;2D;6;142;51.878;8.764365e-01;1.353079e-03
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0441971;2D;7;149;54.017;9.644390e-01;1.198611e-03
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0441971;2D;8;153;55.354;9.380094e-01;1.063095e-03
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0441971;2D;9;158;57.026;8.714354e-01;1.003830e-03
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0441971;2D;10;165;59.091;9.623864e-01;7.191829e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0441971;2D;11;171;60.938;1.102021e+00;4.421841e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0441971;2D;12;176;62.510;1.971152e+00;2.328453e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0441971;2D;13;182;64.243;1.401367e+00;1.645479e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0441971;2D;14;183;64.893;7.329515e-01;6.749863e-05
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0441971;2D;15;184;65.564;1.958082e-01;3.328624e-06
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0441971;2D;16;185;66.123;1.559853e-02;2.245040e-07
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0441971;2D;17;186;66.729;1.235230e-04;1.906332e-09
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0441971;2D;18;187;67.117;2.091116e-08;2.616615e-13
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0312524;2D;0;188;67.247;9.976307e-01;1.445802e-03
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0312524;2D;1;198;68.886;9.960888e-01;1.434457e-03
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0312524;2D;2;203;70.016;9.920502e-01;1.414703e-03
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0312524;2D;3;209;71.319;9.979227e-01;1.377983e-03
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0312524;2D;4;215;72.644;9.859792e-01;1.328680e-03
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0312524;2D;5;222;74.236;8.896633e-01;1.232564e-03
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0312524;2D;6;226;75.087;9.939322e-01;1.098366e-03
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0312524;2D;7;232;76.248;9.975226e-01;9.948936e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0312524;2D;8;239;77.535;9.872802e-01;9.074071e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0312524;2D;9;243;78.403;8.970712e-01;7.873736e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0312524;2D;10;249;79.629;8.976263e-01;5.774725e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0312524;2D;11;254;80.683;9.005965e-01;3.867108e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0312524;2D;12;255;81.142;2.134614e+00;1.371329e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0312524;2D;13;256;81.592;8.922514e-01;1.807081e-05
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0312524;2D;14;257;82.053;1.640253e-01;2.591953e-06
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0312524;2D;15;258;82.513;7.007542e-03;1.015470e-07
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0312524;2D;16;259;83.001;1.406760e-05;2.023659e-10
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0312524;2D;17;260;83.341;3.927617e-10;2.285807e-14
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.022099;2D;0;261;83.492;9.935468e-01;1.217658e-03
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.022099;2D;1;270;85.040;9.959115e-01;1.188817e-03
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.022099;2D;2;274;85.892;9.797720e-01;1.146441e-03
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.022099;2D;3;278;86.787;9.679508e-01;1.084884e-03
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.022099;2D;4;285;88.091;9.677061e-01;9.670225e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.022099;2D;5;291;89.207;9.902777e-01;8.227479e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.022099;2D;6;295;90.037;9.132451e-01;6.385534e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.022099;2D;7;300;91.050;1.207062e+00;4.615531e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.022099;2D;8;305;92.065;1.252616e+00;3.027368e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.022099;2D;9;306;92.480;1.200724e+00;9.620845e-05
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.022099;2D;10;307;92.908;2.956627e-01;6.690933e-06
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.022099;2D;11;308;93.325;3.403664e-02;6.030863e-07
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.022099;2D;12;309;93.747;3.899529e-04;5.968573e-09
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.022099;2D;13;310;94.164;5.472182e-08;7.583200e-13
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0156265;2D;0;311;94.318;9.802866e-01;9.421642e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0156265;2D;1;318;95.561;9.451632e-01;8.820687e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0156265;2D;2;324;96.741;9.766008e-01;8.045810e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0156265;2D;3;329;97.787;9.660467e-01;7.162927e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0156265;2D;4;335;99.106;9.231494e-01;4.849436e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0156265;2D;5;343;101.179;8.922799e-01;4.521301e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0156265;2D;6;349;103.035;1.548027e+00;2.411670e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0156265;2D;7;357;105.104;1.313770e+00;1.624269e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0156265;2D;8;361;105.970;9.947575e-01;8.285980e-05
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0156265;2D;9;362;106.382;1.967288e+00;2.222296e-05
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0156265;2D;10;363;106.811;1.431169e+00;1.682069e-05
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0156265;2D;11;364;107.243;1.505722e-01;1.924400e-06
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0156265;2D;12;365;107.666;1.858476e-03;3.120184e-08
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0156265;2D;13;366;108.097;7.342169e-07;1.203501e-11
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0110497;2D;0;367;108.261;9.343422e-01;6.624678e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0110497;2D;1;373;109.410;8.320202e-01;5.773731e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0110497;2D;2;378;110.461;8.772273e-01;5.409509e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0110497;2D;3;385;111.862;9.540907e-01;3.801115e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0110497;2D;4;389;112.770;6.630757e-01;2.121479e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0110497;2D;5;390;113.240;1.383439e+00;3.322701e-05
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0110497;2D;6;391;113.812;3.906628e-01;4.878952e-06
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0110497;2D;7;392;114.360;8.981877e-02;1.105188e-06
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0110497;2D;8;393;115.095;9.563515e-03;1.161212e-07
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0110497;2D;9;394;115.469;1.447558e-04;1.763358e-09
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0110497;2D;10;395;115.824;3.445992e-08;4.211217e-13
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0078134;2D;0;396;116.023;8.153178e-01;4.232910e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0078134;2D;1;402;117.703;8.669592e-01;3.420184e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0078134;2D;2;405;118.737;4.002832e-01;1.004952e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0078134;2D;3;406;119.375;1.439884e-01;4.057400e-06
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0078134;2D;4;407;119.857;9.579431e-03;1.993122e-07
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0078134;2D;5;408;120.400;6.477302e-05;9.383090e-10
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.0078134;2D;6;409;120.846;2.612887e-09;4.898001e-14
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.00552496;2D;0;410;121.071;6.172089e-01;2.486305e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.00552496;2D;1;411;121.476;1.845456e+00;6.133920e-05
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.00552496;2D;2;412;122.165;5.418904e-01;1.158111e-05
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.00552496;2D;3;413;122.633;1.007593e-01;1.926595e-06
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.00552496;2D;4;414;123.183;6.029481e-03;8.584076e-08
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.00552496;2D;5;415;123.961;2.442920e-05;2.867670e-10
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0.00552496;2D;6;416;124.333;8.457165e-10;4.233077e-14
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0;2D;0;417;124.554;6.702475e-01;2.755027e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0;2D;1;423;126.909;8.041601e-01;1.874061e-04
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0;2D;2;424;127.530;4.691134e-01;6.734491e-05
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0;2D;3;425;128.072;1.014194e-01;2.784073e-06
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0;2D;4;426;128.781;5.059506e-03;7.804266e-08
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0;2D;5;427;129.520;1.099995e-05;1.847220e-10
+lbfgs L0 refacto 1 taux 0.5;densite sigma 0.02 s 0;2D;6;428;130.011;7.075180e-10;4.432180e-14
+lbfgs L0 taux 0.5;densite sigma 0.02 s 0;2D;0;1;0.154;3.411864e+02;2.651839e-02
+lbfgs L0 sans plancher;densite sigma 0.02 s 0;2D;0;1;0.125;3.411864e+02;2.651839e-02

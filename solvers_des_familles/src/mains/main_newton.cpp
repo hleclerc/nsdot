@@ -9,12 +9,16 @@
 //   xmake run newton --help
 //   xmake run newton --2d -n 100000 --solver amg --amg-var 2
 //   xmake run newton --3d --kernel float
+//   xmake run newton --methode lbfgs --bascule 0.5   L-BFGS depuis Voronoi, Newton des que toute
+//                                                    cellule est a moins de 50 % de sa cible
+//   xmake run newton --methode cg --c2 0.1 --courbe courbes.csv
 // =====================================================================================
 
 #include "bench/Dispatch.h"
 #include "bench/Trames.h"
 #include "solver/Lineaire.h"
 #include "solver/Newton.h"
+#include "solver/PremierOrdre.h"
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -34,6 +38,9 @@ struct Opts {
     int           linmax = 20000;
     std::string   ecrire;          ///< ou ecrire les poids trouves, au format de `cases/`
     std::string   dump;            ///< les trames de l'animation ( JSONL )
+    std::string   methode = "newton"; ///< newton | lbfgs | cg ( `PremierOrdre.h` )
+    PremierOrdreOptions po;
+    std::string   courbe;          ///< CSV : le residu apres chaque pas, contre les diagrammes et le temps
 };
 
 template<class PD, class Lin>
@@ -56,19 +63,36 @@ int lance( const Args &a, const Opts &o, const Nuage<PD::dim> &nu, Lin &lin ) {
     Newton<PD,Lin> nw( pd, lin, nu.P, a.par, o.newton );
     nw.nu.assign( n, TF( 1 ) / n );
     Trames trames;
-    if ( ! o.dump.empty() && trames.ouvre( o.dump ) )
-        nw.o.apres_pas = [ & ]( int it, TF t, int reculs ) { trames.ecrit( pd, nw.nu, a.par, "newton", 0, it, double( t ), reculs ); };
+    const bool dump = ! o.dump.empty() && trames.ouvre( o.dump );
+    FILE *courbe = o.courbe.empty() ? nullptr : std::fopen( o.courbe.c_str(), "a" );
+    const std::string etiquette = o.methode == "newton" ? ( o.newton.pas == NewtonOptions::ESSAI_LIMITES ? "newton essai-limites" : "newton" ) : o.po.nom();
     t0 = now();
-    const bool ok = nw.resout( std::vector<TF>( n, TF( 0 ) ) );
+    nw.o.apres_pas = [ & ]( int it, TF t, int reculs ) {
+        if ( dump ) trames.ecrit( pd, nw.nu, a.par, "newton", 0, it, double( t ), reculs );
+        if ( courbe ) {                              // le residu du point ACCEPTE, contre ce qu'il a coute
+            TF p = 0;
+            for ( SI i = 0; i < n; ++i ) p = std::max( p, std::fabs( nw.nu[ i ] - nw.a[ i ] ) / nw.nu[ i ] );
+            std::fprintf( courbe, "%s;%s;%dD;%d;%d;%.3f;%.6e;%.6e\n", etiquette.c_str(), nu.nom.c_str(), D, it + 1, nw.st.nb_diag, now() - t0, double( p ), double( nw.merite( nw.a ) ) );
+        }
+    };
+    PremierOrdre<PD,Lin> po( nw, o.po );
+    const bool ok = o.methode == "newton" ? nw.resout( std::vector<TF>( n, TF( 0 ) ) ) : po.resout( std::vector<TF>( n, TF( 0 ) ) );
     const double total = now() - t0 + t_arbre;
+    if ( courbe ) std::fclose( courbe );
     const NewtonStats &st = nw.st;
     const StatsLin &sl = lin.st;
     const double autre = total - t_arbre - st.t_maj - st.t_diag - st.t_asm - st.t_lin - st.t_lim;
+    if ( o.methode != "newton" ) {
+        const PremierOrdreStats &ps = po.st;
+        std::printf( "  %s %s ( max|a-nu|/nu = %.2e ) : %dD n=%d -- %d iterations, %d diagrammes ( %d en recherche lineaire, %d refuses par le plancher, %d redemarrages, %d factorisations )%s, %.3f s\n",
+                     o.methode == "cg" ? "gradient conjugue ( PR+ )" : "L-BFGS", ps.fin, double( ps.reste ), D, int( n ), ps.nb_iter, ps.nb_diag, ps.nb_ls, ps.nb_plancher, ps.nb_restart, ps.nb_facto,
+                     ps.it_bascule >= 0 ? ( " puis NEWTON depuis l'iteration " + std::to_string( ps.it_bascule ) ).c_str() : "", ps.temps );
+    }
 
     std::printf( "  newton %s ( max|a-nu|/nu = %.2e ) : %dD n=%d threads=%d kernel=%s maxnv=%d leaf=%d"
                  " -- %d iterations, %d diagrammes ( %d reculs ), %s%s\n",
                  st.fin, double( st.reste ), D, int( n ), a.par.threads, a.kernel.c_str(), PD::max_nv,
-                 int( a.leaf ), st.nb_iter, st.nb_diag, st.nb_recul, lin.nom(),
+                 int( a.leaf ), st.nb_iter, st.nb_diag - ( o.methode != "newton" ? po.st.nb_diag : 0 ), st.nb_recul, lin.nom(),
                  sl.nb_iter ? ( " ( " + std::to_string( sl.nb_iter ) + " iterations )" ).c_str() : "" );
     std::printf( "         arbre %.3f | majorants %.3f | diagrammes %.3f | assemblage %.3f"
                  " | resolution %.3f | limites %.3f | reste %.3f | TOTAL %.3f s\n",
@@ -180,6 +204,19 @@ int main( int argc, char **argv ) {
         else if ( s == "--beta0" )      o.newton.beta0 = std::atof( val() );
         else if ( s == "--mult-ok" )    o.newton.mult_ok = std::atof( val() );
         else if ( s == "--dump" )       o.dump = val();
+        else if ( s == "--methode" )    o.methode = val();
+        else if ( s == "--memoire" )    o.po.memoire = std::atoi( val() );
+        else if ( s == "--c2" )         o.po.c2 = std::atof( val() );
+        else if ( s == "--precond" )    o.po.precond = std::atoi( val() );
+        else if ( s == "--refacto" )    o.po.refacto = std::atoi( val() );
+        else if ( s == "--sauter-borne" ) o.po.sauter_borne = std::atoi( val() );
+        else if ( s == "--refacto-borne" ) o.po.refacto_borne = std::atof( val() );
+        else if ( s == "--refacto-taux" ) o.po.refacto_taux = std::atof( val() );
+        else if ( s == "--plancher" )   o.po.plancher = std::atoi( val() );
+        else if ( s == "--max-ls" )     o.po.max_ls = std::atoi( val() );
+        else if ( s == "--bascule" )    o.po.bascule = std::atof( val() );
+        else if ( s == "--bascule-it" ) o.po.bascule_it = std::atoi( val() );
+        else if ( s == "--courbe" )     o.courbe = val();
         else if ( s == "--lim-tol" )    o.newton.lim.tol = std::atof( val() );
         else if ( s == "--lim-coeff" )  o.newton.lim.coeff = std::atof( val() );
         else if ( s == "--t-min" )      o.newton.t_min = std::atof( val() );
@@ -208,11 +245,28 @@ int main( int argc, char **argv ) {
                 "  --lim-tol T     precision relative des limites               (1e-2)\n"
                 "  --lim-coeff C   ou verifier la prediction                    (0.99)\n"
                 "  --t-min T       sous ce pas, STAGNATION                      (1e-10)\n"
-                "  --residu R      lin ( a - nu ) | barriere ( x - 1/x, x = a/nu ) | log  (lin)\n" );
+                "  --residu R      lin ( a - nu ) | barriere ( x - 1/x, x = a/nu ) | log  (lin)\n"
+                "  --methode M     newton ( defaut ) | lbfgs | cg : le premier ordre sur le dual ( PremierOrdre.h )\n"
+                "  --memoire K     L-BFGS : paires gardees                                     (10)\n"
+                "  --c2 C          Wolfe forte |phi'( alpha )| <= C |phi'( 0 )|                   (0.5 ; CG : 0.1)\n"
+                "  --precond P     H0 : 0 = gamma I | 1 = diagonale du laplacien | 2 = laplacien du depart, factorise une fois  (2)\n"
+                "  --refacto K     precond 2 : refactoriser toutes les K iterations                  (0 : jamais)\n"
+                "  --refacto-borne F  precond 2 : refactoriser quand le plancher a borne le pas sous F   (0.25)\n"
+                "  --refacto-taux T   precond 2 : refactoriser quand |r|_2 n'a pas ete divise par 1/T   (0.5 ; 0 : jamais)\n"
+                "  --plancher 0|1  refuser un pas qui met une cellule sous eps ( KMT )                (1)\n"
+                "  --sauter-borne 0|1  L-BFGS : ne pas garder la paire d'un pas borne par le plancher (1)\n"
+                "  --max-ls K      diagrammes par recherche lineaire, au plus                     (12)\n"
+                "  --bascule R     passer a Newton des que max|a-nu|/nu <= R                     (0 : jamais)\n"
+                "  --bascule-it K  passer a Newton apres K iterations                            (0 : jamais)\n"
+                "  --courbe FILE   CSV ( ajoute ) : methode;cas;dim;it;diagrammes;temps;max|a-nu|/nu;|r|_2 apres chaque pas\n" );
             return s == "--help" || s == "-h" ? 0 : 1;
         }
     }
     a.finalise();
+    o.po.tol = o.newton.tol;
+    o.po.trace = o.newton.trace;
+    o.po.maxit = 10 * o.newton.maxit;                    // le premier ordre a besoin de bien plus d'iterations
+    if ( o.methode == "cg" ) { o.po.methode = PremierOrdreOptions::CG; if ( o.po.c2 == TF( 0.5 ) ) o.po.c2 = 0.1; }
 
     int bad = 0;
     if ( a.dims != 3 ) bad += deroule<2>( a, o );

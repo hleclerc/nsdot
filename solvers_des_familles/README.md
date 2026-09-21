@@ -55,6 +55,7 @@ src/solver/    Laplacien.h        c_ij = |facette| / ( 2 |p_i - p_j| ), assembl�
                Ecrasement.h       le polynôme d'une cellule le long de w + alpha d, à combinatoire figée
                Prolongation.h     le multi-échelle : paquets, prolongations, relèvement minimal (§ 8)
                Densite.h          plancher + gaussiennes : la masse d'une cellule par circulation (§ 9)
+               PremierOrdre.h     L-BFGS et gradient conjugué sur le dual, laplacien figé, bascule vers Newton (§ 10)
 
 src/bench/     Nuages.h/.cpp      uniforme, lecture/écriture de cases/, la suite
                Direction.h        un nuage + des poids + une direction de Newton, sauvés dans directions/
@@ -69,7 +70,8 @@ src/mains/     main_check.cpp     l'exactitude
                main_densite.cpp   les densités hétérogènes, la continuation en largeur (§ 9)
 
 directions/    les directions « à problème » sauvées, leurs CSV et leurs figures
-scripts/       ecrasement_plot.py, les figures depuis les CSV
+courbes/       le résidu contre les diagrammes, méthode par méthode (`--courbe`, § 10)
+scripts/       ecrasement_plot.py, methodes_plot.py, les figures depuis les CSV
 ```
 
 **Les responsabilités, en une phrase chacune.** L'arbre range les germes et borne leurs poids ; il
@@ -927,3 +929,140 @@ Pourquoi ça marche là où la barrière (§ 9.6) et les gardes (§ 9.5) échoua
 limites ne cherche pas à *empêcher* les pincements, il mesure exactement jusqu'où la direction
 peut aller avant qu'une cellule ne passe sous le plancher, et y va — au lieu de deviner par
 moitiés. Les cellules qui s'amincissent sans passer sous `ε` ne le freinent pas.
+
+---
+
+# 10. NEWTON CONTRE LE PREMIER ORDRE : L-BFGS ET LE GRADIENT CONJUGUÉ (`--methode`)
+
+La question : un L-BFGS *ad hoc*, ou un gradient conjugué non linéaire, font-ils mieux que Newton
+amorti — sur l'uniforme, sur un nuage compliqué (les lignes, les plans), et sur une densité
+hétérogène (`σ = 0.02`) — en 2D et en 3D ? `src/solver/PremierOrdre.h`, branché dans `newton`
+et `densite` par `--methode newton | lbfgs | cg`, même diagramme, même critère d'arrêt, même
+compteur ; `figures/methodes.png` (`scripts/methodes_plot.py` depuis `courbes/*.csv`, écrits par
+`--courbe`).
+
+**Ce qu'on minimise.** `F(w) = −Φ(w)`, convexe, de gradient `a(w) − ν` : exactement ce que le
+diagramme livre, sans hessienne ni système linéaire. **La recherche linéaire n'a pas de valeur
+de fonction** (il faudrait le second moment de chaque cellule, et un noyau de plus avec une
+densité) : elle n'a que `φ'(α) = (a(w + αd) − ν)·d`, croissante en `α` par convexité. Ça
+suffit : tout `α` où `φ' ≤ 0` fait décroître `F` (`F(α) ≤ F(0) + α φ'(α)`), donc chaque point
+essayé du bon côté est un progrès garanti sans Armijo, et la sécante entre un `φ' < 0` et un
+`φ' > 0` converge vers le minimum sur la droite. On accepte à `|φ'(α)| ≤ c₂ |φ'(0)|` (`c₂ = 0.5`,
+`0.1` pour CG), et la courbure `s·y > 0` de L-BFGS est automatique. **Le plancher de masse est
+gardé** : un pas qui met une cellule sous `ε = min(min ν, min a₀)/2` est refusé et le pas coupé
+en deux, comme KMT (les cellules vides au départ sont exemptées tant qu'elles le restent).
+
+**Le préconditionnement, et pourquoi il fait tout.** Trois `H₀` :
+
+* `γ I` (`--precond 0`) et la **diagonale du laplacien** (`--precond 1`, Jacobi, gratuite
+  depuis les facettes). Les deux **stagnent** sur tous les cas. Sans plancher, l'uniforme
+  n = 20 000 finit avec 19 702 cellules vides sur 20 000 à l'itération 20 : une cellule vide a un
+  gradient constant `−ν_i` et une courbure nulle, la paire `(s, y)` de L-BFGS le lui dit
+  (`y_i = 0`), l'inverse de la hessienne devient énorme dans ces directions, et le pas suivant
+  pousse ces poids sans mesure — elles avalent leurs voisines, qui se vident à leur tour. Avec le
+  plancher, c'est la **rugosité** de la direction qui bloque : `d_i` suit le résidu de la cellule
+  `i` seule, deux voisines partent en sens opposés, et c'est `d_i − d_j` qui déplace leur
+  bissectrice (de `(d_i − d_j)/2|p_i − p_j|`). Mesuré : `|d|max = 2h²`, une cellule à la moitié
+  de sa cible vidée par ses voisines dès `α = 0.25`, puis `α ≈ 5e-3` par itération et `φ'` qui ne
+  bouge plus — là où la direction de Newton, *lisse*, passe entière. STAGNATION à 3.9 (uniforme)
+  et 1.7e3 (lignes), 54 et 46 diagrammes refusés par le plancher.
+* le **laplacien figé** `L₀⁻¹` (`--precond 2`, le défaut) : factorisé une fois — la descente de
+  Cholesky, ou la hiérarchie AMG gardée (`resout_encore`, ajouté à `Amg` pour ça) — et une
+  descente par itération. La direction a la régularité de Newton, les paires corrigent ce que la
+  combinatoire a changé depuis. C'est la **méthode de la corde avec une mémoire**, et c'est ce
+  qui réutilise la factorisation (le levier que § 7.4 désignait). Elle est refaite quand la corde
+  ne mord plus : quand le plancher a borné le pas sous `0.25` (`--refacto-borne`), quand `|r|₂`
+  n'a pas été divisé par 2 au dernier pas (`--refacto-taux 0.5`), toutes les K itérations
+  (`--refacto K`), et quand la recherche linéaire échoue sur un laplacien périmé. **À chaque
+  refonte la mémoire est vidée** : mesuré sur la densité à `s = 0.125`, les paires apprises sur
+  l'ancien laplacien et bornées par le plancher tirent la direction fraîche vers la cellule qui
+  bloque (`d_i = −9e-4` pour une cellule à `0.066 ν` dont le résidu demande `+0.93 ν`), et le pas
+  tombe à 1e-15 — Newton, qui refait son laplacien, passe la même étape en 7 diagrammes.
+
+**La bascule** (`--bascule 0.5`) : dès que `max|a − ν|/ν ≤ 0.5` — toute cellule a au moins la
+moitié de sa cible, donc le plancher KMT est raisonnable — on rend la main à Newton depuis là,
+diagramme compris. L'hybride : le premier ordre pour partir de loin, Newton pour finir.
+
+## 10.1 Ce que ça donne
+
+n = 100 000, 8 fils. 2D : Cholesky pour tout le monde ; 3D : AMG Ruge-Stüben+GS. Sur les lignes
+le plancher du cas est 2.35e-6 (§ 3), la tolérance est mise à 4e-6 pour que personne ne paie
+la sortie en STAGNATION. `L₀` = laplacien figé, refait selon les règles ci-dessus ; `refacto 1` =
+refait à chaque itération, c'est Newton avec cette recherche linéaire à la place des essais.
+
+| diagrammes (itérations) — temps | 2D uniforme | 2D lignes | 3D uniforme | 3D plans |
+|---|---|---|---|---|
+| **Newton, essais KMT** | **8** (6) — 2.6 s | 79 (23) — 16.5 s | **9** (6) — 8.7 s | **27** (13) — 19.5 s |
+| Newton, `essai-limites` (2D) | 7 (6) — 2.5 s | **30** (18) — 8.4 s | — | — |
+| L-BFGS `L₀`, taux 0.5 | 36 (13), 5 facto — 3.9 s | 86 (24), 14 facto — 12.3 s | 22 (12), 3 facto — 14.3 s | 105 (28), 15 facto — 57 s |
+| L-BFGS `L₀`, jamais refait sauf blocage | 67 (23), 2 facto — 4.4 s | 161 (47), 15 facto — 21.5 s | 51 (16), 2 facto — 20 s | 228 (48), 13 facto — 121 s |
+| L-BFGS `L₀` → Newton à 0.5 | 27 + 2 — 4.0 s | 81 + 2 — 11.7 s | 17 + 2 — 10.1 s | 97 + 4 — 59 s |
+| CG (PR+) `L₀`, taux 0.5 | 56 (14) — 4.9 s | 120 (25) — 15.0 s | 36 (11) — 21.6 s | 161 (31) — 86 s |
+| L-BFGS `L₀`, refait à chaque itération | 8 (6) — 2.8 s | 87 (20) — 12.4 s | 11 (6) — 8.2 s | 65 (17) — 41 s |
+| L-BFGS Jacobi | STAGNATION à 3.9 | STAGNATION à 1.7e3 | — | — |
+| L-BFGS `L₀` sans plancher | 62 (32) — 4.9 s | STAGNATION à 24, 733 diag | — | — |
+
+(Les temps de la ligne Newton 2D sont ceux de ce lot, pris pendant qu'un autre tournait : 2.2 et
+13.0 s au calme, § 3.) Et la densité, `σ = 0.02`, continuation `√2` depuis `s = 0.5`, 15 étapes :
+
+| | diagrammes (itérations) | temps |
+|---|---|---|
+| Newton, essais KMT | 400 (139) | 124 s |
+| Newton, `essai-limites` | **204** (130) | 108 s |
+| L-BFGS `L₀`, taux 0.5 | 557 (208) | 157 s |
+| L-BFGS `L₀`, jamais refait sauf blocage | 884 (309) | 227 s |
+| L-BFGS `L₀` → Newton à 0.5 | 491 (149) | 156 s |
+| CG (PR+) `L₀`, taux 0.5 | 723 (211) | 175 s |
+| L-BFGS `L₀`, refait à chaque itération | 428 (129) | 130 s |
+| L-BFGS direct (`s = 0`), tout `H₀` | ÉCHEC | |
+
+Le direct à `σ = 0.02` : le laplacien de Voronoï y a des blocs de facettes de masse `1e-300`
+(Cholesky échoue), Jacobi donne `φ'(0) = −4.6e22`, et le gradient nu fait `α = 6e-6` avec
+33 000 cellules vides. Ce que Newton ne peut pas (§ 9.1), le premier ordre ne le peut pas non
+plus : une cellule de masse nulle n'a ni équation ni courbure, et son gradient constant ne dit
+pas de combien monter.
+
+## 10.2 Ce qu'il faut en lire
+
+**Newton gagne partout, en diagrammes comme en temps**, de 2× (2D uniforme, 3D uniforme) à 4×
+(3D plans, densité) sur la meilleure variante du premier ordre — et `essai-limites` creuse encore
+l'écart en 2D. Le seul cas où le premier ordre égale Newton est quand il *est* Newton
+(`refacto 1`), avec une recherche linéaire un peu plus chère que les essais (2D uniforme 8 = 8 ;
+3D plans 65 contre 27 : la sécante et le test de Wolfe coûtent un à deux diagrammes de plus par
+itération, et la trajectoire diffère).
+
+**La phase chère est la même pour tout le monde, et ce n'est pas une affaire de méthode.** Sur
+les lignes, les plans, la zone dure de la densité, ce sont les cellules qui s'écrasent le long de
+la direction qui bornent le pas (§ 7) ; le premier ordre n'y échappe pas — il a *besoin* du
+plancher (sans lui, effondrement) — et sa direction, moins bonne, y est bornée plus tôt et plus
+souvent (86 refus sur les lignes contre 55 reculs de Newton). Le levier là est celui de § 7 et
+§ 9.7 : mesurer la limite au lieu de deviner, pas changer d'ordre.
+
+**Là où le premier ordre coûte peu, il converge lentement.** Une fois les cellules en place, la
+corde `L₀` avance à 1 diagramme par itération sans factorisation — mais au taux 0.5–0.6 par
+itération (lignes, it 20 à 44 : `|r|₂` divisé par 1.85 par pas, 24 itérations pour 6 décades), là
+où Newton en met 3 quadratiques. À 0.13 s le diagramme et 0.3 s la factorisation en 2D, 0.4 et
+0.5 s en 3D (AMG, hiérarchie comprise), refaire le laplacien est *toujours* rentable : la
+corde ne paie que si la factorisation coûte plus de dix diagrammes, ce qui n'est vrai nulle part
+ici. La mémoire de L-BFGS n'y change rien de lisible : sans elle (`--memoire 0`, la corde nue
+avec les mêmes refontes), 28 diagrammes contre 36 sur l'uniforme et 94 contre 86 sur les lignes,
+mêmes factorisations.
+
+**L'hybride ne rend que ce que Newton aurait fait.** `→ Newton à 0.5` économise les 3 à 4
+dernières itérations de la corde (27 + 2 contre 36 sur l'uniforme), mais tout ce qui précède est
+déjà borné par le plancher comme Newton l'aurait été. Il n'y a pas de « phase loin de la
+solution » où le premier ordre serait plus robuste : la difficulté du transport semi-discret
+n'est pas la non-linéarité du dual, c'est sa *non-régularité* — les cellules qui se vident — et
+un pas de gradient s'y écrase comme un pas de Newton, en moins bien.
+
+**2D contre 3D.** Même ordre, mêmes conclusions ; la différence est de prix relatif. En 3D le
+diagramme vaut la résolution (0.4 et 0.5 s), donc une méthode qui multiplie les diagrammes par
+2–4 pour économiser des factorisations perd sur les deux tableaux ; et la corde figée y est
+plus mauvaise (plans : 228 contre 27), les plans changent la combinatoire plus que les lignes.
+En 2D avec Cholesky la factorisation (0.3 s) vaut deux diagrammes, et c'est là que le premier
+ordre est le moins loin (uniforme : 3.9 s contre 2.6).
+
+Ce qui reste ouvert, si on y revient : une recherche linéaire à la KMT (couper en deux, accepter
+le premier pas admissible) rendrait `refacto 1` égal à Newton ; et la 3D d'une densité
+hétérogène (flux d'un champ radial à travers des faces polygonales, un niveau d'imbrication de
+plus que § 9) n'est pas écrite.

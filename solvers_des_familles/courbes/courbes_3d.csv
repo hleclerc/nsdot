@@ -1,0 +1,235 @@
+newton;uniforme n=100000;3D;0;1;0.349;3.380851e+00;1.363905e-03
+newton;uniforme n=100000;3D;1;3;2.013;1.878367e+00;6.604117e-04
+newton;uniforme n=100000;3D;2;5;3.788;1.029686e+00;3.340924e-04
+newton;uniforme n=100000;3D;3;6;5.051;1.524484e-01;1.676015e-05
+newton;uniforme n=100000;3D;4;7;6.368;5.651364e-03;1.793138e-07
+newton;uniforme n=100000;3D;5;8;7.476;8.246068e-06;1.283531e-10
+newton;uniforme n=100000;3D;6;9;8.633;1.660252e-11;2.092640e-16
+lbfgs L0 taux 0.5;uniforme n=100000;3D;0;1;0.426;3.380851e+00;1.363905e-03
+lbfgs L0 taux 0.5;uniforme n=100000;3D;1;3;2.239;1.878367e+00;6.604117e-04
+lbfgs L0 taux 0.5;uniforme n=100000;3D;2;8;5.309;1.359397e+00;4.128740e-04
+lbfgs L0 taux 0.5;uniforme n=100000;3D;3;9;6.731;6.950518e-01;1.118029e-04
+lbfgs L0 taux 0.5;uniforme n=100000;3D;4;12;8.373;9.630789e-01;3.432842e-05
+lbfgs L0 taux 0.5;uniforme n=100000;3D;5;13;9.124;1.091061e+00;1.372437e-05
+lbfgs L0 taux 0.5;uniforme n=100000;3D;6;15;10.058;5.035376e-01;6.312574e-06
+lbfgs L0 taux 0.5;uniforme n=100000;3D;7;17;10.932;3.183639e-02;1.512497e-06
+lbfgs L0 taux 0.5;uniforme n=100000;3D;8;18;11.524;7.975804e-03;2.324455e-07
+lbfgs L0 taux 0.5;uniforme n=100000;3D;9;19;12.115;5.111219e-03;7.797170e-08
+lbfgs L0 taux 0.5;uniforme n=100000;3D;10;20;12.690;6.541081e-03;7.261153e-08
+lbfgs L0 taux 0.5;uniforme n=100000;3D;11;21;13.741;1.083966e-05;1.176190e-10
+lbfgs L0 taux 0.5;uniforme n=100000;3D;12;22;14.294;1.903038e-08;2.065121e-13
+lbfgs L0;uniforme n=100000;3D;0;1;0.305;3.380851e+00;1.363905e-03
+lbfgs L0;uniforme n=100000;3D;1;3;1.729;1.878367e+00;6.604117e-04
+lbfgs L0;uniforme n=100000;3D;2;8;3.438;1.359397e+00;4.128740e-04
+lbfgs L0;uniforme n=100000;3D;3;13;5.126;1.739686e+00;2.195594e-04
+lbfgs L0;uniforme n=100000;3D;4;18;6.776;8.246381e-01;1.718191e-04
+lbfgs L0;uniforme n=100000;3D;5;22;8.257;1.591951e+00;1.045469e-04
+lbfgs L0;uniforme n=100000;3D;6;27;9.982;7.817303e-01;8.329308e-05
+lbfgs L0;uniforme n=100000;3D;7;31;11.436;1.548483e+00;5.587031e-05
+lbfgs L0;uniforme n=100000;3D;8;37;13.448;9.725693e-01;4.261288e-05
+lbfgs L0;uniforme n=100000;3D;9;40;14.574;1.364314e+00;3.301796e-05
+lbfgs L0;uniforme n=100000;3D;10;43;15.706;6.248249e-01;2.461600e-05
+lbfgs L0;uniforme n=100000;3D;11;45;17.017;2.347108e-01;2.843203e-06
+lbfgs L0;uniforme n=100000;3D;12;47;17.826;1.104569e-02;1.795126e-07
+lbfgs L0;uniforme n=100000;3D;13;48;18.381;1.201993e-03;1.546699e-08
+lbfgs L0;uniforme n=100000;3D;14;49;18.946;1.912018e-04;2.110236e-09
+lbfgs L0;uniforme n=100000;3D;15;50;19.529;3.592426e-06;6.028651e-11
+lbfgs L0;uniforme n=100000;3D;16;51;20.111;1.388208e-07;1.889586e-12
+lbfgs L0 taux 0.5 +newton;uniforme n=100000;3D;0;1;0.318;3.380851e+00;1.363905e-03
+lbfgs L0 taux 0.5 +newton;uniforme n=100000;3D;1;3;1.754;1.878367e+00;6.604117e-04
+lbfgs L0 taux 0.5 +newton;uniforme n=100000;3D;2;8;3.513;1.359397e+00;4.128740e-04
+lbfgs L0 taux 0.5 +newton;uniforme n=100000;3D;3;9;4.681;6.950518e-01;1.118029e-04
+lbfgs L0 taux 0.5 +newton;uniforme n=100000;3D;4;12;5.896;9.630789e-01;3.432842e-05
+lbfgs L0 taux 0.5 +newton;uniforme n=100000;3D;5;13;6.498;1.091061e+00;1.372437e-05
+lbfgs L0 taux 0.5 +newton;uniforme n=100000;3D;6;15;7.350;5.035376e-01;6.312574e-06
+lbfgs L0 taux 0.5 +newton;uniforme n=100000;3D;7;17;8.248;3.183639e-02;1.512497e-06
+lbfgs L0 taux 0.5 +newton;uniforme n=100000;3D;0;17;8.250;3.183639e-02;1.512497e-06
+lbfgs L0 taux 0.5 +newton;uniforme n=100000;3D;1;18;9.198;2.432107e-04;5.018176e-09
+lbfgs L0 taux 0.5 +newton;uniforme n=100000;3D;2;19;10.093;1.463789e-08;1.914562e-13
+cg L0 taux 0.5;uniforme n=100000;3D;0;1;0.336;3.380851e+00;1.363905e-03
+cg L0 taux 0.5;uniforme n=100000;3D;1;5;2.258;1.878367e+00;6.604117e-04
+cg L0 taux 0.5;uniforme n=100000;3D;2;10;3.886;1.359397e+00;4.128740e-04
+cg L0 taux 0.5;uniforme n=100000;3D;3;14;6.868;1.477602e+00;2.980467e-05
+cg L0 taux 0.5;uniforme n=100000;3D;4;20;11.616;9.701995e-01;1.513837e-05
+cg L0 taux 0.5;uniforme n=100000;3D;5;23;14.830;4.287132e-01;7.653910e-06
+cg L0 taux 0.5;uniforme n=100000;3D;6;26;17.614;2.462109e-02;3.540646e-07
+cg L0 taux 0.5;uniforme n=100000;3D;7;28;18.356;2.474463e-03;3.611400e-08
+cg L0 taux 0.5;uniforme n=100000;3D;8;30;19.121;4.351942e-04;5.939450e-09
+cg L0 taux 0.5;uniforme n=100000;3D;9;32;19.871;1.976689e-05;3.792040e-10
+cg L0 taux 0.5;uniforme n=100000;3D;10;34;20.832;1.540988e-06;2.011937e-11
+cg L0 taux 0.5;uniforme n=100000;3D;11;36;21.578;1.016482e-07;1.346764e-12
+lbfgs L0 refacto 1 taux 0.5;uniforme n=100000;3D;0;1;0.323;3.380851e+00;1.363905e-03
+lbfgs L0 refacto 1 taux 0.5;uniforme n=100000;3D;1;3;1.792;1.878367e+00;6.604117e-04
+lbfgs L0 refacto 1 taux 0.5;uniforme n=100000;3D;2;7;3.848;1.551892e+00;2.546399e-04
+lbfgs L0 refacto 1 taux 0.5;uniforme n=100000;3D;3;8;5.016;8.501455e-01;1.464540e-05
+lbfgs L0 refacto 1 taux 0.5;uniforme n=100000;3D;4;9;6.063;4.496194e-02;5.312044e-07
+lbfgs L0 refacto 1 taux 0.5;uniforme n=100000;3D;5;10;7.110;5.804449e-04;6.378732e-09
+lbfgs L0 refacto 1 taux 0.5;uniforme n=100000;3D;6;11;8.129;7.286269e-08;8.327673e-13
+newton;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;0;1;0.319;7.360894e+02;2.577265e-02
+newton;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;1;8;3.356;7.246425e+02;2.537139e-02
+newton;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;2;11;5.309;5.569006e+02;1.939521e-02
+newton;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;3;14;7.187;4.276762e+02;1.483172e-02
+newton;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;4;16;8.848;2.430763e+02;8.267893e-03
+newton;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;5;18;10.320;1.370885e+02;4.579226e-03
+newton;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;6;20;11.860;7.727512e+01;2.527035e-03
+newton;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;7;21;12.977;2.024291e+01;5.609733e-04
+newton;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;8;22;14.163;5.383974e+00;1.290019e-04
+newton;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;9;23;15.276;1.271935e+00;2.440620e-05
+newton;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;10;24;16.294;1.993663e-01;3.043979e-06
+newton;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;11;25;17.398;8.946227e-03;1.099763e-07
+newton;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;12;26;18.430;2.100775e-05;2.278736e-10
+newton;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;13;27;19.456;1.162343e-10;1.242873e-15
+lbfgs L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;0;1;0.310;7.360894e+02;2.577265e-02
+lbfgs L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;1;10;4.090;7.189597e+02;2.517184e-02
+lbfgs L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;2;17;7.170;6.857347e+02;2.400464e-02
+lbfgs L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;3;22;9.613;6.618812e+02;2.316762e-02
+lbfgs L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;4;28;12.590;6.560792e+02;2.296441e-02
+lbfgs L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;5;34;15.482;5.823151e+02;2.036282e-02
+lbfgs L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;6;40;18.635;4.558379e+02;1.587957e-02
+lbfgs L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;7;44;21.070;2.257912e+02;7.618108e-03
+lbfgs L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;8;52;24.843;1.913831e+02;6.381178e-03
+lbfgs L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;9;59;28.554;1.830646e+02;6.103259e-03
+lbfgs L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;10;64;31.361;9.200625e+01;2.983659e-03
+lbfgs L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;11;69;33.702;7.650368e+01;2.445075e-03
+lbfgs L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;12;73;36.245;4.339021e+01;1.352947e-03
+lbfgs L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;13;79;39.326;2.668940e+01;8.178632e-04
+lbfgs L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;14;82;41.616;1.229172e+01;3.605829e-04
+lbfgs L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;15;88;44.536;1.131491e+01;3.263153e-04
+lbfgs L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;16;90;46.095;3.740478e+00;7.591078e-05
+lbfgs L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;17;93;47.619;2.343927e+00;5.486372e-05
+lbfgs L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;18;94;48.778;2.120424e+00;3.709299e-05
+lbfgs L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;19;95;49.963;1.024322e+00;1.186354e-05
+lbfgs L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;20;97;51.096;4.262543e-01;5.396756e-06
+lbfgs L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;21;98;51.808;1.129209e-01;1.411966e-06
+lbfgs L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;22;99;52.527;2.029890e-02;2.566456e-07
+lbfgs L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;23;100;53.366;1.435206e-03;2.109836e-08
+lbfgs L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;24;101;54.172;3.411653e-04;4.892009e-09
+lbfgs L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;25;102;54.974;2.859755e-05;7.169004e-10
+lbfgs L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;26;103;55.768;8.240949e-06;1.716406e-10
+lbfgs L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;27;104;56.558;1.480317e-06;2.361114e-11
+lbfgs L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;28;105;57.347;1.697700e-07;3.809121e-12
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;0;1;0.315;7.360894e+02;2.577265e-02
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;1;10;4.352;7.189597e+02;2.517184e-02
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;2;17;7.556;6.857347e+02;2.400464e-02
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;3;22;10.120;6.618812e+02;2.316762e-02
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;4;28;13.203;6.560792e+02;2.296441e-02
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;5;34;16.259;5.823151e+02;2.036282e-02
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;6;40;19.665;4.558379e+02;1.587957e-02
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;7;44;22.342;2.257912e+02;7.618108e-03
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;8;52;26.006;1.913831e+02;6.381178e-03
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;9;59;29.775;1.830646e+02;6.103259e-03
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;10;64;32.870;9.200625e+01;2.983659e-03
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;11;69;35.469;7.650368e+01;2.445075e-03
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;12;75;38.535;5.058788e+01;1.536824e-03
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;13;80;41.113;4.430270e+01;1.326596e-03
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;14;86;44.118;3.227329e+01;9.295363e-04
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;15;93;47.467;3.027433e+01;8.665294e-04
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;16;100;51.204;2.824515e+01;8.082296e-04
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;17;105;54.268;2.498096e+01;7.142246e-04
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;18;110;57.178;1.536642e+01;4.322438e-04
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;19;115;59.778;1.178615e+01;3.245498e-04
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;20;119;61.712;8.294552e+00;2.197046e-04
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;21;127;65.298;6.777703e+00;1.747517e-04
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;22;138;70.779;5.140528e+00;1.279505e-04
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;23;146;74.816;4.387811e+00;1.062369e-04
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;24;154;78.834;3.525546e+00;8.360968e-05
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;25;163;83.223;3.081305e+00;7.089948e-05
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;26;170;86.744;2.560370e+00;5.883521e-05
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;27;179;91.164;2.277305e+00;5.044765e-05
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;28;186;94.695;1.934694e+00;4.402677e-05
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;29;191;97.292;1.770261e+00;3.760270e-05
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;30;194;98.995;1.553379e+00;3.470743e-05
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;31;198;101.235;1.415976e+00;3.043478e-05
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;32;200;102.421;1.294414e+00;2.761722e-05
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;33;202;103.614;1.186332e+00;2.505416e-05
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;34;204;104.809;1.089801e+00;2.340383e-05
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;35;206;106.083;1.003236e+00;2.164662e-05
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;36;208;107.340;9.253189e-01;2.041882e-05
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;37;210;108.598;8.817108e-01;1.917399e-05
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;38;212;109.871;8.899427e-01;1.821815e-05
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;39;214;111.127;8.925414e-01;1.730635e-05
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;40;216;112.369;8.956070e-01;1.656025e-05
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;41;218;113.596;8.964431e-01;1.588335e-05
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;42;221;115.321;6.029245e-01;1.125869e-05
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;43;223;117.063;5.027593e-02;8.791340e-07
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;44;224;117.810;1.207629e-02;1.677071e-07
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;45;225;118.567;2.581382e-03;3.257971e-08
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;46;226;119.322;7.237106e-05;1.499186e-09
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;47;227;120.093;1.403359e-05;2.107928e-10
+lbfgs L0;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;48;228;120.860;3.000480e-07;5.756493e-12
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;0;1;0.336;7.360894e+02;2.577265e-02
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;1;10;4.381;7.189597e+02;2.517184e-02
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;2;17;7.631;6.857347e+02;2.400464e-02
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;3;22;10.220;6.618812e+02;2.316762e-02
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;4;28;13.448;6.560792e+02;2.296441e-02
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;5;34;16.498;5.823151e+02;2.036282e-02
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;6;40;19.906;4.558379e+02;1.587957e-02
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;7;44;22.572;2.257912e+02;7.618108e-03
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;8;52;26.260;1.913831e+02;6.381178e-03
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;9;59;30.123;1.830646e+02;6.103259e-03
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;10;64;33.249;9.200625e+01;2.983659e-03
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;11;69;35.837;7.650368e+01;2.445075e-03
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;12;73;38.748;4.339021e+01;1.352947e-03
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;13;79;42.433;2.668940e+01;8.178632e-04
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;14;82;44.799;1.229172e+01;3.605829e-04
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;15;88;47.865;1.131491e+01;3.263153e-04
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;16;90;49.655;3.740478e+00;7.591078e-05
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;17;93;51.336;2.343927e+00;5.486372e-05
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;18;94;52.602;2.120424e+00;3.709299e-05
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;19;95;53.830;1.024322e+00;1.186354e-05
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;20;97;55.040;4.262543e-01;5.396756e-06
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;0;97;55.041;4.262543e-01;5.396756e-06
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;1;98;56.125;9.218651e-02;1.074005e-06
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;2;99;57.196;2.240852e-03;2.583173e-08
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;3;100;58.297;1.463862e-06;1.693933e-11
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;4;101;59.394;6.805571e-12;1.597183e-16
+cg L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;0;1;0.348;7.360894e+02;2.577265e-02
+cg L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;1;10;4.319;7.189597e+02;2.517184e-02
+cg L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;2;17;7.538;6.857347e+02;2.400464e-02
+cg L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;3;22;10.016;6.618812e+02;2.316762e-02
+cg L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;4;28;13.040;6.560792e+02;2.296441e-02
+cg L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;5;34;15.825;5.823151e+02;2.036282e-02
+cg L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;6;40;19.005;4.558379e+02;1.587957e-02
+cg L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;7;46;22.249;2.049277e+02;6.842769e-03
+cg L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;8;56;26.836;1.992854e+02;6.642382e-03
+cg L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;9;60;29.321;1.908140e+02;6.359441e-03
+cg L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;10;67;33.053;1.492755e+02;4.961477e-03
+cg L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;11;72;35.971;1.092802e+02;3.613897e-03
+cg L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;12;76;38.652;3.593117e+01;1.061095e-03
+cg L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;13;79;40.248;1.259811e+01;3.300095e-04
+cg L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;14;89;45.108;5.773276e+00;1.527353e-04
+cg L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;15;102;51.601;5.759078e+00;1.521049e-04
+cg L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;16;108;55.114;5.451326e+00;1.449093e-04
+cg L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;17;115;59.268;4.791220e+00;1.286478e-04
+cg L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;18;120;62.243;3.849166e+00;1.085900e-04
+cg L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;19;128;66.618;3.580258e+00;1.002921e-04
+cg L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;20;132;69.152;5.289116e+00;1.034733e-04
+cg L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;21;134;70.860;1.862835e+00;2.457170e-05
+cg L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;22;140;73.949;8.547147e-01;1.445868e-05
+cg L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;23;143;76.087;4.015850e-01;4.557017e-06
+cg L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;24;147;78.128;1.538244e-02;4.711419e-07
+cg L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;25;149;79.239;5.263266e-03;7.207935e-08
+cg L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;26;151;80.342;1.474225e-03;1.923191e-08
+cg L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;27;153;81.458;1.823622e-04;2.442450e-09
+cg L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;28;155;82.600;3.462269e-05;4.347405e-10
+cg L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;29;157;83.749;4.146522e-06;1.010464e-10
+cg L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;30;159;84.882;1.268900e-06;1.564792e-11
+cg L0 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;31;161;85.945;2.589791e-07;3.906141e-12
+lbfgs L0 refacto 1 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;0;1;0.345;7.360894e+02;2.577265e-02
+lbfgs L0 refacto 1 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;1;10;4.530;7.189597e+02;2.517184e-02
+lbfgs L0 refacto 1 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;2;17;7.867;6.857347e+02;2.400464e-02
+lbfgs L0 refacto 1 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;3;22;10.514;6.618812e+02;2.316762e-02
+lbfgs L0 refacto 1 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;4;28;13.757;6.560792e+02;2.296441e-02
+lbfgs L0 refacto 1 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;5;34;16.884;5.823151e+02;2.036282e-02
+lbfgs L0 refacto 1 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;6;40;20.375;4.558379e+02;1.587957e-02
+lbfgs L0 refacto 1 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;7;44;23.071;2.257912e+02;7.618108e-03
+lbfgs L0 refacto 1 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;8;47;25.412;8.860323e+01;2.825696e-03
+lbfgs L0 refacto 1 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;9;48;26.675;2.299103e+01;6.360260e-04
+lbfgs L0 refacto 1 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;10;53;29.699;1.764910e+01;4.873518e-04
+lbfgs L0 refacto 1 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;11;58;32.870;1.552054e+01;4.274477e-04
+lbfgs L0 refacto 1 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;12;60;34.631;3.753772e+00;8.978870e-05
+lbfgs L0 refacto 1 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;13;61;35.853;8.311513e-01;1.644925e-05
+lbfgs L0 refacto 1 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;14;62;37.110;1.046593e-01;1.562017e-06
+lbfgs L0 refacto 1 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;15;63;38.364;2.658054e-03;3.154063e-08
+lbfgs L0 refacto 1 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;16;64;39.613;1.861559e-06;2.000366e-11
+lbfgs L0 refacto 1 taux 0.5;../2d_des_familles/cases/planes4_n100000_s0.02_voronoi.txt;3D;17;65;40.886;8.741211e-12;1.695709e-16

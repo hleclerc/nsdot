@@ -33,7 +33,7 @@ void Args::usage() {
         "  --leaf L        germes par feuille de l'arbre          (10)\n"
         "  --seed S        graine du tirage                       (0)\n"
         "  --weights W     poids aleatoires de l'uniforme, en fraction de h^2\n"
-        "  --load FILE     UN nuage, au lieu de la suite ( avec --2d ou --3d )\n"
+        "  --load FILE     UN nuage, au lieu de la suite ( avec --2d ou --3d ) ; 'uniforme' : le seul cas uniforme\n"
         "  --2d / --3d     ne derouler QUE cette dimension        (les deux)\n"
         "  --cases DIR     le repertoire des nuages durs          (../2d_des_familles/cases)\n"
         "  --kernel K      le flottant du noyau : double | float  (double)\n"
@@ -49,6 +49,8 @@ void Args::finalise() {
 
 template<int D>
 std::vector<Nuage<D>> Args::nuages() const {
+    if ( load == "uniforme" )                            // le seul cas uniforme, sans les fichiers
+        return { nuage_uniforme<D>( n, graine, wscale ) };
     if ( ! load.empty() ) {
         Nuage<D> nu;
         nu.nom = load;

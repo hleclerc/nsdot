@@ -22,6 +22,7 @@
 #include "solver/Densite.h"
 #include "solver/Lineaire.h"
 #include "solver/Newton.h"
+#include "solver/PremierOrdre.h"
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -57,6 +58,9 @@ struct Opts {
     int           passes = 6;         ///< garde par cellule : passes de relevement au plus
     bool          check = false;
     std::string   ecrire, dump;
+    std::string   methode = "newton"; ///< newton | lbfgs | cg, a chaque etape ( `PremierOrdre.h` )
+    PremierOrdreOptions po;
+    std::string   courbe;             ///< CSV : le residu apres chaque pas, contre les diagrammes et le temps
 };
 
 /// le jeu par defaut : des centres pas trop symetriques, des masses et des largeurs inegales
@@ -208,8 +212,20 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu, Lin &lin ) {
     Newton<PD,Lin> nw( pd, lin, nu.P, a.par, o.newton );
     nw.rho = &rho;
     nw.derivee = o.ordre > 0;
+    PremierOrdre<PD,Lin> po( nw, o.po );
     Trames trames;                                       // une trame par etape, le diagramme converge
     const bool dump = ! o.dump.empty() && trames.ouvre( o.dump );
+    FILE *courbe = o.courbe.empty() ? nullptr : std::fopen( o.courbe.c_str(), "a" );
+    const std::string etiquette = o.methode == "newton" ? ( o.newton.pas == NewtonOptions::ESSAI_LIMITES ? "newton essai-limites" : "newton" ) : o.po.nom();
+    int diag_avant = 0;                                  // les diagrammes des etapes precedentes
+    TF lam_courant = 0;
+    const double t_courbe = now();
+    if ( courbe )
+        nw.o.apres_pas = [ & ]( int it, TF, int ) {
+            TF p = 0;
+            for ( SI i = 0; i < n; ++i ) p = std::max( p, std::fabs( nw.nu[ i ] - nw.a[ i ] ) / nw.nu[ i ] );
+            std::fprintf( courbe, "%s;densite sigma %g s %g;2D;%d;%d;%.3f;%.6e;%.6e\n", etiquette.c_str(), o.sigma, lam_courant, it + 1, diag_avant + nw.st.nb_diag, now() - t_courbe, double( p ), double( nw.merite( nw.a ) ) );
+        };
 
     std::vector<TF> w( n, TF( 0 ) ), w1, w2, dw, b, a_p, da_p, w_try, a_try, da_try, a_pl, a_mi;
     std::vector<SI> rang( n );                           // identifiant -> rang dans l'arbre
@@ -226,6 +242,7 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu, Lin &lin ) {
     auto norme_res = [ & ]( const std::vector<TF> &a ) { return nw.merite( a ); };   // le merite de Newton ( --residu )
     for ( SI e = 0; e < SI( o.liste.size() ); ++e ) {
         const TF lam = o.liste[ e ];
+        lam_courant = lam;
         regle( lam );
         const TF M = rho.masse_carre();
         nw.nu.assign( n, M / n );
@@ -305,9 +322,19 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu, Lin &lin ) {
             tot_extra += nb_essais;                      // le depart nu remplace le diagramme de depart de Newton
             mesure = true;
         }
-        const bool fini = nw.resout( w, mesure );
+        po.st = PremierOrdreStats{};
+        const bool fini = o.methode == "newton" ? nw.resout( w, mesure ) : po.resout( w, mesure );
         const double dt = now() - te;
-        const NewtonStats &st = nw.st;
+        NewtonStats &st = nw.st;
+        if ( o.methode != "newton" ) {                   // les compteurs du premier ordre rejoignent ceux de Newton
+            st.nb_iter += po.st.nb_iter;
+            st.reste0 = po.st.reste0;
+            st.reste = po.st.reste;
+            st.fin = po.st.fin;
+            std::printf( "   %s : %d iterations, %d diagrammes ( %d refuses par le plancher, %d factorisations )%s\n",
+                         o.methode == "cg" ? "gradient conjugue" : "L-BFGS", po.st.nb_iter, po.st.nb_diag, po.st.nb_plancher, po.st.nb_facto,
+                         po.st.it_bascule >= 0 ? ( ", puis Newton depuis l'iteration " + std::to_string( po.st.it_bascule ) ).c_str() : "" );
+        }
         ok = ok && fini;
         tot_it += st.nb_iter; tot_recul += st.nb_recul; tot_cel_lim += st.nb_cell_lim; tot_tours += st.nb_tours_essai; t_lim += st.t_lim;
         const int diag_newton = st.nb_diag;              // les essais d'extrapolation compris ( `nb_diag` compte tout )
@@ -322,6 +349,7 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu, Lin &lin ) {
         w = nw.w;
         dw.clear();
         tot_diag += diag_newton;
+        diag_avant += st.nb_diag;
         if ( dump ) {
             pd.set_weights( w.data(), a.par );
             trames.ecrit( pd, nw.nu, a.par, "densite", double( lam ), st.nb_iter, double( st.reste ), st.nb_recul );
@@ -376,6 +404,7 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu, Lin &lin ) {
                  tot_it, tot_diag, tot_extra, tot_recul, int( tot_releves ), total, t_arbre, ok ? "converge" : "PAS CONVERGE" );
     if ( tot_tours )
         std::printf( "  limites en masse : %d essais corriges, %d cellules calculees, %.2f s\n", tot_tours, int( tot_cel_lim ), t_lim );
+    if ( courbe ) std::fclose( courbe );
     std::printf( "  | %s | theta (essais) | depart | it | diag (reculs) | reste | temps | fin |\n  |---|---|---|---|---|---|---|---|\n", melange ? "t" : "s" );
     for ( const std::string &l : lignes ) std::printf( "  %s\n", l.c_str() );
 
@@ -437,6 +466,18 @@ int main( int argc, char **argv ) {
         else if ( s == "--quiet" )      o.newton.trace = false;
         else if ( s == "--ecrire" )     o.ecrire = val();
         else if ( s == "--dump" )       o.dump = val();
+        else if ( s == "--methode" )    o.methode = val();
+        else if ( s == "--memoire" )    o.po.memoire = std::atoi( val() );
+        else if ( s == "--c2" )         o.po.c2 = std::atof( val() );
+        else if ( s == "--precond" )    o.po.precond = std::atoi( val() );
+        else if ( s == "--refacto" )    o.po.refacto = std::atoi( val() );
+        else if ( s == "--refacto-borne" ) o.po.refacto_borne = std::atof( val() );
+        else if ( s == "--refacto-taux" ) o.po.refacto_taux = std::atof( val() );
+        else if ( s == "--plancher-po" ) o.po.plancher = std::atoi( val() );
+        else if ( s == "--max-ls" )     o.po.max_ls = std::atoi( val() );
+        else if ( s == "--bascule" )    o.po.bascule = std::atof( val() );
+        else if ( s == "--bascule-it" ) o.po.bascule_it = std::atoi( val() );
+        else if ( s == "--courbe" )     o.courbe = val();
         else {
             std::printf( "usage: densite [options]\n" );
             Args::usage();
@@ -472,11 +513,20 @@ int main( int argc, char **argv ) {
                 "  --t-min T       sous ce pas, STAGNATION                  (1e-10)\n"
                 "  --quiet         pas de trace par iteration\n"
                 "  --ecrire FILE   ecrire les poids trouves au format de cases/\n"
-                "  --dump FILE     les trames ( JSONL ) : le diagramme converge de chaque etape\n" );
+                "  --dump FILE     les trames ( JSONL ) : le diagramme converge de chaque etape\n"
+                "  --methode M     newton ( defaut ) | lbfgs | cg : le premier ordre a chaque etape ( PremierOrdre.h )\n"
+                "  --memoire K --c2 C --precond P --refacto K --refacto-borne F --plancher-po 0|1 --max-ls K\n"
+                "                  les reglages du premier ordre ( voir newton --help )\n"
+                "  --bascule R     passer a Newton des que max|a-nu|/nu <= R ; --bascule-it K apres K iterations\n"
+                "  --courbe FILE   CSV ( ajoute ) : methode;cas;dim;it;diagrammes;temps;max|a-nu|/nu;|r|_2 apres chaque pas\n" );
             return s == "--help" || s == "-h" ? 0 : 1;
         }
     }
     a.finalise();
+    o.po.tol = o.newton.tol;
+    o.po.trace = o.newton.trace;
+    o.po.maxit = 10 * o.newton.maxit;                    // le premier ordre a besoin de bien plus d'iterations
+    if ( o.methode == "cg" ) { o.po.methode = PremierOrdreOptions::CG; if ( o.po.c2 == TF( 0.5 ) ) o.po.c2 = 0.1; }
     if ( o.liste.empty() ) {
         if ( o.chemin == "melange" ) {
             for ( TF f = o.mel0; f > 0 && f >= o.mel_min * ( 1 - 1e-12 ); f /= o.mel_ratio ) o.liste.push_back( 1 - f );

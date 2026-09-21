@@ -24,6 +24,8 @@
 
 #include "solver/Laplacien.h"
 #include <algorithm>
+#include <functional>
+#include <memory>
 #include <tuple>
 #include <type_traits>
 
@@ -66,10 +68,27 @@ struct Amg {
     TF       tol      = 1e-10;     ///< residu RELATIF
     int      maxit    = 20000;
     StatsLin st;
+    /// la derniere hierarchie, gardee pour `resout_encore` ( le type du solveur depend de la variante )
+    std::function<std::tuple<int,double>( const std::vector<double> &, std::vector<double> & )> encore;
 
     const char *nom() const {
         return variante == RS_GS ? "AMGCL Ruge-Stuben+GS"
              : variante == SA_GS ? "AMGCL agregation+GS" : "AMGCL agregation+spai0";
+    }
+
+    /// UNE RESOLUTION DE PLUS sur la derniere hierarchie : la matrice a change, pas ses voisinages,
+    /// et c'est la hierarchie qui coute -- pour qui reutilise un laplacien fige ( `PremierOrdre.h` ).
+    void resout_encore( const std::vector<TF> &b, std::vector<TF> &d ) {
+        const SI n = SI( b.size() ), m = n - 1;
+        const double t0 = now();
+        std::vector<double> rb( m ), sol( m, 0.0 );
+        for ( SI i = 1; i < n; ++i ) rb[ i - 1 ] = double( b[ i ] );
+        auto [ it, err ] = encore( rb, sol );
+        st.nb_iter += it;
+        st.pire = std::max( st.pire, TF( err ) );
+        d.assign( n, TF( 0 ) );
+        for ( SI i = 1; i < n; ++i ) d[ i ] = TF( sol[ i - 1 ] );
+        st.t_res += now() - t0;
     }
 
     bool resout( const Laplacien &L, const std::vector<TF> &b, std::vector<TF> &d ) {
@@ -92,12 +111,13 @@ struct Amg {
             typename Solv::params prm;
             prm.solver.tol = double( tol );
             prm.solver.maxiter = maxit;
-            Solv so( std::tie( m, ptr, col, val ), prm );
+            auto so = std::make_shared<Solv>( std::tie( m, ptr, col, val ), prm );
             const double ta = now();
             st.t_hier += ta - t1;
             ++st.nb_hier;
-            std::tie( it, err ) = so( rb, sol );
+            std::tie( it, err ) = ( *so )( rb, sol );
             st.t_res += now() - ta;
+            encore = [ so ]( const std::vector<double> &b, std::vector<double> &x ) { return ( *so )( b, x ); };
         };
         using SaSpai = amgcl::make_solver<amgcl::amg<Back, amgcl::coarsening::smoothed_aggregation, amgcl::relaxation::spai0>, amgcl::solver::cg<Back>>;
         using SaGs   = amgcl::make_solver<amgcl::amg<Back, amgcl::coarsening::smoothed_aggregation, amgcl::relaxation::gauss_seidel>, amgcl::solver::cg<Back>>;
