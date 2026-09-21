@@ -21,6 +21,12 @@ struct PowerDiagram_Plain {
 
     template<class TK>
     HD auto fournisseur( SI k0 ) const { return FournisseurTous<PowerDiagram_Plain,TK,ct_dim>( *this, k0 ); }
+
+    /// le meme diagramme, les poids lus AILLEURS ( voir `PowerDiagram_Bsp::with_weights` ) ; l'ordre
+    /// des membres est celui de `PowerDiagram.py` + `PowerDiagram_Plain.py`
+    HD auto with_weights( auto &&weights_ ) const {
+        return ::sdot::PowerDiagram_Plain{ box_min, box_max, bnd_directions, bnd_offsets, nb_points, nb_boundaries, nb_dims, positions, weights_ };
+    }
 };
 
 }

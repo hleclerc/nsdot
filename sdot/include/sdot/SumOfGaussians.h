@@ -106,6 +106,11 @@ struct SumOfGaussians {
     /// les deux quantités dont tout le reste se déduit, calculées une fois.
     HD auto kernel_at( SI i, const auto &x ) const;
 
+    /// `Int_{arete} rho ds` sur l'arete `cut` de la cellule 2D `pc` ( `[ v_cut, v_cut+1 ]` ) -- ce que le
+    /// laplacien d'un transport lit ( `otplan/Balayage.h` ) : une gaussienne le long d'un segment est
+    /// un `erf`, la distance au segment etant constante. 2D seulement.
+    HD TF   facet_mass    ( const auto &pc, int cut ) const;
+
     HD TF   value_at      ( const auto &x ) const;   ///< rho( x )
     HD auto gradient_at   ( const auto &x ) const;   ///< grad rho( x ), un `Vector<TF,ct_dim>`
 

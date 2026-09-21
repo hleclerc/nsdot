@@ -127,5 +127,25 @@ class PowerDiagram_Bsp( PowerDiagram ):
     def _ranks_of_items( self ):
         return self._rank_of
 
+    # ---- ce que le solveur de `OtPlan` ecrit ---------------------------------------------------------
+
+    def _solver_weights_call( self ):
+        """`( expression C++ du diagramme aux poids INSCRIPTIBLES, kwargs de l'appel, ce qu'il faut
+        reprendre après )` : les poids triés et les majorants de l'arbre sont des SORTIES de l'appel
+        ( `PowerDiagram_Bsp.h::with_weights` ), que `_solver_weights_after` adopte"""
+        sw = RealTensor[ self.num_point ]()
+        wa = RealTensor[ self.tree.num_bsp_node, self.tree.dim ]()
+        wb = RealTensor[ self.tree.num_bsp_node ]()
+        return ( "power_diagram.with_weights( sorted_weights_out, node_wa_out, node_wb_out )",
+                 dict( output_attributes = [ "sorted_weights_out", "node_wa_out", "node_wb_out" ],
+                       args = dict( sorted_weights_out = sw, node_wa_out = wa, node_wb_out = wb ) ),
+                 ( sw, wa, wb ) )
+
+    def _solver_weights_after( self, produced ):
+        sw, wa, wb = produced
+        self.sorted_weights = sw.raw
+        self.tree.node_wa = wa.raw
+        self.tree.node_wb = wb.raw
+
     def _grad_seeds_expr( self ):
         return "grad_for_power_diagram.sorted_positions, grad_for_power_diagram.sorted_weights"

@@ -27,3 +27,13 @@ class PowerDiagram_Plain( PowerDiagram ):
 
     def _grad_seeds_expr( self ):
         return "grad_for_power_diagram.positions, grad_for_power_diagram.weights"
+
+    # ---- ce que le solveur de `OtPlan` ecrit ( voir `PowerDiagram_Bsp` ) ----------------------------
+
+    def _solver_weights_call( self ):
+        w = RealTensor[ self.num_point ]()
+        return ( "power_diagram.with_weights( weights_out )",
+                 dict( output_attributes = [ "weights_out" ], args = dict( weights_out = w ) ), w )
+
+    def _solver_weights_after( self, produced ):
+        self.weights = produced.raw

@@ -117,6 +117,34 @@ namespace detail {
     }
 }
 
+UTP HD typename DTP::TF DTP::facet_mass( const auto &pc, int cut ) const {
+    static_assert( ct_dim == 2, "facet_mass : 2D seulement ( une arete )" );
+    const int nb = pc.nb_vertices();
+    const int j = cut + 1 < nb ? cut + 1 : 0;
+    const TF ax = TF( pc.coord( cut, 0 ) ), ay = TF( pc.coord( cut, 1 ) );
+    const TF ex = TF( pc.coord( j, 0 ) ) - ax, ey = TF( pc.coord( j, 1 ) ) - ay;
+    const TF L = sdot::sqrt( ex * ex + ey * ey );
+    if ( ! ( L > 0 ) )
+        return 0;
+    const TF ux = ex / L, uy = ey / L;                    // la tangente, et une normale
+    const TF nx = -uy, ny = ux;
+    TF res = 0;
+    const SI ng = SI( sigmas.shape( 0 ) );
+    for ( SI i = 0; i < ng; ++i ) {
+        const TF s = TF( sigmas( i ) ), m = TF( weights( i ) );
+        const TF px = ax - TF( positions( i, 0 ) ), py = ay - TF( positions( i, 1 ) );
+        const TF d = px * nx + py * ny;                   // la distance signee du centre a la droite
+        const TF t0 = px * ux + py * uy, t1 = t0 + L;
+        const TF q = d * d / ( 2 * s * s );
+        if ( q > TF( 700 ) )
+            continue;                                    // rien, a l'arrondi pres
+        const TF is2 = TF( 0.70710678118654752440 ) / s;
+        const TF E = sdot::erf( t1 * is2 ) - sdot::erf( t0 * is2 );
+        res += m * sdot::exp( -q ) * E / ( 2 * s * TF( 2.50662827463100050242 ) );   // `sqrt( 2 pi )`
+    }
+    return res;
+}
+
 UTP HD typename DTP::TF DTP::wedge_measure( const auto &P, const auto &Q ) const {
     static_assert( ct_dim == 2, "le coin polaire est la réduction 2D (voir SumOfGaussians.h)" );
     const TF two_pi = TF( 6.283185307179586476925286766559 );
