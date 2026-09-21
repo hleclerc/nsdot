@@ -38,6 +38,12 @@ inline void bissect3( TK xj, TK yj, TK zj, TK wj, TK x0, TK y0, TK z0, TK w0, SI
 ///      feuille memorisee propose ses bits a 0 ( le complement ), un noeud qui contient une
 ///      feuille memorisee est descendu ; `tester = false` leur epargne le test d'eviction ( on
 ///      sait qu'on y entre ), `true` le garde ( la cellule finale peut les rejeter maintenant ).
+///   C. `front [ 0 .. nfront )` : LA FRONTIERE du parcours d'hier -- les feuilles entrees puis les
+///      noeuds REJETES ( dont on n'est pas descendu ), en indices de noeuds -- rejouee SANS PILE :
+///      apres les bits a 1 ( forme B ), chaque noeud de la frontiere est teste et, s'il passe,
+///      parcouru normalement ( une feuille memorisee propose son complement ) ; l'arbre n'est
+///      redescendu que sous un rejete d'hier qui passe aujourd'hui. Exact : tout noeud est soit
+///      ancetre d'une feuille entree, soit entre, soit rejete, soit sous un rejete.
 /// Compile a part pour que le chemin sans memoire ne porte ni pointeur ni compteur de plus.
 template<class TK, bool POIDS, int W = 8, bool MEMO = false>
 struct FournisseurBsp3 {
@@ -52,7 +58,9 @@ struct FournisseurBsp3 {
         int  fa = 0; unsigned long long bits = 0; bool fa_ouverte = false;   ///< MEMO B : la feuille en cours de la pre-passe
         unsigned long long saut = 0; int kbeg = 0;      ///< MEMO B : au parcours, les bits deja proposes de la feuille ouverte
         int  nb_prop = 0, nb_boites = 0, nb_coupees = 0; ///< MEMO : plans proposes, boites testees, coupes EFFECTIVES
-        int  entrees[ 64 ]; int nentrees = 0;            ///< MEMO : les feuilles entrees ( rang du premier germe ), pour batir la memoire
+        int  entrees[ 64 ]; int nentrees = 0;            ///< MEMO : les feuilles entrees ( indices de noeuds ), pour batir la memoire
+        int  rejets[ 256 ]; int nrejets = 0;             ///< MEMO : les noeuds rejetes par l'elagage ( indices ), idem
+        int  ifront = 0;                                 ///< MEMO C : ou on en est de la frontiere
     };
 
     const Arbre *arbre;
@@ -66,6 +74,8 @@ struct FournisseurBsp3 {
     int                  nf = 0;
     int                  tester = 1;                     ///< MEMO B : 0 = ne pas tester les boites qu'on sait entrees, 1 = les tester toutes, 2 = tester les feuilles seules ( les noeuds internes connus sont descendus sans test )
     bool                 parcours = true;                ///< MEMO : `false` = les souvenirs seuls, sans parcours ( le plancher )
+    const SI32          *front = nullptr;                ///< MEMO C : la frontiere d'hier ( indices de noeuds )
+    int                  nfront = 0;
 
     /// MEMO B : l'indice de la premiere feuille memorisee de rang >= `r`
     int feuille_des( int r ) const {
@@ -102,7 +112,10 @@ struct FournisseurBsp3 {
 
     template<class Etat>
     bool suivant( const Etat &e, Local &l, Plan3<TK> &p ) {
-        if ( ! l.amorce ) { l.pile[ l.haut++ ] = 0; l.amorce = true; }
+        if ( ! l.amorce ) {                              // la racine -- sauf avec une frontiere ( C ) : elle la remplace
+            if ( ! ( MEMO && nfront > 0 ) ) l.pile[ l.haut++ ] = 0;
+            l.amorce = true;
+        }
 
         if constexpr ( MEMO ) {                          // la pre-passe : les voisins d'hier
             if ( l.ipre < npre ) {                       // A. par rang
@@ -144,8 +157,12 @@ struct FournisseurBsp3 {
                 return true;
             }
 
-            if ( l.haut == 0 )
+            if ( l.haut == 0 ) {
+                if constexpr ( MEMO ) {                  // C : le noeud suivant de la frontiere
+                    if ( l.ifront < nfront ) { l.pile[ l.haut++ ] = front[ l.ifront++ ]; continue; }
+                }
                 return false;
+            }
 
             const int h = l.pile[ --l.haut ];
             const auto &nd = arbre->nodes[ h ];
@@ -159,12 +176,15 @@ struct FournisseurBsp3 {
                 }
                 if ( ! connu || tester == 1 || ( tester == 2 && nd.right < 0 ) ) {
                     ++l.nb_boites;
-                    if ( ! peut_couper( nd, e ) ) continue;
+                    if ( ! peut_couper( nd, e ) ) {
+                        if ( l.nrejets < 256 ) l.rejets[ l.nrejets++ ] = h;
+                        continue;
+                    }
                 }
                 if ( nd.right < 0 ) {
                     l.k = int( nd.beg ); l.fin = int( nd.end ); l.kbeg = int( nd.beg );
                     l.saut = fi >= 0 ? fmask[ fi ] : 0;
-                    if ( l.nentrees < 64 ) l.entrees[ l.nentrees++ ] = int( nd.beg );
+                    if ( l.nentrees < 64 ) l.entrees[ l.nentrees++ ] = h;
                     continue;
                 }
             } else {

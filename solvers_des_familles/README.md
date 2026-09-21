@@ -1144,39 +1144,57 @@ n'est pas du parcours, ce sont les coupes transitoires, et elles n'ont de prix q
 plancher : les voisins seuls font −61 %, la moitié du diagramme est encore le parcours de l'arbre
 pour *confirmer* qu'il n'y a personne d'autre — et ça, la mémoire ne peut pas le savoir.
 
-## 11.4 Comment se souvenir : les rangs, ou les feuilles et leurs bits
+## 11.4 Comment se souvenir : les rangs, les feuilles et leurs bits, ou la frontière
 
-Trois formes de mémoire, mesurées sur les mêmes souvenirs exacts (uniforme 10⁵, 8 fils) :
+Trois formes de mémoire, mesurées sur les mêmes souvenirs exacts (uniforme 10⁵, 8 fils sur les
+cœurs 8–15, `scripts/banc.sh`, minimum de 10 ; la machine était partagée, les *comptes* sont
+exacts, les temps indicatifs) :
 
 * **A. les rangs des voisins** (ce que § 11.1 mesurait) : une liste triée par germe, proposée
-  d'abord, et au parcours un octet par rang, « déjà proposé », posé et retiré par la cellule ;
-* **B. les feuilles entrées, un bit par germe** (l'idée « vecteur de booléens par boîte ») :
-  par germe la liste des feuilles où le parcours est entré la dernière fois — rang de leur
-  premier germe, trié — et pour chacune un masque de 64 bits, 1 = voisin final. Les bits à 1 sont
-  proposés d'abord, sans aucun test de boîte ; au parcours une feuille mémorisée propose son
-  complément, et un nœud qui contient une feuille mémorisée est descendu. Trois politiques :
-  tester quand même toutes les boîtes ; tester les feuilles mais plus les nœuds internes qu'on
-  sait entrés ; ne rien tester de ce qu'on sait entré.
+  d'abord, et au parcours un octet par rang, « déjà proposé », posé et retiré par la cellule.
+  Le parcours reste entier — pile, tests d'éviction — et les diracs des boîtes extérieures ne
+  sont re-proposés que si leur boîte passe encore le test, contre la cellule finale ;
+* **B. les feuilles entrées, un bit par germe** : par germe la liste des feuilles où le parcours
+  est entré la dernière fois — rang de leur premier germe, trié — et pour chacune un masque de
+  64 bits, 1 = voisin final. Les bits à 1 sont proposés d'abord, sans aucun test de boîte ; au
+  parcours une feuille mémorisée propose son complément, et un nœud qui contient une feuille
+  mémorisée est descendu. Trois politiques : tester quand même toutes les boîtes ; tester les
+  feuilles mais plus les nœuds internes qu'on sait entrés ; ne rien tester de ce qu'on sait entré ;
+* **C. la frontière, rejouée sans pile** : la liste des feuilles entrées *et* des nœuds rejetés
+  (dont on n'est pas descendu), en indices de nœuds. Après les bits à 1, chaque nœud de la
+  frontière est testé et, s'il passe, parcouru normalement (une feuille mémorisée propose son
+  complément) ; l'arbre n'est redescendu que sous un rejeté d'hier qui passe aujourd'hui. Aucun
+  dépilage d'ancêtre, aucune recherche dans une liste. Exact : tout nœud de l'arbre est soit
+  ancêtre d'une feuille entrée, soit entré, soit rejeté, soit sous un rejeté.
 
 | par cellule | plans proposés | boîtes testées | coupes effectives | temps |
 |---|---|---|---|---|
-| sans mémoire | 87 | 95 | 30 | 0.258 s |
-| **A. rangs** | 68 | 84 | 15 | **0.176 s (−32 %)** |
-| B. feuilles + bits, tout testé | 68 | 84 | 15 | 0.191 s (−26 %) |
-| B. feuilles testées, pas les nœuds | 68 | 50 | 15 | 0.203 s (−21 %) |
-| B. rien de connu n'est testé | 87 | 35 | 15 | 0.214 s (−17 %) |
-| les voisins seuls | 15 | 0 | 15 | 0.116 s (−55 %) |
+| sans mémoire | 87 | 95 | 30 | 0.232 s |
+| A. rangs | 68 | 84 | 15 | 0.170 s (−27 %) |
+| B. feuilles + bits, tout testé | 68 | 84 | 15 | 0.183 s (−21 %) |
+| B. feuilles testées, pas les nœuds | 68 | 50 | 15 | 0.209 s (−10 %) |
+| B. rien de connu n'est testé | 87 | 35 | 15 | 0.213 s (−8 %) |
+| **C. la frontière, sans pile** | 68 | **48** | 15 | **0.164 s (−29 %)** |
+| les voisins seuls | 15 | 0 | 15 | 0.086 s (−63 %) |
+
+Sur les plans / Voronoï : A −33 %, C −36 % ; sur les plans / volumes égaux (Laguerre, 43 feuilles
+entrées et 85 nœuds rejetés par cellule, 7.5 % de frontières au-delà des tampons de 64 / 256 et
+donc sans souvenir) : A −13 %, C −18 %. Avec des souvenirs périmés (`0.9 W` → `W`) : A −27 %,
+C −38 % ; depuis Voronoï : les deux −24 % (20 coupes effectives au lieu de 32, 209 boîtes
+testées au lieu de 251 pour C).
 
 Ce que les colonnes disent. **Ne pas tester les feuilles qu'on sait entrées coûte** : avec la
 cellule finale dès le départ, 3 des 14.5 feuilles entrées hier sont *rejetées* aujourd'hui, et
-chacune vaut six ou sept premières passes — les plans proposés remontent de 68 à 87. **Ne pas
-tester les nœuds internes connus ne rapporte rien** : les 34 tests épargnés sont ceux qui
-*passent*, donc les moins chers (la sortie anticipée dès le premier bloc de huit sommets), et
-il faut savoir qu'un nœud est connu — une recherche dans la liste à chaque dépilage, qui coûte
-plus que les tests qu'elle évite. Les tests chers sont les rejets, et ce sont précisément ceux
-que l'exactitude oblige à refaire : une boîte rejetée hier peut couper aujourd'hui. Reste que
-les deux formes font le même travail utile (68 plans, 15 coupes effectives), et que A est plus
-courte (60 octets par germe contre 170) et plus simple. C'est A qui est portée.
+chacune vaut six ou sept premières passes — les plans proposés remontent de 68 à 87. **Les tests
+des nœuds internes connus valent peu** : ce sont les 34 qui *passent*, donc les moins chers (la
+sortie anticipée dès le premier bloc de huit sommets), et les *chercher* dans une liste à chaque
+dépilage (B, deuxième politique) coûte plus que les tests qu'on évite. Les tests chers sont les
+rejets, et ce sont précisément ceux que l'exactitude oblige à refaire : une boîte rejetée hier peut
+couper aujourd'hui. **C les épargne sans les chercher** : la frontière *est* la liste de ce qu'il
+faut tester, 14.5 feuilles et 33.6 rejetés, et le reste de l'arbre n'existe plus pour cette
+cellule. C'est la forme la plus courte en travail (48 tests contre 84) ; elle coûte 48 entrées
+de 4 octets plus 14.5 masques par germe (~370 octets contre 60 pour A), et le gain sur A, de 3 à
+10 points selon le cas, est celui des tests d'ancêtres — les moins chers.
 
 (Ce que la 2D disait déjà : le masque limité à la feuille du germe ne peut rien gagner, la descente
 l'atteint en premier de toute façon. Ici la mémoire couvre *toutes* les feuilles entrées, et ce

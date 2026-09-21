@@ -119,9 +119,11 @@ struct PowerDiagram {
     struct Memo {                                        ///< ce qu'on donne a `cellule_memo` ( voir `FournisseurBsp3` )
         const d2::SI32 *pre = nullptr; int npre = 0; const unsigned char *saute = nullptr;                 // A
         const d2::SI32 *fbeg = nullptr; const unsigned long long *fmask = nullptr; int nf = 0; int tester = 1;   // B
+        const d2::SI32 *front = nullptr; int nfront = 0;                                                    // C
         bool parcours = true;
         int prop = 0, boites = 0, coupees = 0;           ///< rendus
-        int entrees[ 64 ]; int nentrees = 0;             ///< rendu : les feuilles entrees ( rang du premier germe )
+        int entrees[ 64 ]; int nentrees = 0;             ///< rendu : les feuilles entrees ( indices de noeuds )
+        int rejets[ 256 ]; int nrejets = 0;              ///< rendu : les noeuds rejetes ( indices )
     };
     bool cellule_memo( SI k, Cell &cel, Memo &m ) const {
         static_assert( D == 3, "la memoire n'est ecrite qu'en 3D" );
@@ -218,11 +220,13 @@ private:
             F f( &arbre, c[ 0 ][ k ], c[ 1 ][ k ], c[ 2 ][ k ], POIDS ? w[ k ] : TK( 0 ), ids[ k ] );
             f.pre = m.pre; f.npre = m.npre; f.saute = m.saute; f.parcours = m.parcours;
             f.fbeg = m.fbeg; f.fmask = m.fmask; f.nf = m.nf; f.tester = m.tester;
+            f.front = m.front; f.nfront = m.nfront;
             typename F::Local loc;
             const int r = d3::moteur( &f, &cel, &loc );
             m.prop = loc.nb_prop; m.boites = loc.nb_boites; m.coupees = loc.nb_coupees;
-            m.nentrees = loc.nentrees;
+            m.nentrees = loc.nentrees; m.nrejets = loc.nrejets;
             for ( int q = 0; q < loc.nentrees; ++q ) m.entrees[ q ] = loc.entrees[ q ];
+            for ( int q = 0; q < loc.nrejets; ++q ) m.rejets[ q ] = loc.rejets[ q ];
             return r == 0;
         } else
             return false;

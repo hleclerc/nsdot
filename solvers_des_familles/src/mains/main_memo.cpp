@@ -63,16 +63,23 @@ int mesure( const Args &a, const Nuage<3> &nu ) {
     const int nth = std::max( a.par.threads, 1 );
     std::vector<SI> feuille_de( n );                     // rang -> rang du premier germe de sa feuille
     for ( const auto &nd : pd.arbre.nodes ) if ( nd.right < 0 ) for ( SI k = nd.beg; k < nd.end; ++k ) feuille_de[ k ] = nd.beg;
-    std::vector<std::vector<d2::SI32>> vois( n );
+    std::vector<std::vector<d2::SI32>> vois( n ), frontiere( n );
     std::vector<std::vector<std::pair<d2::SI32,unsigned long long>>> feuilles( n );
-    std::atomic<SI> nb_vois{ 0 }, nb_feuilles{ 0 }, max_feuilles{ 0 }, nb_sature{ 0 };
+    std::atomic<SI> nb_vois{ 0 }, nb_feuilles{ 0 }, max_feuilles{ 0 }, nb_sature{ 0 }, nb_rejets{ 0 }, nb_front_sature{ 0 };
     parallel_for( n, a.par, [ & ]( SI k, int ) {
         typename PD::Cell cel;
         typename PD::Memo m;
         pd.cellule_memo( k, cel, m );
         d2::SI32 out[ PD::max_nv ];
         const int nv = cel.voisins( out, PD::max_nv );
+        // C : la frontiere = les feuilles entrees ( noeuds ) puis les rejetes ; incomplete si un tampon a sature
+        if ( m.nentrees < 64 && m.nrejets < 256 ) {
+            for ( int q = 0; q < m.nentrees; ++q ) frontiere[ k ].push_back( d2::SI32( m.entrees[ q ] ) );
+            for ( int q = 0; q < m.nrejets; ++q ) frontiere[ k ].push_back( d2::SI32( m.rejets[ q ] ) );
+        } else ++nb_front_sature;
+        nb_rejets += m.nrejets;
         std::vector<d2::SI32> fb( m.entrees, m.entrees + m.nentrees );
+        for ( d2::SI32 &b : fb ) b = d2::SI32( pd.arbre.nodes[ b ].beg );   // noeud -> rang du premier germe
         std::sort( fb.begin(), fb.end() );
         for ( d2::SI32 b : fb ) feuilles[ k ].push_back( { b, 0ull } );
         for ( int q = 0; q < nv; ++q ) if ( out[ q ] >= 0 ) {
@@ -87,18 +94,19 @@ int mesure( const Args &a, const Nuage<3> &nu ) {
         nb_feuilles += m.nentrees;
         SI mx = max_feuilles.load(); while ( m.nentrees > mx && ! max_feuilles.compare_exchange_weak( mx, m.nentrees ) ) {}
     } );
-    std::vector<SI> beg( n + 1, 0 ), fbeg_c( n + 1, 0 );
-    for ( SI k = 0; k < n; ++k ) { beg[ k + 1 ] = beg[ k ] + SI( vois[ k ].size() ); fbeg_c[ k + 1 ] = fbeg_c[ k ] + SI( feuilles[ k ].size() ); }
-    std::vector<d2::SI32> pre( beg[ n ] ), fb_all( fbeg_c[ n ] );
+    std::vector<SI> beg( n + 1, 0 ), fbeg_c( n + 1, 0 ), fr_c( n + 1, 0 );
+    for ( SI k = 0; k < n; ++k ) { beg[ k + 1 ] = beg[ k ] + SI( vois[ k ].size() ); fbeg_c[ k + 1 ] = fbeg_c[ k ] + SI( feuilles[ k ].size() ); fr_c[ k + 1 ] = fr_c[ k ] + SI( frontiere[ k ].size() ); }
+    std::vector<d2::SI32> pre( beg[ n ] ), fb_all( fbeg_c[ n ] ), fr_all( fr_c[ n ] );
     std::vector<unsigned long long> fm_all( fbeg_c[ n ] );
     for ( SI k = 0; k < n; ++k ) {
         std::copy( vois[ k ].begin(), vois[ k ].end(), pre.begin() + beg[ k ] );
+        std::copy( frontiere[ k ].begin(), frontiere[ k ].end(), fr_all.begin() + fr_c[ k ] );
         for ( SI q = 0; q < SI( feuilles[ k ].size() ); ++q ) { fb_all[ fbeg_c[ k ] + q ] = feuilles[ k ][ q ].first; fm_all[ fbeg_c[ k ] + q ] = feuilles[ k ][ q ].second; }
     }
     if ( ! w_perime.empty() ) pd.set_weights( nu.W, a.par );
 
     // ---- une passe MEMO parametree
-    enum { TEMOIN, A, B_TESTE, B_FEUILLES, B_SANS_TEST, SEULS };
+    enum { TEMOIN, A, B_TESTE, B_FEUILLES, B_SANS_TEST, C_FRONT, SEULS };
     std::vector<std::vector<unsigned char>> saute( nth, std::vector<unsigned char>( n, 0 ) );
     std::vector<SI> prop_th( nth ), boites_th( nth ), coupees_th( nth );
     std::atomic<SI> deborde{ 0 };
@@ -117,7 +125,8 @@ int mesure( const Args &a, const Nuage<3> &nu ) {
                 m.pre = p; m.npre = np; m.saute = sa; m.parcours = mode != SEULS;
             } else if ( mode != TEMOIN ) {
                 m.fbeg = fb_all.data() + fbeg_c[ k ]; m.fmask = fm_all.data() + fbeg_c[ k ]; m.nf = int( fbeg_c[ k + 1 ] - fbeg_c[ k ] );
-                m.tester = mode == B_TESTE ? 1 : mode == B_FEUILLES ? 2 : 0;
+                m.tester = mode == B_TESTE || mode == C_FRONT ? 1 : mode == B_FEUILLES ? 2 : 0;
+                if ( mode == C_FRONT ) { m.front = fr_all.data() + fr_c[ k ]; m.nfront = int( fr_c[ k + 1 ] - fr_c[ k ] ); }
             }
             if ( ! pd.cellule_memo( k, cel, m ) ) ++deborde;
             else res[ pd.ids[ k ] ] = PD::mesure( cel );
@@ -136,19 +145,19 @@ int mesure( const Args &a, const Nuage<3> &nu ) {
         for ( int r = 0; r < a.reps; ++r ) { const double t0 = now(); passe( mode ); t = std::min( t, now() - t0 ); }
         return t;
     };
-    std::printf( "  %-24s n=%-7d %-8s  %.2f voisins, %.2f feuilles entrees ( au plus %d ) par cellule%s%s\n", nu.nom.c_str(), int( n ), nu.W ? "Laguerre" : "Voronoi",
-                 double( nb_vois.load() ) / n, double( nb_feuilles.load() ) / n, int( max_feuilles.load() ),
+    std::printf( "  %-24s n=%-7d %-8s  %.2f voisins, %.2f feuilles entrees ( au plus %d ), %.2f noeuds rejetes par cellule ( frontiere incomplete : %d )%s%s\n", nu.nom.c_str(), int( n ), nu.W ? "Laguerre" : "Voronoi",
+                 double( nb_vois.load() ) / n, double( nb_feuilles.load() ) / n, int( max_feuilles.load() ), double( nb_rejets.load() ) / n, int( nb_front_sature.load() ),
                  nb_sature ? ( "  ( " + std::to_string( nb_sature.load() ) + " voisins hors des feuilles enregistrees )" ).c_str() : "",
                  w_perime.empty() ? "" : ( "  ( souvenirs pris a " + std::to_string( perime ) + " x W )" ).c_str() );
     std::printf( "     %-34s %8.3f s   somme %.9f\n", "sans memoire", t_sans, double( somme_sans ) );
     TF s_avec = somme_sans, s_seuls = somme_sans;
-    for ( int mode : { TEMOIN, A, B_TESTE, B_FEUILLES, B_SANS_TEST, SEULS } ) {
+    for ( int mode : { TEMOIN, A, B_TESTE, B_FEUILLES, B_SANS_TEST, C_FRONT, SEULS } ) {
         const double t = chrono( mode );
         const auto [ sm, prop, boites, coupees ] = passe( mode );
-        const char *nom = mode == TEMOIN ? "temoin ( MEMO a vide )" : mode == A ? "A. voisins par rang" : mode == B_TESTE ? "B. feuilles + bits, testees" : mode == B_FEUILLES ? "B. feuilles testees, pas les noeuds" : mode == B_SANS_TEST ? "B. feuilles + bits, sans test" : "les voisins seuls ( plancher )";
+        const char *nom = mode == TEMOIN ? "temoin ( MEMO a vide )" : mode == A ? "A. voisins par rang" : mode == B_TESTE ? "B. feuilles + bits, testees" : mode == B_FEUILLES ? "B. feuilles testees, pas les noeuds" : mode == C_FRONT ? "C. la frontiere, sans pile" : mode == B_SANS_TEST ? "B. feuilles + bits, sans test" : "les voisins seuls ( plancher )";
         std::printf( "     %-34s %8.3f s   somme %.9f   %6.2f plans proposes, %6.2f boites testees, %6.2f coupes effectives par cellule   ( %+.1f %% / sans )\n",
                      nom, t, double( sm ), double( prop ) / n, double( boites ) / n, double( coupees ) / n, 100 * ( t / t_sans - 1 ) );
-        if ( mode == A || mode == B_TESTE || mode == B_FEUILLES || mode == B_SANS_TEST ) if ( std::fabs( sm - somme_sans ) > std::fabs( s_avec - somme_sans ) ) s_avec = sm;
+        if ( mode == A || mode == B_TESTE || mode == B_FEUILLES || mode == B_SANS_TEST || mode == C_FRONT ) if ( std::fabs( sm - somme_sans ) > std::fabs( s_avec - somme_sans ) ) s_avec = sm;
         if ( mode == SEULS ) s_seuls = sm;
     }
     const bool ok = std::fabs( s_avec - somme_sans ) < 1e-9 && ( ! w_perime.empty() || std::fabs( s_seuls - somme_sans ) < 1e-9 ) && deborde == 0;
