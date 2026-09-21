@@ -28,11 +28,17 @@ inline void bissect3( TK xj, TK yj, TK zj, TK wj, TK x0, TK y0, TK z0, TK w0, SI
     p.id = id;
 }
 
-/// `MEMO` : LA MEMOIRE ( `main_memo.cpp`, la borne superieure de `--memo` en 3D ). Le fournisseur
-/// propose d'abord les rangs de `pre[ 0 .. npre )` -- les voisins de la cellule finale, connus
-/// d'une passe precedente -- puis le parcours ordinaire, en SAUTANT les rangs marques dans
-/// `saute` ( le complement : aucun dirac deux fois, `cut` n'est pas idempotente ). Compile a part
-/// pour que le chemin sans memoire ne porte ni pointeur ni compteur de plus.
+/// `MEMO` : LA MEMOIRE ( `main_memo.cpp`, la borne superieure de `--memo` en 3D ), sous deux formes.
+///   A. `pre[ 0 .. npre )` : les RANGS des voisins de la cellule finale, connus d'une passe
+///      precedente, proposes d'abord ; puis le parcours ordinaire, en SAUTANT les rangs marques
+///      dans `saute` ( le complement : aucun dirac deux fois, `cut` n'est pas idempotente ).
+///   B. `fbeg / fmask [ 0 .. nf )` : les FEUILLES entrees a la passe precedente ( par le rang de
+///      leur premier germe, triees ), et pour chacune un bit par germe disant « voisin final ».
+///      Les bits a 1 sont proposes d'abord, sans aucun test de boite ; puis le parcours : une
+///      feuille memorisee propose ses bits a 0 ( le complement ), un noeud qui contient une
+///      feuille memorisee est descendu ; `tester = false` leur epargne le test d'eviction ( on
+///      sait qu'on y entre ), `true` le garde ( la cellule finale peut les rejeter maintenant ).
+/// Compile a part pour que le chemin sans memoire ne porte ni pointeur ni compteur de plus.
 template<class TK, bool POIDS, int W = 8, bool MEMO = false>
 struct FournisseurBsp3 {
     using Arbre = AaBspT<3>;
@@ -42,17 +48,31 @@ struct FournisseurBsp3 {
         int  haut = 0;
         int  k = 0, fin = 0;
         bool amorce = false;
-        int  ipre = 0;                                   ///< MEMO : ou on en est dans `pre`
+        int  ipre = 0;                                   ///< MEMO A : ou on en est dans `pre`
+        int  fa = 0; unsigned long long bits = 0; bool fa_ouverte = false;   ///< MEMO B : la feuille en cours de la pre-passe
+        unsigned long long saut = 0; int kbeg = 0;      ///< MEMO B : au parcours, les bits deja proposes de la feuille ouverte
         int  nb_prop = 0, nb_boites = 0, nb_coupees = 0; ///< MEMO : plans proposes, boites testees, coupes EFFECTIVES
+        int  entrees[ 64 ]; int nentrees = 0;            ///< MEMO : les feuilles entrees ( rang du premier germe ), pour batir la memoire
     };
 
     const Arbre *arbre;
     TK   x0, y0, z0, w0;
     SI32 i0;
-    const SI32          *pre = nullptr;                  ///< MEMO : les rangs a proposer d'abord
+    const SI32          *pre = nullptr;                  ///< MEMO A : les rangs a proposer d'abord
     int                  npre = 0;
-    const unsigned char *saute = nullptr;                ///< MEMO : par rang, 1 = deja propose
+    const unsigned char *saute = nullptr;                ///< MEMO A : par rang, 1 = deja propose
+    const SI32          *fbeg = nullptr;                 ///< MEMO B : les feuilles memorisees ( rang du premier germe, triees )
+    const unsigned long long *fmask = nullptr;           ///< MEMO B : leurs bits « voisin final »
+    int                  nf = 0;
+    int                  tester = 1;                     ///< MEMO B : 0 = ne pas tester les boites qu'on sait entrees, 1 = les tester toutes, 2 = tester les feuilles seules ( les noeuds internes connus sont descendus sans test )
     bool                 parcours = true;                ///< MEMO : `false` = les souvenirs seuls, sans parcours ( le plancher )
+
+    /// MEMO B : l'indice de la premiere feuille memorisee de rang >= `r`
+    int feuille_des( int r ) const {
+        int lo = 0, hi = nf;
+        while ( lo < hi ) { const int m = ( lo + hi ) / 2; if ( fbeg[ m ] < r ) lo = m + 1; else hi = m; }
+        return lo;
+    }
 
     FournisseurBsp3( const Arbre *arbre, TK x0, TK y0, TK z0, TK w0, SI32 i0 )
         : arbre( arbre ), x0( x0 ), y0( y0 ), z0( z0 ), w0( w0 ), i0( i0 ) {}
@@ -85,8 +105,20 @@ struct FournisseurBsp3 {
         if ( ! l.amorce ) { l.pile[ l.haut++ ] = 0; l.amorce = true; }
 
         if constexpr ( MEMO ) {                          // la pre-passe : les voisins d'hier
-            if ( l.ipre < npre ) {
+            if ( l.ipre < npre ) {                       // A. par rang
                 const int k = pre[ l.ipre++ ];
+                ++l.nb_prop;
+                bissect3<POIDS>( TK( arbre->seed_c( k, 0 ) ), TK( arbre->seed_c( k, 1 ) ),
+                                 TK( arbre->seed_c( k, 2 ) ), POIDS ? TK( arbre->seed_w( k ) ) : TK( 0 ),
+                                 x0, y0, z0, w0, SI32( arbre->order[ k ] ), p );
+                return true;
+            }
+            while ( l.fa < nf ) {                        // B. par feuille, les bits a 1
+                if ( ! l.fa_ouverte ) { l.bits = fmask[ l.fa ]; l.fa_ouverte = true; }
+                if ( ! l.bits ) { ++l.fa; l.fa_ouverte = false; continue; }
+                const int b = __builtin_ctzll( l.bits );
+                l.bits &= l.bits - 1;
+                const int k = fbeg[ l.fa ] + b;
                 ++l.nb_prop;
                 bissect3<POIDS>( TK( arbre->seed_c( k, 0 ) ), TK( arbre->seed_c( k, 1 ) ),
                                  TK( arbre->seed_c( k, 2 ) ), POIDS ? TK( arbre->seed_w( k ) ) : TK( 0 ),
@@ -101,7 +133,11 @@ struct FournisseurBsp3 {
                 const int k = l.k++;
                 const SI32 id = SI32( arbre->order[ k ] );
                 if ( id == i0 ) continue;
-                if constexpr ( MEMO ) { if ( saute && saute[ k ] ) continue; ++l.nb_prop; }
+                if constexpr ( MEMO ) {
+                    if ( saute && saute[ k ] ) continue;
+                    if ( ( l.saut >> ( k - l.kbeg ) ) & 1 ) continue;
+                    ++l.nb_prop;
+                }
                 bissect3<POIDS>( TK( arbre->seed_c( k, 0 ) ), TK( arbre->seed_c( k, 1 ) ),
                                  TK( arbre->seed_c( k, 2 ) ), POIDS ? TK( arbre->seed_w( k ) ) : TK( 0 ),
                                  x0, y0, z0, w0, id, p );
@@ -113,10 +149,29 @@ struct FournisseurBsp3 {
 
             const int h = l.pile[ --l.haut ];
             const auto &nd = arbre->nodes[ h ];
-            if constexpr ( MEMO ) ++l.nb_boites;
-            if ( ! peut_couper( nd, e ) )
-                continue;
-            if ( nd.right < 0 ) { l.k = int( nd.beg ); l.fin = int( nd.end ); continue; }
+            if constexpr ( MEMO ) {
+                // B : ce noeud contient-il une feuille memorisee ? ( est-ce cette feuille ? )
+                int fi = -1; bool connu = false;
+                if ( nf && ( tester != 1 || nd.right < 0 ) ) {   // en mode 1 seules les feuilles ont besoin de leur masque
+                    const int q = feuille_des( int( nd.beg ) );
+                    connu = q < nf && fbeg[ q ] < int( nd.end );
+                    if ( connu && nd.right < 0 ) fi = q;
+                }
+                if ( ! connu || tester == 1 || ( tester == 2 && nd.right < 0 ) ) {
+                    ++l.nb_boites;
+                    if ( ! peut_couper( nd, e ) ) continue;
+                }
+                if ( nd.right < 0 ) {
+                    l.k = int( nd.beg ); l.fin = int( nd.end ); l.kbeg = int( nd.beg );
+                    l.saut = fi >= 0 ? fmask[ fi ] : 0;
+                    if ( l.nentrees < 64 ) l.entrees[ l.nentrees++ ] = int( nd.beg );
+                    continue;
+                }
+            } else {
+                if ( ! peut_couper( nd, e ) )
+                    continue;
+                if ( nd.right < 0 ) { l.k = int( nd.beg ); l.fin = int( nd.end ); continue; }
+            }
 
             const int g = h + 1, dr = int( nd.right );
             if ( proximite( g ) <= proximite( dr ) ) { l.pile[ l.haut++ ] = dr; l.pile[ l.haut++ ] = g; }

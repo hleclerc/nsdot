@@ -116,10 +116,16 @@ struct PowerDiagram {
     /// LA CELLULE AVEC MEMOIRE ( 3D, `main_memo.cpp` ) : les rangs `pre[ 0 .. npre )` proposes en
     /// premier, ceux marques dans `saute` ( par rang ) sautes au parcours. `prop` et `boites` rendent
     /// ce que le fournisseur a propose et teste. Rend `false` sur debordement.
-    bool cellule_memo( SI k, Cell &cel, const d2::SI32 *pre, int npre, const unsigned char *saute, int &prop, int &boites, int &coupees, bool parcours = true ) const {
+    struct Memo {                                        ///< ce qu'on donne a `cellule_memo` ( voir `FournisseurBsp3` )
+        const d2::SI32 *pre = nullptr; int npre = 0; const unsigned char *saute = nullptr;                 // A
+        const d2::SI32 *fbeg = nullptr; const unsigned long long *fmask = nullptr; int nf = 0; int tester = 1;   // B
+        bool parcours = true;
+        int prop = 0, boites = 0, coupees = 0;           ///< rendus
+        int entrees[ 64 ]; int nentrees = 0;             ///< rendu : les feuilles entrees ( rang du premier germe )
+    };
+    bool cellule_memo( SI k, Cell &cel, Memo &m ) const {
         static_assert( D == 3, "la memoire n'est ecrite qu'en 3D" );
-        return laguerre() ? cellule_memo_<true>( k, cel, pre, npre, saute, prop, boites, coupees, parcours )
-                          : cellule_memo_<false>( k, cel, pre, npre, saute, prop, boites, coupees, parcours );
+        return laguerre() ? cellule_memo_<true>( k, cel, m ) : cellule_memo_<false>( k, cel, m );
     }
 
     /// La mesure de la cellule, et ses facettes contre d'autres germes : `facette( j, mes )`
@@ -179,10 +185,10 @@ struct PowerDiagram {
                     const int np = int( memo_beg[ k + 1 ] - memo_beg[ k ] );
                     unsigned char *sa = memo_saute[ t ].data();
                     for ( int q = 0; q < np; ++q ) sa[ p[ q ] ] = 1;
-                    int prop = 0, boites = 0, coup = 0;
-                    const bool ok = cellule_memo( k, cel, p, np, sa, prop, boites, coup );
+                    Memo m; m.pre = p; m.npre = np; m.saute = sa;
+                    const bool ok = cellule_memo( k, cel, m );
                     for ( int q = 0; q < np; ++q ) sa[ p[ q ] ] = 0;
-                    coupees += coup;
+                    coupees += m.coupees;
                     if ( ! ok ) { ++deborde; return; }
                     res[ i ] = mes( cel, [ & ]( d2::SI32 j, TF m ) { facette( t, i, j, m ); }, SI( i ) );
                 } );
@@ -206,14 +212,17 @@ private:
     }
 
     template<bool POIDS>
-    bool cellule_memo_( SI k, Cell &cel, const d2::SI32 *pre, int npre, const unsigned char *saute, int &prop, int &boites, int &coupees, bool parcours ) const {
+    bool cellule_memo_( SI k, Cell &cel, Memo &m ) const {
         if constexpr ( D == 3 ) {
             using F = d3::FournisseurBsp3<TK,POIDS,8,true>;
             F f( &arbre, c[ 0 ][ k ], c[ 1 ][ k ], c[ 2 ][ k ], POIDS ? w[ k ] : TK( 0 ), ids[ k ] );
-            f.pre = pre; f.npre = npre; f.saute = saute; f.parcours = parcours;
+            f.pre = m.pre; f.npre = m.npre; f.saute = m.saute; f.parcours = m.parcours;
+            f.fbeg = m.fbeg; f.fmask = m.fmask; f.nf = m.nf; f.tester = m.tester;
             typename F::Local loc;
             const int r = d3::moteur( &f, &cel, &loc );
-            prop = loc.nb_prop; boites = loc.nb_boites; coupees = loc.nb_coupees;
+            m.prop = loc.nb_prop; m.boites = loc.nb_boites; m.coupees = loc.nb_coupees;
+            m.nentrees = loc.nentrees;
+            for ( int q = 0; q < loc.nentrees; ++q ) m.entrees[ q ] = loc.entrees[ q ];
             return r == 0;
         } else
             return false;

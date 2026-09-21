@@ -1143,3 +1143,55 @@ le contraire de la conclusion 2D, pour une raison qu'on peut nommer : ce que la 
 n'est pas du parcours, ce sont les coupes transitoires, et elles n'ont de prix qu'en 3D. Reste le
 plancher : les voisins seuls font −61 %, la moitié du diagramme est encore le parcours de l'arbre
 pour *confirmer* qu'il n'y a personne d'autre — et ça, la mémoire ne peut pas le savoir.
+
+## 11.4 Comment se souvenir : les rangs, ou les feuilles et leurs bits
+
+Trois formes de mémoire, mesurées sur les mêmes souvenirs exacts (uniforme 10⁵, 8 fils) :
+
+* **A. les rangs des voisins** (ce que § 11.1 mesurait) : une liste triée par germe, proposée
+  d'abord, et au parcours un octet par rang, « déjà proposé », posé et retiré par la cellule ;
+* **B. les feuilles entrées, un bit par germe** (l'idée « vecteur de booléens par boîte ») :
+  par germe la liste des feuilles où le parcours est entré la dernière fois — rang de leur
+  premier germe, trié — et pour chacune un masque de 64 bits, 1 = voisin final. Les bits à 1 sont
+  proposés d'abord, sans aucun test de boîte ; au parcours une feuille mémorisée propose son
+  complément, et un nœud qui contient une feuille mémorisée est descendu. Trois politiques :
+  tester quand même toutes les boîtes ; tester les feuilles mais plus les nœuds internes qu'on
+  sait entrés ; ne rien tester de ce qu'on sait entré.
+
+| par cellule | plans proposés | boîtes testées | coupes effectives | temps |
+|---|---|---|---|---|
+| sans mémoire | 87 | 95 | 30 | 0.258 s |
+| **A. rangs** | 68 | 84 | 15 | **0.176 s (−32 %)** |
+| B. feuilles + bits, tout testé | 68 | 84 | 15 | 0.191 s (−26 %) |
+| B. feuilles testées, pas les nœuds | 68 | 50 | 15 | 0.203 s (−21 %) |
+| B. rien de connu n'est testé | 87 | 35 | 15 | 0.214 s (−17 %) |
+| les voisins seuls | 15 | 0 | 15 | 0.116 s (−55 %) |
+
+Ce que les colonnes disent. **Ne pas tester les feuilles qu'on sait entrées coûte** : avec la
+cellule finale dès le départ, 3 des 14.5 feuilles entrées hier sont *rejetées* aujourd'hui, et
+chacune vaut six ou sept premières passes — les plans proposés remontent de 68 à 87. **Ne pas
+tester les nœuds internes connus ne rapporte rien** : les 34 tests épargnés sont ceux qui
+*passent*, donc les moins chers (la sortie anticipée dès le premier bloc de huit sommets), et
+il faut savoir qu'un nœud est connu — une recherche dans la liste à chaque dépilage, qui coûte
+plus que les tests qu'elle évite. Les tests chers sont les rejets, et ce sont précisément ceux
+que l'exactitude oblige à refaire : une boîte rejetée hier peut couper aujourd'hui. Reste que
+les deux formes font le même travail utile (68 plans, 15 coupes effectives), et que A est plus
+courte (60 octets par germe contre 170) et plus simple. C'est A qui est portée.
+
+(Ce que la 2D disait déjà : le masque limité à la feuille du germe ne peut rien gagner, la descente
+l'atteint en premier de toute façon. Ici la mémoire couvre *toutes* les feuilles entrées, et ce
+qu'elle épargne n'est pas de l'ordre mais des coupes transitoires.)
+
+## 11.5 Dans `sdot`
+
+`PowerDiagram( ..., memory = K )` : le stockage `PowerDiagram_Bsp` porte `memo_nbrs [ n, K ]` et
+`memo_counts [ n ]` en rangs de l'arbre, écrits par le kernel de `measures` (les voisins de chaque
+cellule, triés, ou rien au-delà de `K`) et lus par `FournisseurBsp<…, MEMO>` — la pré-passe, puis
+le parcours avec un curseur de saut par feuille (pas d'octet par rang : rien par work-item, ce qui
+va aussi au GPU). Les entrées et les sorties d'un appel étant disjointes, la mémoire sort dans deux
+tenseurs neufs repris après l'appel — sauf sous une trace (`jit`, `grad`), où l'ancienne reste.
+Effacée quand les positions changent. Mesuré (`./run bench "test_PowerDiagram::pd accelerated"
+--nb-dims=3 --nb-points=200000 --memory=0|32`, machine partagée, minimum de 7) : Laguerre
+0.450 → **0.337 s (−25 %)**, Voronoï 0.436 → **0.307 s (−30 %)** ; en 2D à 10⁶ la mémoire *coûte*
++13 % (0.227 → 0.256 s : la coupe d'un polygone en registres ne vaut pas la pré-passe). D'où le
+défaut : `32` en 3D et au-delà, `0` en 2D.
