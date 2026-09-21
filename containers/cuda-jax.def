@@ -35,6 +35,10 @@ From: ubuntu:24.04
 %post
     set -eux
     export DEBIAN_FRONTEND=noninteractive
+    # les telechargements de pip (des gigaoctets pour CUDA) vont dans le rootfs, pas dans le /tmp
+    # de l'hote -- un tmpfs, vite plein
+    export TMPDIR=/opt/pip-tmp
+    mkdir -p $TMPDIR
 
     apt-get update
     apt-get install -y --no-install-recommends \
@@ -43,13 +47,14 @@ From: ubuntu:24.04
     python3 -m venv /opt/venv
     /opt/venv/bin/pip install --no-cache-dir --upgrade pip
     /opt/venv/bin/pip install --no-cache-dir -r /opt/sdot/requirements.txt
-    /opt/venv/bin/pip install --no-cache-dir "jax[cuda13]"
+    # le compilateur CUDA 13.4 (son frontend EDG) s'effondre sur nos noyaux, 13.3 passe : epingle
+    /opt/venv/bin/pip install --no-cache-dir "jax[cuda13]" "nvidia-cuda-nvcc<13.4" "nvidia-cuda-crt<13.4" "nvidia-nvvm<13.4"
 
     /opt/venv/bin/pip install --no-cache-dir -e /opt/sdot/loom
     /opt/venv/bin/pip install --no-cache-dir -e /opt/sdot/sdot
     /opt/venv/bin/pip install --no-cache-dir -e /opt/sdot/otrec
 
-    apt-get clean && rm -rf /var/lib/apt/lists/*
+    apt-get clean && rm -rf /var/lib/apt/lists/* $TMPDIR
 
 %test
     /opt/venv/bin/python -c "import jax; print('jax', jax.__version__)"

@@ -37,7 +37,7 @@ jobs:
       - name: dépendances
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt ninja wheel "jax[cuda13]"
+          python -m pip install -r requirements.txt ninja wheel "jax[cuda13]" "nvidia-cuda-nvcc<13.4" "nvidia-cuda-crt<13.4" "nvidia-nvvm<13.4"
       - name: catalogue CPU, une variante par niveau
         run: |
           for v in x86-64-v2 x86-64-v3 x86-64-v4; do
