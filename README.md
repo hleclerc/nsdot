@@ -351,10 +351,17 @@ et `sdot/include/sdot/` (transport optimal). Les headers générés (JIT)
 atterrissent dans `build/include/`.
 
 Compilation : le compilateur C++ hôte pour le CPU (`c++`/`clang++`/`g++`, `SDOT_CXX` pour en
-imposer un ; `-O3 -march=native`), `nvcc` autour de lui pour CUDA (en cours de portage). Chaque
+imposer un ; `-O3 -march=native`), `nvcc` autour de lui pour CUDA (celui du paquet pip
+`nvidia-cuda-nvcc-cu13` s'il est là, sinon `/usr/local/cuda`, sinon PATH ; `SDOT_NVCC`). Chaque
 device dit avec quoi il se compile (`Device.compiler`, voir `loom/src/loom/compilation/Compiler.py`) ;
-le runtime C++ d'un device est sa queue (`loom/include/loom/support/kernels/CpuQueue.h`), qui porte
-le lancement des noyaux -- `run_parallel` ne connaît aucun device.
+le runtime C++ d'un device est sa queue (`loom/include/loom/support/kernels/CpuQueue.h`,
+`CudaQueue.h`), qui porte le lancement des noyaux -- `run_parallel` ne connaît aucun device.
+
+Sous nvcc, tout ce qu'un noyau atteint porte `HD` (`__host__ __device__`, vide ailleurs) : toute
+nouvelle fonction atteignable par un noyau s'écrit avec ; `scripts/annotate_hd.py` (libclang) le
+pose sur un fichier neuf. Les mathématiques passent par `sdot::sqrt` & co (`loom/support/math.h`),
+les atomiques par `atomic_add.h`, les étiquettes globales par `LOOM_TAG` : les seuls `#if` sur la
+cible.
 
 La compilation passe par un graphe ninja (`loom/src/loom/compilation/build.py`, `build/build.ninja`
 réécrit depuis `build/ninja/manifest.json`) : une unité n'est refaite que si l'un de SES en-têtes a

@@ -130,7 +130,7 @@ SIMD_VEC_IMPL_REG_HSUM( AVX, FP64, 4, horizontal_sum( impl_from_reg<SimdVecImpl<
     _mm256_castpd256_pd128( impl.data.reg ), _mm256_extractf128_pd( impl.data.reg, 1 ) ) ) ) );
 
 // iota, register form (see the comment in SimdVecImpl_AVX2.h)
-template<class Arch> requires ( Arch::template Has<features::AVX>::value ) HaD
+template<class Arch> requires ( Arch::template Has<features::AVX>::value ) inline
 SimdVecImpl<FP32,8,Arch> iota( FP32 beg, S<SimdVecImpl<FP32,8,Arch>> ) {
     SimdVecImpl<FP32,8,Arch> res;
     res.data.reg = _mm256_add_ps( _mm256_setr_ps( 0, 1, 2, 3, 4, 5, 6, 7 ), _mm256_set1_ps( beg ) );

@@ -317,7 +317,7 @@ ASIMD_X86_PARTIAL_256( ASIMD_OPS_REQ_EXCL( AVX, AVX512VL ), PI64, 4, pd, double,
 // fits the low lane is an in-lane `vpermilps` and a blend. Without these a `ymm` has no split to
 // fall back on and the generic form is a round trip through memory.
 namespace internal {
-    template<int K> HaD __m256 avx_lane_ext_ps( __m256 x, __m256 y ) {
+    template<int K> inline __m256 avx_lane_ext_ps( __m256 x, __m256 y ) {
         if constexpr ( K == 0 ) return x;
         else if constexpr ( K == 2 ) return _mm256_shuffle_ps( x, y, _MM_SHUFFLE( 1, 0, 3, 2 ) );
         else if constexpr ( K == 1 ) {
@@ -328,7 +328,7 @@ namespace internal {
             return _mm256_shuffle_ps( t, y, _MM_SHUFFLE( 2, 1, 2, 0 ) );             // t0 t2 y1 y2
         }
     }
-    template<int K> HaD __m256d avx_lane_ext_pd( __m256d x, __m256d y ) {
+    template<int K> inline __m256d avx_lane_ext_pd( __m256d x, __m256d y ) {
         if constexpr ( K == 0 ) return x;
         else return _mm256_shuffle_pd( x, y, 0x5 );                                  // x1 y0
     }
