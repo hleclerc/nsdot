@@ -137,7 +137,8 @@ struct Balayage {
     int    nb_diag    = 0;
     double t_maj = 0, t_diag = 0;
 
-    Balayage( const CpuQueue &queue, PD &pd, const Dom &dom, const Dist &dist, SI cap0 )
+    /// `pd_in` : le stockage tel qu'il est entre ( ses souvenirs, `memo_*`, sont recopies dans ceux de `pd` )
+    Balayage( const CpuQueue &queue, PD &pd, const auto &pd_in, const Dom &dom, const Dist &dist, SI cap0 )
         : queue( queue ), pd( pd ), dom( dom ), dist( &dist ), nt( std::max( queue.nb_workers(), 1 ) ), cap( std::max<SI>( cap0, 8 ) ) {
         const SI n = pd.nb_seeds();
         scratch.resize( nt );
@@ -146,6 +147,17 @@ struct Balayage {
         for ( SI k = 0; k < n; ++k )
             rang_de[ pd.user_id( k ) ] = k;
         redimensionne();
+        if constexpr ( requires { PD::has_memo; } ) {
+            if constexpr ( PD::has_memo ) {              // la memoire : les souvenirs d'avant, ou rien
+                const SI K = SI( pd.memo_nbrs.shape( 1 ) );
+                for ( SI k = 0; k < n; ++k ) {
+                    const int c = int( pd_in.memo_counts( k ) );
+                    pd.memo_counts( k ) = c;
+                    for ( SI q = 0; q < c && q < K; ++q )
+                        pd.memo_nbrs( k, q ) = int( pd_in.memo_nbrs( k, q ) );
+                }
+            }
+        }
     }
 
     SI n() const { return pd.nb_seeds(); }
@@ -217,6 +229,12 @@ struct Balayage {
                                                fa != nullptr ) ) {
                         deborde = true;
                         return;
+                    }
+                    // la memoire ( 3D ) : les voisins de cette cellule, proposes en premier au balayage suivant --
+                    // meme d'un essai refuse, un souvenir reste exact ( il ne fait qu'ordonner les coupes )
+                    if constexpr ( requires { PD::has_memo; } ) {
+                        if constexpr ( PD::has_memo )
+                            diagram::memorise( c, k, pd.memo_nbrs, pd.memo_counts );
                     }
                 }
             } );

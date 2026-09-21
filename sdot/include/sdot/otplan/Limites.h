@@ -297,7 +297,8 @@ struct Limites2D {
     struct Fil {                                         ///< ce qu'un fil garde d'une cellule a l'autre
         std::vector<Droite2> dr;
         std::vector<double> v0x, v0y, v1x, v1y;
-        std::vector<int> chauds, c2;
+        std::vector<int> chauds;                         ///< les voisins de la derniere bonne cellule ( rangs tries )
+        std::vector<int> cids_ok, c2;                    ///< TOUTES ses coupes, domaine compris ( la combinatoire )
     };
 
     Limites2D( Bal &bal ) : bal( bal ) {
@@ -407,6 +408,8 @@ struct Limites2D {
                 std::sort( f.chauds.begin(), f.chauds.end() );
                 auto garde_voisins = [&]() {             // la cellule courante est bonne : on repart d'elle
                     f.chauds.clear();
+                    f.cids_ok.assign( c.cid, c.cid + c.nb );
+                    std::sort( f.cids_ok.begin(), f.cids_ok.end() );
                     for ( int q = 0; q < c.nb; ++q ) if ( c.cid[ q ] >= 0 ) f.chauds.push_back( c.cid[ q ] );
                     std::sort( f.chauds.begin(), f.chauds.end() );
                 };
@@ -434,11 +437,10 @@ struct Limites2D {
                         ++Li.tours;
                         ++nb_cel;
 
-                        // ---- memes aretes : le polynome etait exact de `a_ok` a `a_test`
-                        f.c2.clear();
-                        for ( int q2 = 0; q2 < c.nb; ++q2 ) if ( c.cid[ q2 ] >= 0 ) f.c2.push_back( c.cid[ q2 ] );
+                        // ---- memes aretes ( le domaine compris ) : le polynome etait exact de `a_ok` a `a_test`
+                        f.c2.assign( c.cid, c.cid + c.nb );
                         std::sort( f.c2.begin(), f.c2.end() );
-                        const bool memes = c.nb > 0 && f.c2 == f.chauds;
+                        const bool memes = c.nb > 0 && f.c2 == f.cids_ok;
                         if ( memes ) {
                             if ( a_test >= horizon ) { fini( pred < INFINI && pred < horizon ? pred : horizon, LimiteCellule::HORIZON ); termine = true; break; }
                             if ( sur_pred ) { fini( pred, Li.tours == 1 ? LimiteCellule::CONFIRMEE : LimiteCellule::CORRIGEE ); termine = true; break; }

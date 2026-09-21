@@ -53,6 +53,10 @@ similitude qui ramène le nuage dans le pavé. `stats["depart"]` le dit.
 poids) — à chaque étape de la continuation. Le plan est celui vers la densité restreinte au
 domaine, normalisée.
 
+**La mémoire 3D** (`memory = K`, 32 par défaut en 3D) est refaite DANS le solveur à chaque
+balayage (`Balayage::mesures` → `diagram::memorise`), dans deux vues de sortie initialisées depuis
+les souvenirs d'avant ; un souvenir d'un essai refusé reste exact (il ne fait qu'ordonner les coupes).
+
 **Le domaine non borné** (des gaussiennes sans `boundaries`) est fermé par l'ENVELOPPE des diracs,
 approchée par l'extérieur : 16 demi-plans d'appui en 2D (les axes compris → un pavé de départ +
 12 coupes par cellule), 26 en 3D (`sdot/hull.py`). L'enveloppe exacte peut avoir `n` arêtes et
@@ -70,8 +74,9 @@ chaque cellule est coupée par tous les plans du domaine : elle rendrait le diag
 | 2D lignes 1e5, s = 0.005, essais KMT (`step="trials"`) | 23 / 56 (32) | 8.8 s | KMT 24 / 113, 17.9 s |
 | 2D lignes 1e5, `step="limits"` (défaut) | **19 / 32 (0)** | 6.6 s (diag 2.9, lin 3.3) | essai-limites 19 / 40, 8.4 s |
 | 3D uniforme 1e5 | 4 / 7 (2) | 8 s (diag 3.5, AMG 4.5 sans OpenMP) | 6 / 9, 5.2 s |
+| 3D uniforme 2e4, `memory = 0` → 32 (le défaut) | 5 / 7 | 0.107 → 0.090 s par diagramme | § 11 : −25 à −40 % à 1e5+ |
 | densité 4 gaussiennes σ = 0.05, n = 5000, direct | STAGNATION | | idem |
-| … continuation auto | 14 étapes, 66 / 82 (0) | 2 s | |
+| … continuation auto | 14 étapes, 57 / 77 (1) | 1.8 s | |
 | densité σ = 0.02, n = 1e5, continuation | 17 étapes, 156 / 246 (2) | 113 s (diag 69, lin 40, lim 1.7) | 15 étapes, 130 / 204, 108 s |
 
 Le diagramme d'une densité gaussienne coûte 0.28 s à 1e5 (la réduction exacte par triangles de
@@ -90,9 +95,6 @@ C'est le sur-coût par appel de loom, pas le solveur.
 - **Les limites en 3D** (le banc ne les a pas écrites) : `step = "trials"` y reste le défaut.
 - **Les gaussiennes en 3D** : `facet_mass` n'est écrit qu'en 2D (le laplacien d'une densité
   ponctuelle au-delà demande une quadrature de face).
-- **La mémoire 3D** (`memory = K`) n'est pas mise à jour DANS le solveur (les souvenirs du
-  dernier `measures` sont lus, jamais refaits) : à brancher dans `Balayage::mesures` avec des vues
-  de sortie, comme les poids.
 - **AMGCL sans OpenMP** : l'unité de domaine est compilée avec les flags de loom ; `-fopenmp`
   rendrait la hiérarchie parallèle (4.5 s → ~2 s en 3D à 1e5).
 - **Le relèvement minimal** (§ 8.4–8.5, l'enveloppe convexe de `(1−ε)p² − w`) : un départ

@@ -112,7 +112,7 @@ inline double minimum( const std::vector<double> &v ) {
 /// sont dans l'ordre utilisateur. `weights` ( ordre utilisateur ), `hist` ( `nb_steps`, `rows [ step,
 /// NB_HIST ]`, `weights [ step, n ]` facultatif ) et `stats` sont les sorties.
 template<class TK>
-void resoudre( const CpuQueue &queue, auto &pd, const auto &dom, const auto &dist, const auto &nu_in, const auto &w0_in,
+void resoudre( const CpuQueue &queue, auto &pd, const auto &pd_in, const auto &dom, const auto &dist, const auto &nu_in, const auto &w0_in,
                const OptionsSolveur &o, auto &&weights, auto &&hist, auto &&stats ) {
     using PD = DECAYED_TYPE_OF( pd );
     using Dist = DECAYED_TYPE_OF( dist );
@@ -121,7 +121,7 @@ void resoudre( const CpuQueue &queue, auto &pd, const auto &dom, const auto &dis
     const double t_debut = now();
 
     Convolee<Dist> conv( dist );
-    Balayage<PD,DECAYED_TYPE_OF( dom ),Dist,TK> bal( queue, pd, dom, dist, o.cap0 );
+    Balayage<PD,DECAYED_TYPE_OF( dom ),Dist,TK> bal( queue, pd, pd_in, dom, dist, o.cap0 );
     auto lin = solveur_lineaire( o.lin, n, D );
     Newton<decltype( bal )> newton( bal, *lin, o.newton );
 

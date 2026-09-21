@@ -45,6 +45,13 @@ struct PowerDiagram_Bsp {
         return ::sdot::PowerDiagram_Bsp{ box_min, box_max, bnd_directions, bnd_offsets, nb_points, nb_boundaries, nb_dims,
                                          tree_, sorted_positions, sorted_weights_, memo_nbrs, memo_counts, nb_memo };
     }
+    /// ... et la memoire aussi lue ailleurs ( le solveur l'ecrit a chaque balayage )
+    HD auto with_weights( auto &&sorted_weights_, auto &&node_wa_, auto &&node_wb_, auto &&memo_nbrs_, auto &&memo_counts_ ) const {
+        auto tree_ = ::sdot::AaBsp{ tree.seed_indices, tree.node_left, tree.node_right, tree.node_begin, tree.node_end,
+                                    tree.node_box, node_wa_, node_wb_, tree.nb_bsp_seeds, tree.nb_bsp_nodes, tree.nb_lohi, tree.nb_dims };
+        return ::sdot::PowerDiagram_Bsp{ box_min, box_max, bnd_directions, bnd_offsets, nb_points, nb_boundaries, nb_dims,
+                                         tree_, sorted_positions, sorted_weights_, memo_nbrs_, memo_counts_, nb_memo };
+    }
 
     /// ce que `bsp_refresh_majorant` lit : les germes dans l'ordre de l'arbre
     HD auto sorted_cloud() const { return BspCloudView{ nb_dims, sorted_positions, sorted_weights }; }

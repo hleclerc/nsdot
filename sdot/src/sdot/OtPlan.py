@@ -238,7 +238,7 @@ class OtPlan:
                     "os.lin = otplan::Lin( int( SI( options.lin ) ) ); os.cap0 = SI( options.cap0 );",
                     "os.continuation = int( SI( options.continuation ) ); os.seuil_continuation = double( options.conv_seuil );",
                     "os.conv_s0 = double( options.conv_s0 ); os.conv_ratio = double( options.conv_ratio ); os.conv_min = double( options.conv_min );",
-                    f"otplan::resoudre<TK_otplan>( queue, pd_otplan, dom_cell, { dist_expr }, nu, w0, os, weights, history, stats );",
+                    f"otplan::resoudre<TK_otplan>( queue, pd_otplan, power_diagram, dom_cell, { dist_expr }, nu, w0, os, weights, history, stats );",
                 ] ) ),
             output_attributes = out,
             output_exceptions = [] if keep_weights else [ "history.weights" ],

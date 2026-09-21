@@ -33,7 +33,7 @@ class PowerDiagram_Plain( PowerDiagram ):
     def _solver_weights_call( self ):
         w = RealTensor[ self.num_point ]()
         return ( "power_diagram.with_weights( weights_out )",
-                 dict( output_attributes = [ "weights_out" ], args = dict( weights_out = w ) ), w )
+                 dict( output_attributes = [ "weights_out" ], args = dict( weights_out = w ) ), dict( weights_out = w ) )
 
     def _solver_weights_after( self, produced ):
-        self.weights = produced.raw
+        self.weights = produced[ "weights_out" ].raw
