@@ -1,18 +1,15 @@
-# Apptainer/Singularity image for the CPU (standard) toolchain.
+# Image Apptainer/Singularity pour le CPU.
 #
-# Much lighter than the CUDA image: the "minimal" AdaptiveCpp profile is CPU/OpenMP only and
-# needs NO LLVM. Bakes a pre-built AdaptiveCpp (minimal) + pinned Boost into /opt/sdot-cache,
-# and installs CPU builds of JAX and PyTorch in /opt/venv.
+# Il n'y a plus de chaine a batir : les noyaux se compilent avec le g++ de l'image (`c++`), et
+# ninja vient de pip. Les trois paquets du monorepo sont installes en editable, dans l'ordre :
+#   loom (tenseurs + compilation) -> sdot (transport optimal) -> otrec (reconstruction)
 #
-# The nsdot monorepo has three independent packages installed in dependency order:
-#   loom (core tensor lib + compilation) → sdot (optimal transport) → otrec (CT reconstruction)
-#
-# Build (from the repo root):
-#   apptainer build --fakeroot containers/cpu.sif containers/cpu.def
-# Run the test suite:
+# Batir (depuis la racine du depot) :
+#   ./run build-sif --env cpu           ou    apptainer build --fakeroot containers/cpu.sif containers/cpu.def
+# Lancer les tests :
 #   apptainer exec containers/cpu.sif python -m loom.cli test
 #
-# See containers/README.md for the APPTAINER_TMPDIR / APPTAINER_CACHEDIR disk-space setup.
+# Les noyaux compiles a l'execution vont dans ~/.cache/sdot (voir `loom.compilation.build_dir`).
 
 Bootstrap: docker
 From: ubuntu:24.04
@@ -22,31 +19,25 @@ From: ubuntu:24.04
     loom/pyproject.toml    /opt/sdot/loom/pyproject.toml
     loom/src               /opt/sdot/loom/src
     loom/include           /opt/sdot/loom/include
+    loom/cpp               /opt/sdot/loom/cpp
     sdot/pyproject.toml    /opt/sdot/sdot/pyproject.toml
     sdot/src               /opt/sdot/sdot/src
     sdot/include           /opt/sdot/sdot/include
+    sdot/catalogue         /opt/sdot/sdot/catalogue
     otrec/pyproject.toml   /opt/sdot/otrec/pyproject.toml
     otrec/src              /opt/sdot/otrec/src
 
 %environment
-    # First candidate cache root.  Read-only at runtime; any new compilation falls through
-    # to ~/.cache/sdot or /tmp.
-    export SDOT_CACHE_DIR=/opt/sdot-cache
     export PATH=/opt/venv/bin:$PATH
     export DEBIAN_FRONTEND=noninteractive
 
 %post
     set -eux
-
-    export SDOT_ACPP_VERSION=v25.10.0
     export DEBIAN_FRONTEND=noninteractive
-    export SDOT_CACHE_DIR=/opt/sdot-cache
 
     apt-get update
     apt-get install -y --no-install-recommends \
-        build-essential cmake ninja-build git ca-certificates \
-        libomp-dev python3 python3-pip python3-venv
-    # (g++ from build-essential provides OpenMP via libgomp; libomp-dev covers a clang fallback.)
+        build-essential git ca-certificates python3 python3-pip python3-venv
 
     python3 -m venv /opt/venv
     /opt/venv/bin/pip install --no-cache-dir --upgrade pip
@@ -54,29 +45,20 @@ From: ubuntu:24.04
     /opt/venv/bin/pip install --no-cache-dir jax
     /opt/venv/bin/pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 
-    # Install the three nsdot packages as editable (in dependency order).
     /opt/venv/bin/pip install --no-cache-dir -e /opt/sdot/loom
     /opt/venv/bin/pip install --no-cache-dir -e /opt/sdot/sdot
     /opt/venv/bin/pip install --no-cache-dir -e /opt/sdot/otrec
 
-    # Pre-build AdaptiveCpp (minimal) + pinned Boost into the in-image cache.
-    /opt/venv/bin/python -c \
-        "from loom.compilation.adaptive_cpp import ensure_acpp; print('acpp:', ensure_acpp('minimal'))"
-
-    chmod -R a+rX /opt/sdot-cache
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 %test
-    SDOT_CACHE_DIR=/opt/sdot-cache /opt/venv/bin/python -c \
-        "from loom.compilation.adaptive_cpp import is_available; assert is_available('minimal'), 'acpp missing'; print('acpp ok')"
     /opt/venv/bin/python -c "import jax, torch; print('jax', jax.__version__, '| torch', torch.__version__)"
     /opt/venv/bin/python -c "import loom, sdot, otrec; print('loom ok, sdot ok, otrec ok')"
+    /opt/venv/bin/python -m loom.toolchain --device cpu
 
 %labels
-    org.sdot.role  cpu-toolchain
-    org.sdot.acpp  v25.10.0
+    org.sdot.role  cpu
 
 %help
-    CPU build+runtime image for nsdot (loom + sdot + otrec).
-    AdaptiveCpp (minimal) is prebuilt in /opt/sdot-cache.
+    Image CPU pour nsdot (loom + sdot + otrec) : g++ + ninja, les noyaux se compilent a l'usage.
       apptainer exec containers/cpu.sif python -m loom.cli test

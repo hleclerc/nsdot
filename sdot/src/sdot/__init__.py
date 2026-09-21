@@ -2,9 +2,16 @@
 # `sdot/_include` tree the wheel ships next to the package otherwise -- registered with loom,
 # which compiles the kernels and does not know its users by name
 from pathlib import Path as _Path
+import os as _os
 import loom.compilation as _compilation
 _here = _Path( __file__ ).resolve().parent
 _compilation.register_include_root( _here / "_include" if ( _here / "_include" ).is_dir() else _here.parents[ 1 ] / "include" )
+
+# the catalogue of precompiled kernels, when there is one: a wheel's `sdot/_catalogue`, built with
+# these very headers -- or, for a checkout, the directory `SDOT_CATALOGUE_DIR` names EXPLICITLY (a
+# checkout's headers move, a catalogue registered by default would silently serve stale binaries)
+from loom.compilation import catalogue as _catalogue
+_catalogue.register_catalogue( _os.environ[ "SDOT_CATALOGUE_DIR" ] if "SDOT_CATALOGUE_DIR" in _os.environ else _here / "_catalogue" )
 
 from .AaBsp import AaBsp as AaBsp
 from .Cell import Cell as Cell

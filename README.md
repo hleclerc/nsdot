@@ -363,6 +363,13 @@ pose sur un fichier neuf. Les mathématiques passent par `sdot::sqrt` & co (`loo
 les atomiques par `atomic_add.h`, les étiquettes globales par `LOOM_TAG` : les seuls `#if` sur la
 cible.
 
+Un wheel embarque un **catalogue** de noyaux précompilés (`sdot/_catalogue`, une bibliothèque par
+variante : `cpu-x86-64-v3`, `cuda`, ...) : l'usage standard n'y compile rien. Le relevé
+(`catalogue_record/`, versionné) vient de `scripts/build_catalogue.py record`, qui exerce
+`python -m sdot.catalogue` ; la compilation par variante est `build_catalogue.py compile`, ce que
+fait `.github/workflows/wheels.yml`. `SDOT_KERNELS=auto|catalogue|atelier`. Voir
+`loom/src/loom/compilation/catalogue.py`.
+
 La compilation passe par un graphe ninja (`loom/src/loom/compilation/build.py`, `build/build.ninja`
 réécrit depuis `build/ninja/manifest.json`) : une unité n'est refaite que si l'un de SES en-têtes a
 changé (depfiles du compilateur). `libloom_runtime` (la file de threads, une par processus) est liée
