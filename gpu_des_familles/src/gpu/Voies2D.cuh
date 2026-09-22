@@ -7,11 +7,14 @@
 // `ballot`, ses deux bouts par `ffs`, deux intersections en une division, deux permutations par
 // `shfl` -- et le test d'elagage coute UNE operation par voie et un `ballot`.
 //
-// Un warp porte QUATRE cellules ( `shfl` et `ballot` de largeur 8 ). Les quatre parcourent des
-// arbres differents : le warp execute l'union de leurs chemins, et pendant qu'un groupe travaille
-// les trois autres attendent -- c'est le prix de ce mappage. En 2D une cellule finie a six
-// sommets en moyenne et 98 % des etats intermediaires en ont huit ou moins : sur huit voies,
-// deux dorment ; sur trente-deux, vingt-six dormiraient. D'ou huit, et pas le warp.
+// `V` voies par cellule : 8 ( QUATRE cellules par warp, `shfl` et `ballot` de largeur 8 ), 16 ou
+// 32. Les groupes d'un warp parcourent des arbres differents : le warp execute l'union de leurs
+// chemins, et pendant qu'un groupe travaille les autres attendent. En 2D une cellule finie a six
+// sommets en moyenne et 98 % des etats intermediaires en ont huit ou moins : sur huit voies deux
+// dorment, sur trente-deux vingt-six. MESURE ( README § 4 ) : 32 voies font JEU EGAL avec 8 -- le
+// noyau n'est pas borne par les voies qui dorment mais par la latence de la chaine noeud -> test ->
+// plan -> coupe ; les voies libres du warp sont a employer a tester plusieurs boites ou plans a la
+// fois, pas a porter plus de cellules.
 //
 // LE DEBORDEMENT EST UNE EXCURSION, comme au CPU : au-dela de huit sommets la cellule se pose dans
 // des tableaux locaux de la voie 0, qui coupe en scalaire ( `coupe2` ) pendant que les sept

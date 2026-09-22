@@ -67,6 +67,12 @@ __device__ __forceinline__ Plan3<TK> bissect3( const Arbre<TK,3> &ar, int q, TK 
     return p;
 }
 
+/// `min` / `max` qui sortent en UNE instruction ( `FMNMX` ) et pas en branchement.
+__device__ __forceinline__ float  mn( float a, float b )   { return fminf( a, b ); }
+__device__ __forceinline__ float  mx( float a, float b )   { return fmaxf( a, b ); }
+__device__ __forceinline__ double mn( double a, double b ) { return fmin( a, b ); }
+__device__ __forceinline__ double mx( double a, double b ) { return fmax( a, b ); }
+
 /// LE TEST D'ELAGAGE POUR UN SOMMET, le critere de `cell/Elagage2D.h` : rend `s`, et `s <= 0` dit
 /// « un germe de la boite peut retrancher ce sommet ». `min_q ( |v - q|^2 - a . q )` est
 /// separable par axe, libre en `q = v + a / 2`, un clamp par axe le donne. Exact.
@@ -76,7 +82,7 @@ __device__ __forceinline__ TK bilan_sommet( const Noeud<TK,D> &B, const TK *v, c
 #pragma unroll
     for ( int d = 0; d < D; ++d ) {
         TK y = v[ d ] + ( POIDS ? TK( 0.5 ) * B.a[ d ] : TK( 0 ) );
-        y = y < B.lo[ d ] ? B.lo[ d ] : ( y > B.hi[ d ] ? B.hi[ d ] : y );
+        y = mn( mx( y, B.lo[ d ] ), B.hi[ d ] );
         const TK u = y - v[ d ], f = v[ d ] - p0[ d ];
         s += u * u - f * f;
         if constexpr ( POIDS ) s -= B.a[ d ] * y;
@@ -90,7 +96,7 @@ __device__ __forceinline__ TK proximite( const Noeud<TK,D> &nd, const TK *p0 ) {
     TK s = 0;
 #pragma unroll
     for ( int d = 0; d < D; ++d ) {
-        const TK e = p0[ d ] < nd.lo[ d ] ? nd.lo[ d ] - p0[ d ] : p0[ d ] > nd.hi[ d ] ? p0[ d ] - nd.hi[ d ] : TK( 0 );
+        const TK e = mx( mx( nd.lo[ d ] - p0[ d ], p0[ d ] - nd.hi[ d ] ), TK( 0 ) );
         s += e * e;
     }
     return s;

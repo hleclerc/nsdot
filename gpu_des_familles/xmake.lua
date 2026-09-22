@@ -13,6 +13,7 @@
 --   src/gpu/Fil2D.cuh       UNE CELLULE PAR THREAD, 2D : la boucle scalaire en memoire locale
 --   src/gpu/Voies2D.cuh     LA CELLULE SUR HUIT VOIES, 2D : voie = sommet, quatre cellules par warp
 --   src/gpu/Fil3D.cuh       une cellule par thread, 3D : le polytope simple porte par ses sommets
+--   src/gpu/Voies3D.cuh     LA CELLULE SUR LE WARP, 3D : la voie l porte les sommets l, l+32, ... ; deux passes
 --   src/gpu/Mesures.h/.cu   `DiagrammeGpu<D,TK>` : televersement, lancement, chrono par evenements
 --   src/mains/main_mesures.cpp   le banc
 -- =====================================================================================

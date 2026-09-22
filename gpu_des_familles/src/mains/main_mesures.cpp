@@ -59,17 +59,18 @@ int mesure( const Args &a, const Opt &o, const Nuage<PD::dim> &nu ) {
     const double moyenne = somme_cpu / nu.n;
     for ( gpu::Variante v : { gpu::Variante::FIL, gpu::Variante::VOIES, gpu::Variante::VOIES16, gpu::Variante::VOIES32 } ) {
         if ( o.variante != "toutes" && o.variante != gpu::nom( v ) ) continue;
-        if ( D == 3 && v != gpu::Variante::FIL ) continue;
+        if ( D == 3 && ( v == gpu::Variante::VOIES16 || v == gpu::Variante::VOIES32 ) ) continue;   // en 3D « voies » est le warp
         const gpu::Chrono ch = g.mesures( v, a.nv( D ), o.reps_gpu, res );
-        // l'ecart d'une cellule est rapporte a ELLE ( ou a la moyenne si elle est plus petite ) : en
-        // `float` l'erreur d'une grande cellule vaut son perimetre fois 1e-7, et les nuages de
-        // lignes ont des cellules mille fois plus grandes que la moyenne
+        // l'ecart d'une cellule est rapporte a ELLE ( ou a la moyenne si elle est plus petite ). En
+        // `float` c'est du bruit : une cellule de cote 1e-3 avec des sommets a 6e-8 pres a son aire
+        // a 4e-4 pres, et les deux cotes n'arrondissent pas pareil ( `fma` contractes ou non ) ;
+        // la somme, elle, est tenue a 1e-6. En `double` l'ecart est celui de l'ordre des operations
         double somme = 0, ecart = 0;
         for ( SI i = 0; i < nu.n; ++i ) {
             somme += res[ i ];
             ecart = std::max( ecart, std::fabs( res[ i ] - cpu[ i ] ) / std::max( double( cpu[ i ] ), moyenne ) );
         }
-        const bool ok = ch.deborde == 0 && ecart < ( sizeof( TK ) == 4 ? 1e-4 : 1e-9 ) && std::fabs( somme - 1 ) < 1e-6 + 1e-4 * std::fabs( somme_cpu - 1 );
+        const bool ok = ch.deborde == 0 && ecart < ( sizeof( TK ) == 4 ? 1e-2 : 1e-9 ) && std::fabs( somme - 1 ) < 1e-6 + 1e-4 * std::fabs( somme_cpu - 1 );
         std::printf( "      %-8s %8.4f s  %7.0f ns/germe  x%-5.1f  somme %.9f  ecart max %.1e  retour %.0f ms%s%s\n",
                      gpu::nom( v ), ch.noyau, ch.noyau / nu.n * 1e9, t_cpu / ch.noyau, somme, ecart, ch.retour * 1e3,
                      ch.deborde ? "   <-- DEBORDE" : "", ok ? "" : "   <-- FAUX" );
