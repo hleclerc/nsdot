@@ -18,6 +18,7 @@
 #include "gpu/FilRot2D.cuh"
 #include "gpu/FilNrm2D.cuh"
 #include "gpu/FilUni2D.cuh"
+#include "gpu/FilShm2D.cuh"
 #include "gpu/Fil3D.cuh"
 #include "gpu/Voies3D.cuh"
 
@@ -201,6 +202,18 @@ Chrono lance2( const Impl &m, Variante v, int reps, std::vector<double> &res ) {
             case Variante::FILMIX12: return mix( std::integral_constant<int,12>{} );
             default:                 return mix( std::integral_constant<int,16>{} );
         }
+    }
+    if ( v == Variante::FILSHM8 ) {
+        // ( le carveout a 100 % de memoire partagee a ete essaye : il prend le L1 -- la pile, les
+        // noeuds -- pour une occupation que 12 Ko par bloc ne remontent pas : 8.3 au lieu de 8.0 )
+        return chrono<2,TK>( m, reps, res, [ & ]() {
+            noyau2_filshm<POIDS,8><<<grid, bloc>>>( ar, m.res, m.deb, m.liste );
+            int nd = 0;
+            CUDA_OK( cudaMemcpy( &nd, m.deb, sizeof( int ), cudaMemcpyDeviceToHost ) );
+            if ( nd == 0 ) return m.deb;
+            noyau2_filmix<POIDS,64,8,true><<<( nd + bloc - 1 ) / bloc, bloc>>>( ar, m.res, m.deb2, m.liste, nd );
+            return m.deb2;
+        } );
     }
     if ( v == Variante::FILUNI8NP )                       // la boucle unique, un thread par cellule
         return chrono<2,TK>( m, reps, res, [ & ]() {

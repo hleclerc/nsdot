@@ -18,7 +18,7 @@ xmake run mesures --threads 8 --variante voies --load uniforme -n 1000000
 ```
 
 Les options communes (`-n`, `--load`, `--kernel`, `--maxnv`, `--leaf`, `--cases`, …) sont celles
-de `solvers_des_familles` (`src/bench/Args.h`), plus `--variante fil | filreg | filregc | filmix{4,6,8,12,16} | filbrk{6,8,10,12,16} | filbrk8nu | filrot{6,8} | filnrm8 | filuni8 | filuni8np | voies | voies16 |
+de `solvers_des_familles` (`src/bench/Args.h`), plus `--variante fil | filreg | filregc | filmix{4,6,8,12,16} | filbrk{6,8,10,12,16} | filbrk8nu | filrot{6,8} | filnrm8 | filuni8 | filuni8np | filshm8 | voies | voies16 |
 voies32 | paquet{8,32}x{1,2,4}[S] | toutes` et `--reps-gpu`. Sur la machine, `--threads 8` est à donner (`hardware_concurrency` rend 1
 dans le bac à sable) et **tout chronométrage passe par `job -b`**.
 
@@ -43,6 +43,8 @@ src/gpu/FilNrm2D.cuh    la cellule NORMALISÉE AVANT la coupe : tout se lit à d
                         rien n'est recomposé après — LE GAGNANT en 2D à `R = 8`
 src/gpu/FilUni2D.cuh    le même en UNE SEULE BOUCLE ( un pas par itération ) et avec des lanes
                         persistantes — mesuré, et perdu (§ 4)
+src/gpu/FilShm2D.cuh    le même avec la rotation en MÉMOIRE PARTAGÉE ( layout [case][thread] ) :
+                        −26 % d'instructions, −25 % d'occupation, égalité — perdu de peu (§ 4)
 src/gpu/Voies2D.cuh     LA CELLULE SUR LES VOIES, 2D : voie = sommet, `V` = 8, 16 ou 32 voies par
                         cellule ; le débordement est une excursion sur la voie 0
 src/gpu/Paquet2D.cuh    PLUSIEURS CELLULES PAR VOIE, un parcours par warp, les plans d'une feuille
@@ -227,6 +229,19 @@ l'arbre et parties ensemble, sont **corrélées en phase** — les lanes persist
 corrélation, et la queue qu'elles rattrapent vaut moins qu'elle. La divergence qui reste n'est
 pas une affaire de structure de boucle mais de cellules dissemblables dans un warp : c'est le
 tri par taille (§ 5).
+
+**La rotation en mémoire partagée (`filshm8`).** La mémoire partagée fait ce qui manque aux
+registres : l'indexation dynamique. La rotation de `filnrm` devient huit stores à indices fixes
+et six chargements à indices calculés, les quatre sommets des intersections quatre chargements —
+plus un barillet, plus un `select`. Layout `[ case ][ thread ]` (une ligne par thread mettrait
+les 32 threads d'un warp sur quatre bancs). Mesuré : **1816 → 1343 instructions par cellule
+(−26 %)**, 60 registres, 7,5 actifs par warp… et 8.0–8.3 ns/germe contre 7.7. Ce qui perd est
+l'**empreinte** : `x`, `y`, `cid` × 8 cases = 96 octets par thread, 12 Ko par bloc, cinq blocs par
+SM au lieu de huit, 62 % d'occupation au lieu de 87 — sur un noyau borné par la latence, c'est ce
+qui compte. Réutiliser le même tampon pour `x` puis `y` (8 Ko, la dépendance store → load est dans
+le thread) remonte à 75 % mais sérialise deux allers-retours : 8.3 ; le carveout à 100 % de
+mémoire partagée prend le L1 (la pile, les nœuds) : 8.3 aussi. À garder pour la 3D, où la
+rotation d'une cellule à trente sommets a plus à rendre et où le warp entier partage une cellule.
 
 **Les micro-optimisations de `filbrk`** (`filbrk8nu` est sans) : une cellule non vide a trois
 sommets au moins et une coupe en laisse `nb_in + 2 ≥ 3`, donc les trois premières cases ne
