@@ -19,6 +19,7 @@
 #include "gpu/FilNrm2D.cuh"
 #include "gpu/FilUni2D.cuh"
 #include "gpu/FilShm2D.cuh"
+#include "gpu/FilPh2D.cuh"
 #include "gpu/Fil3D.cuh"
 #include "gpu/Voies3D.cuh"
 
@@ -204,6 +205,36 @@ Chrono lance2( const Impl &m, Variante v, int reps, std::vector<double> &res ) {
             case Variante::FILMIX12: return mix( std::integral_constant<int,12>{} );
             default:                 return mix( std::integral_constant<int,16>{} );
         }
+    }
+    if ( v == Variante::FILPH8 ) {
+        // LE NOYAU PERSISTANT PAR SM : autant de blocs que la carte en loge, `CAP` cellules en vol
+        // par bloc, l'etat en RAM
+        constexpr int CAP = 512, BLPH = 128;
+        auto noy = noyau2_filph<POIDS,8,CAP,BLPH,TK>;
+        int par_sm = 0, dev = 0;
+        CUDA_OK( cudaGetDevice( &dev ) );
+        CUDA_OK( cudaOccupancyMaxActiveBlocksPerMultiprocessor( &par_sm, noy, BLPH, 0 ) );
+        cudaDeviceProp prop;
+        CUDA_OK( cudaGetDeviceProperties( &prop, dev ) );
+        const int grid_p = std::max( 1, par_sm ) * prop.multiProcessorCount;
+        EtatPh<TK> st;
+        st.S = grid_p * CAP;
+        CUDA_OK( cudaMalloc( &st.x, size_t( st.S ) * 8 * sizeof( TK ) ) );
+        CUDA_OK( cudaMalloc( &st.y, size_t( st.S ) * 8 * sizeof( TK ) ) );
+        CUDA_OK( cudaMalloc( &st.c, size_t( st.S ) * 8 * sizeof( int ) ) );
+        CUDA_OK( cudaMalloc( &st.pile, size_t( st.S ) * PILE_PH * sizeof( int ) ) );
+        CUDA_OK( cudaMalloc( &st.meta, size_t( st.S ) * META_PH * sizeof( int ) ) );
+        const Chrono ch = chrono<2,TK>( m, reps, res, [ & ]() {
+            CUDA_OK( cudaMemset( m.cptr, 0, sizeof( int ) ) );
+            noy<<<grid_p, BLPH>>>( ar, m.res, m.deb, m.liste, m.cptr, st );
+            int nd = 0;
+            CUDA_OK( cudaMemcpy( &nd, m.deb, sizeof( int ), cudaMemcpyDeviceToHost ) );
+            if ( nd == 0 ) return m.deb;
+            noyau2_filmix<POIDS,64,8,true><<<( nd + bloc - 1 ) / bloc, bloc>>>( ar, m.res, m.deb2, m.liste, nd );
+            return m.deb2;
+        } );
+        cudaFree( st.x ); cudaFree( st.y ); cudaFree( st.c ); cudaFree( st.pile ); cudaFree( st.meta );
+        return ch;
     }
     if ( v == Variante::FILNRM8TRI || v == Variante::FILNRM8TRIL ) {
         // L'ORACLE DE L'HOMOGENEITE : un premier tour compte le cout de chaque cellule ( plans et
