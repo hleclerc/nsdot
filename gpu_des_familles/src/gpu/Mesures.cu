@@ -25,6 +25,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <type_traits>
+#include <algorithm>
+#include <numeric>
 
 namespace sf::gpu {
 
@@ -202,6 +204,36 @@ Chrono lance2( const Impl &m, Variante v, int reps, std::vector<double> &res ) {
             case Variante::FILMIX12: return mix( std::integral_constant<int,12>{} );
             default:                 return mix( std::integral_constant<int,16>{} );
         }
+    }
+    if ( v == Variante::FILNRM8TRI || v == Variante::FILNRM8TRIL ) {
+        // L'ORACLE DE L'HOMOGENEITE : un premier tour compte le cout de chaque cellule ( plans et
+        // boites testes ), puis les cellules sont TRIEES PAR COUT ( `tri` : globalement ; `tril` :
+        // dans des tranches de 4096 rangs, pour garder la localite ) et le noyau tourne dans cet
+        // ordre -- chaque warp recoit 32 cellules de cout semblable. C'est ce qu'une file par
+        // phases obtiendrait au mieux sur ce point, sans rien construire.
+        int *cout = nullptr;
+        CUDA_OK( cudaMalloc( &cout, m.n * sizeof( int ) ) );
+        CUDA_OK( cudaMemset( m.deb, 0, sizeof( int ) ) );
+        noyau2_filnrm<POIDS,8><<<grid, bloc>>>( ar, m.res, m.deb, m.liste, nullptr, 0, cout );
+        std::vector<int> hc( m.n ), ordre( m.n );
+        CUDA_OK( cudaMemcpy( hc.data(), cout, m.n * sizeof( int ), cudaMemcpyDeviceToHost ) );
+        std::iota( ordre.begin(), ordre.end(), 0 );
+        const int tranche = v == Variante::FILNRM8TRI ? m.n : 4096;
+        for ( int b = 0; b < m.n; b += tranche )
+            std::sort( ordre.begin() + b, ordre.begin() + std::min( b + tranche, m.n ), [ & ]( int a, int c ) { return hc[ a ] < hc[ c ]; } );
+        int *dordre = nullptr;
+        CUDA_OK( cudaMalloc( &dordre, m.n * sizeof( int ) ) );
+        CUDA_OK( cudaMemcpy( dordre, ordre.data(), m.n * sizeof( int ), cudaMemcpyHostToDevice ) );
+        const Chrono ch = chrono<2,TK>( m, reps, res, [ & ]() {
+            noyau2_filnrm<POIDS,8><<<grid, bloc>>>( ar, m.res, m.deb, m.liste, dordre, m.n, nullptr );
+            int nd = 0;
+            CUDA_OK( cudaMemcpy( &nd, m.deb, sizeof( int ), cudaMemcpyDeviceToHost ) );
+            if ( nd == 0 ) return m.deb;
+            noyau2_filmix<POIDS,64,8,true><<<( nd + bloc - 1 ) / bloc, bloc>>>( ar, m.res, m.deb2, m.liste, nd );
+            return m.deb2;
+        } );
+        cudaFree( cout ); cudaFree( dordre );
+        return ch;
     }
     if ( v == Variante::FILSHM8 ) {
         // ( le carveout a 100 % de memoire partagee a ete essaye : il prend le L1 -- la pile, les

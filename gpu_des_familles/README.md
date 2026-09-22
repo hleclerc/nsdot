@@ -18,7 +18,7 @@ xmake run mesures --threads 8 --variante voies --load uniforme -n 1000000
 ```
 
 Les options communes (`-n`, `--load`, `--kernel`, `--maxnv`, `--leaf`, `--cases`, …) sont celles
-de `solvers_des_familles` (`src/bench/Args.h`), plus `--variante fil | filreg | filregc | filmix{4,6,8,12,16} | filbrk{6,8,10,12,16} | filbrk8nu | filrot{6,8} | filnrm8 | filuni8 | filuni8np | filshm8 | voies | voies16 |
+de `solvers_des_familles` (`src/bench/Args.h`), plus `--variante fil | filreg | filregc | filmix{4,6,8,12,16} | filbrk{6,8,10,12,16} | filbrk8nu | filrot{6,8} | filnrm8 | filuni8 | filuni8np | filshm8 | filnrm8tri | filnrm8tril | voies | voies16 |
 voies32 | paquet{8,32}x{1,2,4}[S] | toutes` et `--reps-gpu`. Sur la machine, `--threads 8` est à donner (`hardware_concurrency` rend 1
 dans le bac à sable) et **tout chronométrage passe par `job -b`**.
 
@@ -243,6 +243,33 @@ le thread) remonte à 75 % mais sérialise deux allers-retours : 8.3 ; le carveo
 mémoire partagée prend le L1 (la pile, les nœuds) : 8.3 aussi. À garder pour la 3D, où la
 rotation d'une cellule à trente sommets a plus à rendre et où le warp entier partage une cellule.
 
+**L'oracle de l'homogénéité (`filnrm8tri`, `filnrm8tril`) — ce qu'une file par phases pourrait
+rendre, mesuré sans la construire.** L'idée d'une file (des warps spécialisés par phase — couper
+une cellule par les germes d'une boîte, fournir des boîtes aux cellules en attente, mesurer — qui
+se passent l'état par la mémoire partagée) vise deux choses : des warps **homogènes** (32 items
+de coût semblable, donc max ≈ moyenne) et pas de queue. Le modèle SIMT dit que l'*alignement*
+des phases par lui-même ne rend rien (l'ordonnanceur fait déjà partager les instructions d'une
+boucle à des lanes à des itérations différentes ; le coût est la somme sur les phases du max sur
+les lanes) ; ce qui rend, c'est l'homogénéité. On la mesure sans la file : un premier tour compte
+le coût de chaque cellule (plans + boîtes testés), puis le noyau tourne sur les cellules **triées
+par coût** — chaque warp reçoit 32 cellules semblables, sans queue :
+
+| | uniforme / lignes V / lignes L | actifs / warp | L1 |
+|---|---|---|---|
+| `filnrm8`, l'ordre de l'arbre | 7.8 / 19 / 46 | 6.8 | 91 % |
+| trié par coût, globalement | **14.8** / 29 / 65 | **9.4** | 49 %, DRAM 40 %, 22 cycles par instruction |
+| trié par coût par tranches de 4096 rangs | 7.7 / **25** / 55 | | |
+
+L'homogénéité fait ce qu'on attendait, 6,8 → 9,4 lanes actifs (+38 %), et c'est tout ce qu'elle
+peut donner ; et elle coûte 2× parce qu'elle casse ce qui porte le noyau : **les 32 cellules d'un
+warp sont voisines dans l'arbre** et lisent les mêmes nœuds et les mêmes feuilles. Le tri local
+garde la localité à 4096 près et perd quand même 30 % sur les lignes : la localité qui compte est
+à l'échelle du warp. Une file par phases redistribue les items entre lanes et paie ce prix, plus
+son état en mémoire partagée (~220 octets par cellule en vol — la pile surtout — soit ~300
+cellules par SM, 30 % d'occupation, là où `filshm` a montré que 62 % annulaient déjà −26 %
+d'instructions), plus la compaction et les barrières. Verdict : pas en 2D sur cette carte ; le
+tri par taille du diagramme précédent (§ 5) tombe avec.
+
 **Les micro-optimisations de `filbrk`** (`filbrk8nu` est sans) : une cellule non vide a trois
 sommets au moins et une coupe en laisse `nb_in + 2 ≥ 3`, donc les trois premières cases ne
 testent pas `i < nb` ; et `__builtin_expect` d'après les compteurs (58 % des plans ne coupent
@@ -383,15 +410,17 @@ réelle.
 # 5. CE QUI RESTE
 
 * **`filnrm8` est la référence 2D** (7.7 ns/germe en uniforme, ×19 ; 19 et 47 sur les lignes,
-  `filmix6` à égalité sur Laguerre) ; `filreg` / `filregc` à 8 registres et une excursion sont derrière. La piste
-  suivante est celle que la seconde passe a révélée : **des warps homogènes en taille de
-  cellule** (§ 3), par un tri des cellules sur le nombre de sommets du diagramme précédent (dans
-  Newton on l'a gratuitement) — à faire. Ce qui reste : la divergence du
+  `filmix6` à égalité sur Laguerre). Ce qui reste de divergence (6,8 actifs sur 32) est mesuré
+  incompressible à peu de frais : l'oracle du tri par coût (§ 4) dit +38 % de lanes au mieux,
+  contre une localité par warp qui vaut 2× ; `filreg` / `filregc` à 8 registres et une excursion sont derrière. La piste
+  suivante était celle que la seconde passe a révélée : des warps homogènes en taille de
+  cellule — mesurée par l'oracle du § 4 : elle ne vaut pas la localité qu'elle coûte. Ce qui reste : la divergence du
   parcours entre les 32 cellules d'un warp (6 actifs) — un tri des cellules par profondeur de
   parcours ou une pile en mémoire partagée ne changeraient pas le fond ; les 3 000 instructions
   par cellule sont à lire ligne à ligne comme pour le 3D.
-* **Les paquets, le test en bloc, les deux fils au push, la boucle unique et les lanes
-  persistantes sont mesurés et perdent** (§ 4) : ne pas y revenir sans une idée neuve.
+* **Les paquets, le test en bloc, les deux fils au push, la boucle unique, les lanes
+  persistantes, la rotation en mémoire partagée et le tri par coût sont mesurés et perdent**
+  (§ 4) : ne pas y revenir sans une idée neuve.
 * **La coupe 3D à 800 instructions.** Les survivants en place plutôt que renumérotés (moins de
   `rassemble`, mais les trous du CPU à gérer par masques) ; les helpers `rang` / `nieme` appelés
   moins de fois (le nouveau numéro d'un voisin calculé une fois par sommet et non par octet) ;
