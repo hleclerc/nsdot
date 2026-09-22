@@ -24,11 +24,19 @@
 --   src/gpu/Voies3D.cuh     LA CELLULE SUR LE WARP, 3D : la voie l porte les sommets l, l+32, ... ; deux passes
 --   src/gpu/Mesures.h/.cu   `DiagrammeGpu<D,TK>` : televersement, lancement, chrono par evenements
 --   src/mains/main_mesures.cpp   le banc
+--   src/mains/main_bande.cu      le debit en streaming SoA : le cout d'une phase si l'etat va en RAM
 -- =====================================================================================
 
 set_project( "gpu_des_familles" )
 set_languages( "c++20" )
 add_rules( "mode.release", "mode.debug" )
+
+target( "bande" )
+    set_kind( "binary" )
+    add_files( "src/mains/main_bande.cu" )
+    set_rundir( "$(projectdir)" )
+    add_cugencodes( "sm_75" )
+    add_cuflags( "-O3", { force = true } )
 
 target( "mesures" )
     set_kind( "binary" )

@@ -217,6 +217,15 @@ Chrono lance2( const Impl &m, Variante v, int reps, std::vector<double> &res ) {
         noyau2_filnrm<POIDS,8><<<grid, bloc>>>( ar, m.res, m.deb, m.liste, nullptr, 0, cout );
         std::vector<int> hc( m.n ), ordre( m.n );
         CUDA_OK( cudaMemcpy( hc.data(), cout, m.n * sizeof( int ), cudaMemcpyDeviceToHost ) );
+        if ( std::getenv( "MESURES_DEBUG" ) ) {
+            double sf = 0, sc = 0; int mf = 0;
+            std::vector<int> hf( m.n );
+            for ( int i = 0; i < m.n; ++i ) { hf[ i ] = hc[ i ] >> 20; sf += hf[ i ]; sc += hc[ i ] & 0xfffff; mf = std::max( mf, hf[ i ] ); }
+            std::sort( hf.begin(), hf.end() );
+            std::fprintf( stderr, "        feuilles par cellule : moyenne %.2f, mediane %d, p99 %d, max %d ; cout moyen %.1f\n",
+                          sf / m.n, hf[ m.n / 2 ], hf[ m.n * 99 / 100 ], mf, sc / m.n );
+        }
+        for ( int i = 0; i < m.n; ++i ) hc[ i ] &= 0xfffff;
         std::iota( ordre.begin(), ordre.end(), 0 );
         const int tranche = v == Variante::FILNRM8TRI ? m.n : 4096;
         for ( int b = 0; b < m.n; b += tranche )

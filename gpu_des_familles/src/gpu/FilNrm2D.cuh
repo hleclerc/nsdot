@@ -46,7 +46,7 @@ __global__ void __launch_bounds__( 128 ) noyau2_filnrm( Arbre<TK,2> ar, double *
     const int ti = blockIdx.x * blockDim.x + threadIdx.x;
     const int k = liste ? ( ti < nl ? liste[ ti ] : ar.n ) : ti;
     if ( k >= ar.n ) return;
-    int n_cout = 0;
+    int n_cout = 0, n_feuilles = 0;
     const TK p0[ 2 ] = { ar.c[ 0 ][ k ], ar.c[ 1 ][ k ] };
     const TK w0 = POIDS ? ar.w[ k ] : TK( 0 );
     const int i0 = ar.ids[ k ];
@@ -84,6 +84,7 @@ __global__ void __launch_bounds__( 128 ) noyau2_filnrm( Arbre<TK,2> ar, double *
             continue;
         }
         n_cout += nd.end - nd.beg;
+        ++n_feuilles;
 
         for ( int q = nd.beg; q < nd.end; ++q ) {
             // pas de test « c'est mon germe » : son plan a `d = 0` et `off = 0` EXACTEMENT, donc
@@ -167,7 +168,7 @@ fin:
         area = 0.5 * fabs( a );
     }
     if ( nb < 0 ) liste_deb[ atomicAdd( deborde, 1 ) ] = k;
-    if ( cout ) cout[ k ] = n_cout;
+    if ( cout ) cout[ k ] = ( n_feuilles << 20 ) | ( n_cout & 0xfffff );   // feuilles en haut, cout en bas
     res[ i0 ] = area;
 }
 

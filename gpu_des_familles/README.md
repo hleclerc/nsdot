@@ -55,6 +55,7 @@ src/gpu/Voies3D.cuh     LA CELLULE SUR LE WARP, 3D : la voie `l` porte les somme
 src/gpu/Mesures.h/.cu   `DiagrammeGpu<D,TK>` : téléversement, le choix du noyau ( variante,
                         Voronoï / Laguerre, sommets max ), le chrono par événements CUDA
 src/mains/main_mesures.cpp   le banc
+src/mains/main_bande.cu      le débit en streaming SoA : ce que coûte une phase si l'état va en RAM
 ```
 
 Ce qui est repris de `../solvers_des_familles/src` sans y toucher : `accel/AaBsp.h` (l'arbre,
@@ -270,6 +271,35 @@ cellules par SM, 30 % d'occupation, là où `filshm` a montré que 62 % annulaie
 d'instructions), plus la compaction et les barrières. Verdict : pas en 2D sur cette carte ; le
 tri par taille du diagramme précédent (§ 5) tombe avec.
 
+**Les phases avec l'état en RAM du GPU — l'enveloppe.** La mémoire partagée ne peut pas porter
+32k cellules en vol ; la RAM, si. Le schéma : des chunks de 32k cellules, une phase « couper par
+les germes d'une boîte » qui écrit en RAM les cellules pas finies (`[x, y, cid]` + la boîte
+courante), une phase « avancer le parcours » qui donne à chacune sa boîte suivante, une phase
+« mesurer » quand le tampon des finies est assez plein. L'intérêt par rapport au tri par coût
+(ci-dessus) : en groupant les couples (cellule, feuille) **par feuille**, la phase de coupe aurait
+une localité *meilleure* que l'actuelle (32 lanes, une seule feuille lue) et une homogénéité
+parfaite. Le prix est le trafic. Les deux nombres qui décident :
+
+* **le nombre de phases** = les feuilles visitées par cellule — mesuré 3.80 en uniforme (médiane
+  4, p99 8), 4.14 sur les lignes Voronoï, **32.7** sur les lignes Laguerre ;
+* **le coût d'une phase** = lire et réécrire l'état — `xmake run bande 1000000 8` : **0.36 ns par
+  cellule et par passe**, 532 Go/s, en SoA parfaitement coalescé, rien d'autre ne tournant.
+
+Uniforme : ~4 phases de coupe (0.36 chacune) et ~4 de parcours (0.27, les sommets sans les `cid`)
+= **2.4 ns/germe de trafic incompressible**, contre 7.7 ns pour tout le noyau aujourd'hui — 31 %.
+Or le gain est plafonné : l'oracle donne +38 % de lanes actifs, et la moitié du temps seulement
+est dans la phase de coupe, donc au mieux −25 %, soit 5.8 ns. 5.8 + 2.4 (même partiellement
+recouvert) ne bat pas 7.7. Sur les lignes Laguerre c'est pire : 32.7 phases × 0.63 = 20 ns contre
+46 ns — 45 % du temps en trafic.
+
+Ce que ça dit sur les conditions où le schéma passerait : il faut **peu de phases par cellule**
+(des feuilles plus grosses — mais `--leaf` est mesuré optimal à 10, § 4) et surtout **beaucoup de
+calcul par phase**. C'est le cas en 3D, où une coupe coûte 800 instructions au lieu de 60 :
+l'état d'une cellule 3D fait ~600 octets, ~9 feuilles visitées, soit ~20 ns/germe de trafic contre
+229 ns/germe — 9 %, très amortissable. Mais en 3D il n'y a pas de divergence à corriger (un warp
+porte une cellule, 27 lanes actifs sur 32) : le schéma paierait sans rien rapporter. Les deux
+conditions ne se rencontrent sur aucun de nos cas.
+
 **Les micro-optimisations de `filbrk`** (`filbrk8nu` est sans) : une cellule non vide a trois
 sommets au moins et une coupe en laisse `nb_in + 2 ≥ 3`, donc les trois premières cases ne
 testent pas `i < nb` ; et `__builtin_expect` d'après les compteurs (58 % des plans ne coupent
@@ -420,7 +450,8 @@ réelle.
   par cellule sont à lire ligne à ligne comme pour le 3D.
 * **Les paquets, le test en bloc, les deux fils au push, la boucle unique, les lanes
   persistantes, la rotation en mémoire partagée et le tri par coût sont mesurés et perdent**
-  (§ 4) : ne pas y revenir sans une idée neuve.
+  (§ 4) : ne pas y revenir sans une idée neuve. Les phases avec l'état en RAM sont chiffrées au
+  § 4 sans être écrites : le trafic vaut 31 % du temps en 2D pour un gain plafonné à 25 %.
 * **La coupe 3D à 800 instructions.** Les survivants en place plutôt que renumérotés (moins de
   `rassemble`, mais les trous du CPU à gérer par masques) ; les helpers `rang` / `nieme` appelés
   moins de fois (le nouveau numéro d'un voisin calculé une fois par sommet et non par octet) ;
