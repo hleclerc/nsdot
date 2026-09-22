@@ -77,7 +77,10 @@ __global__ void __launch_bounds__( BL ) noyau2_filph( Arbre<TK,2> ar, double *re
     constexpr int NZ = 512;                               // les zones du binning
     __shared__ int zone[ GROUPE == 2 ? NZ : 1 ], zone2[ GROUPE == 2 ? NZ : 1 ];
     // L'ARENE : `NZA` zones de `ZA` places, puis un pool de `POOLA` places
-    constexpr int NZA = 64, ZA = 8, POOLA = 128, ARN = NZA * ZA + POOLA;
+    // le pool a `CAP` places : au plus `CAP` entrees en tout, il ne peut donc pas deborder --
+    // avec un pool plus petit et un `% ARN`, les entrees en trop en ECRASAIENT d'autres ( mesure :
+    // 1603 cellules perdues sur 1e6, et des temps flatteurs )
+    constexpr int NZA = 64, ZA = 8, POOLA = CAP, ARN = NZA * ZA + POOLA;
     __shared__ unsigned short arene[ GROUPE == 3 ? ARN : 1 ];
     __shared__ int fina[ GROUPE == 3 ? NZA : 1 ], poola;
     __shared__ int off[ MOTS ], nfile, cur, reste;
@@ -208,7 +211,7 @@ __global__ void __launch_bounds__( BL ) noyau2_filph( Arbre<TK,2> ar, double *re
                 if constexpr ( GROUPE == 3 ) {           // DIRECTEMENT dans la zone de la feuille
                     const int z = feuille & ( NZA - 1 );
                     const int p = atomicAdd( &fina[ z ], 1 );
-                    arene[ p < ( z + 1 ) * ZA ? p : atomicAdd( &poola, 1 ) % ARN ] = ( unsigned short ) ( slot - base );
+                    arene[ p < ( z + 1 ) * ZA ? p : atomicAdd( &poola, 1 ) ] = ( unsigned short ) ( slot - base );
                 } else
                     pose( mB[ 1 - cur ], slot - base );
             } else

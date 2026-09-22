@@ -346,9 +346,9 @@ consécutives prennent alors des slots consécutifs, ce qui rend la coalescence 
 | | *float* | | | | *double* | | |
 | `filnrm8` | **7.7** | **18.6** | **45.8** | | 100.5 | 133.2 | **492** |
 | `filph8` (phases) | 20.7 | 28.8 | 110.4 | | 97.7 | 136.2 | 805 |
-| `filph8g` (groupé : tri) | 20.6 | 35.5 | 132.0 | | **88.7** | 134.1 | 833 |
-| `filph8b` (groupé : binning) | 22.5 | 32.4 | 120.7 | | 89.4 | 134.6 | 829 |
-| `filph8a` (groupé : arène) | 25.9 | 36.4 | 128.9 | | 102.4 | 141.7 | 801 |
+| `filph8g` (groupé : tri) | 20.6 | 35.9 | 132.5 | | **89.4** | 132.9 | 858 |
+| `filph8b` (groupé : binning) | 22.5 | 33.5 | 118.4 | | **89.1** | 135.1 | 834 |
+| `filph8a` (groupé : arène) | 26.4 | 35.6 | 133.9 | | 103.7 | 147.7 | 853 |
 
 **Le schéma marche, et le profil dit exactement quand.** Les lanes actifs passent de 6,8 à
 **11,3–11,8 sur 32 (+70 %)** — mieux que les +38 % que l'oracle du tri laissait espérer, parce
@@ -393,9 +393,10 @@ deux autres s'en passent de plus en plus :
   la phase de parcours connaît la feuille, le slot est posé dans la zone de cette feuille
   (`feuille % 64`), à une place prise par un compteur atomique, et part dans un pool commun si la
   zone est pleine. **Aucune passe de réorganisation** ; en échange la phase de coupe balaie
-  l'arène et saute les trous. Mesuré : 102.4 en `double`, **plus lent que les deux autres**.
-  Le réglage compte (64 zones × 8 places + 128 de pool, soit 640 pour ~512 entrées, est le
-  meilleur des cinq essayés : 1024 places donnent 107.4) mais ne renverse rien.
+  l'arène et saute les trous. Mesuré : 103.7 en `double`, **plus lent que les deux autres**.
+  (Le pool doit avoir `CAP` places — au plus `CAP` entrées en tout : un pool plus petit avec un
+  `% ARN` écrase des entrées, ce qui donnait 1603 cellules perdues sur 10⁶ et des temps
+  flatteurs. Le réglage des zones a été balayé, il ne renverse rien.)
 
 Pourquoi l'arène perd alors qu'elle supprime du travail : dans le régime où le groupement sert
 (`double`, borné par le calcul), **le tri ne coûte rien** — il est masqué comme le reste du
