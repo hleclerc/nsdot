@@ -11,7 +11,8 @@
 -- OU EST QUOI :
 --   src/gpu/Arbre.cuh       l'arbre tel que le GPU le lit : noeuds AoS alignes, germes dans l'ordre
 --   src/gpu/Fil2D.cuh       UNE CELLULE PAR THREAD, 2D : la boucle scalaire en memoire locale
---   src/gpu/FilReg2D.cuh    une cellule par thread, LES SOMMETS EN REGISTRES : le gagnant en 2D
+--   src/gpu/FilReg2D.cuh    une cellule par thread, LES SOMMETS EN REGISTRES, l'excursion au-dela de 8
+--   src/gpu/FilMix2D.cuh    le meme, R sommets en registres et la queue en memoire par une boucle : LE GAGNANT 2D ( R = 6 )
 --   src/gpu/Paquet2D.cuh    plusieurs cellules par voie, un parcours par warp, plans en bloc : perdu
 --   src/gpu/Voies2D.cuh     LA CELLULE SUR HUIT VOIES, 2D : voie = sommet, quatre cellules par warp
 --   src/gpu/Fil3D.cuh       une cellule par thread, 3D : le polytope simple porte par ses sommets

@@ -13,6 +13,7 @@
 #include "gpu/Voies2D.cuh"
 #include "gpu/Paquet2D.cuh"
 #include "gpu/FilReg2D.cuh"
+#include "gpu/FilMix2D.cuh"
 #include "gpu/Fil3D.cuh"
 #include "gpu/Voies3D.cuh"
 
@@ -159,7 +160,7 @@ Chrono lance2( const Impl &m, Variante v, int reps, std::vector<double> &res ) {
             default:                 return paq( V32{}, I4{}, T{} );
         }
     }
-    if ( v != Variante::FIL && v != Variante::FILREG && v != Variante::FILREGC ) {
+    if ( v >= Variante::VOIES ) {
         auto voies = [ & ]( auto vv ) {
             constexpr int V = decltype( vv )::value;
             const int cellules_par_bloc = BLOC2 / V;
@@ -173,6 +174,19 @@ Chrono lance2( const Impl &m, Variante v, int reps, std::vector<double> &res ) {
     const int bloc = 128, grid = ( m.n + bloc - 1 ) / bloc;
     if ( v == Variante::FILREG )
         return chrono<2,TK>( m, reps, res, [ & ]() { noyau2_filreg<POIDS,MaxNb,false><<<grid, bloc>>>( ar, m.res, m.deb ); return m.deb; } );
+    if ( v >= Variante::FILMIX4 && v <= Variante::FILMIX16 ) {
+        auto mix = [ & ]( auto rr ) {
+            constexpr int R = decltype( rr )::value;
+            return chrono<2,TK>( m, reps, res, [ & ]() { noyau2_filmix<POIDS,( MaxNb > 64 ? 64 : MaxNb ),R,true><<<grid, bloc>>>( ar, m.res, m.deb ); return m.deb; } );
+        };
+        switch ( v ) {
+            case Variante::FILMIX4:  return mix( std::integral_constant<int,4>{} );
+            case Variante::FILMIX6:  return mix( std::integral_constant<int,6>{} );
+            case Variante::FILMIX8:  return mix( std::integral_constant<int,8>{} );
+            case Variante::FILMIX12: return mix( std::integral_constant<int,12>{} );
+            default:                 return mix( std::integral_constant<int,16>{} );
+        }
+    }
     if ( v == Variante::FILREGC )
         return chrono<2,TK>( m, reps, res, [ & ]() { noyau2_filreg<POIDS,MaxNb,true><<<grid, bloc>>>( ar, m.res, m.deb ); return m.deb; } );
     return chrono<2,TK>( m, reps, res, [ & ]() { noyau2_fil<POIDS,MaxNb><<<grid, bloc>>>( ar, m.res, m.deb ); return m.deb; } );
