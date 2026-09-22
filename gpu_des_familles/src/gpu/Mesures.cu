@@ -15,6 +15,7 @@
 #include "gpu/FilReg2D.cuh"
 #include "gpu/FilMix2D.cuh"
 #include "gpu/FilBrk2D.cuh"
+#include "gpu/FilRot2D.cuh"
 #include "gpu/Fil3D.cuh"
 #include "gpu/Voies3D.cuh"
 
@@ -196,6 +197,20 @@ Chrono lance2( const Impl &m, Variante v, int reps, std::vector<double> &res ) {
             case Variante::FILMIX12: return mix( std::integral_constant<int,12>{} );
             default:                 return mix( std::integral_constant<int,16>{} );
         }
+    }
+    if ( v == Variante::FILROT6 || v == Variante::FILROT8 ) {
+        auto rot = [ & ]( auto rr ) {
+            constexpr int R = decltype( rr )::value;
+            return chrono<2,TK>( m, reps, res, [ & ]() {
+                noyau2_filrot<POIDS,R><<<grid, bloc>>>( ar, m.res, m.deb, m.liste );
+                int nd = 0;
+                CUDA_OK( cudaMemcpy( &nd, m.deb, sizeof( int ), cudaMemcpyDeviceToHost ) );
+                if ( nd == 0 ) return m.deb;
+                noyau2_filmix<POIDS,64,8,true><<<( nd + bloc - 1 ) / bloc, bloc>>>( ar, m.res, m.deb2, m.liste, nd );
+                return m.deb2;
+            } );
+        };
+        return v == Variante::FILROT6 ? rot( std::integral_constant<int,6>{} ) : rot( std::integral_constant<int,8>{} );
     }
     if ( v >= Variante::FILBRK6 && v <= Variante::FILBRK8NU ) {
         // tout en registres avec des sorties, puis les rangs qui ont deborde `R` refaits par
