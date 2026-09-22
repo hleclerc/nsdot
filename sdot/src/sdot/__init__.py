@@ -32,7 +32,6 @@ from .OtPlan1d import OtPlan1d as OtPlan1d
 from .OtPlan import OtPlan as OtPlan
 from .PowerDiagram import PowerDiagram as PowerDiagram
 from .PowerDiagram import box_half_spaces as box_half_spaces
-from .hull import supporting_half_spaces as supporting_half_spaces
 from .PowerDiagram_Bsp import PowerDiagram_Bsp as PowerDiagram_Bsp
 from .PowerDiagram_Plain import PowerDiagram_Plain as PowerDiagram_Plain
 from .SpatialAccelerator import SpatialAccelerator as SpatialAccelerator

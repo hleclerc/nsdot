@@ -65,7 +65,6 @@ def provoke( device = None ):
             if d == 2:
                 sog = SumOfGaussians( positions = pos[ :4 ], sigmas = [ 0.1 ] * 4, weights = [ 1.0 ] * 4 )
                 OtPlan( SumOfDiracs( pos ), sog, max_iter = 20 )
-                OtPlan( SumOfDiracs( pos ), None, max_iter = 20 )
 
     # la cellule seule, ce que `Cell` expose
     for d in ( 2, 3 ):

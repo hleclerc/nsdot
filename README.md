@@ -373,8 +373,8 @@ fait `.github/workflows/wheels.yml`. `SDOT_KERNELS=auto|catalogue|atelier`. Voir
 Le transport semi-discret (`sdot.OtPlan`) est résolu **en un appel**, tout en C++
 (`sdot/include/sdot/otplan/`) : le Newton amorti du banc `solvers_des_familles`, le laplacien
 assemblé sans tri, Cholesky (Eigen) / AMG (AMGCL) / CG en unité de domaine, le pas par les limites
-en 2D, la continuation en largeur pour les densités qui se concentrent, l'enveloppe des diracs quand
-la densité ne borne pas le domaine. Eigen et AMGCL sont téléchargés par loom lui-même au premier
+en 2D, la continuation en largeur pour les densités qui se concentrent ; le domaine est le support
+que la densité déclare (`bounding_half_spaces`). Eigen et AMGCL sont téléchargés par loom lui-même au premier
 noyau compilé (`loom/src/loom/compilation/externals.py` : archive épinglée + SHA-256, dans le cache
 utilisateur, puis sur le chemin d'inclusion ; `SDOT_EXTERNALS=0` pour s'en passer -- le gradient
 conjugué maison reste). Voir `notes/2026-09-22-otplan-cpp.md`.

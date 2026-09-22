@@ -33,7 +33,7 @@ sdot/include/sdot/otplan/
   Limites.h       PdAlpha*, FournisseurListe, PolyCellule, Limites2D::alpha_min
   Continuation.h  Convolee<Dist>::at( s ), etapes( s0, ratio, s_min )
   Solve.h         resoudre<TK>( queue, pd, dom, dist, nu, w0, options, weights, hist, stats )
-sdot/src/sdot/OtPlan.py   la classe ; hull.py : l'enveloppe par demi-espaces d'appui (un noyau)
+sdot/src/sdot/OtPlan.py   la classe
 ```
 
 **Les poids sont des SORTIES de l'appel.** Les entrées d'un `driver.call` sont en lecture seule ;
@@ -57,15 +57,12 @@ domaine, normalisée.
 balayage (`Balayage::mesures` → `diagram::memorise`), dans deux vues de sortie initialisées depuis
 les souvenirs d'avant ; un souvenir d'un essai refusé reste exact (il ne fait qu'ordonner les coupes).
 
-**Le domaine vient de la densité, et d'elle seule** (plus de `boundaries` sur `OtPlan`) : le pavé
-d'une image ; quand le support ne borne rien (des gaussiennes, Lebesgue), l'ENVELOPPE des diracs
-approchée par l'extérieur : 16 demi-plans d'appui en 2D (les axes compris → un pavé de départ +
-12 coupes par cellule), 26 en 3D (`sdot/hull.py`). L'enveloppe exacte peut avoir `n` arêtes et
-chaque cellule est coupée par tous les plans du domaine : elle rendrait le diagramme quadratique.
-Le maximum sur les `n` germes est un noyau (`supporting_half_spaces`, un work-item par direction,
-là où vivent les positions) ; seuls les `K` décalages passent côté hôte, comme les demi-espaces
-d'une image, parce que `PowerDiagram` y lit la description du domaine pour poser sa cellule de
-départ.
+**Le domaine vient de la densité, et d'elle seule** (plus de `boundaries` sur `OtPlan`) : le
+support qu'elle déclare (`bounding_half_spaces` : le pavé d'une image, `centres ± 6σ` pour des
+gaussiennes — `SumOfGaussians( support_sigmas = 6 )`, la queue au-delà pèse 2e-9), qui doit être
+borné, sinon `OtPlan` refuse. Les diracs n'y sont pour rien : leurs cellules peuvent être loin
+d'eux. Leur enveloppe ne sert qu'au DÉPART, pour le déplacement qui les ramène dans le domaine
+(la similitude de `Solve.h`, sur les boîtes des deux).
 
 **Eigen et AMGCL sont téléchargés par la chaîne de compilation** (`loom/compilation/externals.py`,
 déclarés dans `sdot/__init__.py` : archive + SHA-256, une fois dans `~/.cache/sdot/ext/`, puis

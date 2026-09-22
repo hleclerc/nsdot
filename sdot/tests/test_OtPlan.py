@@ -5,11 +5,11 @@ from loom.testing import test, experiment, Param
 from sdot import Image, OtPlan, PowerDiagram, SumOfDiracs, SumOfGaussians, Visualizer, box_half_spaces, write_convergence_html
 
 
-# le domaine VIENT DE LA DENSITÉ : le pavé d'une image, et pour des gaussiennes ( support non borné )
-# l'enveloppe des diracs ( `hull.py` ) -- la masse gaussienne hors de l'enveloppe est PERDUE, et le
-# solveur remet les masses cibles à l'échelle de ce que le domaine contient ( `otplan/Solve.h` ) :
-# le plan est celui du transport vers la densité restreinte au domaine. `atol` des tests : la masse
-# cible d'un dirac est `1 / n`, et Newton converge au bruit du noyau.
+# le domaine VIENT DE LA DENSITÉ, et d'elle seule : le pavé d'une image, `centres +- 6 sigma` pour des
+# gaussiennes ( `SumOfGaussians.bounding_half_spaces` ). La masse hors du domaine est PERDUE ( 2e-9
+# à 6 sigma ), et le solveur remet les masses cibles à l'échelle de ce que le domaine contient
+# ( `otplan/Solve.h` ). `atol` des tests : la masse cible d'un dirac est `1 / n`, et Newton converge
+# au bruit du noyau.
 
 
 def _overlapping_target( d, nb_gaussians, seed, spread = 0.12 ):
@@ -53,8 +53,8 @@ if test( "newton_matches_the_target_masses" ):
     assert plan.converged, plan.stats
     got = numpy.asarray( plan.cell_masses ).reshape( -1 )
     assert numpy.allclose( got, _target_masses( plan ), atol = 1e-10 ), numpy.abs( got - _target_masses( plan ) ).max()
-    # la masse cible est celle des diracs, à la masse perdue hors de l'enveloppe près
-    assert 0.7 < plan.stats[ "masse_domaine" ] < 1, plan.stats[ "masse_domaine" ]
+    # la masse cible est celle des diracs, à la queue au-delà de 6 sigma près
+    assert abs( plan.stats[ "masse_domaine" ] - 1 ) < 1e-7, plan.stats[ "masse_domaine" ]
 
 
 if test( "starting_from_nonzero_weights_still_converges" ):
@@ -253,24 +253,28 @@ if test( "the_continuation_solves_what_direct_newton_cannot" ):
     assert numpy.allclose( got, _target_masses( plan ), rtol = 1e-5 ), numpy.abs( got / _target_masses( plan ) - 1 ).max()
 
 
-if test( "an_unbounded_domain_is_closed_by_the_hull_of_the_diracs" ):
-    # des gaussiennes ( support non borné ) : le domaine est l'enveloppe des diracs ( `hull.py`, seize
-    # demi-plans qui s'appuient sur le nuage, les axes compris -> un pavé de départ et douze coupes ),
-    # chaque dirac y est, le transport est celui vers la gaussienne restreinte à ce domaine
+if test( "the_domain_comes_from_the_density_alone" ):
+    # des gaussiennes : le domaine est le support qu'elles DÉCLARENT ( `centres +- 6 sigma` ), pas
+    # l'enveloppe des diracs -- des diracs tirés dans un coin du domaine ont des cellules qui vont
+    # loin d'eux, et le transport les y envoie ( les barycentres sortent de la boîte des diracs )
     rng = numpy.random.default_rng( 3 )
-    pos = rng.uniform( 0.15, 0.85, size = ( 60, 2 ) )
+    pos = rng.uniform( 0.4, 0.6, size = ( 60, 2 ) )
     dst = SumOfGaussians( numpy.array( [ [ 0.5, 0.5 ] ] ), numpy.array( [ 0.15 ] ), weights = numpy.array( [ 1.0 ] ) )
     plan = OtPlan( SumOfDiracs( pos ), dst, max_iter = 100, mass_tol = 1e-12 )
     assert plan.converged, plan.stats
     pd = plan._pd
-    assert pd.box_min.is_defined and int( pd.bnd_offsets.shape[ 0 ] ) == 12
-    assert numpy.allclose( numpy.asarray( pd.box_min ), pos.min( axis = 0 ) ) and numpy.allclose( numpy.asarray( pd.box_max ), pos.max( axis = 0 ) )
-    assert 0.9 < plan.stats[ "masse_domaine" ] < 1.0
-    got = numpy.asarray( plan.cell_masses ).reshape( -1 )
-    assert numpy.allclose( got, _target_masses( plan ), atol = 1e-10 )
-    # une marge écarte le domaine, qui contient alors plus de masse
-    wide = OtPlan( SumOfDiracs( pos ), dst, max_iter = 100, mass_tol = 1e-12, domain_margin = 0.2 )
-    assert wide.converged and wide.stats[ "masse_domaine" ] > plan.stats[ "masse_domaine" ]
+    assert pd.box_min.is_defined and not pd.bnd_offsets.is_defined
+    assert numpy.allclose( numpy.asarray( pd.box_min ), [ 0.5 - 0.9 ] * 2 ) and numpy.allclose( numpy.asarray( pd.box_max ), [ 0.5 + 0.9 ] * 2 )
+    assert abs( plan.stats[ "masse_domaine" ] - 1 ) < 1e-7
+    _, bary, _ = plan.transport()
+    bary = numpy.asarray( bary )
+    assert bary.min() < 0.3 and bary.max() > 0.7, ( bary.min(), bary.max() )
+    # sans support déclaré, pas de domaine : on le dit
+    try:
+        OtPlan( SumOfDiracs( pos ), SumOfGaussians( numpy.array( [ [ 0.5, 0.5 ] ] ), numpy.array( [ 0.15 ] ), support_sigmas = None ) )
+        assert False, "un domaine non borne devrait etre refuse"
+    except ValueError:
+        pass
 
 
 if test( "the_plain_storage_gives_the_same_plan" ):

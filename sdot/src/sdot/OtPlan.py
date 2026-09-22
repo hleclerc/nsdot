@@ -53,7 +53,6 @@ from loom.util import Aggregate
 from .Cell import Cell
 from .CellScratch import fp_size
 from .PowerDiagram import PowerDiagram, axis_aligned_box
-from .hull import supporting_half_spaces
 
 
 # ce que `stats` porte, dans l'ordre de `otplan/Solve.h::Stat`
@@ -113,21 +112,20 @@ class OtPlan:
                   weights0 = None, max_iter = 100, mass_tol = 1e-8, mass_rtol = 0.0, step = "auto",
                   linear_solver = "auto", keep_weights = False, verbose = False, t_min = 1e-10,
                   max_backtracks = 60, restart_factor = 4.0, memory = None,
-                  continuation = "auto", conv_start = None, conv_ratio = 2 ** 0.5, conv_min = None, conv_threshold = 1e-2,
-                  domain_margin = 0.0 ):
+                  continuation = "auto", conv_start = None, conv_ratio = 2 ** 0.5, conv_min = None, conv_threshold = 1e-2 ):
         """`src_dist` : une `SumOfDiracs` ( ses `weights`, normalisés, sont les masses cibles ).
-        `dst_dist` : la distribution CONTINUE contre laquelle intégrer ( `Image`, `SumOfGaussians`, ou `None` : la mesure de Lebesgue sur l'enveloppe des diracs,
+        `dst_dist` : la distribution CONTINUE contre laquelle intégrer ( `Image`, `SumOfGaussians`,
         ... ), normalisée -- puis remise à l'échelle de ce que le DOMAINE en contient ( voir
         `otplan/Solve.h` : ce qu'on résout est le transport vers la densité restreinte au domaine ).
 
         `accelerator` / `memory` : transmis tels quels au `PowerDiagram` ( voir `PowerDiagram.__init__` ).
 
-        LE DOMAINE VIENT DE LA DENSITÉ, et d'elle seule : le support de `dst_dist` ( le pavé d'une
-        image ). S'il n'est PAS BORNÉ ( des gaussiennes, la mesure de Lebesgue ), c'est l'ENVELOPPE
-        des diracs -- l'intersection de demi-espaces qui s'appuient sur le nuage, un noyau
-        ( `hull.supporting_half_spaces` ), écartés de `domain_margin` : chaque dirac est dedans, donc
-        chaque cellule de Voronoï a une mesure positive, et le transport est celui vers la densité
-        restreinte à ce domaine ( `stats[ "masse_domaine" ]` dit ce qu'il en contient ).
+        LE DOMAINE VIENT DE LA DENSITÉ, et d'elle seule : le support que `dst_dist` déclare
+        ( `bounding_half_spaces` -- le pavé d'une image, `centres +- 6 sigma` pour des gaussiennes ),
+        qui doit être BORNÉ. Les diracs n'y sont pour rien : leurs cellules peuvent être loin d'eux.
+        Leur enveloppe ne sert qu'au DÉPART, pour le déplacement qui les ramène dans le domaine
+        quand il le faut ( la similitude de `otplan/Solve.h` ). `stats[ "masse_domaine" ]` dit ce que
+        le domaine contient de la densité.
 
         `kernel_dtype` : le flottant dans lequel la géométrie se coupe -- `FP64` par défaut ICI, et
         non `FP32` comme pour un diagramme seul : le banc l'a mesuré ( README § 4 ), l'amortissement
@@ -168,21 +166,22 @@ class OtPlan:
                                        "lineaire sont du code hote ) ; choisir le device CPU ( SDOT_DEVICE=cpu )" )
         src_dist = src_dist.normalized_version()
         self.src_dist = src_dist
-        #: la densité cible, normalisée -- ou `None` : la mesure de Lebesgue sur le domaine ( borné )
-        self.dst_dist = None if dst_dist is None else dst_dist.normalized_version()
+        if dst_dist is None:
+            raise ValueError( "OtPlan : il faut une densite cible -- c'est elle qui donne le domaine" )
+        #: la densité cible, normalisée
+        self.dst_dist = dst_dist.normalized_version()
 
         d = int( src_dist.nb_dims.value )
         if kernel_dtype is None:
             kernel_dtype = "FP64"
 
-        # le domaine, borné : le support de la densité -- ou, s'il ne borne rien, l'enveloppe des
-        # diracs ( voir `hull.py` )
-        boundaries = self._bounded_domain( d, float( domain_margin ) )
+        # le domaine : le support de la densité, qui doit le borner ( `PowerDiagram` l'ajoute lui-même )
+        self._check_bounded_support( d )
 
         # LE diagramme, bâti une fois sur les positions ( voir la docstring du module ) ; les poids
         # qu'il porte à un instant donné sont les derniers posés
         self._pd = PowerDiagram( src_dist.positions, RealTensor[ src_dist.num_dirac ].full( 0.0 ) if weights0 is None else weights0,
-                                 boundaries = boundaries, accelerator = accelerator, kernel_dtype = kernel_dtype,
+                                 accelerator = accelerator, kernel_dtype = kernel_dtype,
                                  distribution = self.dst_dist, memory = memory )
         pd = self._pd
         n = int( pd.nb_points.value )
@@ -281,21 +280,22 @@ class OtPlan:
                 entry[ "weights" ] = RealTensor[ pd.num_point ]( history.weights.raw[ s ] )
             self.history.append( entry )
 
-    def _bounded_domain( self, d, margin ):
-        """Rien si le support de la densité borne le domaine ( `PowerDiagram` l'ajoute lui-même ) ;
-        sinon l'enveloppe des diracs, à donner en `boundaries` ( voir `__init__` )"""
-        support = None if self.dst_dist is None else self.dst_dist.bounding_half_spaces()
+    def _check_bounded_support( self, d ):
+        """Le support que la densité déclare doit borner le domaine ( voir `__init__` ) -- un pavé,
+        ou un polytope quelconque qu'on construit pour le savoir"""
+        support = self.dst_dist.bounding_half_spaces()
         if support is not None:
             dirs = np.asarray( support[ 0 ], dtype = float ).reshape( -1, d )
             offs = np.asarray( support[ 1 ], dtype = float ).reshape( -1 )
             if axis_aligned_box( dirs, offs ) is not None:
-                return None                                          # un pavé : borné
-            dom = Cell.make_unbounded( d, kernel_dtype = "FP64" )   # un polytope quelconque : on le construit
+                return
+            dom = Cell.make_unbounded( d, kernel_dtype = "FP64" )
             for k in range( len( offs ) ):
                 dom.cut( dirs[ k ], float( offs[ k ] ) )
             if dom.is_bounded:
-                return None
-        return supporting_half_spaces( self.src_dist.positions, margin = margin )
+                return
+        raise ValueError( "OtPlan : le support de la densite ne borne pas le domaine ( `bounding_half_spaces` ) -- "
+                          "c'est a la densite de le declarer ( `SumOfGaussians( support_sigmas = ... )` )" )
 
     @property
     def converged( self ):
