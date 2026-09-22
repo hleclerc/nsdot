@@ -462,8 +462,30 @@ occupés, son complément donne les slots libres. Par coupe :
   `nb_in` octets, et les deux octets neufs à la suite. Six instructions, là où il y avait trois
   barillets.
 
-Mesuré : **les registres tombent de 121–128 à 96 en `double`, de 68 à 58 en `float`** (−21 % et
-−14 %), et le temps est à 3–5 % près celui de `filnrm8` (8.0 / 19.4 / 47.1 en `float` contre
+**Où va le temps, et pourquoi ce n'est pas le mode masque.** Le profil par ligne de `filord8` :
+`octets_non_nuls` — la recomposition du masque par position, le cœur de l'idée — ne fait que
+**2,2 %** du noyau. Ce qui coûte est ailleurs : les lectures indexées `selR` (13 %), la première
+passe et le test d'élagage qui balaient **les huit slots au lieu de `nb`** (11,4 % + 10,2 % : le
+gâchis annoncé), et les écritures masquées des deux sommets neufs (8 %). Borner ces boucles par
+le slot vivant le plus haut (`31 − clz( vivant )`, les slots libres étant toujours pris par le
+plus petit) a été essayé et **perd** — les branches coûtent plus que les itérations épargnées
+(8.3 / 20.7 / 51.0 contre 8.0 / 19.4 / 47.1).
+
+Le fait marquant : `filord8` exécute **1762 instructions par cellule contre 1816** pour
+`filnrm8` — moins — et reste 4 % plus lent, parce qu'il lui faut **9.0 cycles par instruction
+émise contre 7.1**. La chaîne `M → masque par position → i1, j2 → slot → valeur → s → t → A` est
+**séquentielle**, là où les trois barillets de `filnrm` sont soixante-douze `select` indépendants
+que l'ordonnanceur entrelace à volonté. Autrement dit : en masques on fait moins de travail, mais
+on le fait en file indienne. C'est la limite de l'approche telle qu'elle est écrite, et la piste
+pour aller plus loin serait d'y **rendre du parallélisme** plutôt que d'économiser encore des
+instructions — par exemple en maintenant, à côté de `O`, les masques `succ` et `pred` (octet `i` =
+one-hot du successeur / prédécesseur du slot `i`), qui donneraient les quatre slots de la
+frontière directement depuis `M` (`j0 = dedans & pred( M )`, `j3 = dedans & succ( M )`,
+`i1 = succ( j0 )`, `j2 = pred( j3 )`) en deux branches **indépendantes**, sans passer par les
+positions.
+
+Mesuré aussi : **les registres tombent de 121–128 à 96 en `double`, de 68 à 58 en `float`**
+(−21 % et −14 %), et le temps est à 3–5 % près celui de `filnrm8` (8.0 / 19.4 / 47.1 en `float` contre
 7.6 / 17.8 / 45.1) : les instructions entières du masque et les écritures masquées rendent ce que
 les barillets économisent. C'est donc **neutre en vitesse et gagnant en registres** — à garder en
 tête là où la pression compte.

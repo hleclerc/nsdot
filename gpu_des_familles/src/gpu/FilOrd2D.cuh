@@ -23,6 +23,12 @@
 //     gardes sont contigus dans l'ordre cyclique -- une rotation de `j3` octets, une troncature a
 //     `nb_in` octets, et les deux octets neufs a la suite. Six instructions.
 //
+// LE GACHIS DES SLOTS MORTS est le prix a payer : la premiere passe et le test d'elagage font
+// 22 % du noyau, sur huit slots au lieu de `nb`. Le borner par le slot vivant le plus haut
+// ( `31 - clz( vivant )`, les slots libres etant toujours pris par le plus petit ) a ete essaye
+// et PERD : les branches coutent plus que les iterations epargnees ( 8.3 / 20.7 / 51.0 contre
+// 8.0 / 19.4 / 47.1 ). Sans branche, huit a chaque fois.
+//
 // Plus un barillet, plus un tableau temporaire.
 // =====================================================================================
 
