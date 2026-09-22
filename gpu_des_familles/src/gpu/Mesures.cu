@@ -206,11 +206,11 @@ Chrono lance2( const Impl &m, Variante v, int reps, std::vector<double> &res ) {
             default:                 return mix( std::integral_constant<int,16>{} );
         }
     }
-    if ( v == Variante::FILPH8 ) {
+    if ( v == Variante::FILPH8 || v == Variante::FILPH8G ) {
         // LE NOYAU PERSISTANT PAR SM : autant de blocs que la carte en loge, `CAP` cellules en vol
         // par bloc, l'etat en RAM
         constexpr int CAP = 512, BLPH = 128;
-        auto noy = noyau2_filph<POIDS,8,CAP,BLPH,TK>;
+        auto noy = v == Variante::FILPH8G ? noyau2_filph<POIDS,8,CAP,BLPH,true,64,TK> : noyau2_filph<POIDS,8,CAP,BLPH,false,1,TK>;
         int par_sm = 0, dev = 0;
         CUDA_OK( cudaGetDevice( &dev ) );
         CUDA_OK( cudaOccupancyMaxActiveBlocksPerMultiprocessor( &par_sm, noy, BLPH, 0 ) );

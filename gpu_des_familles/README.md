@@ -18,7 +18,7 @@ xmake run mesures --threads 8 --variante voies --load uniforme -n 1000000
 ```
 
 Les options communes (`-n`, `--load`, `--kernel`, `--maxnv`, `--leaf`, `--cases`, …) sont celles
-de `solvers_des_familles` (`src/bench/Args.h`), plus `--variante fil | filreg | filregc | filmix{4,6,8,12,16} | filbrk{6,8,10,12,16} | filbrk8nu | filrot{6,8} | filnrm8 | filuni8 | filuni8np | filshm8 | filnrm8tri | filnrm8tril | filph8 | voies | voies16 |
+de `solvers_des_familles` (`src/bench/Args.h`), plus `--variante fil | filreg | filregc | filmix{4,6,8,12,16} | filbrk{6,8,10,12,16} | filbrk8nu | filrot{6,8} | filnrm8 | filuni8 | filuni8np | filshm8 | filnrm8tri | filnrm8tril | filph8 | filph8g | voies | voies16 |
 voies32 | paquet{8,32}x{1,2,4}[S] | toutes` et `--reps-gpu`. Sur la machine, `--threads 8` est à donner (`hardware_concurrency` rend 1
 dans le bac à sable) et **tout chronométrage passe par `job -b`**.
 
@@ -46,9 +46,9 @@ src/gpu/FilUni2D.cuh    le même en UNE SEULE BOUCLE ( un pas par itération ) e
 src/gpu/FilShm2D.cuh    le même avec la rotation en MÉMOIRE PARTAGÉE ( layout [case][thread] ) :
                         −26 % d'instructions, −25 % d'occupation, égalité — perdu de peu (§ 4)
 src/gpu/FilPh2D.cuh     LES PHASES : un noyau PERSISTANT par SM, trois files par bloc ( attend une
-                        boîte / a une feuille / finie ), l'état des cellules en vol en RAM — écrit
-                        et mesuré (§ 4) : +70 % de lanes actifs, perdant en `float`, gagnant en
-                        `double` sur l'uniforme
+                        boîte / a une feuille / finie ), l'état des cellules en vol en RAM, et la
+                        file de coupe GROUPÉE PAR FEUILLE ( tri bitonique par blocs de 64 ) —
+                        écrit et mesuré (§ 4) : perdant en `float`, −12 % en `double` (uniforme)
 src/gpu/Voies2D.cuh     LA CELLULE SUR LES VOIES, 2D : voie = sommet, `V` = 8, 16 ou 32 voies par
                         cellule ; le débordement est une excursion sur la voie 0
 src/gpu/Paquet2D.cuh    PLUSIEURS CELLULES PAR VOIE, un parcours par warp, les plans d'une feuille
@@ -344,8 +344,9 @@ consécutives prennent alors des slots consécutifs, ce qui rend la coalescence 
 | ns/germe | uniforme | lignes V | lignes L | | uniforme | lignes V | lignes L |
 |---|---|---|---|---|---|---|---|
 | | *float* | | | | *double* | | |
-| `filnrm8` | **7.7** | **19.5** | **46.5** | | 101.3 | **135.5** | **500** |
-| `filph8` | 20.7 | 30.3 | 111.5 | | **98.5** | 137.9 | 830 |
+| `filnrm8` | **7.7** | **18.6** | **45.8** | | 100.5 | 133.2 | **492** |
+| `filph8` (phases) | 20.7 | 28.8 | 110.4 | | 97.7 | 136.2 | 805 |
+| `filph8g` (+ groupé par feuille) | 20.2 | 36.2 | 126.2 | | **88.7** | **130.5** | 837 |
 
 **Le schéma marche, et le profil dit exactement quand.** Les lanes actifs passent de 6,8 à
 **11,3–11,8 sur 32 (+70 %)** — mieux que les +38 % que l'oracle du tri laissait espérer, parce
@@ -364,10 +365,33 @@ localité que le tri par coût, arrivée par un autre chemin. Le paramètre `CAP
 `CAP = 128` garde les cellules d'un bloc plus corrélées et gagne en `float` (15.3 au lieu de
 20.7) mais perd l'homogénéité et le gain en `double` (109 au lieu de 98.5).
 
-Ce que ça laisse : le schéma est **exactement à la frontière** sur cette carte. Il gagnerait si le
-calcul par phase montait (3D : 800 instructions par coupe), ou si la localité de l'arbre était
-rétablie — en groupant la file « a une feuille » par feuille, ce qui ferait lire un seul nœud par
-warp au lieu de trente-deux ; c'est la suite naturelle, non écrite.
+**Le groupement par feuille (`filph8g`), qui suivait de cette analyse.** La file « a une feuille »
+est triée par numéro de feuille avant la phase de coupe : une clef `( feuille << 9 ) | slot` et un
+**tri bitonique en mémoire partagée**, de sorte que les lanes d'un warp partagent quelques feuilles
+au lieu d'en avoir trente-deux. Les cellules d'un bloc étant voisines dans l'arbre, elles visitent
+largement les mêmes feuilles : le groupement a de la matière. Mesuré : les lanes actifs montent
+encore, **11.0 → 14.9 sur 32** (le tri rend aussi la phase homogène : toutes les cellules d'une
+même feuille y testent le même nombre de plans), et le L2 passe de 58 à 67 %. Le tri complet
+(45 passes sur 512) coûte cependant plus qu'il ne rend en `float` ; **un tri partiel par blocs de
+64** (21 passes) garde le gain sans le prix — la file est déjà presque triée, les slots ordonnés
+correspondant à des cellules voisines :
+
+| tri sur des blocs de | float (uniforme / lignes V / L) | double |
+|---|---|---|
+| 512 (complet) | 23.6 / 39.6 / 158 | 88.5 / 134.5 / 839 |
+| 128 | 20.9 / 36.2 / 140 | 88.0 / 129.8 / 827 |
+| **64** | **20.7** / 35.9 / 134 | **88.0** / 132.2 / 838 |
+
+Bilan : en `double`, le schéma complet fait **88.7 contre 100.5 ns/germe pour `filnrm8`, −12 %**
+sur l'uniforme et −2 % sur les lignes Voronoï (DRAM à 12 %, calcul à 83 % : le trafic est
+entièrement masqué, comme l'enveloppe le prévoyait). En `float` il reste 2,6× derrière : le noyau
+de base y est trop rapide pour payer le trafic, quelle que soit l'homogénéité. Et sur les lignes
+Laguerre (33 feuilles par cellule, des cellules très inégales) il perd dans les deux précisions :
+trop de phases, et un bloc dont quelques cellules traînent bloque ses slots.
+
+Ce que ça vaut pour la suite : **le schéma est bon quand le calcul domine le trafic**, ce qui est
+exactement le régime de la 3D (800 instructions par coupe contre 60) — et c'est là qu'il faudrait
+l'essayer, pas en 2D `float` sur cette carte.
 
 **Les micro-optimisations de `filbrk`** (`filbrk8nu` est sans) : une cellule non vide a trois
 sommets au moins et une coupe en laisse `nb_in + 2 ≥ 3`, donc les trois premières cases ne
@@ -520,11 +544,10 @@ réelle.
 * **Les paquets, le test en bloc, les deux fils au push, la boucle unique, les lanes
   persistantes, la rotation en mémoire partagée et le tri par coût sont mesurés et perdent**
   (§ 4) : ne pas y revenir sans une idée neuve.
-* **Les phases (`filph8`) sont écrites et mesurées** (§ 4) : +70 % de lanes actifs, mais bornées
-  par la DRAM en `float` (la redistribution fait chuter le L1 sur l'arbre, 91 → 40 %). La suite
-  naturelle, non écrite : **grouper la file « a une feuille » par feuille**, pour qu'un warp lise
-  un nœud au lieu de trente-deux — c'est ce qui rendrait sa localité au schéma, et il est déjà
-  gagnant en `double`.
+* **Les phases (`filph8`, `filph8g`) sont écrites et mesurées** (§ 4), groupement par feuille
+  compris : 6,8 → 14,9 lanes actifs, −12 % en `double` sur l'uniforme, mais bornées par la DRAM
+  en `float`. **À reprendre en 3D**, où une coupe coûte 800 instructions au lieu de 60 : c'est le
+  régime où le trafic est masqué et où le schéma gagne.
 * **Revérifier sur une autre carte** : Turing a la plus petite mémoire partagée par SM des
   générations récentes (64 Ko contre 164–228), et un ratio FLOP/octet médian. Deux de nos
   conclusions en dépendent (§ 4) : « la rotation en mémoire partagée perd » et « le trafic des

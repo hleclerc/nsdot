@@ -49,8 +49,14 @@ struct EtatPh {
 constexpr int PILE_PH = 24;     ///< la profondeur du BSP median : `log2( n / feuille )` + marge
 constexpr int META_PH = 4;
 
+/// `GROUPE` : la file « a une feuille » TRIEE PAR FEUILLE avant la phase de coupe ( un tri
+/// bitonique en memoire partagee sur `( feuille << 9 ) | slot` ). Les cellules d'un bloc etant
+/// voisines dans l'arbre, elles visitent largement les memes feuilles : triees, les lanes d'un
+/// warp en couvrent quelques-unes au lieu de trente-deux, et le noeud se lit une fois pour toutes.
+/// C'est le seul poste qui coute ( README § 4 : l'arbre fait 50 % des requetes, L1 91 -> 40 % ).
+///
 /// `CAP` cellules en vol par bloc, `BL` threads par bloc.
-template<bool POIDS, int R, int CAP, int BL, class TK>
+template<bool POIDS, int R, int CAP, int BL, bool GROUPE, int TRI, class TK>
 __global__ void __launch_bounds__( BL ) noyau2_filph( Arbre<TK,2> ar, double *res, int *deborde, int *liste_deb,
                                                        int *compteur, EtatPh<TK> st ) {
     constexpr int SUR = 3;
@@ -61,6 +67,7 @@ __global__ void __launch_bounds__( BL ) noyau2_filph( Arbre<TK,2> ar, double *re
     constexpr int MOTS = CAP / 32;
     __shared__ unsigned mA[ 2 ][ MOTS ], mB[ 2 ][ MOTS ], mC[ MOTS ], mlibre[ MOTS ];
     __shared__ unsigned short file[ CAP ];               // la file ordonnee de la phase courante
+    __shared__ unsigned clefs[ GROUPE ? CAP : 1 ];       // `( feuille << 9 ) | slot`, triees
     __shared__ int off[ MOTS ], nfile, cur, reste;
 
     for ( int w = tid; w < MOTS; w += BL ) { mA[ 0 ][ w ] = mA[ 1 ][ w ] = mB[ 0 ][ w ] = mB[ 1 ][ w ] = mC[ w ] = 0; mlibre[ w ] = 0xffffffffu; }
@@ -193,10 +200,31 @@ __global__ void __launch_bounds__( BL ) noyau2_filph( Arbre<TK,2> ar, double *re
         // les germes de la feuille, tous, puis retour en A ( ou en C si la cellule est finie )
         deplie( mB[ cur ] );
         const int ncou = nfile;
-        for ( int e = tid; e < ncou; e += BL ) {
-            const int slot = base + file[ e ];
+        if constexpr ( GROUPE ) {
+            static_assert( CAP <= 512 && ( CAP & ( CAP - 1 ) ) == 0, "le tri bitonique demande une puissance de deux, le slot tient sur neuf bits" );
+            for ( int e = tid; e < CAP; e += BL )
+                clefs[ e ] = e < ncou ? ( ( unsigned( st.meta[ 3 * S + base + file[ e ] ] ) << 9 ) | file[ e ] ) : 0xffffffffu;
+            __syncthreads();
+            for ( int kk = 2; kk <= TRI; kk <<= 1 )     // LE TRI BITONIQUE, sur des blocs de `TRI`
+                for ( int j = kk >> 1; j > 0; j >>= 1 ) {
+                    for ( int i = tid; i < CAP; i += BL ) {
+                        const int ixj = i ^ j;
+                        if ( ixj > i ) {
+                            const unsigned a = clefs[ i ], b = clefs[ ixj ];
+                            if ( ( a > b ) == ( ( i & kk ) == 0 ) ) { clefs[ i ] = b; clefs[ ixj ] = a; }
+                        }
+                    }
+                    __syncthreads();
+                }
+        }
+        // avec un tri PARTIEL ( `TRI < CAP` ) les clefs de remplissage restent dans leur bloc :
+        // on les saute au lieu de s'arreter a `ncou`
+        for ( int e = tid; e < ( GROUPE ? CAP : ncou ); e += BL ) {
+            if ( GROUPE && clefs[ e ] == 0xffffffffu ) continue;
+            const int slot = base + ( GROUPE ? int( clefs[ e ] & 511u ) : int( file[ e ] ) );
             int nb = st.meta[ 0 * S + slot ];
-            const int k = st.meta[ 2 * S + slot ], h = st.meta[ 3 * S + slot ];
+            const int k = st.meta[ 2 * S + slot ];
+            const int h = GROUPE ? int( clefs[ e ] >> 9 ) : st.meta[ 3 * S + slot ];
             const Noeud<TK,2> nd = ar.nodes[ h ];
             const TK p0[ 2 ] = { ar.c[ 0 ][ k ], ar.c[ 1 ][ k ] };
             const TK w0 = POIDS ? ar.w[ k ] : TK( 0 );
