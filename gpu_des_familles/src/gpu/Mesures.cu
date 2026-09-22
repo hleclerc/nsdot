@@ -11,6 +11,8 @@
 #include "gpu/Mesures.h"
 #include "gpu/Fil2D.cuh"
 #include "gpu/Voies2D.cuh"
+#include "gpu/Paquet2D.cuh"
+#include "gpu/FilReg2D.cuh"
 #include "gpu/Fil3D.cuh"
 #include "gpu/Voies3D.cuh"
 
@@ -30,7 +32,8 @@ struct DiagrammeGpu<D,TK>::Impl {
     TK          *w = nullptr;
     int         *ids = nullptr;
     double      *res = nullptr;
-    int         *deb = nullptr, *deb2 = nullptr;     ///< les compteurs de debordement des deux passes
+    int         *deb = nullptr, *deb2 = nullptr;
+    unsigned long long *stats = nullptr;             ///< 4 compteurs, pour les noyaux qui comptent     ///< les compteurs de debordement des deux passes
     int         *liste = nullptr;                    ///< les rangs qui ont deborde a la premiere passe
     int          n = 0, nn = 0;
     bool         poids = false;
@@ -79,6 +82,7 @@ DiagrammeGpu<D,TK>::DiagrammeGpu( const AaBspT<D> &arbre ) : impl( new Impl ) {
     CUDA_OK( cudaMalloc( &m.res, m.n * sizeof( double ) ) );
     CUDA_OK( cudaMalloc( &m.deb, sizeof( int ) ) );
     CUDA_OK( cudaMalloc( &m.deb2, sizeof( int ) ) );
+    CUDA_OK( cudaMalloc( &m.stats, 4 * sizeof( unsigned long long ) ) );
     CUDA_OK( cudaMalloc( &m.liste, m.n * sizeof( int ) ) );
     CUDA_OK( cudaDeviceSynchronize() );
     t_tele = now() - t0;
@@ -89,7 +93,7 @@ DiagrammeGpu<D,TK>::~DiagrammeGpu() {
     Impl &m = *impl;
     cudaFree( m.nodes );
     for ( int d = 0; d < D; ++d ) cudaFree( m.c[ d ] );
-    cudaFree( m.w ); cudaFree( m.ids ); cudaFree( m.res ); cudaFree( m.deb ); cudaFree( m.deb2 ); cudaFree( m.liste );
+    cudaFree( m.w ); cudaFree( m.ids ); cudaFree( m.res ); cudaFree( m.deb ); cudaFree( m.deb2 ); cudaFree( m.liste ); cudaFree( m.stats );
     delete impl;
 }
 
@@ -108,6 +112,8 @@ Chrono chrono( const Impl &m, int reps, std::vector<double> &res, auto &&lance )
     for ( int r = -1; r < reps; ++r ) {                  // `-1` : la chauffe
         CUDA_OK( cudaMemset( m.deb, 0, sizeof( int ) ) );
         CUDA_OK( cudaMemset( m.deb2, 0, sizeof( int ) ) );
+        CUDA_OK( cudaMemset( m.res, 0xff, m.n * sizeof( double ) ) );   // NaN : une cellule non ecrite se voit
+        CUDA_OK( cudaMemset( m.stats, 0, 4 * sizeof( unsigned long long ) ) );
         CUDA_OK( cudaEventRecord( e0 ) );
         deb = lance();
         CUDA_OK( cudaEventRecord( e1 ) );
@@ -121,6 +127,7 @@ Chrono chrono( const Impl &m, int reps, std::vector<double> &res, auto &&lance )
     res.resize( m.n );
     CUDA_OK( cudaMemcpy( res.data(), m.res, m.n * sizeof( double ), cudaMemcpyDeviceToHost ) );
     CUDA_OK( cudaMemcpy( &ch.deborde, deb, sizeof( int ), cudaMemcpyDeviceToHost ) );
+    CUDA_OK( cudaMemcpy( ch.stats, m.stats, 4 * sizeof( unsigned long long ), cudaMemcpyDeviceToHost ) );
     ch.retour = now() - t0;
     cudaEventDestroy( e0 ); cudaEventDestroy( e1 );
     return ch;
@@ -129,18 +136,45 @@ Chrono chrono( const Impl &m, int reps, std::vector<double> &res, auto &&lance )
 template<class TK, bool POIDS, int MaxNb, class Impl>
 Chrono lance2( const Impl &m, Variante v, int reps, std::vector<double> &res ) {
     const Arbre<TK,2> ar = m.arbre();
-    if ( v != Variante::FIL ) {
+    if ( paquet( v ) ) {
+        auto paq = [ & ]( auto vv, auto kk, auto sib ) {
+            constexpr int V = decltype( vv )::value, K = decltype( kk )::value;
+            constexpr bool SIB = decltype( sib )::value;
+            constexpr int cellules_par_bloc = 4 * ( 32 / V ) * K;
+            const int grid = ( m.n + cellules_par_bloc - 1 ) / cellules_par_bloc;
+            return chrono<2,TK>( m, reps, res, [ & ]() { noyau2_paquet<POIDS,MaxNb,V,K,SIB><<<grid, 128>>>( ar, m.res, m.deb, m.stats ); return m.deb; } );
+        };
+        using I1 = std::integral_constant<int,1>; using I2 = std::integral_constant<int,2>; using I4 = std::integral_constant<int,4>;
+        using V8 = std::integral_constant<int,8>; using V32 = std::integral_constant<int,32>;
+        using F = std::false_type; using T = std::true_type;
+        switch ( v ) {
+            case Variante::PAQ8x1:   return paq( V8{},  I1{}, F{} );
+            case Variante::PAQ8x2:   return paq( V8{},  I2{}, F{} );
+            case Variante::PAQ8x4:   return paq( V8{},  I4{}, F{} );
+            case Variante::PAQ32x1:  return paq( V32{}, I1{}, F{} );
+            case Variante::PAQ32x2:  return paq( V32{}, I2{}, F{} );
+            case Variante::PAQ32x4:  return paq( V32{}, I4{}, F{} );
+            case Variante::PAQ8x1S:  return paq( V8{},  I1{}, T{} );
+            case Variante::PAQ32x1S: return paq( V32{}, I1{}, T{} );
+            default:                 return paq( V32{}, I4{}, T{} );
+        }
+    }
+    if ( v != Variante::FIL && v != Variante::FILREG && v != Variante::FILREGC ) {
         auto voies = [ & ]( auto vv ) {
             constexpr int V = decltype( vv )::value;
             const int cellules_par_bloc = BLOC2 / V;
             const int grid = ( m.n + cellules_par_bloc - 1 ) / cellules_par_bloc;
-            return chrono<2,TK>( m, reps, res, [ & ]() { noyau2_voies<POIDS,MaxNb,V><<<grid, BLOC2>>>( ar, m.res, m.deb ); return m.deb; } );
+            return chrono<2,TK>( m, reps, res, [ & ]() { noyau2_voies<POIDS,MaxNb,V><<<grid, BLOC2>>>( ar, m.res, m.deb, m.stats ); return m.deb; } );
         };
         if ( v == Variante::VOIES16 ) return voies( std::integral_constant<int,16>{} );
         if ( v == Variante::VOIES32 ) return voies( std::integral_constant<int,32>{} );
         return voies( std::integral_constant<int,8>{} );
     }
     const int bloc = 128, grid = ( m.n + bloc - 1 ) / bloc;
+    if ( v == Variante::FILREG )
+        return chrono<2,TK>( m, reps, res, [ & ]() { noyau2_filreg<POIDS,MaxNb,false><<<grid, bloc>>>( ar, m.res, m.deb ); return m.deb; } );
+    if ( v == Variante::FILREGC )
+        return chrono<2,TK>( m, reps, res, [ & ]() { noyau2_filreg<POIDS,MaxNb,true><<<grid, bloc>>>( ar, m.res, m.deb ); return m.deb; } );
     return chrono<2,TK>( m, reps, res, [ & ]() { noyau2_fil<POIDS,MaxNb><<<grid, bloc>>>( ar, m.res, m.deb ); return m.deb; } );
 }
 

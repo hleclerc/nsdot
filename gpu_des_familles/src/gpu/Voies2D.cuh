@@ -33,7 +33,7 @@ constexpr int BLOC2 = 128;              ///< threads par bloc
 
 /// `V` voies par cellule : 8 ( quatre cellules par warp ), 16 ou 32 ( une seule ).
 template<bool POIDS, int MaxNb, int V, class TK>
-__global__ void __launch_bounds__( BLOC2 ) noyau2_voies( Arbre<TK,2> ar, double *res, int *deborde ) {
+__global__ void __launch_bounds__( BLOC2 ) noyau2_voies( Arbre<TK,2> ar, double *res, int *deborde, unsigned long long *stats ) {
     static_assert( V == 8 || V == 16 || V == 32, "un groupe est une fraction du warp" );
     constexpr int VOIES2 = V;
     const int lane = threadIdx.x & 31;
@@ -59,6 +59,7 @@ __global__ void __launch_bounds__( BLOC2 ) noyau2_voies( Arbre<TK,2> ar, double 
     TK  lvx[ MaxNb ], lvy[ MaxNb ], ls[ MaxNb ];
     int lcid[ MaxNb ];
     bool large = false;
+    unsigned n_plans = 0, n_eff = 0, n_exc = 0, n_boites = 0;
 
     int haut = 1;
     if ( l == 0 ) pile[ 0 ] = 0;
@@ -67,6 +68,7 @@ __global__ void __launch_bounds__( BLOC2 ) noyau2_voies( Arbre<TK,2> ar, double 
     while ( haut ) {
         const int h = pile[ --haut ];
         const Noeud<TK,2> nd = ar.nodes[ h ];
+        ++n_boites;
 
         // ---- LE TEST D'ELAGAGE : une operation par voie, ou la boucle de la voie 0
         bool peut;
@@ -94,6 +96,7 @@ __global__ void __launch_bounds__( BLOC2 ) noyau2_voies( Arbre<TK,2> ar, double 
         for ( int q = nd.beg; q < nd.end; ++q ) {
             if ( ar.ids[ q ] == i0 ) continue;
             const Plan2<TK> p = bissect2<POIDS>( ar, q, p0[ 0 ], p0[ 1 ], w0 );
+            ++n_plans;
 
             if ( ! large ) {
                 // LE TEST, QUI EST DEJA LA COUPE : `s > 0` dehors
@@ -102,6 +105,7 @@ __global__ void __launch_bounds__( BLOC2 ) noyau2_voies( Arbre<TK,2> ar, double 
                 const unsigned m = ( __ballot_sync( gm, l < nb && s > 0 ) >> ( V * grp ) ) & valid;
                 if ( ! m )
                     continue;
+                ++n_eff;
                 if ( m == valid ) { nb = 0; goto fin; }
 
                 // LES DEUX BOUTS DE LA PLAGE EXTERIEURE
@@ -148,6 +152,7 @@ __global__ void __launch_bounds__( BLOC2 ) noyau2_voies( Arbre<TK,2> ar, double 
                     if ( l == 0 ) { lvx[ i ] = x; lvy[ i ] = y; lcid[ i ] = c; }
                 }
                 large = true;
+                ++n_exc;
             }
 
             // EN EXCURSION : la voie 0 coupe en scalaire, `nb` est rediffuse
@@ -170,6 +175,7 @@ __global__ void __launch_bounds__( BLOC2 ) noyau2_voies( Arbre<TK,2> ar, double 
     }
 
 fin:
+    if ( stats && l == 0 ) { atomicAdd( stats, n_plans ); atomicAdd( stats + 1, n_eff ); atomicAdd( stats + 2, n_exc ); atomicAdd( stats + 3, n_boites ); }
     double area = 0;
     if ( nb > 0 ) {
         if ( ! large ) {                                 // le lacet, une arete par voie

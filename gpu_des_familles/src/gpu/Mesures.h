@@ -14,21 +14,20 @@
 namespace sf::gpu {
 
 /// le mappage cellule / threads
-enum class Variante { FIL, VOIES, VOIES16, VOIES32 };
+enum class Variante { FIL, FILREG, FILREGC, VOIES, VOIES16, VOIES32, PAQ8x1, PAQ8x2, PAQ8x4, PAQ32x1, PAQ32x2, PAQ32x4, PAQ8x1S, PAQ32x1S, PAQ32x4S, NB };
 inline const char *nom( Variante v ) {
-    switch ( v ) {
-        case Variante::FIL:     return "fil";
-        case Variante::VOIES:   return "voies";
-        case Variante::VOIES16: return "voies16";
-        default:                return "voies32";
-    }
+    static const char *noms[] = { "fil", "filreg", "filregc", "voies", "voies16", "voies32", "paquet8x1", "paquet8x2", "paquet8x4", "paquet32x1", "paquet32x2", "paquet32x4", "paquet8x1S", "paquet32x1S", "paquet32x4S" };
+    return noms[ int( v ) ];
 }
+/// `paquet V x K` : `V` voies par cellule, `K` cellules par voie, un parcours par warp ( 2D )
+inline bool paquet( Variante v ) { return v >= Variante::PAQ8x1 && v < Variante::NB; }
 
 /// les chiffres d'un `mesures`
 struct Chrono {
     double noyau  = 0;      ///< le noyau seul, en secondes, MINIMUM des repetitions ( evenements CUDA )
     double retour = 0;      ///< la descente des mesures, une fois
     int    deborde = 0;     ///< cellules dont les tampons n'ont pas suffi ( mesure fausse )
+    long long stats[ 4 ] = {};   ///< par cellule, si le noyau les compte : coupes tentees, effectives, excursions, boites testees
 };
 
 template<int D, class TK>

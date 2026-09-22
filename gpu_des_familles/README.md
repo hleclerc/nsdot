@@ -18,8 +18,8 @@ xmake run mesures --threads 8 --variante voies --load uniforme -n 1000000
 ```
 
 Les options communes (`-n`, `--load`, `--kernel`, `--maxnv`, `--leaf`, `--cases`, …) sont celles
-de `solvers_des_familles` (`src/bench/Args.h`), plus `--variante fil | voies | voies16 | voies32 |
-toutes` et `--reps-gpu`. Sur la machine, `--threads 8` est à donner (`hardware_concurrency` rend 1
+de `solvers_des_familles` (`src/bench/Args.h`), plus `--variante fil | filreg | filregc | voies | voies16 |
+voies32 | paquet{8,32}x{1,2,4}[S] | toutes` et `--reps-gpu`. Sur la machine, `--threads 8` est à donner (`hardware_concurrency` rend 1
 dans le bac à sable) et **tout chronométrage passe par `job -b`**.
 
 ---
@@ -31,8 +31,12 @@ src/gpu/Arbre.cuh       l'arbre tel que le GPU le lit : noeuds AoS alignés sur 
                         majorant affine, tranche, fils droit ), germes dans l'ordre de l'arbre,
                         le plan bissecteur, le test d'élagage pour UN sommet, la proximité
 src/gpu/Fil2D.cuh       UNE CELLULE PAR THREAD, 2D : `coupe_large` mot pour mot, la pile en local
+src/gpu/FilReg2D.cuh    UNE CELLULE PAR THREAD, LES SOMMETS EN REGISTRES, 2D : le noyau à registres
+                        du CPU exécuté par un thread scalaire — LE GAGNANT en 2D (§ 3)
 src/gpu/Voies2D.cuh     LA CELLULE SUR LES VOIES, 2D : voie = sommet, `V` = 8, 16 ou 32 voies par
                         cellule ; le débordement est une excursion sur la voie 0
+src/gpu/Paquet2D.cuh    PLUSIEURS CELLULES PAR VOIE, un parcours par warp, les plans d'une feuille
+                        testés en bloc — mesuré, et perdu (§ 4)
 src/gpu/Fil3D.cuh       une cellule par thread, 3D : `Cellule3` mot pour mot, tout en mémoire locale
 src/gpu/Voies3D.cuh     LA CELLULE SUR LE WARP, 3D : la voie `l` porte les sommets `l, l+32, …`
                         dans `S` cases de registres, coupes et voisins en octets ; deux passes
@@ -48,7 +52,7 @@ g++ avec `-march=native` : la frontière est `Mesures.h`, qui ne contient pas un
 
 ---
 
-# 2. LES DEUX MAPPAGES
+# 2. LES MAPPAGES
 
 Un GPU exécute 32 voies en lock-step. Une cellule de Voronoï est une suite de coupes dont chacune
 dépend de la précédente, sur un parcours d'arbre qui dépend de la cellule. Deux façons de mettre
@@ -59,6 +63,14 @@ début à la fin, comme un fil CPU : les sommets dans des tableaux locaux, la pi
 locale, la coupe scalaire en place. C'est ce que fait le chemin GPU de `sdot` (« la boucle nue en
 mémoire »). Les 32 cellules d'un warp sont voisines dans l'arbre, donc leurs parcours se
 ressemblent ; rien d'autre ne limite la divergence.
+
+**`filreg` — une cellule par thread, les sommets en registres.** Le noyau à registres du CPU
+(`cell/Noyau2D.h`) exécuté par UN thread scalaire : huit `x`, huit `y` dans des registres (tout
+est déroulé, une lecture à indice dynamique est une chaîne de `select`), `nb` un entier, la coupe
+**sans boucle ni branche** — masque de signe, ses deux bouts par `ffs`, deux intersections, et le
+remontage par huit `select` à huit entrées. Les `cid` en mémoire locale (`filreg`) ou en
+registres aussi (`filregc`). Au-delà de huit sommets, l'excursion : la cellule se pose en mémoire
+locale et `coupe2` continue en scalaire jusqu'au retour à huit.
 
 **`voies` — la cellule sur les voies.** Le pendant CUDA du noyau à registres du CPU : la voie `l`
 porte le sommet `l`, le nombre de sommets est un scalaire uniforme, et la coupe est le même calcul
@@ -93,6 +105,15 @@ Le volume est la somme des tétraèdres `( g, o_f, a, b )` sur les arêtes et le
 le plus petit sommet de la face (`atomicMin` partagé) — équivalent à l'accumulation par face du
 CPU sur un polygone convexe, sans accumulateur.
 
+**`paquet` — plusieurs cellules par voie, un parcours par warp (2D).** La voie `l` porte le
+sommet `l` de `K` cellules (des cases de registres), un warp porte `G K` cellules consécutives
+dans l'arbre, le parcours est partagé (une boîte est descendue si une cellule du paquet peut
+encore être coupée), les deux fils d'un nœud sont testés ensemble (`S`) ou chaque nœud à sa
+sortie de pile, et les plans d'une feuille sont testés **en bloc** : un `fma` par (germe, case),
+un bit par couple qui coupe, une réduction OU du warp, et seuls ces couples passent par le code
+de coupe, exécuté sans branche pour tous les groupes (prédiqué). L'idée : tard dans le parcours il
+n'y a plus que des coupes inutiles, et là tout est du SIMD pur. Mesuré et perdu, § 4 dit pourquoi.
+
 **Deux passes.** À deux cases par voie (64 sommets) 0,02 % des cellules débordent en cours de
 route (223 sur 10⁶ en uniforme) ; à quatre cases le code et les registres doublent et tout le
 monde paie (681 contre 247 ns/germe). Donc : deux cases pour tout le monde, les rangs qui ont
@@ -112,28 +133,32 @@ résultats sont comptés à part. Mêmes nuages que les deux autres bancs. Les v
 
 ## `float`, ce pour quoi cette carte est faite
 
-| | n | CPU 8 fils | `fil` | `voies` 8 | `voies16` | `voies32` |
-|---|---|---|---|---|---|---|
-| 2D uniforme | 10⁶ | 142 ns/germe | 68 (×2.1) | **26 (×5.4)** | 33 (×4.3) | 27 (×5.2) |
-| 2D lignes / Voronoï | 10⁵ | 138 | 70 (×2.0) | 34 (×4.1) | 31 (×4.5) | **25 (×5.6)** |
-| 2D lignes / aires égales | 10⁵ | 694 | 207 (×3.4) | **98 (×7.1)** | 109 (×6.4) | 127 (×5.4) |
-| 3D uniforme | 10⁶ | 1831 | 3855 (×0.5) | **229 (×8.0)** | — | — |
-| 3D plans / Voronoï | 10⁵ | 1774 | 3458 (×0.5) | **231 (×7.7)** | — | — |
-| 3D plans / volumes égaux | 10⁵ | 3054 | 4651 (×0.7) | **405 (×7.5)** | — | — |
+| | n | CPU 8 fils | `fil` | `filreg` | `filregc` | `voies` 8 | `voies16` | `voies32` |
+|---|---|---|---|---|---|---|---|---|
+| 2D uniforme | 10⁶ | 145 ns/germe | 68 (×2.1) | 16 (×8.9) | **14 (×10.0)** | 29 (×5.0) | 34 | 34 |
+| 2D lignes / Voronoï | 10⁵ | 141 | 63 (×2.3) | 23 (×6.1) | **22 (×6.5)** | 36 (×4.0) | 32 | 32 |
+| 2D lignes / aires égales | 10⁵ | 696 | 188 (×3.7) | 61 (×11.5) | **51 (×13.6)** | 106 (×6.6) | 108 | 128 |
+| 3D uniforme | 10⁶ | 1831 | 3855 (×0.5) | — | — | **229 (×8.0)** | — | — |
+| 3D plans / Voronoï | 10⁵ | 1774 | 3458 (×0.5) | — | — | **231 (×7.7)** | — | — |
+| 3D plans / volumes égaux | 10⁵ | 3054 | 4651 (×0.7) | — | — | **405 (×7.5)** | — | — |
 
-(en 3D, `voies` est le warp entier, en deux passes.) Le téléversement d'un arbre à 10⁶ germes
+(en 3D, `voies` est le warp entier, en deux passes.) Les paquets, 2D uniforme : `paquet8x1` 34,
+`paquet8x2` 83, `paquet8x4` 272, `paquet32x1` 41, `paquet32x2` 47, `paquet32x4` 95, et les mêmes
+avec le test des deux fils (`S`) 38 / 48 / 112 — tous derrière `voies`, et derrière `filreg` de
+loin ; sur les lignes les paquets à `K ≥ 2` débordent même les 64 sommets de l'excursion. Le téléversement d'un arbre à 10⁶ germes
 coûte 20 ms en 3D, 140 ms en 2D avec le premier contexte CUDA ; la descente des 10⁶ mesures, 1 à
 5 ms.
 
 ## `double`
 
-| | n | CPU 8 fils | `fil` | `voies` |
-|---|---|---|---|---|
-| 2D uniforme | 10⁶ | 142 | 160 (×0.9) | 191 (×0.7) |
-| 2D lignes / aires égales | 10⁵ | 680 | 693 (×1.0) | 875 (×0.8) |
-| 3D uniforme | 10⁶ | 1975 | 5648 (×0.3) | **1103 (×1.8)** |
-| 3D plans / Voronoï | 10⁵ | 1908 | 5435 (×0.4) | 1066 (×1.8) |
-| 3D plans / volumes égaux | 10⁵ | 3302 | 8107 (×0.4) | 2926 (×1.1) |
+| | n | CPU 8 fils | `fil` | `filreg` | `voies` |
+|---|---|---|---|---|---|
+| 2D uniforme | 10⁶ | 138 | 160 (×0.9) | **116 (×1.2)** | 186 (×0.7) |
+| 2D lignes / Voronoï | 10⁵ | 137 | 174 (×0.8) | 131 (×1.0) | 198 (×0.7) |
+| 2D lignes / aires égales | 10⁵ | 688 | 688 (×1.0) | **493 (×1.4)** | 871 (×0.8) |
+| 3D uniforme | 10⁶ | 1975 | 5648 (×0.3) | — | **1103 (×1.8)** |
+| 3D plans / Voronoï | 10⁵ | 1908 | 5435 (×0.4) | — | 1066 (×1.8) |
+| 3D plans / volumes égaux | 10⁵ | 3302 | 8107 (×0.4) | — | 2926 (×1.1) |
 
 Le `double` coûte 5× au GPU (1/32 du débit FP64, mais les noyaux ne sont pas bornés par le
 flottant, § 4) là où il coûte 4 % au CPU. Sur cette carte le GPU est une histoire de `float` ; et
@@ -159,12 +184,44 @@ c'est pour ça qu'il vaut ×2 en 2D et rien en 3D.
 **`voies` en 2D : 10 threads actifs par warp**, L1 à 91 %, DRAM à 1 %, calcul à 48 %, 6 000
 instructions par cellule. Ce qui borne est la divergence entre les quatre groupes d'un warp (dix
 actifs sur trente-deux, soit 1,3 groupe sur 4 en moyenne) et la latence (12 cycles par instruction
-émise par warp). La preuve par `voies32` : 26 voies dorment, zéro divergence, et il fait **jeu
-égal** avec `voies8` (27 contre 26 ns/germe en uniforme, mieux sur lignes / Voronoï, moins bien
-sur Laguerre où les cellules ont plus de sommets et débordent plus). Le noyau 2D n'est donc pas
-borné par les ALU mais par la latence de la chaîne (nœud → test → plan → coupe) ; les voies libres
-d'un warp sont à employer à **casser cette chaîne** — tester plusieurs boîtes ou plusieurs plans
-d'une feuille en même temps — plutôt qu'à porter plus de cellules (§ 5).
+émise par warp). `voies32` — 26 voies dorment, zéro divergence — fait **jeu égal** avec `voies8` :
+le noyau n'est pas borné par les voies qui dorment mais par la latence de la chaîne nœud → test →
+plan → coupe.
+
+**`filreg` en 2D : 3 000 instructions par cellule**, la moitié de `voies`, 6 threads actifs par
+warp, 85 % d'occupation, calcul à 47 %. Ce qui a changé par rapport à `fil` (68 → 16 ns) : plus
+une lecture de sommet en mémoire (L1 passait de 49 % de succès à rien à lire), et une coupe en
+**ligne droite** — des `select`, pas une boucle sur `nb` ni un `if` par cas de plage — donc les 32
+cellules d'un warp, même désynchronisées, exécutent le même flot d'instructions avec des prédicats
+différents. La divergence qui reste est celle du parcours (quel nœud, feuille ou pas, combien de
+germes). C'est le meilleur mappage 2D, et de loin ; le `cid` en registres (`filregc`) rapporte 5 à
+15 % de plus là où il y a beaucoup de coupes. Plafonner à 128 registres n'apporte rien (64 sans
+débordement).
+
+**Les paquets, et pourquoi ils perdent** — les compteurs par cellule (uniforme 10⁶, float) :
+
+| | plans testés / tentés | coupes effectives | excursions | boîtes testées |
+|---|---|---|---|---|
+| `voies8` (un parcours par cellule, test au pop) | 29.7 | 12.5 | 0.14 | 47 |
+| `paquet32x1` (batch de plans, test au pop) | 19.2 | 12.7 | 0 | — |
+| `paquet32x1S` (batch, les deux fils au push) | 19.2 | 12.7 | 0 | 78 |
+| `paquet8x1` (4 cellules par warp, un parcours) | 50.3 | **19.5** | 0.40 | — |
+| `paquet8x4` (16 cellules par warp) | 83.0 | **34.3** | 0.96 | — |
+
+* **Tester les deux fils au push** descend 78 boîtes au lieu de 47 : au push la cellule est
+  encore grande, au pop chaque coupe faite entre-temps rend le « non » plus probable. C'est la
+  règle du CPU (`FournisseurBsp2D.h`), elle vaut au GPU.
+* **Partager le parcours** présente à chaque cellule les plans les plus proches *du paquet* et non
+  les siens : ils coupent le grand carré initial pour rien — les coupes effectives passent de 12,5
+  à 19,5 par cellule à 4 cellules par warp, à 34 à 16 — la cellule grossit, déborde des 8 voies
+  (excursions ×3 à ×7), et sur les lignes déborde même les 64 sommets de l'excursion. Le paquet
+  coûte plus de travail qu'il n'économise de latence.
+* **Le test en bloc** marche pour ce qu'il fait (19 tentatives au lieu de 30 tests, 12,7
+  effectives dans les deux cas) et perd quand même (41 contre 34 ns à `V = 32`) : un test de plan
+  coûte un `fma` et un `ballot`, la réduction 64 bits par feuille et les deux passes sur ses germes
+  coûtent plus que les dix tests évités. Le nearest-first par cellule avec test au pop est déjà
+  le minimum de travail ; ce qu'il reste à cacher est de la latence, et ça se cache par
+  l'occupation (`filreg`, 85 %), pas en ajoutant du travail.
 
 **`voies` en 3D : 27 threads actifs par warp**, L1 à 98 %, DRAM à 0,2 %. La première version
 faisait 66 000 instructions par cellule avec 9,6 cycles par instruction émise, dont **4 à attendre
@@ -197,12 +254,12 @@ réelle.
 
 # 5. CE QUI RESTE
 
-* **Casser la chaîne en 2D.** Un warp entier par cellule ne coûte rien de plus que quatre
-  groupes (§ 4) : les 24 voies libres peuvent tester **quatre boîtes** ou **quatre plans** d'un
-  coup — la première passe d'une feuille de dix germes sur ses ~8 sommets tient dans trois
-  opérations de warp, et les plans qui ne coupent rien (la majorité : ~40 testés pour ~15
-  effectifs) tombent en bloc. Les coupes effectives restent séquentielles, mais elles ne sont plus
-  qu'un tiers des plans.
+* **`filreg` en 2D est la référence** (14 ns/germe, ×10). Ce qui reste : la divergence du
+  parcours entre les 32 cellules d'un warp (6 actifs) — un tri des cellules par profondeur de
+  parcours ou une pile en mémoire partagée ne changeraient pas le fond ; les 3 000 instructions
+  par cellule sont à lire ligne à ligne comme pour le 3D.
+* **Les paquets, le test en bloc et les deux fils au push sont mesurés et perdent** (§ 4) : ne pas
+  y revenir sans une idée qui réduise les coupes transitoires.
 * **La coupe 3D à 800 instructions.** Les survivants en place plutôt que renumérotés (moins de
   `rassemble`, mais les trous du CPU à gérer par masques) ; les helpers `rang` / `nieme` appelés
   moins de fois (le nouveau numéro d'un voisin calculé une fois par sommet et non par octet) ;
