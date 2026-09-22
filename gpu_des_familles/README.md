@@ -18,7 +18,7 @@ xmake run mesures --threads 8 --variante voies --load uniforme -n 1000000
 ```
 
 Les options communes (`-n`, `--load`, `--kernel`, `--maxnv`, `--leaf`, `--cases`, …) sont celles
-de `solvers_des_familles` (`src/bench/Args.h`), plus `--variante fil | filreg | filregc | filmix{4,6,8,12,16} | filbrk{6,8,10,12,16} | filbrk8nu | filrot{6,8} | filnrm8 | filord8 | filuni8 | filuni8np | filshm8 | filnrm8tri | filnrm8tril | filph8 | filph8g | filph8b | filph8a | filph8c | filph8o | voies | voies16 |
+de `solvers_des_familles` (`src/bench/Args.h`), plus `--variante fil | filreg | filregc | filmix{4,6,8,12,16} | filbrk{6,8,10,12,16} | filbrk8nu | filrot{6,8} | filnrm8 | filord8 | filsuc8 | filuni8 | filuni8np | filshm8 | filnrm8tri | filnrm8tril | filph8 | filph8g | filph8b | filph8a | filph8c | filph8o | voies | voies16 |
 voies32 | paquet{8,32}x{1,2,4}[S] | toutes` et `--reps-gpu`. Sur la machine, `--threads 8` est à donner (`hardware_concurrency` rend 1
 dans le bac à sable) et **tout chronométrage passe par `job -b`**.
 
@@ -44,6 +44,9 @@ src/gpu/FilNrm2D.cuh    la cellule NORMALISÉE AVANT la coupe : tout se lit à d
 src/gpu/FilOrd2D.cuh    LES SOMMETS NE BOUGENT PLUS : un registre de 64 bits porte l'ordre
                         cyclique ( un octet = le slot, en one-hot ) — −21 % de registres, à
                         vitesse égale (§ 4)
+src/gpu/FilSuc2D.cuh    TOUT EN MASQUES : la cellule est une relation de succession ( deux
+                        registres `succ` / `pred` ), plus une position ni un index — mêmes
+                        registres, même vitesse (§ 4)
 src/gpu/FilUni2D.cuh    le même en UNE SEULE BOUCLE ( un pas par itération ) et avec des lanes
                         persistantes — mesuré, et perdu (§ 4)
 src/gpu/FilShm2D.cuh    le même avec la rotation en MÉMOIRE PARTAGÉE ( layout [case][thread] ) :
@@ -484,6 +487,33 @@ frontière directement depuis `M` (`j0 = dedans & pred( M )`, `j3 = dedans & suc
 `i1 = succ( j0 )`, `j2 = pred( j3 )`) en deux branches **indépendantes**, sans passer par les
 positions.
 
+**Cette version existe : `filsuc8`.** Deux registres de 64 bits portent la succession et la
+précédence (octet `i` = masque one-hot du successeur / prédécesseur du slot `i`) ; il n'y a plus
+de positions du tout. `succ` et `pred` d'un *ensemble* se lisent en `hor_or( SU & spread( X ) )`
+— `spread` étalant un masque de huit bits en huit octets par une multiplication et trois `or` —
+et d'un *singleton* dont on a l'indice, en un simple décalage. La mise à jour est purement
+locale : le cycle devient `j0 → A → B → j3`, soit trois octets à écrire dans `SU` et trois dans
+`PR`, sans rotation ni ordre global à maintenir. Machine seule :
+
+| ns/germe | uniforme | lignes V | lignes L | registres (double / float) | instr / cellule | cycles / instr |
+|---|---|---|---|---|---|---|
+| `filnrm8` | **7.6** | 18.5 | **45.2** | 121–128 / 68 | 1816 | **7.1** |
+| `filord8` (ordre en registre) | 8.0 | 19.5 | 48.1 | **96 / 58** | **1762** | 9.0 |
+| `filsuc8` (succession) | 8.1 | **18.4** | 47.6 | **96 / 58** | 1782 | 9.2 |
+
+Les trois se tiennent en 5 %, et `filsuc8` égale `filnrm8` sur les lignes / Voronoï — le nuage où
+les cellules sont les plus régulières. Mais **la chaîne de dépendances n'a pas raccourci** : 9.2
+cycles par instruction émise, contre 9.0 pour `filord` et 7.1 pour `filnrm`. Supprimer
+l'aller-retour masque↔index a bien rendu `j0` et `j3` indépendants, mais chaque branche reste
+longue (`M → spread → hor_or → ffs → voisin → ffs → selR → s → t → A → écritures`), et le profil
+ne bouge pas : `selR` 13 %, la première passe 11 %, l'élagage 10 %, les écritures masquées 8 %,
+les six `pose_voisin` 5 %. Ce qui fait gagner `filnrm`, ce sont ses barillets — soixante-douze
+`select` sans aucune dépendance entre eux, que l'ordonnanceur émet en continu.
+
+Bilan de la famille « masques » : **même vitesse, 21 % de registres en moins**, et une écriture
+nettement plus simple (plus de barillet, plus de tableau temporaire). Un bon point de départ pour
+la 3D ou pour une carte où la pression de registres décide — pas un gain en 2D ici.
+
 Mesuré aussi : **les registres tombent de 121–128 à 96 en `double`, de 68 à 58 en `float`**
 (−21 % et −14 %), et le temps est à 3–5 % près celui de `filnrm8` (8.0 / 19.4 / 47.1 en `float` contre
 7.6 / 17.8 / 45.1) : les instructions entières du masque et les écritures masquées rendent ce que
@@ -648,7 +678,9 @@ réelle.
 * **Les paquets, le test en bloc, les deux fils au push, la boucle unique, les lanes
   persistantes, la rotation en mémoire partagée et le tri par coût sont mesurés et perdent**
   (§ 4) : ne pas y revenir sans une idée neuve.
-* **L'ordre dans un registre (`filord8`) coûte 21 % de registres en moins à vitesse égale** (§ 4).
+* **L'ordre dans un registre (`filord8`) et la succession en masques (`filsuc8`) coûtent 21 % de
+  registres en moins à vitesse égale** (§ 4) ; leur limite est la longueur de la chaîne de
+  dépendances, pas le nombre d'instructions.
   Dans le noyau des phases il manque **trois registres** (131) pour franchir le palier des quatre
   blocs par SM : sortir les `cid` des registres, ou coder `O` autrement, le ferait basculer —
   c'est le chantier le plus court à essayer.
