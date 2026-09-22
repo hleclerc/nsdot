@@ -126,7 +126,7 @@ int main( int argc, char **argv ) {
         if ( s == "--reps-gpu" && i + 1 < argc ) { o.reps_gpu = std::atoi( argv[ ++i ] ); continue; }
         std::printf( "usage: mesures [options]\n" );
         Args::usage();
-        std::printf( "  --variante V    fil | filreg | filregc | filmix{4,6,8,12,16} | filbrk{6,8,10,12,16} | filbrk8nu | filrot{6,8} | filnrm8 | filuni8 | filuni8np | filshm8 | filnrm8tri | filnrm8tril | filph8 | filph8g | filph8b | filph8a | filph8c | voies | voies16 | voies32 | paquet{8,32}x{1,2,4}[S] | toutes (toutes)\n"
+        std::printf( "  --variante V    fil | filreg | filregc | filmix{4,6,8,12,16} | filbrk{6,8,10,12,16} | filbrk8nu | filrot{6,8} | filnrm8 | filord8 | filuni8 | filuni8np | filshm8 | filnrm8tri | filnrm8tril | filph8 | filph8g | filph8b | filph8a | filph8c | filph8o | voies | voies16 | voies32 | paquet{8,32}x{1,2,4}[S] | toutes (toutes)\n"
                      "  --reps-gpu R    repetitions du noyau GPU, minimum       (10)\n" );
         return s == "--help" || s == "-h" ? 0 : 1;
     }

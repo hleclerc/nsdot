@@ -32,7 +32,7 @@
 // une cellule descend en RAM entre deux phases, pas pendant.
 // =====================================================================================
 
-#include "gpu/FilNrm2D.cuh"
+#include "gpu/FilOrd2D.cuh"
 
 namespace sf::gpu {
 
@@ -47,7 +47,7 @@ struct EtatPh {
 };
 
 constexpr int PILE_PH = 24;     ///< la profondeur du BSP median : `log2( n / feuille )` + marge
-constexpr int META_PH = 4;
+constexpr int META_PH = 7;    ///< nb, haut, rang, noeud, O bas, O haut, vivant
 
 /// `GROUPE` : la file « a une feuille » GROUPEE PAR FEUILLE avant la phase de coupe -- les lanes
 /// d'un warp partagent alors quelques feuilles au lieu de trente-deux, et le noeud se lit une fois
@@ -66,7 +66,7 @@ constexpr int META_PH = 4;
 ///     une RECHERCHE BINAIRE ( sept etapes ). Plus un trou parcouru, et l'ecriture reste directe.
 ///
 /// `CAP` cellules en vol par bloc, `BL` threads par bloc.
-template<bool POIDS, int R, int CAP, int BL, int GROUPE, int TRI, class TK>
+template<bool POIDS, int R, int CAP, int BL, int GROUPE, int TRI, bool ORD, class TK>
 __global__ void __launch_bounds__( BL, 3 ) noyau2_filph( Arbre<TK,2> ar, double *res, int *deborde, int *liste_deb,
                                                        int *compteur, EtatPh<TK> st, unsigned long long *stats = nullptr ) {
     constexpr int SUR = 3;
@@ -140,6 +140,22 @@ __global__ void __launch_bounds__( BL, 3 ) noyau2_filph( Arbre<TK,2> ar, double 
             if ( nb > 0 ) {
                 TK x[ R ], y[ R ]; int c[ R ];
                 charge( slot, x, y, c );
+                if constexpr ( ORD ) {
+                    const unsigned long long O = ( unsigned long long ) unsigned( st.meta[ 4 * S + slot ] )
+                                               | ( ( unsigned long long ) unsigned( st.meta[ 5 * S + slot ] ) << 32 );
+                    int tp = slot_de( O, 0 );
+                    TK xp = selR( x, tp ), yp = selR( y, tp );
+                    const TK x00 = xp, y00 = yp;
+#pragma unroll
+                    for ( int i = 1; i < R; ++i ) {
+                        if ( i >= nb ) break;
+                        const int tq = slot_de( O, i );
+                        const TK xq = selR( x, tq ), yq = selR( y, tq );
+                        a += double( xp ) * double( yq ) - double( xq ) * double( yp );
+                        xp = xq; yp = yq;
+                    }
+                    a += double( xp ) * double( y00 ) - double( x00 ) * double( yp );
+                } else
 #pragma unroll
                 for ( int i = 0; i < R; ++i ) {
                     if ( i >= SUR && i >= nb ) break;
@@ -173,6 +189,7 @@ __global__ void __launch_bounds__( BL, 3 ) noyau2_filph( Arbre<TK,2> ar, double 
             st.meta[ 0 * S + slot ] = 4;                 // nb
             st.meta[ 1 * S + slot ] = 1;                 // haut
             st.meta[ 2 * S + slot ] = k;
+            if constexpr ( ORD ) { st.meta[ 4 * S + slot ] = 0x08040201; st.meta[ 5 * S + slot ] = 0; st.meta[ 6 * S + slot ] = 0x0f; }
             pose( mA[ 1 - cur ], slot - base );
         }
         __syncthreads();
@@ -184,6 +201,7 @@ __global__ void __launch_bounds__( BL, 3 ) noyau2_filph( Arbre<TK,2> ar, double 
         for ( int e = tid; e < npar; e += BL ) {
             const int slot = base + file[ e ];
             const int nb = st.meta[ 0 * S + slot ], k = st.meta[ 2 * S + slot ];
+            const unsigned viv = ORD ? unsigned( st.meta[ 6 * S + slot ] ) : 0u;
             int haut = st.meta[ 1 * S + slot ];
             const TK p0[ 2 ] = { ar.c[ 0 ][ k ], ar.c[ 1 ][ k ] };
             const TK w0 = POIDS ? ar.w[ k ] : TK( 0 );
@@ -197,7 +215,8 @@ __global__ void __launch_bounds__( BL, 3 ) noyau2_filph( Arbre<TK,2> ar, double 
                 bool peut = false;
 #pragma unroll
                 for ( int i = 0; i < R; ++i ) {
-                    if ( i >= SUR && i >= nb ) break;
+                    if ( ! ORD && i >= SUR && i >= nb ) break;
+                    if ( ORD && ! ( ( viv >> i ) & 1u ) ) continue;
                     const TK v[ 2 ] = { x[ i ], y[ i ] };
                     peut |= bilan_sommet<POIDS>( nd, v, p0, w0 ) <= TK( 0 );
                 }
@@ -312,10 +331,68 @@ __global__ void __launch_bounds__( BL, 3 ) noyau2_filph( Arbre<TK,2> ar, double 
             charge( slot, x, y, c );
             TK xl = 0, yl = 0; int cl = 0;
             bool vu_dernier = false;                     // `v_nb-1` : relu au besoin
+            unsigned vivo = ORD ? unsigned( st.meta[ 6 * S + slot ] ) : 0u;
+            unsigned long long O = ORD ? ( ( unsigned long long ) unsigned( st.meta[ 4 * S + slot ] )
+                                         | ( ( unsigned long long ) unsigned( st.meta[ 5 * S + slot ] ) << 32 ) ) : 0ull;
 
             for ( int q = nd.beg; q < nd.end && nb > 0; ++q ) {
                 const Plan2<TK> p = bissect2<POIDS>( ar, q, p0[ 0 ], p0[ 1 ], w0 );
-                unsigned m = 0;
+                unsigned m;
+                if constexpr ( ORD ) {
+                    // ---- L'ORDRE EN REGISTRE : rien ne bouge, `O` dit ou sont les sommets
+                    unsigned M = 0;
+#pragma unroll
+                    for ( int i = 0; i < R; ++i )
+                        M |= unsigned( p.dx * x[ i ] + p.dy * y[ i ] - p.off > TK( 0 ) ) << i;
+                    M &= vivo;
+                    if ( PROBABLE( ! M ) ) continue;
+                    m = octets_non_nuls( O & ( 0x0101010101010101ull * ( unsigned long long ) M ) );
+                    const unsigned valid = ( 1u << nb ) - 1;
+                    if ( IMPROBABLE( m == valid ) ) { nb = 0; break; }
+
+                    const unsigned prev = ( ( m << 1 ) | ( m >> ( nb - 1 ) ) ) & valid;
+                    const unsigned next = ( ( m >> 1 ) | ( m << ( nb - 1 ) ) ) & valid;
+                    const int i1 = __ffs( m & ~prev ) - 1;
+                    const int j2 = __ffs( m & ~next ) - 1;
+                    const int j0 = i1 ? i1 - 1 : nb - 1;
+                    const int j3 = j2 + 1 < nb ? j2 + 1 : 0;
+                    const int nb_in = nb - __popc( m );
+                    const int nn = nb_in + 2;
+                    if ( IMPROBABLE( nn > R ) ) { nb = -1; break; }
+
+                    const int t0 = slot_de( O, j0 ), t1 = slot_de( O, i1 ), t2 = slot_de( O, j2 ), t3 = slot_de( O, j3 );
+                    const TK x0v = selR( x, t0 ), y0v = selR( y, t0 );
+                    const TK x1 = selR( x, t1 ), y1 = selR( y, t1 );
+                    const TK x2 = selR( x, t2 ), y2 = selR( y, t2 );
+                    const TK x3 = selR( x, t3 ), y3 = selR( y, t3 );
+                    const int bid = selR( c, t2 );
+                    const TK s0 = p.dx * x0v + p.dy * y0v - p.off, s1 = p.dx * x1 + p.dy * y1 - p.off;
+                    const TK s2 = p.dx * x2 + p.dy * y2 - p.off,   s3 = p.dx * x3 + p.dy * y3 - p.off;
+                    const TK ta = s0 / ( s0 - s1 ), tb = s3 / ( s3 - s2 );
+                    const TK pax = x0v + ( x1 - x0v ) * ta, pay = y0v + ( y1 - y0v ) * ta;
+                    const TK pbx = x3 + ( x2 - x3 ) * tb,   pby = y3 + ( y2 - y3 ) * tb;
+
+                    unsigned libre = ( ~vivo | M ) & 0xffu;
+                    const int sA = __ffs( int( libre ) ) - 1; libre &= ~( 1u << sA );
+                    const int sB = __ffs( int( libre ) ) - 1; libre &= ~( 1u << sB );
+#pragma unroll
+                    for ( int i = 0; i < R; ++i ) {
+                        x[ i ] = i == sA ? pax : ( i == sB ? pbx : x[ i ] );
+                        y[ i ] = i == sA ? pay : ( i == sB ? pby : y[ i ] );
+                        c[ i ] = i == sA ? p.id : ( i == sB ? bid : c[ i ] );
+                    }
+                    vivo = ( ~libre ) & 0xffu;
+                    const int rot = 8 * j3;
+                    const unsigned long long Or = j3 ? ( ( O >> rot ) | ( O << ( 8 * nb - rot ) ) ) : O;
+                    const unsigned long long garde = nb_in >= 8 ? ~0ull : ( ( 1ull << ( 8 * nb_in ) ) - 1 );
+                    O = ( Or & garde )
+                      | ( ( unsigned long long ) ( 1u << sA ) << ( 8 * nb_in ) )
+                      | ( ( unsigned long long ) ( 1u << sB ) << ( 8 * ( nb_in + 1 ) ) );
+                    nb = nn;
+                    continue;
+                }
+
+                m = 0;
 #pragma unroll
                 for ( int i = 0; i < R; ++i ) {
                     if ( i >= SUR && i >= nb ) break;
@@ -377,6 +454,7 @@ __global__ void __launch_bounds__( BL, 3 ) noyau2_filph( Arbre<TK,2> ar, double 
             }
 
             st.meta[ 0 * S + slot ] = nb;
+            if constexpr ( ORD ) { st.meta[ 4 * S + slot ] = int( unsigned( O ) ); st.meta[ 5 * S + slot ] = int( unsigned( O >> 32 ) ); st.meta[ 6 * S + slot ] = int( vivo ); }
             if ( nb > 0 ) {
                 range( slot, x, y, c );
                 pose( mA[ 1 - cur ], slot - base );

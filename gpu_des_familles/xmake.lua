@@ -16,6 +16,7 @@
 --   src/gpu/FilBrk2D.cuh    tout en registres avec des sorties a nb, les cellules > R en seconde passe
 --   src/gpu/FilRot2D.cuh    le meme, le remontage par decalage en barillet au lieu de lectures indexees
 --   src/gpu/FilNrm2D.cuh    la cellule normalisee AVANT la coupe, tout a positions fixes, rien a recomposer : LE GAGNANT 2D
+--   src/gpu/FilOrd2D.cuh    les sommets ne bougent plus : l'ordre cyclique dans un registre de 64 bits ( -21 % de registres )
 --   src/gpu/FilUni2D.cuh    le meme en une seule boucle, lanes persistantes : perdu ( les phases se remelangent )
 --   src/gpu/FilShm2D.cuh    la rotation en memoire partagee : -26 % d'instructions, -25 % d'occupation, perdu de peu
 --   src/gpu/FilPh2D.cuh     LES PHASES : un noyau persistant par SM, trois files par bloc, l'etat en RAM,

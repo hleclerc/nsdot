@@ -17,6 +17,7 @@
 #include "gpu/FilBrk2D.cuh"
 #include "gpu/FilRot2D.cuh"
 #include "gpu/FilNrm2D.cuh"
+#include "gpu/FilOrd2D.cuh"
 #include "gpu/FilUni2D.cuh"
 #include "gpu/FilShm2D.cuh"
 #include "gpu/FilPh2D.cuh"
@@ -206,15 +207,16 @@ Chrono lance2( const Impl &m, Variante v, int reps, std::vector<double> &res ) {
             default:                 return mix( std::integral_constant<int,16>{} );
         }
     }
-    if ( v == Variante::FILPH8 || v == Variante::FILPH8G || v == Variante::FILPH8B || v == Variante::FILPH8A || v == Variante::FILPH8C ) {
+    if ( v == Variante::FILPH8 || v == Variante::FILPH8G || v == Variante::FILPH8B || v == Variante::FILPH8A || v == Variante::FILPH8C || v == Variante::FILPH8O ) {
         // LE NOYAU PERSISTANT PAR SM : autant de blocs que la carte en loge, `CAP` cellules en vol
         // par bloc, l'etat en RAM
         constexpr int CAP = 512, BLPH = 128;
-        auto noy = v == Variante::FILPH8G ? noyau2_filph<POIDS,8,CAP,BLPH,1,64,TK>
-                 : v == Variante::FILPH8B ? noyau2_filph<POIDS,8,CAP,BLPH,2,1,TK>
-                 : v == Variante::FILPH8A ? noyau2_filph<POIDS,8,CAP,BLPH,3,1,TK>
-                 : v == Variante::FILPH8C ? noyau2_filph<POIDS,8,CAP,BLPH,4,1,TK>
-                 : noyau2_filph<POIDS,8,CAP,BLPH,0,1,TK>;
+        auto noy = v == Variante::FILPH8G ? noyau2_filph<POIDS,8,CAP,BLPH,1,64,false,TK>
+                 : v == Variante::FILPH8B ? noyau2_filph<POIDS,8,CAP,BLPH,2,1,false,TK>
+                 : v == Variante::FILPH8A ? noyau2_filph<POIDS,8,CAP,BLPH,3,1,false,TK>
+                 : v == Variante::FILPH8C ? noyau2_filph<POIDS,8,CAP,BLPH,4,1,false,TK>
+                 : v == Variante::FILPH8O ? noyau2_filph<POIDS,8,CAP,BLPH,4,1,true,TK>
+                 : noyau2_filph<POIDS,8,CAP,BLPH,0,1,false,TK>;
         int par_sm = 0, dev = 0;
         CUDA_OK( cudaGetDevice( &dev ) );
         CUDA_OK( cudaOccupancyMaxActiveBlocksPerMultiprocessor( &par_sm, noy, BLPH, 0 ) );
@@ -318,6 +320,15 @@ Chrono lance2( const Impl &m, Variante v, int reps, std::vector<double> &res ) {
             return m.deb2;
         } );
     }
+    if ( v == Variante::FILORD8 )
+        return chrono<2,TK>( m, reps, res, [ & ]() {
+            noyau2_filord<POIDS><<<grid, bloc>>>( ar, m.res, m.deb, m.liste );
+            int nd = 0;
+            CUDA_OK( cudaMemcpy( &nd, m.deb, sizeof( int ), cudaMemcpyDeviceToHost ) );
+            if ( nd == 0 ) return m.deb;
+            noyau2_filmix<POIDS,64,8,true><<<( nd + bloc - 1 ) / bloc, bloc>>>( ar, m.res, m.deb2, m.liste, nd );
+            return m.deb2;
+        } );
     if ( v == Variante::FILNRM8 )
         return chrono<2,TK>( m, reps, res, [ & ]() {
             noyau2_filnrm<POIDS,8><<<grid, bloc>>>( ar, m.res, m.deb, m.liste );

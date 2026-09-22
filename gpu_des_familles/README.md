@@ -18,7 +18,7 @@ xmake run mesures --threads 8 --variante voies --load uniforme -n 1000000
 ```
 
 Les options communes (`-n`, `--load`, `--kernel`, `--maxnv`, `--leaf`, `--cases`, …) sont celles
-de `solvers_des_familles` (`src/bench/Args.h`), plus `--variante fil | filreg | filregc | filmix{4,6,8,12,16} | filbrk{6,8,10,12,16} | filbrk8nu | filrot{6,8} | filnrm8 | filuni8 | filuni8np | filshm8 | filnrm8tri | filnrm8tril | filph8 | filph8g | filph8b | filph8a | filph8c | voies | voies16 |
+de `solvers_des_familles` (`src/bench/Args.h`), plus `--variante fil | filreg | filregc | filmix{4,6,8,12,16} | filbrk{6,8,10,12,16} | filbrk8nu | filrot{6,8} | filnrm8 | filord8 | filuni8 | filuni8np | filshm8 | filnrm8tri | filnrm8tril | filph8 | filph8g | filph8b | filph8a | filph8c | filph8o | voies | voies16 |
 voies32 | paquet{8,32}x{1,2,4}[S] | toutes` et `--reps-gpu`. Sur la machine, `--threads 8` est à donner (`hardware_concurrency` rend 1
 dans le bac à sable) et **tout chronométrage passe par `job -b`**.
 
@@ -41,6 +41,9 @@ src/gpu/FilRot2D.cuh    le même avec le remontage par DÉCALAGE EN BARILLET au 
                         indexées
 src/gpu/FilNrm2D.cuh    la cellule NORMALISÉE AVANT la coupe : tout se lit à des positions fixes,
                         rien n'est recomposé après — LE GAGNANT en 2D à `R = 8`
+src/gpu/FilOrd2D.cuh    LES SOMMETS NE BOUGENT PLUS : un registre de 64 bits porte l'ordre
+                        cyclique ( un octet = le slot, en one-hot ) — −21 % de registres, à
+                        vitesse égale (§ 4)
 src/gpu/FilUni2D.cuh    le même en UNE SEULE BOUCLE ( un pas par itération ) et avec des lanes
                         persistantes — mesuré, et perdu (§ 4)
 src/gpu/FilShm2D.cuh    le même avec la rotation en MÉMOIRE PARTAGÉE ( layout [case][thread] ) :
@@ -437,6 +440,41 @@ Ce que ça vaut pour la suite : **le schéma est bon quand le calcul domine le t
 exactement le régime de la 3D (800 instructions par coupe contre 60) — et c'est là qu'il faudrait
 l'essayer, pas en 2D `float` sur cette carte.
 
+**Ne plus déplacer les sommets : l'ordre dans un registre (`filord8`, idée de H. L.).** `filnrm`
+normalise la cellule à chaque coupe — trois barillets sur `x`, `y`, `cid`, huit tableaux
+temporaires. Ici les valeurs **ne bougent jamais** : un sommet reste dans son slot tant qu'il vit,
+et un registre `O` de 64 bits porte l'ordre cyclique — son octet `i` est le masque **one-hot** du
+slot où se trouve le sommet de position `i`. Un masque `vivant` de huit bits dit quels slots sont
+occupés, son complément donne les slots libres. Par coupe :
+
+* la première passe calcule `s` pour **les huit slots**, occupés ou non (du gâchis, mais pas une
+  branche), et rend un masque `M` **par slot** ;
+* le masque **par position** se recompose en sept instructions entières :
+  `t = O & ( M × 0x0101010101010101 )` a un octet non nul là où le sommet est dehors, et
+  « octet non nul → bit » se fait par trois `or` décalés puis une multiplication magique
+  (`× 0x0102040810204080 >> 56`) ;
+* les quatre sommets de la frontière se lisent par leur slot (`ffs` de l'octet), et leur `s` se
+  **recalcule** — un `fma` coûte moins qu'une lecture indexée ;
+* les deux sommets neufs prennent deux slots libres (les sortants viennent de se libérer) : deux
+  écritures masquées, rien d'autre ne bouge ;
+* **`O` se met à jour presque gratuitement** : comme la sortie est normalisée depuis `j3`, les
+  gardés sont contigus dans l'ordre cyclique — une rotation de `j3` octets, une troncature à
+  `nb_in` octets, et les deux octets neufs à la suite. Six instructions, là où il y avait trois
+  barillets.
+
+Mesuré : **les registres tombent de 121–128 à 96 en `double`, de 68 à 58 en `float`** (−21 % et
+−14 %), et le temps est à 3–5 % près celui de `filnrm8` (8.0 / 19.4 / 47.1 en `float` contre
+7.6 / 17.8 / 45.1) : les instructions entières du masque et les écritures masquées rendent ce que
+les barillets économisent. C'est donc **neutre en vitesse et gagnant en registres** — à garder en
+tête là où la pression compte.
+
+Et justement, elle compte dans le noyau des phases (166 registres, 25 % d'occupation) : porté là
+(`filph8o`), il descend à **131 registres en `double`** (112 → 92 en `float`)… sans que
+l'occupation bouge, et il perd 11 % (95.4 contre 85.8). La raison est un seuil : à 128 threads
+par bloc, trois blocs par SM demandent ≤ 170 registres — `filph8c` y est déjà à 166 — et le palier
+suivant est à **≤ 128 registres** pour quatre blocs. Avec 131, on le manque de trois registres, et
+forcer le plafond fait déborder. Une idée juste, arrêtée par un seuil matériel.
+
 **Les micro-optimisations de `filbrk`** (`filbrk8nu` est sans) : une cellule non vide a trois
 sommets au moins et une coupe en laisse `nb_in + 2 ≥ 3`, donc les trois premières cases ne
 testent pas `i < nb` ; et `__builtin_expect` d'après les compteurs (58 % des plans ne coupent
@@ -588,6 +626,10 @@ réelle.
 * **Les paquets, le test en bloc, les deux fils au push, la boucle unique, les lanes
   persistantes, la rotation en mémoire partagée et le tri par coût sont mesurés et perdent**
   (§ 4) : ne pas y revenir sans une idée neuve.
+* **L'ordre dans un registre (`filord8`) coûte 21 % de registres en moins à vitesse égale** (§ 4).
+  Dans le noyau des phases il manque **trois registres** (131) pour franchir le palier des quatre
+  blocs par SM : sortir les `cid` des registres, ou coder `O` autrement, le ferait basculer —
+  c'est le chantier le plus court à essayer.
 * **Les phases (`filph8`, `filph8g`, `filph8b`, `filph8a`, `filph8c`) sont écrites et mesurées**
   (§ 4), groupement par feuille compris — par tri, par binning, par écriture directe en arène et
   par arène compactée (la meilleure : −15 % en `double`). Ce qui les bride maintenant est
