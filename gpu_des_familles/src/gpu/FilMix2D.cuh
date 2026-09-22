@@ -28,10 +28,12 @@ __device__ __forceinline__ T selR( const T ( &a )[ R ], int i ) {
     return r;
 }
 
+/// `liste` : les rangs a faire ( `nullptr` : tous ) -- la seconde passe de `filbrk`.
 template<bool POIDS, int MaxNb, int R, bool CIDREG, class TK>
-__global__ void __launch_bounds__( 128 ) noyau2_filmix( Arbre<TK,2> ar, double *res, int *deborde ) {
+__global__ void __launch_bounds__( 128 ) noyau2_filmix( Arbre<TK,2> ar, double *res, int *deborde, const int *liste = nullptr, int nl = 0 ) {
     static_assert( MaxNb <= 64 && R <= MaxNb && R >= 4, "les masques sont sur 64 bits, le carre tient dans les registres" );
-    const int k = blockIdx.x * blockDim.x + threadIdx.x;
+    const int ti = blockIdx.x * blockDim.x + threadIdx.x;
+    const int k = liste ? ( ti < nl ? liste[ ti ] : ar.n ) : ti;
     if ( k >= ar.n ) return;
     const TK p0[ 2 ] = { ar.c[ 0 ][ k ], ar.c[ 1 ][ k ] };
     const TK w0 = POIDS ? ar.w[ k ] : TK( 0 );

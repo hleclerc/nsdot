@@ -18,7 +18,7 @@ xmake run mesures --threads 8 --variante voies --load uniforme -n 1000000
 ```
 
 Les options communes (`-n`, `--load`, `--kernel`, `--maxnv`, `--leaf`, `--cases`, …) sont celles
-de `solvers_des_familles` (`src/bench/Args.h`), plus `--variante fil | filreg | filregc | filmix{4,6,8,12,16} | voies | voies16 |
+de `solvers_des_familles` (`src/bench/Args.h`), plus `--variante fil | filreg | filregc | filmix{4,6,8,12,16} | filbrk{6,8,10,12,16} | voies | voies16 |
 voies32 | paquet{8,32}x{1,2,4}[S] | toutes` et `--reps-gpu`. Sur la machine, `--threads 8` est à donner (`hardware_concurrency` rend 1
 dans le bac à sable) et **tout chronométrage passe par `job -b`**.
 
@@ -34,7 +34,9 @@ src/gpu/Fil2D.cuh       UNE CELLULE PAR THREAD, 2D : `coupe_large` mot pour mot,
 src/gpu/FilReg2D.cuh    UNE CELLULE PAR THREAD, LES SOMMETS EN REGISTRES, 2D : le noyau à registres
                         du CPU exécuté par un thread scalaire, l'excursion au-delà de huit
 src/gpu/FilMix2D.cuh    le même, `R` sommets en registres et la queue en mémoire par une boucle
-                        ordinaire, sans excursion — LE GAGNANT en 2D à `R = 6` (§ 3)
+                        ordinaire, sans excursion — le gagnant sur les lignes / Laguerre à `R = 6`
+src/gpu/FilBrk2D.cuh    tout en registres, tout déroulé, chaque boucle SORT à `nb`, et les cellules
+                        qui dépassent `R` refaites en SECONDE PASSE — LE GAGNANT en uniforme à `R = 8`
 src/gpu/Voies2D.cuh     LA CELLULE SUR LES VOIES, 2D : voie = sommet, `V` = 8, 16 ou 32 voies par
                         cellule ; le débordement est une excursion sur la voie 0
 src/gpu/Paquet2D.cuh    PLUSIEURS CELLULES PAR VOIE, un parcours par warp, les plans d'une feuille
@@ -81,6 +83,13 @@ et ne fait rien pour une cellule qui tient dans ses registres. Plus d'excursion,
 mode : la coupe est une seule suite d'instructions, `nb` va jusqu'à 64 (masques sur 64 bits). `R`
 règle un compromis : le code déroulé fait toujours `R` cases, occupées ou non ; la queue coûte
 une boucle divergente et des chargements à la place des `select`.
+
+**`filbrk` — tout en registres, tout déroulé, avec des sorties, et une seconde passe.** `R`
+sommets en registres et chaque boucle déroulée sort dès que `i >= nb` (`break` dans la boucle
+déroulée : une branche par case, mais pas de travail sur une case vide, et le warp n'exécute que
+jusqu'au plus grand `nb` de ses voies). Une cellule qui dépasserait `R` sommets n'est pas gérée :
+son rang est poussé dans une liste (atomique) et une **seconde passe**, `filmix` à 8 registres et
+64 sommets, refait ces cellules-là entre elles.
 
 **`voies` — la cellule sur les voies.** Le pendant CUDA du noyau à registres du CPU : la voie `l`
 porte le sommet `l`, le nombre de sommets est un scalaire uniforme, et la coupe est le même calcul
@@ -143,14 +152,28 @@ résultats sont comptés à part. Mêmes nuages que les deux autres bancs. Les v
 
 ## `float`, ce pour quoi cette carte est faite
 
-| | n | CPU 8 fils | `fil` | `filreg` | `filregc` | `filmix6` | `voies` 8 | `voies16` | `voies32` |
-|---|---|---|---|---|---|---|---|---|---|
-| 2D uniforme | 10⁶ | 145 ns/germe | 68 (×2.1) | 16 (×8.9) | 14 (×10.0) | **13 (×11)** | 29 (×5.0) | 34 | 34 |
-| 2D lignes / Voronoï | 10⁵ | 141 | 63 (×2.3) | 23 (×6.1) | 22 (×6.5) | **20 (×7)** | 36 (×4.0) | 32 | 32 |
-| 2D lignes / aires égales | 10⁵ | 696 | 188 (×3.7) | 61 (×11.5) | 51 (×13.6) | **45 (×15)** | 106 (×6.6) | 108 | 128 |
-| 3D uniforme | 10⁶ | 1831 | 3855 (×0.5) | — | — | — | **229 (×8.0)** | — | — |
-| 3D plans / Voronoï | 10⁵ | 1774 | 3458 (×0.5) | — | — | — | **231 (×7.7)** | — | — |
-| 3D plans / volumes égaux | 10⁵ | 3054 | 4651 (×0.7) | — | — | — | **405 (×7.5)** | — | — |
+| | n | CPU 8 fils | `fil` | `filreg` | `filregc` | `filmix6` | `filbrk8` | `voies` 8 | `voies16` | `voies32` |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 2D uniforme | 10⁶ | 145 ns/germe | 68 (×2.1) | 16 (×8.9) | 15 (×9.7) | 13 (×11) | **10 (×14)** | 29 (×5.0) | 34 | 34 |
+| 2D lignes / Voronoï | 10⁵ | 141 | 63 (×2.3) | 23 (×6.1) | 21 (×6.7) | **20 (×7)** | 21 (×6.7) | 36 (×4.0) | 32 | 32 |
+| 2D lignes / aires égales | 10⁵ | 696 | 188 (×3.7) | 61 (×11.5) | 51 (×13.6) | **46 (×15)** | 52 (×13.4) | 106 (×6.6) | 108 | 128 |
+| 3D uniforme | 10⁶ | 1831 | 3855 (×0.5) | — | — | — | — | **229 (×8.0)** | — | — |
+| 3D plans / Voronoï | 10⁵ | 1774 | 3458 (×0.5) | — | — | — | — | **231 (×7.7)** | — | — |
+| 3D plans / volumes égaux | 10⁵ | 3054 | 4651 (×0.7) | — | — | — | — | **405 (×7.5)** | — | — |
+
+(chiffres 2D repris après l'ajout d'une chauffe de 300 ms avant le premier chrono, § 6 : sans elle
+le premier noyau d'un banc tournait à fréquence réduite, 17 au lieu de 13.)
+
+`filbrk` selon `R` (uniforme / lignes Voronoï / lignes Laguerre, float) : `R = 6` 13 / 21 / 57,
+`R = 8` **10 / 21 / 52**, `R = 10` 11 / 30 / 61, `R = 12` 13 / 47 / 86, `R = 16` 17 / 55 / 114 ;
+la seconde passe reçoit 10 % des cellules à `R = 8` (elles dépassent huit sommets *en cours de
+route*, même si 98 % des états sont à huit ou moins), 0,03 à 1 % à `R = 12`. Et pourtant `R = 12`
+perd sur les lignes en envoyant moins de cellules en seconde passe : **la seconde passe regroupe
+les grandes cellules entre elles**. Dans un warp, une cellule à douze sommets et trente coupes
+fait attendre trente et une voies ; renvoyée à une passe où toutes ses voisines lui ressemblent,
+elle ne coûte que sa part. C'est la vraie raison du gain de `filbrk8`, plus que les cases vides
+— et une piste : trier les cellules par taille attendue (dans Newton, celle du diagramme d'avant)
+pour que chaque warp soit homogène.
 
 `filmix` selon `R` (uniforme / lignes Voronoï / lignes Laguerre, float) : `R = 4` 31 / 38 / 83,
 `R = 6` **13 / 20 / 45**, `R = 8` 14 / 22 / 47, `R = 12` 28 / 36 / 68, `R = 16` 56 / 70 / 107 ; en
@@ -272,8 +295,10 @@ réelle.
 
 # 5. CE QUI RESTE
 
-* **`filmix6` en 2D est la référence** (13 ns/germe, ×11 ; `filreg` / `filregc` à 8 registres
-  et une excursion sont 7 à 10 % derrière). Ce qui reste : la divergence du
+* **`filbrk8` en uniforme (10 ns/germe, ×14), `filmix6` sur les lignes / Laguerre (46)** sont
+  les références 2D ; `filreg` / `filregc` à 8 registres et une excursion sont derrière. La piste
+  suivante est celle que la seconde passe a révélée : des warps homogènes en taille de cellule
+  (§ 3), par un tri sur la taille du diagramme précédent. Ce qui reste : la divergence du
   parcours entre les 32 cellules d'un warp (6 actifs) — un tri des cellules par profondeur de
   parcours ou une pile en mémoire partagée ne changeraient pas le fond ; les 3 000 instructions
   par cellule sont à lire ligne à ligne comme pour le 3D.
@@ -295,6 +320,10 @@ réelle.
 ---
 
 # 6. COMMENT LES CHIFFRES SONT PRIS
+
+Avant chaque chrono, 300 ms de noyau en boucle : le CPU (l'arbre, le témoin) laisse le GPU
+redescendre en fréquence, et un seul tour de chauffe ne le remonte pas — le même noyau donnait
+17 puis 13 ns/germe selon qu'il passait premier ou second. Puis 10 tours, minimum.
 
 `job -b -- ./build/linux/x86_64/release/mesures --threads 8 --reps 3 --reps-gpu 10 --kernel float`
 puis la même en `double` — machine seule, rien d'autre ne tourne. Un `PowerDiagram` CPU bâtit

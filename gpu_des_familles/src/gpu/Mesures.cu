@@ -14,6 +14,7 @@
 #include "gpu/Paquet2D.cuh"
 #include "gpu/FilReg2D.cuh"
 #include "gpu/FilMix2D.cuh"
+#include "gpu/FilBrk2D.cuh"
 #include "gpu/Fil3D.cuh"
 #include "gpu/Voies3D.cuh"
 
@@ -110,7 +111,16 @@ Chrono chrono( const Impl &m, int reps, std::vector<double> &res, auto &&lance )
     CUDA_OK( cudaEventCreate( &e1 ) );
     ch.noyau = 1e300;
     int *deb = m.deb;
-    for ( int r = -1; r < reps; ++r ) {                  // `-1` : la chauffe
+    // LA CHAUFFE : 300 ms de noyau avant le premier chrono. Le CPU ( l'arbre, le temoin ) laisse le
+    // GPU redescendre en frequence, et un seul tour ne le remonte pas ( mesure : 17 puis 13 ns
+    // par germe pour le meme noyau, selon qu'il passait premier ou second )
+    for ( const double t0 = now(); now() - t0 < 0.3; ) {
+        CUDA_OK( cudaMemset( m.deb, 0, sizeof( int ) ) );
+        CUDA_OK( cudaMemset( m.deb2, 0, sizeof( int ) ) );
+        lance();
+        CUDA_OK( cudaDeviceSynchronize() );
+    }
+    for ( int r = 0; r < reps; ++r ) {
         CUDA_OK( cudaMemset( m.deb, 0, sizeof( int ) ) );
         CUDA_OK( cudaMemset( m.deb2, 0, sizeof( int ) ) );
         CUDA_OK( cudaMemset( m.res, 0xff, m.n * sizeof( double ) ) );   // NaN : une cellule non ecrite se voit
@@ -122,7 +132,7 @@ Chrono chrono( const Impl &m, int reps, std::vector<double> &res, auto &&lance )
         CUDA_OK( cudaEventSynchronize( e1 ) );
         float ms = 0;
         CUDA_OK( cudaEventElapsedTime( &ms, e0, e1 ) );
-        if ( r >= 0 && ms * 1e-3 < ch.noyau ) ch.noyau = ms * 1e-3;
+        if ( ms * 1e-3 < ch.noyau ) ch.noyau = ms * 1e-3;
     }
     const double t0 = now();
     res.resize( m.n );
@@ -185,6 +195,29 @@ Chrono lance2( const Impl &m, Variante v, int reps, std::vector<double> &res ) {
             case Variante::FILMIX8:  return mix( std::integral_constant<int,8>{} );
             case Variante::FILMIX12: return mix( std::integral_constant<int,12>{} );
             default:                 return mix( std::integral_constant<int,16>{} );
+        }
+    }
+    if ( v >= Variante::FILBRK6 && v <= Variante::FILBRK16 ) {
+        // tout en registres avec des sorties, puis les rangs qui ont deborde `R` refaits par
+        // `filmix` a 8 registres et 64 sommets
+        auto brk = [ & ]( auto rr ) {
+            constexpr int R = decltype( rr )::value;
+            return chrono<2,TK>( m, reps, res, [ & ]() {
+                noyau2_filbrk<POIDS,R><<<grid, bloc>>>( ar, m.res, m.deb, m.liste );
+                int nd = 0;
+                CUDA_OK( cudaMemcpy( &nd, m.deb, sizeof( int ), cudaMemcpyDeviceToHost ) );
+                if ( std::getenv( "MESURES_DEBUG" ) ) std::fprintf( stderr, "        seconde passe : %d cellules\n", nd );
+                if ( nd == 0 ) return m.deb;
+                noyau2_filmix<POIDS,64,8,true><<<( nd + bloc - 1 ) / bloc, bloc>>>( ar, m.res, m.deb2, m.liste, nd );
+                return m.deb2;
+            } );
+        };
+        switch ( v ) {
+            case Variante::FILBRK6:  return brk( std::integral_constant<int,6>{} );
+            case Variante::FILBRK8:  return brk( std::integral_constant<int,8>{} );
+            case Variante::FILBRK10: return brk( std::integral_constant<int,10>{} );
+            case Variante::FILBRK12: return brk( std::integral_constant<int,12>{} );
+            default:                 return brk( std::integral_constant<int,16>{} );
         }
     }
     if ( v == Variante::FILREGC )
