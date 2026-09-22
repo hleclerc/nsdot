@@ -283,22 +283,49 @@ parfaite. Le prix est le trafic. Les deux nombres qui décident :
 * **le nombre de phases** = les feuilles visitées par cellule — mesuré 3.80 en uniforme (médiane
   4, p99 8), 4.14 sur les lignes Voronoï, **32.7** sur les lignes Laguerre ;
 * **le coût d'une phase** = lire et réécrire l'état — `xmake run bande 1000000 8` : **0.36 ns par
-  cellule et par passe**, 532 Go/s, en SoA parfaitement coalescé, rien d'autre ne tournant.
+  cellule et par passe**, 532 Go/s, en SoA parfaitement coalescé ;
+* **et ce coût est-il payé ?** `xmake run bande 1000000 8 F` injecte `F` fma par sommet dans la
+  passe : de `F = 0` à `F = 128` le temps ne bouge pas (0.356 → 0.373 ms) alors que le calcul
+  monte à 5.5 Tfma/s, ~80 % du pic fp32 de la carte. **Le trafic est entièrement masqué par le
+  calcul** tant que celui-ci reste sous ~1000 opérations par cellule et par passe — une phase de
+  coupe en fait ~600 (dix plans à une soixantaine d'instructions). Le temps est
+  `max( calcul, trafic )`, pas leur somme.
 
-Uniforme : ~4 phases de coupe (0.36 chacune) et ~4 de parcours (0.27, les sommets sans les `cid`)
-= **2.4 ns/germe de trafic incompressible**, contre 7.7 ns pour tout le noyau aujourd'hui — 31 %.
-Or le gain est plafonné : l'oracle donne +38 % de lanes actifs, et la moitié du temps seulement
-est dans la phase de coupe, donc au mieux −25 %, soit 5.8 ns. 5.8 + 2.4 (même partiellement
-recouvert) ne bat pas 7.7. Sur les lignes Laguerre c'est pire : 32.7 phases × 0.63 = 20 ns contre
-46 ns — 45 % du temps en trafic.
+Donc l'enveloppe est : ~4 phases de coupe et ~4 de parcours, 2.4 ns/germe de trafic **masqué**,
+et le gain vaut ce que vaut l'homogénéité — l'oracle donne +38 % de lanes actifs, la moitié du
+temps étant dans la phase de coupe, soit au mieux **7.7 → 5.8 ns/germe (−25 %)**. Ce n'est pas
+perdu d'avance ; ce qui décide, ce sont les frais que l'enveloppe ne compte pas : la compaction
+des listes, les atomiques, et surtout les **lancements de noyaux** — trois par phase, huit phases,
+~5 µs pièce : sur des chunks de 32k cellules c'est 1.9 ms pour 10⁶ cellules (25 % du temps
+total, le gain y passe), sur des chunks de 10⁶ (96 Mo d'état, la carte en a 11 Go) c'est 60 µs,
+négligeable. **Le schéma se joue donc en chunks aussi gros que la RAM le permet**, et son gain
+espéré est de l'ordre de −15 à −25 % pour une complexité élevée.
 
-Ce que ça dit sur les conditions où le schéma passerait : il faut **peu de phases par cellule**
-(des feuilles plus grosses — mais `--leaf` est mesuré optimal à 10, § 4) et surtout **beaucoup de
-calcul par phase**. C'est le cas en 3D, où une coupe coûte 800 instructions au lieu de 60 :
-l'état d'une cellule 3D fait ~600 octets, ~9 feuilles visitées, soit ~20 ns/germe de trafic contre
-229 ns/germe — 9 %, très amortissable. Mais en 3D il n'y a pas de divergence à corriger (un warp
-porte une cellule, 27 lanes actifs sur 32) : le schéma paierait sans rien rapporter. Les deux
-conditions ne se rencontrent sur aucun de nos cas.
+Deux corollaires du recouvrement : ( 1 ) ne stocker que les `nb` sommets réels plutôt que huit
+(par un allocateur atomique), ou laisser les `cid` de côté quand seules les mesures comptent,
+ne gagnerait **rien en temps** — le trafic est déjà gratuit — seulement de l'empreinte ( 96 →
+~50 octets par cellule ) ; ( 2 ) sur les lignes Laguerre, 32.7 phases à 0.63 ns font 20 ns contre
+46 ns de calcul : encore sous le toit, mais la marge est mince.
+
+**Et sur une autre génération ?** Deux choses changent, en sens contraire.
+
+| | fp32 | bande passante | FLOP / octet | mémoire partagée / SM |
+|---|---|---|---|---|
+| RTX 2080 Ti (Turing, ici) | 13.4 T | 616 Go/s (532 mesuré) | 22 | **64 Ko** |
+| A100 (Ampere, HBM) | 19.5 T | 1555 Go/s | 13 | 164 Ko |
+| RTX 4090 (Ada) | 82.6 T | 1008 Go/s | 82 | 100 Ko |
+| H100 SXM (Hopper, HBM) | 67 T | 3350 Go/s | 20 | 228 Ko |
+
+Le ratio FLOP/octet dit si le trafic reste masqué : sur les cartes HBM (A100, H100) il l'est
+autant ou mieux qu'ici ; sur les GeForce récentes (Ada, Blackwell) il est 3 à 4 fois moins
+favorable, et le schéma par phases y perdrait. La mémoire partagée par SM dit autre chose, qui
+concerne `filshm` (ci-dessus) : **notre 64 Ko est le pire cas de toutes les générations
+récentes**. Les 12 Ko par bloc qui plafonnent l'occupation à 62 % ici n'en plafonneraient aucune
+sur Ampere ou Hopper — la conclusion « la rotation en mémoire partagée perd » est donc
+spécifique à Turing et à revérifier ailleurs. S'y ajoutent des mécanismes qui n'existent pas
+ici : `cp.async` (Ampere) recouvre global → partagé sans passer par les registres, et la mémoire
+partagée *distribuée* entre les blocs d'un cluster (Hopper) permettrait de garder l'état des
+cellules en vol sans jamais descendre en RAM — c'est-à-dire le schéma par phases sans son trafic.
 
 **Les micro-optimisations de `filbrk`** (`filbrk8nu` est sans) : une cellule non vide a trois
 sommets au moins et une coupe en laisse `nb_in + 2 ≥ 3`, donc les trois premières cases ne
@@ -450,8 +477,15 @@ réelle.
   par cellule sont à lire ligne à ligne comme pour le 3D.
 * **Les paquets, le test en bloc, les deux fils au push, la boucle unique, les lanes
   persistantes, la rotation en mémoire partagée et le tri par coût sont mesurés et perdent**
-  (§ 4) : ne pas y revenir sans une idée neuve. Les phases avec l'état en RAM sont chiffrées au
-  § 4 sans être écrites : le trafic vaut 31 % du temps en 2D pour un gain plafonné à 25 %.
+  (§ 4) : ne pas y revenir sans une idée neuve. **Les phases avec l'état en RAM** sont chiffrées
+  au § 4 sans être écrites : le trafic y est entièrement masqué par le calcul (mesuré), le gain
+  espéré est −15 à −25 % pour une complexité élevée, et il faut des chunks aussi gros que la RAM
+  le permet pour que les lancements de noyaux ne le mangent pas. C'est le seul chantier 2D dont
+  l'enveloppe soit encore positive.
+* **Revérifier sur une autre carte** : Turing a la plus petite mémoire partagée par SM des
+  générations récentes (64 Ko contre 164–228), et un ratio FLOP/octet médian. Deux de nos
+  conclusions en dépendent (§ 4) : « la rotation en mémoire partagée perd » et « le trafic des
+  phases est masqué ».
 * **La coupe 3D à 800 instructions.** Les survivants en place plutôt que renumérotés (moins de
   `rassemble`, mais les trous du CPU à gérer par masques) ; les helpers `rang` / `nieme` appelés
   moins de fois (le nouveau numéro d'un voisin calculé une fois par sommet et non par octet) ;
