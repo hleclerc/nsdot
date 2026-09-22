@@ -49,14 +49,20 @@ struct EtatPh {
 constexpr int PILE_PH = 24;     ///< la profondeur du BSP median : `log2( n / feuille )` + marge
 constexpr int META_PH = 4;
 
-/// `GROUPE` : la file « a une feuille » TRIEE PAR FEUILLE avant la phase de coupe ( un tri
-/// bitonique en memoire partagee sur `( feuille << 9 ) | slot` ). Les cellules d'un bloc etant
-/// voisines dans l'arbre, elles visitent largement les memes feuilles : triees, les lanes d'un
-/// warp en couvrent quelques-unes au lieu de trente-deux, et le noeud se lit une fois pour toutes.
-/// C'est le seul poste qui coute ( README § 4 : l'arbre fait 50 % des requetes, L1 91 -> 40 % ).
+/// `GROUPE` : la file « a une feuille » GROUPEE PAR FEUILLE avant la phase de coupe -- les lanes
+/// d'un warp partagent alors quelques feuilles au lieu de trente-deux, et le noeud se lit une fois
+/// pour toutes ( README § 4 : l'arbre fait 50 % des requetes, L1 91 -> 40 % ).
+///   `GROUPE == 1` : par un TRI bitonique sur `( feuille << 9 ) | slot`, par blocs de `TRI`.
+///   `GROUPE == 2` : par un BINNING en trois passes -- compter, scanner, placer. Pas une
+///     comparaison, mais une reorganisation apres coup tout de meme.
+///   `GROUPE == 3` : L'ARENE -- la PREMIERE ECRITURE atterrit au bon endroit. La phase de parcours,
+///     des qu'elle connait la feuille, pose le slot dans la ZONE de cette feuille ( `feuille % NZ` ),
+///     a une place prise par un compteur atomique ; quand une zone est pleine, l'entree part dans un
+///     POOL commun ( le groupement est perdu pour elle seule ). Aucune passe de reorganisation ;
+///     en echange la phase de coupe BALAIE l'arene et saute les trous.
 ///
 /// `CAP` cellules en vol par bloc, `BL` threads par bloc.
-template<bool POIDS, int R, int CAP, int BL, bool GROUPE, int TRI, class TK>
+template<bool POIDS, int R, int CAP, int BL, int GROUPE, int TRI, class TK>
 __global__ void __launch_bounds__( BL ) noyau2_filph( Arbre<TK,2> ar, double *res, int *deborde, int *liste_deb,
                                                        int *compteur, EtatPh<TK> st ) {
     constexpr int SUR = 3;
@@ -67,10 +73,21 @@ __global__ void __launch_bounds__( BL ) noyau2_filph( Arbre<TK,2> ar, double *re
     constexpr int MOTS = CAP / 32;
     __shared__ unsigned mA[ 2 ][ MOTS ], mB[ 2 ][ MOTS ], mC[ MOTS ], mlibre[ MOTS ];
     __shared__ unsigned short file[ CAP ];               // la file ordonnee de la phase courante
-    __shared__ unsigned clefs[ GROUPE ? CAP : 1 ];       // `( feuille << 9 ) | slot`, triees
+    __shared__ unsigned clefs[ GROUPE ? CAP : 1 ];       // `( feuille << 9 ) | slot`, groupees
+    constexpr int NZ = 512;                               // les zones du binning
+    __shared__ int zone[ GROUPE == 2 ? NZ : 1 ], zone2[ GROUPE == 2 ? NZ : 1 ];
+    // L'ARENE : `NZA` zones de `ZA` places, puis un pool de `POOLA` places
+    constexpr int NZA = 64, ZA = 8, POOLA = 128, ARN = NZA * ZA + POOLA;
+    __shared__ unsigned short arene[ GROUPE == 3 ? ARN : 1 ];
+    __shared__ int fina[ GROUPE == 3 ? NZA : 1 ], poola;
     __shared__ int off[ MOTS ], nfile, cur, reste;
 
     for ( int w = tid; w < MOTS; w += BL ) { mA[ 0 ][ w ] = mA[ 1 ][ w ] = mB[ 0 ][ w ] = mB[ 1 ][ w ] = mC[ w ] = 0; mlibre[ w ] = 0xffffffffu; }
+    if constexpr ( GROUPE == 3 ) {
+        for ( int e = tid; e < ARN; e += BL ) arene[ e ] = 0xffffu;
+        for ( int z = tid; z < NZA; z += BL ) fina[ z ] = z * ZA;
+        if ( tid == 0 ) poola = NZA * ZA;
+    }
     if ( tid == 0 ) { cur = 0; reste = 1; }
     __syncthreads();
 
@@ -188,7 +205,12 @@ __global__ void __launch_bounds__( BL ) noyau2_filph( Arbre<TK,2> ar, double *re
             st.meta[ 1 * S + slot ] = haut;
             if ( feuille >= 0 ) {
                 st.meta[ 3 * S + slot ] = feuille;
-                pose( mB[ 1 - cur ], slot - base );
+                if constexpr ( GROUPE == 3 ) {           // DIRECTEMENT dans la zone de la feuille
+                    const int z = feuille & ( NZA - 1 );
+                    const int p = atomicAdd( &fina[ z ], 1 );
+                    arene[ p < ( z + 1 ) * ZA ? p : atomicAdd( &poola, 1 ) % ARN ] = ( unsigned short ) ( slot - base );
+                } else
+                    pose( mB[ 1 - cur ], slot - base );
             } else
                 pose( mC, slot - base );
         }
@@ -198,9 +220,34 @@ __global__ void __launch_bounds__( BL ) noyau2_filph( Arbre<TK,2> ar, double *re
 
         // ================================================================ PHASE COUPE
         // les germes de la feuille, tous, puis retour en A ( ou en C si la cellule est finie )
-        deplie( mB[ cur ] );
-        const int ncou = nfile;
-        if constexpr ( GROUPE ) {
+        int ncou;
+        if constexpr ( GROUPE == 3 ) { __syncthreads(); ncou = ARN; }
+        else { deplie( mB[ cur ] ); ncou = nfile; }
+        if constexpr ( GROUPE == 2 ) {
+            // ---- LE BINNING : compter, scanner, placer
+            for ( int z = tid; z < NZ; z += BL ) zone[ z ] = 0;
+            __syncthreads();
+            for ( int e = tid; e < ncou; e += BL ) {
+                const int h = st.meta[ 3 * S + base + file[ e ] ];
+                atomicAdd( &zone[ h & ( NZ - 1 ) ], 1 );
+            }
+            __syncthreads();
+            for ( int pas = 1; pas < NZ; pas <<= 1 ) {  // le scan, Hillis-Steele
+                for ( int z = tid; z < NZ; z += BL ) zone2[ z ] = z >= pas ? zone[ z ] + zone[ z - pas ] : zone[ z ];
+                __syncthreads();
+                for ( int z = tid; z < NZ; z += BL ) zone[ z ] = zone2[ z ];
+                __syncthreads();
+            }
+            for ( int e = tid; e < CAP; e += BL ) clefs[ e ] = 0xffffffffu;
+            __syncthreads();
+            for ( int e = tid; e < ncou; e += BL ) {
+                const int sl = file[ e ];
+                const int h = st.meta[ 3 * S + base + sl ];
+                const int p = atomicSub( &zone[ h & ( NZ - 1 ) ], 1 ) - 1;   // la zone se remplit par la fin
+                clefs[ p ] = ( unsigned( h ) << 9 ) | sl;
+            }
+            __syncthreads();
+        } else if constexpr ( GROUPE == 1 ) {
             static_assert( CAP <= 512 && ( CAP & ( CAP - 1 ) ) == 0, "le tri bitonique demande une puissance de deux, le slot tient sur neuf bits" );
             for ( int e = tid; e < CAP; e += BL )
                 clefs[ e ] = e < ncou ? ( ( unsigned( st.meta[ 3 * S + base + file[ e ] ] ) << 9 ) | file[ e ] ) : 0xffffffffu;
@@ -219,12 +266,13 @@ __global__ void __launch_bounds__( BL ) noyau2_filph( Arbre<TK,2> ar, double *re
         }
         // avec un tri PARTIEL ( `TRI < CAP` ) les clefs de remplissage restent dans leur bloc :
         // on les saute au lieu de s'arreter a `ncou`
-        for ( int e = tid; e < ( GROUPE ? CAP : ncou ); e += BL ) {
-            if ( GROUPE && clefs[ e ] == 0xffffffffu ) continue;
-            const int slot = base + ( GROUPE ? int( clefs[ e ] & 511u ) : int( file[ e ] ) );
+        for ( int e = tid; e < ( GROUPE == 3 ? ARN : GROUPE ? CAP : ncou ); e += BL ) {
+            if ( GROUPE == 3 && arene[ e ] == 0xffffu ) continue;
+            if ( GROUPE && GROUPE != 3 && clefs[ e ] == 0xffffffffu ) continue;
+            const int slot = base + ( GROUPE == 3 ? int( arene[ e ] ) : GROUPE ? int( clefs[ e ] & 511u ) : int( file[ e ] ) );
             int nb = st.meta[ 0 * S + slot ];
             const int k = st.meta[ 2 * S + slot ];
-            const int h = GROUPE ? int( clefs[ e ] >> 9 ) : st.meta[ 3 * S + slot ];
+            const int h = ( GROUPE && GROUPE != 3 ) ? int( clefs[ e ] >> 9 ) : st.meta[ 3 * S + slot ];
             const Noeud<TK,2> nd = ar.nodes[ h ];
             const TK p0[ 2 ] = { ar.c[ 0 ][ k ], ar.c[ 1 ][ k ] };
             const TK w0 = POIDS ? ar.w[ k ] : TK( 0 );
@@ -305,6 +353,11 @@ __global__ void __launch_bounds__( BL ) noyau2_filph( Arbre<TK,2> ar, double *re
         }
         __syncthreads();
         for ( int w = tid; w < MOTS; w += BL ) mB[ cur ][ w ] = 0;
+        if constexpr ( GROUPE == 3 ) {
+            for ( int e = tid; e < ARN; e += BL ) arene[ e ] = 0xffffu;
+            for ( int z = tid; z < NZA; z += BL ) fina[ z ] = z * ZA;
+            if ( tid == 0 ) poola = NZA * ZA;
+        }
         __syncthreads();
         if ( tid == 0 ) {
             cur = 1 - cur;

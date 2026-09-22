@@ -18,7 +18,7 @@ xmake run mesures --threads 8 --variante voies --load uniforme -n 1000000
 ```
 
 Les options communes (`-n`, `--load`, `--kernel`, `--maxnv`, `--leaf`, `--cases`, …) sont celles
-de `solvers_des_familles` (`src/bench/Args.h`), plus `--variante fil | filreg | filregc | filmix{4,6,8,12,16} | filbrk{6,8,10,12,16} | filbrk8nu | filrot{6,8} | filnrm8 | filuni8 | filuni8np | filshm8 | filnrm8tri | filnrm8tril | filph8 | filph8g | voies | voies16 |
+de `solvers_des_familles` (`src/bench/Args.h`), plus `--variante fil | filreg | filregc | filmix{4,6,8,12,16} | filbrk{6,8,10,12,16} | filbrk8nu | filrot{6,8} | filnrm8 | filuni8 | filuni8np | filshm8 | filnrm8tri | filnrm8tril | filph8 | filph8g | filph8b | filph8a | voies | voies16 |
 voies32 | paquet{8,32}x{1,2,4}[S] | toutes` et `--reps-gpu`. Sur la machine, `--threads 8` est à donner (`hardware_concurrency` rend 1
 dans le bac à sable) et **tout chronométrage passe par `job -b`**.
 
@@ -346,7 +346,9 @@ consécutives prennent alors des slots consécutifs, ce qui rend la coalescence 
 | | *float* | | | | *double* | | |
 | `filnrm8` | **7.7** | **18.6** | **45.8** | | 100.5 | 133.2 | **492** |
 | `filph8` (phases) | 20.7 | 28.8 | 110.4 | | 97.7 | 136.2 | 805 |
-| `filph8g` (+ groupé par feuille) | 20.2 | 36.2 | 126.2 | | **88.7** | **130.5** | 837 |
+| `filph8g` (groupé : tri) | 20.6 | 35.5 | 132.0 | | **88.7** | 134.1 | 833 |
+| `filph8b` (groupé : binning) | 22.5 | 32.4 | 120.7 | | 89.4 | 134.6 | 829 |
+| `filph8a` (groupé : arène) | 25.9 | 36.4 | 128.9 | | 102.4 | 141.7 | 801 |
 
 **Le schéma marche, et le profil dit exactement quand.** Les lanes actifs passent de 6,8 à
 **11,3–11,8 sur 32 (+70 %)** — mieux que les +38 % que l'oracle du tri laissait espérer, parce
@@ -382,7 +384,29 @@ correspondant à des cellules voisines :
 | 128 | 20.9 / 36.2 / 140 | 88.0 / 129.8 / 827 |
 | **64** | **20.7** / 35.9 / 134 | **88.0** / 132.2 / 838 |
 
-Bilan : en `double`, le schéma complet fait **88.7 contre 100.5 ns/germe pour `filnrm8`, −12 %**
+**Trois façons de grouper, et laquelle gagne.** Le tri ci-dessus réorganise la file après coup ;
+deux autres s'en passent de plus en plus :
+
+* `filph8b`, le **binning** : compter par zone (`feuille % 512`), scanner, placer — trois passes,
+  pas une comparaison. À égalité avec le tri (89.4 contre 88.7 en `double`) ;
+* `filph8a`, l'**arène** : la **première écriture** atterrit directement à la bonne place — dès que
+  la phase de parcours connaît la feuille, le slot est posé dans la zone de cette feuille
+  (`feuille % 64`), à une place prise par un compteur atomique, et part dans un pool commun si la
+  zone est pleine. **Aucune passe de réorganisation** ; en échange la phase de coupe balaie
+  l'arène et saute les trous. Mesuré : 102.4 en `double`, **plus lent que les deux autres**.
+  Le réglage compte (64 zones × 8 places + 128 de pool, soit 640 pour ~512 entrées, est le
+  meilleur des cinq essayés : 1024 places donnent 107.4) mais ne renverse rien.
+
+Pourquoi l'arène perd alors qu'elle supprime du travail : dans le régime où le groupement sert
+(`double`, borné par le calcul), **le tri ne coûte rien** — il est masqué comme le reste du
+trafic — donc il n'y a rien à économiser en l'évitant ; tandis que les trous, eux, coûtent
+vraiment : à 80 % de remplissage la phase de coupe fait cinq tours de boucle au lieu de quatre,
+et chaque lane tombée sur un trou est une voie perdue dans son warp. Autrement dit : une
+réorganisation gratuite bat une écriture bien placée mais dispersée. Ce serait l'inverse si le
+noyau était borné par les instructions — ce qu'il n'est pas ici.
+
+Bilan : en `double`, le schéma complet (phases + groupement par tri) fait **88.7 contre 100.5
+ns/germe pour `filnrm8`, −12 %**
 sur l'uniforme et −2 % sur les lignes Voronoï (DRAM à 12 %, calcul à 83 % : le trafic est
 entièrement masqué, comme l'enveloppe le prévoyait). En `float` il reste 2,6× derrière : le noyau
 de base y est trop rapide pour payer le trafic, quelle que soit l'homogénéité. Et sur les lignes
@@ -544,8 +568,8 @@ réelle.
 * **Les paquets, le test en bloc, les deux fils au push, la boucle unique, les lanes
   persistantes, la rotation en mémoire partagée et le tri par coût sont mesurés et perdent**
   (§ 4) : ne pas y revenir sans une idée neuve.
-* **Les phases (`filph8`, `filph8g`) sont écrites et mesurées** (§ 4), groupement par feuille
-  compris : 6,8 → 14,9 lanes actifs, −12 % en `double` sur l'uniforme, mais bornées par la DRAM
+* **Les phases (`filph8`, `filph8g`, `filph8b`, `filph8a`) sont écrites et mesurées** (§ 4),
+  groupement par feuille compris — par tri, par binning et par écriture directe en arène : 6,8 → 14,9 lanes actifs, −12 % en `double` sur l'uniforme, mais bornées par la DRAM
   en `float`. **À reprendre en 3D**, où une coupe coûte 800 instructions au lieu de 60 : c'est le
   régime où le trafic est masqué et où le schéma gagne.
 * **Revérifier sur une autre carte** : Turing a la plus petite mémoire partagée par SM des
