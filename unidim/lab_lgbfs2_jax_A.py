@@ -98,15 +98,8 @@ def _loss_chunk(
     return chunk_cost(points)
 
 
-def loss(
-    points,
-    normals,
-    bin_edges,
-    bin_mass,
-    mem_budget_bytes=-1,
-    batch_size="auto",
-    use_checkpoint=True,
-):
+def loss(points,normals, bin_edges,bin_mass,
+    mem_budget_bytes=-1,batch_size="auto",use_checkpoint=True,):
     """Sum the Wasserstein loss over angle chunks.
 
     `batch_size` is either a fixed number of angles per chunk or "auto" to
@@ -134,25 +127,16 @@ def loss(
     value, _ = jax.lax.scan(scan_body, value, (normals_chunks, mass_chunks),)
 
     if n_full < A:
-        value = value + _loss_chunk(
-            points,
-            normals[n_full:],
-            bin_edges,
-            bin_mass[n_full:],
-            use_checkpoint=use_checkpoint,
-        )
+        value = value + _loss_chunk(points,normals[n_full:],bin_edges,bin_mass[n_full:],use_checkpoint=use_checkpoint,)
 
     return value
 
 
-def optimize(points, sino,
-             max_iter=50,
-             max_linesearch_steps=4,
-             initial_guess_strategy="one",
-             ext_dtype=jnp.float64,
-             batch_size="auto",
-             use_checkpoint=True,
-             target_loss=1e-3):
+def optimize(points, sino,max_iter=50,
+             max_linesearch_steps=4, initial_guess_strategy="one",
+             ext_dtype=jnp.float64, batch_size="auto",
+             use_checkpoint=True,target_loss=1e-3):
+
     g = sino.geometry
     normals = jnp.asarray(g.normals, dtype=ext_dtype)
     bin_edges = jnp.asarray(g.bin_edges, dtype=ext_dtype)
@@ -166,21 +150,14 @@ def optimize(points, sino,
     state = solver.init(points)
 
     def make_step(mem_budget_bytes):
-        chunk_size = _choose_chunk_size(
-            points.shape[0], normals.shape[0], mem_budget_bytes, batch_size
-        )
-
+        chunk_size = _choose_chunk_size(points.shape[0], normals.shape[0], mem_budget_bytes, batch_size)
+        # C = _choose_chunk_size(n, A, mem_budget_bytes, batch_size) # FIXME redites
         @jax.jit
         def step(p, state, normals, bin_edges, bin_mass):
-            fun = lambda pp: loss(
-                pp,
-                normals,
-                bin_edges,
-                bin_mass,
-                mem_budget_bytes=mem_budget_bytes,
-                batch_size=batch_size,
-                use_checkpoint=use_checkpoint,
-            )
+            fun = lambda pp: loss(pp,normals,bin_edges,bin_mass,
+                                  mem_budget_bytes=mem_budget_bytes,batch_size=batch_size,
+                                    use_checkpoint=use_checkpoint,)
+
             value_and_grad = optax.value_and_grad_from_state(fun)
             value, grad = value_and_grad(p, state=state)
             updates, state = solver.update(grad, state, p, value=value, grad=grad, value_fn=fun)
@@ -222,8 +199,7 @@ def optimize(points, sino,
         iteration_start = time.perf_counter()
         if idx == max_iter - 1:
             (points, state, value, grad), peak = measure_gpu_peak(
-                step, points, state, normals, bin_edges, bin_mass, interval=0.02,
-            )
+                step, points, state, normals, bin_edges, bin_mass, interval=0.02,)
         else:
             points, state, value, grad = step(points, state, normals, bin_edges, bin_mass)
 

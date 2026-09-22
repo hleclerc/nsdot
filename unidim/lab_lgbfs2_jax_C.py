@@ -421,3 +421,98 @@ if __name__ == '__main__':
     base_params['variant'] = "C"
 
     run_experiments(base_params)
+
+
+""""
+Le vrai gain : _linear_indices
+
+C'est le changement qui optimise réellement le calcul, à mon avis de très loin.
+
+Dans l'ancienne implémentation de wasser_dist, tu avais conceptuellement :
+
+j = jnp.searchsorted(cum, q, side="right")
+
+pour chaque point de la grille des quantiles.
+
+Or :
+
+N = nombre de points
+
+donc tu faisais N recherches binaires par angle.
+
+Et ton calcul de M(q) devait en plus retrouver les indices pour q et q+w.
+
+La nouvelle version exploite le fait que :
+
+q = k / N
+
+est une grille régulière.
+Elle prend les frontières des bins :
+
+boundaries = cum[:-1]
+
+puis calcule directement leur position dans la grille :
+
+k0 = jnp.floor(boundaries / w).astype(jnp.int32)
+
+Puis elle reconstruit les indices par accumulation :
+
+markers = jnp.zeros((n + 1,), dtype=jnp.int32).at[cuts].add(1)
+return jnp.clip(jnp.cumsum(markers), 0, cum.shape[0] - 1)
+
+C'est une réduction algorithmique, pas simplement une optimisation JAX.
+
+Deuxième gain : le calcul des projections
+
+Ancienne version :
+
+def angle_cost(normal_and_mass):
+    normal, mass = normal_and_mass
+    projections = points @ normal
+
+Puis lax.map traite les angles par groupes.
+
+Nouvelle version :
+
+proj = normals @ points.T
+
+Donc pour un chunk de C angles :
+
+normals       C × 2
+points.T      2 × N
+                  ↓
+proj          C × N
+
+C'est exactement la forme qui correspond à un gros GEMM GPU.
+
+Troisième gain : vmap sur le résultat du GEMM
+
+La nouvelle séquence est :
+
+proj = normals @ points.T
+
+fun = lambda pr, mass: _w2_1d(pr, mass, bin_edges)
+costs = jax.vmap(fun)(proj, bin_mass)
+
+C'est important : le gros calcul de projection est sorti du vmap.
+
+Ancienne :
+
+lax.map
+   ├── projection angle 1
+   ├── wasserstein angle 1
+   ├── projection angle 2
+   ├── wasserstein angle 2
+   └── ...
+
+Nouvelle :
+
+gros GEMM
+    ↓
+C × N projections
+    ↓
+vmap Wasserstein
+
+C'est une meilleure structure pour le GPU.
+
+"""
