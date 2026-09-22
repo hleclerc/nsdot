@@ -206,13 +206,14 @@ Chrono lance2( const Impl &m, Variante v, int reps, std::vector<double> &res ) {
             default:                 return mix( std::integral_constant<int,16>{} );
         }
     }
-    if ( v == Variante::FILPH8 || v == Variante::FILPH8G || v == Variante::FILPH8B || v == Variante::FILPH8A ) {
+    if ( v == Variante::FILPH8 || v == Variante::FILPH8G || v == Variante::FILPH8B || v == Variante::FILPH8A || v == Variante::FILPH8C ) {
         // LE NOYAU PERSISTANT PAR SM : autant de blocs que la carte en loge, `CAP` cellules en vol
         // par bloc, l'etat en RAM
         constexpr int CAP = 512, BLPH = 128;
         auto noy = v == Variante::FILPH8G ? noyau2_filph<POIDS,8,CAP,BLPH,1,64,TK>
                  : v == Variante::FILPH8B ? noyau2_filph<POIDS,8,CAP,BLPH,2,1,TK>
                  : v == Variante::FILPH8A ? noyau2_filph<POIDS,8,CAP,BLPH,3,1,TK>
+                 : v == Variante::FILPH8C ? noyau2_filph<POIDS,8,CAP,BLPH,4,1,TK>
                  : noyau2_filph<POIDS,8,CAP,BLPH,0,1,TK>;
         int par_sm = 0, dev = 0;
         CUDA_OK( cudaGetDevice( &dev ) );
@@ -229,7 +230,7 @@ Chrono lance2( const Impl &m, Variante v, int reps, std::vector<double> &res ) {
         CUDA_OK( cudaMalloc( &st.meta, size_t( st.S ) * META_PH * sizeof( int ) ) );
         const Chrono ch = chrono<2,TK>( m, reps, res, [ & ]() {
             CUDA_OK( cudaMemset( m.cptr, 0, sizeof( int ) ) );
-            noy<<<grid_p, BLPH>>>( ar, m.res, m.deb, m.liste, m.cptr, st );
+            noy<<<grid_p, BLPH>>>( ar, m.res, m.deb, m.liste, m.cptr, st, m.stats );
             int nd = 0;
             CUDA_OK( cudaMemcpy( &nd, m.deb, sizeof( int ), cudaMemcpyDeviceToHost ) );
             if ( nd == 0 ) return m.deb;

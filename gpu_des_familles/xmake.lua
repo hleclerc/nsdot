@@ -19,7 +19,7 @@
 --   src/gpu/FilUni2D.cuh    le meme en une seule boucle, lanes persistantes : perdu ( les phases se remelangent )
 --   src/gpu/FilShm2D.cuh    la rotation en memoire partagee : -26 % d'instructions, -25 % d'occupation, perdu de peu
 --   src/gpu/FilPh2D.cuh     LES PHASES : un noyau persistant par SM, trois files par bloc, l'etat en RAM,
---                           la file de coupe groupee par feuille : tri, binning, ou arene ( ecriture directe )
+--                           la file de coupe groupee par feuille : tri, binning, arene, arene compactee
 --   src/gpu/Paquet2D.cuh    plusieurs cellules par voie, un parcours par warp, plans en bloc : perdu
 --   src/gpu/Voies2D.cuh     LA CELLULE SUR HUIT VOIES, 2D : voie = sommet, quatre cellules par warp
 --   src/gpu/Fil3D.cuh       une cellule par thread, 3D : le polytope simple porte par ses sommets

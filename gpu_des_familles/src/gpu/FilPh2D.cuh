@@ -60,11 +60,15 @@ constexpr int META_PH = 4;
 ///     a une place prise par un compteur atomique ; quand une zone est pleine, l'entree part dans un
 ///     POOL commun ( le groupement est perdu pour elle seule ). Aucune passe de reorganisation ;
 ///     en echange la phase de coupe BALAIE l'arene et saute les trous.
+///   `GROUPE == 4` : l'arene COMPACTEE SANS DEPLACER LES DONNEES -- `NZA + 1` offsets disent ou
+///     commencent les items de chaque zone dans une numerotation compacte ( un prefixe sur les
+///     tailles, une soixantaine d'additions ), et la phase de coupe retrouve la zone d'un item par
+///     une RECHERCHE BINAIRE ( sept etapes ). Plus un trou parcouru, et l'ecriture reste directe.
 ///
 /// `CAP` cellules en vol par bloc, `BL` threads par bloc.
 template<bool POIDS, int R, int CAP, int BL, int GROUPE, int TRI, class TK>
-__global__ void __launch_bounds__( BL ) noyau2_filph( Arbre<TK,2> ar, double *res, int *deborde, int *liste_deb,
-                                                       int *compteur, EtatPh<TK> st ) {
+__global__ void __launch_bounds__( BL, 3 ) noyau2_filph( Arbre<TK,2> ar, double *res, int *deborde, int *liste_deb,
+                                                       int *compteur, EtatPh<TK> st, unsigned long long *stats = nullptr ) {
     constexpr int SUR = 3;
     const int tid = threadIdx.x;
     const int base = blockIdx.x * CAP;
@@ -81,12 +85,13 @@ __global__ void __launch_bounds__( BL ) noyau2_filph( Arbre<TK,2> ar, double *re
     // avec un pool plus petit et un `% ARN`, les entrees en trop en ECRASAIENT d'autres ( mesure :
     // 1603 cellules perdues sur 1e6, et des temps flatteurs )
     constexpr int NZA = 64, ZA = 8, POOLA = CAP, ARN = NZA * ZA + POOLA;
-    __shared__ unsigned short arene[ GROUPE == 3 ? ARN : 1 ];
-    __shared__ int fina[ GROUPE == 3 ? NZA : 1 ], poola;
+    __shared__ unsigned short arene[ GROUPE >= 3 ? ARN : 1 ];
+    __shared__ int fina[ GROUPE >= 3 ? NZA : 1 ], poola;
+    __shared__ int offa[ GROUPE == 4 ? NZA + 2 : 1 ];
     __shared__ int off[ MOTS ], nfile, cur, reste;
 
     for ( int w = tid; w < MOTS; w += BL ) { mA[ 0 ][ w ] = mA[ 1 ][ w ] = mB[ 0 ][ w ] = mB[ 1 ][ w ] = mC[ w ] = 0; mlibre[ w ] = 0xffffffffu; }
-    if constexpr ( GROUPE == 3 ) {
+    if constexpr ( GROUPE >= 3 ) {
         for ( int e = tid; e < ARN; e += BL ) arene[ e ] = 0xffffu;
         for ( int z = tid; z < NZA; z += BL ) fina[ z ] = z * ZA;
         if ( tid == 0 ) poola = NZA * ZA;
@@ -208,10 +213,12 @@ __global__ void __launch_bounds__( BL ) noyau2_filph( Arbre<TK,2> ar, double *re
             st.meta[ 1 * S + slot ] = haut;
             if ( feuille >= 0 ) {
                 st.meta[ 3 * S + slot ] = feuille;
-                if constexpr ( GROUPE == 3 ) {           // DIRECTEMENT dans la zone de la feuille
+                if constexpr ( GROUPE >= 3 ) {           // DIRECTEMENT dans la zone de la feuille
                     const int z = feuille & ( NZA - 1 );
                     const int p = atomicAdd( &fina[ z ], 1 );
-                    arene[ p < ( z + 1 ) * ZA ? p : atomicAdd( &poola, 1 ) ] = ( unsigned short ) ( slot - base );
+                    const bool deb = p >= ( z + 1 ) * ZA;
+                    arene[ deb ? atomicAdd( &poola, 1 ) : p ] = ( unsigned short ) ( slot - base );
+                    if ( stats ) { atomicAdd( stats, 1ull ); if ( deb ) atomicAdd( stats + 1, 1ull ); }
                 } else
                     pose( mB[ 1 - cur ], slot - base );
             } else
@@ -224,7 +231,23 @@ __global__ void __launch_bounds__( BL ) noyau2_filph( Arbre<TK,2> ar, double *re
         // ================================================================ PHASE COUPE
         // les germes de la feuille, tous, puis retour en A ( ou en C si la cellule est finie )
         int ncou;
-        if constexpr ( GROUPE == 3 ) { __syncthreads(); ncou = ARN; }
+        if constexpr ( GROUPE == 4 ) {
+            // LES OFFSETS COMPACTS : la taille de chaque zone ( bornee par `ZA` : le reste est au
+            // pool ), puis leur prefixe ; la phase de coupe n'aura plus un trou a parcourir
+            __syncthreads();
+            if ( tid == 0 ) {
+                int acc = 0;
+                for ( int z = 0; z < NZA; ++z ) {
+                    offa[ z ] = acc;
+                    const int n = min( fina[ z ], ( z + 1 ) * ZA ) - z * ZA;
+                    acc += n;
+                }
+                offa[ NZA ] = acc;
+                offa[ NZA + 1 ] = acc + ( poola - NZA * ZA );
+            }
+            __syncthreads();
+            ncou = offa[ NZA + 1 ];
+        } else if constexpr ( GROUPE == 3 ) { __syncthreads(); ncou = ARN; }
         else { deplie( mB[ cur ] ); ncou = nfile; }
         if constexpr ( GROUPE == 2 ) {
             // ---- LE BINNING : compter, scanner, placer
@@ -269,13 +292,19 @@ __global__ void __launch_bounds__( BL ) noyau2_filph( Arbre<TK,2> ar, double *re
         }
         // avec un tri PARTIEL ( `TRI < CAP` ) les clefs de remplissage restent dans leur bloc :
         // on les saute au lieu de s'arreter a `ncou`
-        for ( int e = tid; e < ( GROUPE == 3 ? ARN : GROUPE ? CAP : ncou ); e += BL ) {
+        for ( int e = tid; e < ( GROUPE == 3 ? ARN : ( GROUPE == 1 || GROUPE == 2 ) ? CAP : ncou ); e += BL ) {
             if ( GROUPE == 3 && arene[ e ] == 0xffffu ) continue;
-            if ( GROUPE && GROUPE != 3 && clefs[ e ] == 0xffffffffu ) continue;
-            const int slot = base + ( GROUPE == 3 ? int( arene[ e ] ) : GROUPE ? int( clefs[ e ] & 511u ) : int( file[ e ] ) );
+            if ( ( GROUPE == 1 || GROUPE == 2 ) && clefs[ e ] == 0xffffffffu ) continue;
+            int pos = e;
+            if constexpr ( GROUPE == 4 ) {              // la zone de l'item, par dichotomie
+                int lo = 0, hi = NZA;                  // `offa[ lo ] <= e < offa[ lo + 1 ]`
+                while ( lo < hi ) { const int mi = ( lo + hi + 1 ) >> 1; if ( offa[ mi ] <= e ) lo = mi; else hi = mi - 1; }
+                pos = ( lo < NZA ? lo * ZA : NZA * ZA ) + ( e - offa[ lo ] );
+            }
+            const int slot = base + ( GROUPE >= 3 ? int( arene[ pos ] ) : GROUPE ? int( clefs[ e ] & 511u ) : int( file[ e ] ) );
             int nb = st.meta[ 0 * S + slot ];
             const int k = st.meta[ 2 * S + slot ];
-            const int h = ( GROUPE && GROUPE != 3 ) ? int( clefs[ e ] >> 9 ) : st.meta[ 3 * S + slot ];
+            const int h = ( GROUPE == 1 || GROUPE == 2 ) ? int( clefs[ e ] >> 9 ) : st.meta[ 3 * S + slot ];
             const Noeud<TK,2> nd = ar.nodes[ h ];
             const TK p0[ 2 ] = { ar.c[ 0 ][ k ], ar.c[ 1 ][ k ] };
             const TK w0 = POIDS ? ar.w[ k ] : TK( 0 );
@@ -356,7 +385,7 @@ __global__ void __launch_bounds__( BL ) noyau2_filph( Arbre<TK,2> ar, double *re
         }
         __syncthreads();
         for ( int w = tid; w < MOTS; w += BL ) mB[ cur ][ w ] = 0;
-        if constexpr ( GROUPE == 3 ) {
+        if constexpr ( GROUPE >= 3 ) {
             for ( int e = tid; e < ARN; e += BL ) arene[ e ] = 0xffffu;
             for ( int z = tid; z < NZA; z += BL ) fina[ z ] = z * ZA;
             if ( tid == 0 ) poola = NZA * ZA;
