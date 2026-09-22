@@ -86,7 +86,7 @@ int mesure( const Args &a, const Opt &o, const Nuage<PD::dim> &nu ) {
             std::printf( "        debug : %d nulles ou NaN, %d fausses parmi les autres\n", nz, faux );
         }
         const bool ok = non_ecrites == 0 && ch.deborde == 0 && ecart < ( sizeof( TK ) == 4 ? 1e-2 : 1e-9 ) && std::fabs( somme - 1 ) < 1e-6 + 1e-4 * std::fabs( somme_cpu - 1 );
-        std::printf( "      %-8s %8.4f s  %7.0f ns/germe  x%-5.1f  somme %.9f  ecart max %.1e  retour %.0f ms%s%s\n",
+        std::printf( "      %-8s %8.4f s  %7.1f ns/germe  x%-5.1f  somme %.9f  ecart max %.1e  retour %.0f ms%s%s\n",
                      gpu::nom( v ), ch.noyau, ch.noyau / nu.n * 1e9, t_cpu / ch.noyau, somme, ecart, ch.retour * 1e3,
                      ch.deborde ? "   <-- DEBORDE" : "", ok ? "" : "   <-- FAUX" );
         if ( ch.deborde )
@@ -126,7 +126,7 @@ int main( int argc, char **argv ) {
         if ( s == "--reps-gpu" && i + 1 < argc ) { o.reps_gpu = std::atoi( argv[ ++i ] ); continue; }
         std::printf( "usage: mesures [options]\n" );
         Args::usage();
-        std::printf( "  --variante V    fil | filreg | filregc | filmix{4,6,8,12,16} | filbrk{6,8,10,12,16} | voies | voies16 | voies32 | paquet{8,32}x{1,2,4}[S] | toutes (toutes)\n"
+        std::printf( "  --variante V    fil | filreg | filregc | filmix{4,6,8,12,16} | filbrk{6,8,10,12,16} | filbrk8nu | voies | voies16 | voies32 | paquet{8,32}x{1,2,4}[S] | toutes (toutes)\n"
                      "  --reps-gpu R    repetitions du noyau GPU, minimum       (10)\n" );
         return s == "--help" || s == "-h" ? 0 : 1;
     }

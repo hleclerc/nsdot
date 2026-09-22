@@ -197,13 +197,14 @@ Chrono lance2( const Impl &m, Variante v, int reps, std::vector<double> &res ) {
             default:                 return mix( std::integral_constant<int,16>{} );
         }
     }
-    if ( v >= Variante::FILBRK6 && v <= Variante::FILBRK16 ) {
+    if ( v >= Variante::FILBRK6 && v <= Variante::FILBRK8NU ) {
         // tout en registres avec des sorties, puis les rangs qui ont deborde `R` refaits par
         // `filmix` a 8 registres et 64 sommets
-        auto brk = [ & ]( auto rr ) {
+        auto brk = [ & ]( auto rr, auto oo ) {
             constexpr int R = decltype( rr )::value;
+            constexpr bool OPT = decltype( oo )::value;
             return chrono<2,TK>( m, reps, res, [ & ]() {
-                noyau2_filbrk<POIDS,R><<<grid, bloc>>>( ar, m.res, m.deb, m.liste );
+                noyau2_filbrk<POIDS,R,OPT><<<grid, bloc>>>( ar, m.res, m.deb, m.liste );
                 int nd = 0;
                 CUDA_OK( cudaMemcpy( &nd, m.deb, sizeof( int ), cudaMemcpyDeviceToHost ) );
                 if ( std::getenv( "MESURES_DEBUG" ) ) std::fprintf( stderr, "        seconde passe : %d cellules\n", nd );
@@ -213,11 +214,12 @@ Chrono lance2( const Impl &m, Variante v, int reps, std::vector<double> &res ) {
             } );
         };
         switch ( v ) {
-            case Variante::FILBRK6:  return brk( std::integral_constant<int,6>{} );
-            case Variante::FILBRK8:  return brk( std::integral_constant<int,8>{} );
-            case Variante::FILBRK10: return brk( std::integral_constant<int,10>{} );
-            case Variante::FILBRK12: return brk( std::integral_constant<int,12>{} );
-            default:                 return brk( std::integral_constant<int,16>{} );
+            case Variante::FILBRK6:  return brk( std::integral_constant<int,6>{},  std::true_type{} );
+            case Variante::FILBRK8:  return brk( std::integral_constant<int,8>{},  std::true_type{} );
+            case Variante::FILBRK10: return brk( std::integral_constant<int,10>{}, std::true_type{} );
+            case Variante::FILBRK12: return brk( std::integral_constant<int,12>{}, std::true_type{} );
+            case Variante::FILBRK16: return brk( std::integral_constant<int,16>{}, std::true_type{} );
+            default:                 return brk( std::integral_constant<int,8>{},  std::false_type{} );   // `filbrk8nu` : sans les micro-optimisations
         }
     }
     if ( v == Variante::FILREGC )

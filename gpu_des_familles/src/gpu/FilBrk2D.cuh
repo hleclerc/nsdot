@@ -11,14 +11,23 @@
 // ( atomique ) et une SECONDE PASSE, un autre noyau a plus de largeur ( `filmix` a 64 sommets ),
 // la refait. Les grandes cellules sont rares ( 0.1 % des etats au-dela de 8 en uniforme ), le
 // noyau commun ne porte rien pour elles.
+//
+// `OPT`, les micro-optimisations : ( 1 ) une cellule non vide a TROIS sommets au moins, et une
+// coupe en laisse `nb_in + 2 >= 3` : les trois premieres cases n'ont pas a tester `i < nb` ;
+// ( 2 ) `__builtin_expect` d'apres les compteurs -- 58 % des plans testes ne coupent pas, une
+// cellule vide, un debordement ou son propre germe sont rares.
 // =====================================================================================
+
+#define PROBABLE( c )   ( __builtin_expect( !! ( c ), 1 ) )
+#define IMPROBABLE( c ) ( __builtin_expect( !! ( c ), 0 ) )
 
 #include "gpu/FilMix2D.cuh"
 
 namespace sf::gpu {
 
-template<bool POIDS, int R, class TK>
+template<bool POIDS, int R, bool OPT, class TK>
 __global__ void __launch_bounds__( 128 ) noyau2_filbrk( Arbre<TK,2> ar, double *res, int *deborde, int *liste_deb ) {
+    constexpr int SUR = OPT ? 3 : 0;                     // les cases toujours occupees
     static_assert( R >= 4 && R <= 32, "le carre tient dans les registres, le masque dans 32 bits" );
     const int k = blockIdx.x * blockDim.x + threadIdx.x;
     if ( k >= ar.n ) return;
@@ -42,7 +51,7 @@ __global__ void __launch_bounds__( 128 ) noyau2_filbrk( Arbre<TK,2> ar, double *
         bool peut = false;
 #pragma unroll
         for ( int i = 0; i < R; ++i ) {
-            if ( i >= nb ) break;
+            if ( i >= SUR && i >= nb ) break;
             const TK v[ 2 ] = { x[ i ], y[ i ] };
             peut |= bilan_sommet<POIDS>( nd, v, p0, w0 ) <= TK( 0 );
         }
@@ -58,21 +67,21 @@ __global__ void __launch_bounds__( 128 ) noyau2_filbrk( Arbre<TK,2> ar, double *
         }
 
         for ( int q = nd.beg; q < nd.end; ++q ) {
-            if ( ar.ids[ q ] == i0 ) continue;
+            if ( OPT ? IMPROBABLE( ar.ids[ q ] == i0 ) : ar.ids[ q ] == i0 ) continue;
             const Plan2<TK> p = bissect2<POIDS>( ar, q, p0[ 0 ], p0[ 1 ], w0 );
 
             TK s[ R ];
             unsigned m = 0;
 #pragma unroll
             for ( int i = 0; i < R; ++i ) {
-                if ( i >= nb ) break;
+                if ( i >= SUR && i >= nb ) break;
                 s[ i ] = p.dx * x[ i ] + p.dy * y[ i ] - p.off;
                 m |= unsigned( s[ i ] > TK( 0 ) ) << i;
             }
-            if ( ! m )
+            if ( OPT ? PROBABLE( ! m ) : ! m )
                 continue;
             const unsigned valid = nb >= 32 ? 0xffffffffu : ( 1u << nb ) - 1;
-            if ( m == valid ) { nb = 0; goto fin; }
+            if ( OPT ? IMPROBABLE( m == valid ) : m == valid ) { nb = 0; goto fin; }
 
             const unsigned prev = ( ( m << 1 ) | ( m >> ( nb - 1 ) ) ) & valid;
             const unsigned next = ( ( m >> 1 ) | ( m << ( nb - 1 ) ) ) & valid;
@@ -82,7 +91,7 @@ __global__ void __launch_bounds__( 128 ) noyau2_filbrk( Arbre<TK,2> ar, double *
             const int j3 = j2 + 1 < nb ? j2 + 1 : 0;
             const int nb_in = nb - __popc( m );
             const int nn = nb_in + 2;
-            if ( nn > R ) { nb = -1; goto fin; }         // pour la seconde passe
+            if ( OPT ? IMPROBABLE( nn > R ) : nn > R ) { nb = -1; goto fin; }   // pour la seconde passe
 
             const TK s0 = selR( s, j0 ), s1 = selR( s, i1 ), s2 = selR( s, j2 ), s3 = selR( s, j3 );
             const TK x0v = selR( x, j0 ), y0v = selR( y, j0 ), x1v = selR( x, i1 ), y1v = selR( y, i1 );
@@ -96,7 +105,7 @@ __global__ void __launch_bounds__( 128 ) noyau2_filbrk( Arbre<TK,2> ar, double *
             int nc[ R ];
 #pragma unroll
             for ( int o = 0; o < R; ++o ) {
-                if ( o >= nn ) break;
+                if ( o >= SUR && o >= nn ) break;
                 int og = j3 + o; og = og >= nb ? og - nb : og;
                 nx[ o ] = o == nb_in ? pax : ( o == nb_in + 1 ? pbx : selR( x, og ) );
                 ny[ o ] = o == nb_in ? pay : ( o == nb_in + 1 ? pby : selR( y, og ) );
@@ -104,7 +113,7 @@ __global__ void __launch_bounds__( 128 ) noyau2_filbrk( Arbre<TK,2> ar, double *
             }
 #pragma unroll
             for ( int o = 0; o < R; ++o ) {
-                if ( o >= nn ) break;
+                if ( o >= SUR && o >= nn ) break;
                 x[ o ] = nx[ o ]; y[ o ] = ny[ o ]; c[ o ] = nc[ o ];
             }
             nb = nn;
@@ -117,7 +126,7 @@ fin:
         double a = 0;
 #pragma unroll
         for ( int i = 0; i < R; ++i ) {
-            if ( i >= nb ) break;
+            if ( i >= SUR && i >= nb ) break;
             const int j = i + 1 < nb ? i + 1 : 0;
             a += double( x[ i ] ) * double( selR( y, j ) ) - double( selR( x, j ) ) * double( y[ i ] );
         }

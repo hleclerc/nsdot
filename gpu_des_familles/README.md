@@ -154,9 +154,9 @@ résultats sont comptés à part. Mêmes nuages que les deux autres bancs. Les v
 
 | | n | CPU 8 fils | `fil` | `filreg` | `filregc` | `filmix6` | `filbrk8` | `voies` 8 | `voies16` | `voies32` |
 |---|---|---|---|---|---|---|---|---|---|---|
-| 2D uniforme | 10⁶ | 145 ns/germe | 68 (×2.1) | 16 (×8.9) | 15 (×9.7) | 13 (×11) | **10 (×14)** | 29 (×5.0) | 34 | 34 |
-| 2D lignes / Voronoï | 10⁵ | 141 | 63 (×2.3) | 23 (×6.1) | 21 (×6.7) | **20 (×7)** | 21 (×6.7) | 36 (×4.0) | 32 | 32 |
-| 2D lignes / aires égales | 10⁵ | 696 | 188 (×3.7) | 61 (×11.5) | 51 (×13.6) | **46 (×15)** | 52 (×13.4) | 106 (×6.6) | 108 | 128 |
+| 2D uniforme | 10⁶ | 145 ns/germe | 68 (×2.1) | 16 (×8.9) | 15 (×9.7) | 13.2 (×11) | **9.8 (×15)** | 29 (×5.0) | 34 | 34 |
+| 2D lignes / Voronoï | 10⁵ | 141 | 63 (×2.3) | 23 (×6.1) | 21 (×6.7) | 20.0 (×7) | **20.5 (×7)** | 36 (×4.0) | 32 | 32 |
+| 2D lignes / aires égales | 10⁵ | 696 | 188 (×3.7) | 61 (×11.5) | 51 (×13.6) | **45.5 (×15)** | 50 (×14) | 106 (×6.6) | 108 | 128 |
 | 3D uniforme | 10⁶ | 1831 | 3855 (×0.5) | — | — | — | — | **229 (×8.0)** | — | — |
 | 3D plans / Voronoï | 10⁵ | 1774 | 3458 (×0.5) | — | — | — | — | **231 (×7.7)** | — | — |
 | 3D plans / volumes égaux | 10⁵ | 3054 | 4651 (×0.7) | — | — | — | — | **405 (×7.5)** | — | — |
@@ -164,7 +164,15 @@ résultats sont comptés à part. Mêmes nuages que les deux autres bancs. Les v
 (chiffres 2D repris après l'ajout d'une chauffe de 300 ms avant le premier chrono, § 6 : sans elle
 le premier noyau d'un banc tournait à fréquence réduite, 17 au lieu de 13.)
 
-`filbrk` selon `R` (uniforme / lignes Voronoï / lignes Laguerre, float) : `R = 6` 13 / 21 / 57,
+**Les micro-optimisations de `filbrk`** (`filbrk8nu` est sans) : une cellule non vide a trois
+sommets au moins et une coupe en laisse `nb_in + 2 ≥ 3`, donc les trois premières cases ne
+testent pas `i < nb` ; et `__builtin_expect` d'après les compteurs (58 % des plans ne coupent
+pas, une cellule vide, un débordement, son propre germe sont rares) : 10.2 → 9.8, 22.2 → 20.5,
+52 → 50, soit −3 à −7 %. La taille de feuille de l'arbre (`--leaf`) : 6 → 9.7 / 21.1 / 52.5, 8 →
+9.9 / 21.0 / 51.0, **10** → 9.8 / 20.5 / 50, 12 → 10.0 / 23.4 / 53.2 ; le 10 du CPU tient.
+
+`filbrk` selon `R` (uniforme / lignes Voronoï / lignes Laguerre, float, sans les
+micro-optimisations) : `R = 6` 13 / 21 / 57,
 `R = 8` **10 / 21 / 52**, `R = 10` 11 / 30 / 61, `R = 12` 13 / 47 / 86, `R = 16` 17 / 55 / 114 ;
 la seconde passe reçoit 10 % des cellules à `R = 8` (elles dépassent huit sommets *en cours de
 route*, même si 98 % des états sont à huit ou moins), 0,03 à 1 % à `R = 12`. Et pourtant `R = 12`
@@ -297,8 +305,9 @@ réelle.
 
 * **`filbrk8` en uniforme (10 ns/germe, ×14), `filmix6` sur les lignes / Laguerre (46)** sont
   les références 2D ; `filreg` / `filregc` à 8 registres et une excursion sont derrière. La piste
-  suivante est celle que la seconde passe a révélée : des warps homogènes en taille de cellule
-  (§ 3), par un tri sur la taille du diagramme précédent. Ce qui reste : la divergence du
+  suivante est celle que la seconde passe a révélée : **des warps homogènes en taille de
+  cellule** (§ 3), par un tri des cellules sur le nombre de sommets du diagramme précédent (dans
+  Newton on l'a gratuitement) — à faire. Ce qui reste : la divergence du
   parcours entre les 32 cellules d'un warp (6 actifs) — un tri des cellules par profondeur de
   parcours ou une pile en mémoire partagée ne changeraient pas le fond ; les 3 000 instructions
   par cellule sont à lire ligne à ligne comme pour le 3D.

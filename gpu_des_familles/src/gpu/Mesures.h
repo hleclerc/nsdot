@@ -14,9 +14,9 @@
 namespace sf::gpu {
 
 /// le mappage cellule / threads
-enum class Variante { FIL, FILREG, FILREGC, FILMIX4, FILMIX6, FILMIX8, FILMIX12, FILMIX16, FILBRK6, FILBRK8, FILBRK10, FILBRK12, FILBRK16, VOIES, VOIES16, VOIES32, PAQ8x1, PAQ8x2, PAQ8x4, PAQ32x1, PAQ32x2, PAQ32x4, PAQ8x1S, PAQ32x1S, PAQ32x4S, NB };
+enum class Variante { FIL, FILREG, FILREGC, FILMIX4, FILMIX6, FILMIX8, FILMIX12, FILMIX16, FILBRK6, FILBRK8, FILBRK10, FILBRK12, FILBRK16, FILBRK8NU, VOIES, VOIES16, VOIES32, PAQ8x1, PAQ8x2, PAQ8x4, PAQ32x1, PAQ32x2, PAQ32x4, PAQ8x1S, PAQ32x1S, PAQ32x4S, NB };
 inline const char *nom( Variante v ) {
-    static const char *noms[] = { "fil", "filreg", "filregc", "filmix4", "filmix6", "filmix8", "filmix12", "filmix16", "filbrk6", "filbrk8", "filbrk10", "filbrk12", "filbrk16", "voies", "voies16", "voies32", "paquet8x1", "paquet8x2", "paquet8x4", "paquet32x1", "paquet32x2", "paquet32x4", "paquet8x1S", "paquet32x1S", "paquet32x4S" };
+    static const char *noms[] = { "fil", "filreg", "filregc", "filmix4", "filmix6", "filmix8", "filmix12", "filmix16", "filbrk6", "filbrk8", "filbrk10", "filbrk12", "filbrk16", "filbrk8nu", "voies", "voies16", "voies32", "paquet8x1", "paquet8x2", "paquet8x4", "paquet32x1", "paquet32x2", "paquet32x4", "paquet8x1S", "paquet32x1S", "paquet32x4S" };
     return noms[ int( v ) ];
 }
 /// `paquet V x K` : `V` voies par cellule, `K` cellules par voie, un parcours par warp ( 2D )
