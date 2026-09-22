@@ -18,6 +18,7 @@
 #include "gpu/FilRot2D.cuh"
 #include "gpu/FilNrm2D.cuh"
 #include "gpu/FilOrd2D.cuh"
+#include "gpu/FilSuc2D.cuh"
 #include "gpu/FilUni2D.cuh"
 #include "gpu/FilShm2D.cuh"
 #include "gpu/FilPh2D.cuh"
@@ -320,6 +321,15 @@ Chrono lance2( const Impl &m, Variante v, int reps, std::vector<double> &res ) {
             return m.deb2;
         } );
     }
+    if ( v == Variante::FILSUC8 )
+        return chrono<2,TK>( m, reps, res, [ & ]() {
+            noyau2_filsuc<POIDS><<<grid, bloc>>>( ar, m.res, m.deb, m.liste );
+            int nd = 0;
+            CUDA_OK( cudaMemcpy( &nd, m.deb, sizeof( int ), cudaMemcpyDeviceToHost ) );
+            if ( nd == 0 ) return m.deb;
+            noyau2_filmix<POIDS,64,8,true><<<( nd + bloc - 1 ) / bloc, bloc>>>( ar, m.res, m.deb2, m.liste, nd );
+            return m.deb2;
+        } );
     if ( v == Variante::FILORD8 )
         return chrono<2,TK>( m, reps, res, [ & ]() {
             noyau2_filord<POIDS><<<grid, bloc>>>( ar, m.res, m.deb, m.liste );
