@@ -18,7 +18,7 @@ xmake run mesures --threads 8 --variante voies --load uniforme -n 1000000
 ```
 
 Les options communes (`-n`, `--load`, `--kernel`, `--maxnv`, `--leaf`, `--cases`, …) sont celles
-de `solvers_des_familles` (`src/bench/Args.h`), plus `--variante fil | filreg | filregc | filmix{4,6,8,12,16} | filbrk{6,8,10,12,16} | filbrk8nu | filrot{6,8} | voies | voies16 |
+de `solvers_des_familles` (`src/bench/Args.h`), plus `--variante fil | filreg | filregc | filmix{4,6,8,12,16} | filbrk{6,8,10,12,16} | filbrk8nu | filrot{6,8} | filnrm8 | voies | voies16 |
 voies32 | paquet{8,32}x{1,2,4}[S] | toutes` et `--reps-gpu`. Sur la machine, `--threads 8` est à donner (`hardware_concurrency` rend 1
 dans le bac à sable) et **tout chronométrage passe par `job -b`**.
 
@@ -38,7 +38,9 @@ src/gpu/FilMix2D.cuh    le même, `R` sommets en registres et la queue en mémoi
 src/gpu/FilBrk2D.cuh    tout en registres, tout déroulé, chaque boucle SORT à `nb`, et les cellules
                         qui dépassent `R` refaites en SECONDE PASSE
 src/gpu/FilRot2D.cuh    le même avec le remontage par DÉCALAGE EN BARILLET au lieu de lectures
-                        indexées — LE GAGNANT en uniforme à `R = 8`
+                        indexées
+src/gpu/FilNrm2D.cuh    la cellule NORMALISÉE AVANT la coupe : tout se lit à des positions fixes,
+                        rien n'est recomposé après — LE GAGNANT en 2D à `R = 8`
 src/gpu/Voies2D.cuh     LA CELLULE SUR LES VOIES, 2D : voie = sommet, `V` = 8, 16 ou 32 voies par
                         cellule ; le débordement est une excursion sur la voie 0
 src/gpu/Paquet2D.cuh    PLUSIEURS CELLULES PAR VOIE, un parcours par warp, les plans d'une feuille
@@ -104,6 +106,19 @@ sortie est `[ A, B, v_j3 … v_j0 ]` — les points créés à des positions FIX
 `nb_out − 2`. Une seule formule pour les deux : `new[o] = o < a ? old[o] : o == a ? A : o == a+1 ?
 B : old[o + d]`.
 
+**`filnrm` — la cellule normalisée avant la coupe.** L'idée (H. L.) : mettre les sommets dans un
+ordre canonique AVANT de calculer `ta`, `tb`, pour que tout se lise à des positions fixes et que
+rien ne soit à recomposer après. La sortie est toujours `[ A, B, v_j3 … v_j0 ]` : les gardés dans
+l'ordre cyclique depuis `j3`, A et B en 0 et 1. Les gardés y sont amenés par une **rotation
+modulo `nb`** de `j3 − 2`, faite en deux barillets (à gauche pour ce qui vient de `[ j3, nb )`, à
+droite pour ce qui vient de `[ 0, i1 )`) et un `select` par case. Les quatre sommets des
+intersections : `v_j2, v_j3` sont en 1 et 2 de la moitié gauche ; `v_j0, v_i1` sont adjacents, un
+barillet à droite de `R − 1 − i1` les met en `R − 2, R − 1` ; les deux cas de bord (`j3 = 0`,
+`i1 = 0`) lisent **le dernier sommet**, tenu dans un registre à part (c'est `v_j0` à chaque coupe).
+`s` n'est pas décalé : recalculé pour ces quatre sommets, un `fma` chacun. Plus une lecture
+indexée dans la coupe. Et plus de test « c'est mon germe » : son plan a `d = 0` et `off = 0`
+exactement, donc `s = 0`, jamais `> 0` — le test coûtait une lecture par germe (7 %).
+
 **`voies` — la cellule sur les voies.** Le pendant CUDA du noyau à registres du CPU : la voie `l`
 porte le sommet `l`, le nombre de sommets est un scalaire uniforme, et la coupe est le même calcul
 sans boucle — masque de signe par `ballot`, ses deux bouts par `ffs`, deux intersections en une
@@ -165,14 +180,14 @@ résultats sont comptés à part. Mêmes nuages que les deux autres bancs. Les v
 
 ## `float`, ce pour quoi cette carte est faite
 
-| | n | CPU 8 fils | `fil` | `filreg` | `filregc` | `filmix6` | `filbrk8` | `filrot8` | `voies` 8 | `voies16` | `voies32` |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| 2D uniforme | 10⁶ | 145 ns/germe | 68 (×2.1) | 16 (×8.9) | 15 (×9.7) | 13.2 (×11) | 9.9 (×15) | **9.0 (×16)** | 29 (×5.0) | 34 | 34 |
-| 2D lignes / Voronoï | 10⁵ | 141 | 63 (×2.3) | 23 (×6.1) | 21 (×6.7) | 20.0 (×7) | 21.5 (×6.6) | **20.7 (×6.8)** | 36 (×4.0) | 32 | 32 |
-| 2D lignes / aires égales | 10⁵ | 696 | 188 (×3.7) | 61 (×11.5) | 51 (×13.6) | **45.5 (×15)** | 51 (×14) | 51 (×14) | 106 (×6.6) | 108 | 128 |
-| 3D uniforme | 10⁶ | 1831 | 3855 (×0.5) | — | — | — | — | — | **229 (×8.0)** | — | — |
-| 3D plans / Voronoï | 10⁵ | 1774 | 3458 (×0.5) | — | — | — | — | — | **231 (×7.7)** | — | — |
-| 3D plans / volumes égaux | 10⁵ | 3054 | 4651 (×0.7) | — | — | — | — | — | **405 (×7.5)** | — | — |
+| | n | CPU 8 fils | `fil` | `filreg` | `filregc` | `filmix6` | `filbrk8` | `filrot8` | `filnrm8` | `voies` 8 | `voies16` | `voies32` |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 2D uniforme | 10⁶ | 145 ns/germe | 68 (×2.1) | 16 (×8.9) | 15 (×9.7) | 13.2 (×11) | 9.9 (×15) | 8.7 (×17) | **7.7 (×19)** | 29 (×5.0) | 34 | 34 |
+| 2D lignes / Voronoï | 10⁵ | 141 | 63 (×2.3) | 23 (×6.1) | 21 (×6.7) | 20.0 (×7) | 21.5 (×6.6) | 20 (×7) | **19 (×7.4)** | 36 (×4.0) | 32 | 32 |
+| 2D lignes / aires égales | 10⁵ | 696 | 188 (×3.7) | 61 (×11.5) | 51 (×13.6) | **45.5 (×15)** | 51 (×14) | 51 (×14) | **47 (×15)** | 106 (×6.6) | 108 | 128 |
+| 3D uniforme | 10⁶ | 1831 | 3855 (×0.5) | — | — | — | — | — | — | **229 (×8.0)** | — | — |
+| 3D plans / Voronoï | 10⁵ | 1774 | 3458 (×0.5) | — | — | — | — | — | — | **231 (×7.7)** | — | — |
+| 3D plans / volumes égaux | 10⁵ | 3054 | 4651 (×0.7) | — | — | — | — | — | — | **405 (×7.5)** | — | — |
 
 (chiffres 2D repris après l'ajout d'une chauffe de 300 ms avant le premier chrono, § 6 : sans elle
 le premier noyau d'un banc tournait à fréquence réduite, 17 au lieu de 13.)
@@ -186,6 +201,11 @@ par warp), une instruction de moins ne rend pas son temps. Ce qui reste de `selR
 douze lectures des sommets d'intersection (`j0, i1, j2, j3`) et l'aire ; dans le cas qui boucle
 elles sont à des positions connues du tableau décalé (`j2 → 1, j3 → 2, j0 → nb_in + 1`), pas
 dans l'autre — non fait. `filrot6` 13.8 : `R = 6` reste perdant.
+
+**La cellule normalisée (`filnrm8`).** 2167 → **1816 instructions par cellule** (2867 pour
+`filbrk8`, −37 %), `FSEL` de 27 à 17 %, plus une lecture indexée dans la coupe, et le test du
+propre germe en moins (7 %) : 8.7 → **7.7 ns/germe**, 20 → 19, 50 → 47. Ce qui reste en tête du
+profil : la première passe (`s` et le masque, 11 %), les barillets (17 %), le test d'élagage.
 
 **Les micro-optimisations de `filbrk`** (`filbrk8nu` est sans) : une cellule non vide a trois
 sommets au moins et une coupe en laisse `nb_in + 2 ≥ 3`, donc les trois premières cases ne
@@ -326,8 +346,8 @@ réelle.
 
 # 5. CE QUI RESTE
 
-* **`filrot8` en uniforme (9 ns/germe, ×16), `filmix6` sur les lignes / Laguerre (46)** sont
-  les références 2D ; `filreg` / `filregc` à 8 registres et une excursion sont derrière. La piste
+* **`filnrm8` est la référence 2D** (7.7 ns/germe en uniforme, ×19 ; 19 et 47 sur les lignes,
+  `filmix6` à égalité sur Laguerre) ; `filreg` / `filregc` à 8 registres et une excursion sont derrière. La piste
   suivante est celle que la seconde passe a révélée : **des warps homogènes en taille de
   cellule** (§ 3), par un tri des cellules sur le nombre de sommets du diagramme précédent (dans
   Newton on l'a gratuitement) — à faire. Ce qui reste : la divergence du

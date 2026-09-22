@@ -16,6 +16,7 @@
 #include "gpu/FilMix2D.cuh"
 #include "gpu/FilBrk2D.cuh"
 #include "gpu/FilRot2D.cuh"
+#include "gpu/FilNrm2D.cuh"
 #include "gpu/Fil3D.cuh"
 #include "gpu/Voies3D.cuh"
 
@@ -198,6 +199,15 @@ Chrono lance2( const Impl &m, Variante v, int reps, std::vector<double> &res ) {
             default:                 return mix( std::integral_constant<int,16>{} );
         }
     }
+    if ( v == Variante::FILNRM8 )
+        return chrono<2,TK>( m, reps, res, [ & ]() {
+            noyau2_filnrm<POIDS,8><<<grid, bloc>>>( ar, m.res, m.deb, m.liste );
+            int nd = 0;
+            CUDA_OK( cudaMemcpy( &nd, m.deb, sizeof( int ), cudaMemcpyDeviceToHost ) );
+            if ( nd == 0 ) return m.deb;
+            noyau2_filmix<POIDS,64,8,true><<<( nd + bloc - 1 ) / bloc, bloc>>>( ar, m.res, m.deb2, m.liste, nd );
+            return m.deb2;
+        } );
     if ( v == Variante::FILROT6 || v == Variante::FILROT8 ) {
         auto rot = [ & ]( auto rr ) {
             constexpr int R = decltype( rr )::value;
