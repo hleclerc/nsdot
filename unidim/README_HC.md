@@ -24,7 +24,7 @@ conda create -n jaxcuda_recons python=3.12 -y
 conda activate jaxcuda_recons
 pip install jax[cuda13] # bonne version de cuda à mettre
 pip install optax
-pip install tqdm nvidia-ml-py3 matplotlib  pandas mlflow
+pip install tqdm nvidia-ml-py3 matplotlib  pandas mlflow tabulate
 ./run bench reconstruction_jax
 ``` 
 1er bench
@@ -40,7 +40,7 @@ conda create -n cuda_recons python=3.12 -y
 conda activate cuda_recons
 pip install torch[cuda13] # # pouyr la compil cuda, on utilise torch , pb n'installe pas nvcc via le cuda-toolkit=13.0 (tiré par pip tiré par torch!
 conda install cuda-toolkit=13.0 # le paquet conda !=  paquet pipy dans ~/miniconda3/envs/cuda_recons/bin/nvcc
-pip install tqdm nvidia-ml-py3 matplotlib  pandas mlflow
+pip install tqdm nvidia-ml-py3 matplotlib  pandas mlflow tabulate
 ./run bench reconstruction_cuda
 ```
 # B. Historiques des changement dans unidim

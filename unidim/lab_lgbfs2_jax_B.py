@@ -32,7 +32,8 @@ nvidia_mem = nvidia_smi.nvmlDeviceGetMemoryInfo(handle)
 # Numerical agreement with the CUDA reference requires x64 for the
 # target-side Wasserstein computations and "highest" matmul precision.
 jax.config.update("jax_enable_x64", True)
-jax.config.update("jax_default_matmul_precision", "highest")
+jax_default_matmul_precision = "highest"
+jax.config.update("jax_default_matmul_precision", jax_default_matmul_precision)
 
 # Provisional conservative value for the new direct/vectorized kernel.
 #
@@ -44,8 +45,11 @@ jax.config.update("jax_default_matmul_precision", "highest")
 # presented as the final calibrated value.
 _BYTES_PER_CHUNK_ELEMENT = 128
 
-def _w2_1d(proj, bin_mass, bin_edges):
+def _w2_1d(proj, bin_mass, bin_edges,ext_dtype=jnp.float64):
     """Squared 1D Wasserstein distance."""
+    proj = proj.astype(ext_dtype)  # (N,2) float64 : N x 2 x 8 bytes
+    bin_mass = bin_mass.astype(ext_dtype)  # (B) float64 : B  x 8
+    bin_edges = bin_edges.astype(ext_dtype)
     n = proj.shape[0]
     w = 1.0 / n
     dw = bin_edges[1] - bin_edges[0]
@@ -53,71 +57,21 @@ def _w2_1d(proj, bin_mass, bin_edges):
 
     cum = jnp.cumsum(bin_mass)
     cum_start = cum - bin_mass
-    prefix_M = (
-        jnp.cumsum(bin_mass * bin_center)
-        - bin_mass * bin_center
-    )
+    prefix_M = jnp.cumsum(bin_mass * bin_center) - bin_mass * bin_center
 
     def M(q):
-        j = jnp.clip(
-            jnp.searchsorted(cum, q, side="right"),
-            0,
-            bin_mass.shape[0] - 1,
-        )
-        f = jnp.where(
-            bin_mass[j] > 0,
-            (q - cum_start[j]) / bin_mass[j],
-            0.0,
-        )
-        return (
-            prefix_M[j]
-            + bin_mass[j]
-            * (
-                bin_edges[j] * f
-                + dw * f * f / 2
-            )
-        )
+        j = jnp.clip(jnp.searchsorted(cum, q, side="right"),0,bin_mass.shape[0] - 1,)
+        f = jnp.where(bin_mass[j] > 0,(q - cum_start[j]) / bin_mass[j],0.0,)
+        return prefix_M[j] + bin_mass[j] * (bin_edges[j] * f + dw * f * f / 2)
 
     s = jnp.sort(proj).astype(jnp.float64)
     q = jnp.arange(n, dtype=jnp.float64) * w
     bary = (M(q + w) - M(q)) / w
 
-    target_second_moment = (
-        jnp.sum(bin_mass * bin_center ** 2)
-        + dw * dw / 12
-    )
+    target_second_moment = jnp.sum(bin_mass * bin_center ** 2) + dw * dw / 12
 
-    return (
-        w * jnp.sum(s ** 2)
-        - 2 * w * jnp.sum(s * bary)
-        + target_second_moment
-    )
+    return w * jnp.sum(s ** 2)  - 2 * w * jnp.sum(s * bary) + target_second_moment
 
-
-def _sino_arrays(sino):
-    g = sino.geometry
-
-    normals = jnp.asarray(
-        g.normals,
-        dtype=jnp.float32,
-    )
-
-    bin_edges = jnp.asarray(
-        g.bin_edges,
-        dtype=jnp.float64,
-    )
-
-    bin_mass = jnp.asarray(
-        sino.values,
-        dtype=jnp.float64,
-    )
-
-    bin_mass = (
-        bin_mass
-        / bin_mass.sum(axis=1, keepdims=True)
-    )
-
-    return normals, bin_edges, bin_mass
 
 
 def _choose_chunk_size(n, A, mem_budget_bytes, batch_size="auto"):
@@ -125,17 +79,7 @@ def _choose_chunk_size(n, A, mem_budget_bytes, batch_size="auto"):
         if mem_budget_bytes is None:
             return 1
 
-        return max(
-            1,
-            min(
-                A,
-                mem_budget_bytes
-                // (
-                    _BYTES_PER_CHUNK_ELEMENT
-                    * max(n, 1)
-                ),
-            ),
-        )
+        return max(1,min(A,mem_budget_bytes // (_BYTES_PER_CHUNK_ELEMENT* max(n, 1)),),)
 
     if isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size < 1:
         raise ValueError('batch_size must be a positive integer or "auto"')
@@ -143,26 +87,11 @@ def _choose_chunk_size(n, A, mem_budget_bytes, batch_size="auto"):
     return min(A, batch_size)
 
 
-def _loss_chunk(
-    points,
-    normals,
-    bin_edges,
-    bin_mass,
-):
+def _loss_chunk(points, normals,bin_edges, bin_mass,):
     """Direct vectorized kernel for one angle chunk."""
     proj = normals @ points.T
-
-    costs = jax.vmap(
-        lambda pr, mass:
-            _w2_1d(
-                pr,
-                mass,
-                bin_edges,
-            )
-    )(
-        proj,
-        bin_mass,
-    )
+    fun = lambda pr, mass: _w2_1d(pr, mass,bin_edges,)
+    costs = jax.vmap(fun)(proj,bin_mass,)
 
     return costs.sum().astype(jnp.float32)
 
@@ -181,55 +110,35 @@ def loss(
 
     n = points.shape[0]
     A = normals.shape[0]
+    C = _choose_chunk_size(n,A,mem_budget_bytes,batch_size,)
 
-    C = _choose_chunk_size(
-        n,
-        A,
-        mem_budget_bytes,
-        batch_size,
-    )
-
-    value = jnp.array(
-        0.0,
-        dtype=jnp.float32,
-    )
+    value = jnp.array(0.0, dtype=jnp.float32,)
 
     for start in range(0, A, C):
-        stop = min(
-            start + C,
-            A,
-        )
-
-        value = value + _loss_chunk(
-            points,
-            normals[start:stop],
-            bin_edges,
-            bin_mass[start:stop],
-        )
+        stop = min(start + C, A,)
+        value = value + _loss_chunk(points, normals[start:stop],bin_edges, bin_mass[start:stop],)
 
     return value
 
 
 
-def optimize(points, sino,
-             max_iter=50,
-             max_linesearch_steps=4,
-             initial_guess_strategy="one",
-             ext_dtype=jnp.float64,
-             batch_size="auto",
-             target_loss=1e-3,
-             avg_last_n=10):
+def optimize(points, sino, max_iter=50, max_linesearch_steps=4,
+             ext_dtype=jnp.float64, batch_size="auto", target_loss=1e-3,):
     """L-BFGS with JIT numerical kernels and Python-controlled Wolfe search."""
 
-    normals, bin_edges, bin_mass = _sino_arrays(sino)
+    g = sino.geometry
+    normals = jnp.asarray(g.normals, dtype=ext_dtype)
+    bin_edges = jnp.asarray(g.bin_edges, dtype=ext_dtype)
+    bin_mass = jnp.asarray(sino.values, dtype=ext_dtype)
+    bin_mass = bin_mass / bin_mass.sum(axis=1, keepdims=True)
+    history = []
+    start_total = time.perf_counter()
+    time_to_loss = -1
 
     n = points.shape[0]
     A = normals.shape[0]
 
-    direction_tx = optax.chain(
-        optax.scale_by_lbfgs(memory_size=10),
-        optax.scale(-1.0),
-    )
+    direction_tx = optax.chain(optax.scale_by_lbfgs(memory_size=10), optax.scale(-1.0),)
     state = direction_tx.init(points)
 
     @jax.jit
@@ -257,12 +166,7 @@ def optimize(points, sino,
 
             for start in range(0, A, C):
                 stop = min(start + C, A)
-                v, g = vg_chunk(
-                    p,
-                    normals[start:stop],
-                    bin_edges,
-                    bin_mass[start:stop],
-                )
+                v, g = vg_chunk(p, normals[start:stop],bin_edges,bin_mass[start:stop],)
                 value = value + v
                 grad = grad + g
 
@@ -351,12 +255,7 @@ def optimize(points, sino,
 
     mem_budget_bytes = jax_mem_budget_bytes() if batch_size == "auto" else None
 
-    print(
-        f"  [warmup] compiling/stabilizing JIT (n={n})...",
-        end="",
-        flush=True,
-    )
-    t_warmup = time.perf_counter()
+
 
     while True:
         C, value_grad = make_value_grad(mem_budget_bytes)
@@ -369,87 +268,52 @@ def optimize(points, sino,
             for _ in range(4):
                 wd, ws, wslope = make_direction(wg, ws, wp)
                 wslope.block_until_ready()
-                wp, wv, wg, _, _ = python_wolfe(
-                    wp, wv, wg, wd, wslope, value_grad,
-                )
+                wp, wv, wg, _, _ = python_wolfe(wp, wv, wg, wd, wslope, value_grad,)
 
             wg.block_until_ready()
             break
 
         except jax.errors.JaxRuntimeError as e:
-            if (
-                batch_size != "auto"
-                or mem_budget_bytes is None
-                or "RESOURCE_EXHAUSTED" not in str(e)
-            ):
+            if batch_size != "auto" or mem_budget_bytes is None or "RESOURCE_EXHAUSTED" not in str(e) :
                 raise
 
-            mem_budget_bytes = (
-                mem_budget_bytes // 2
-                if mem_budget_bytes >= 2
-                else None
-            )
+            mem_budget_bytes = mem_budget_bytes // 2 if mem_budget_bytes >= 2 else None
             print(" OOM, shrinking angle-chunk budget...", end="", flush=True)
 
-    warmup_time = time.perf_counter() - t_warmup
-    print(f" done ({warmup_time:.2f}s, C={C})")
 
-    initial_eval_start = time.perf_counter()
+    end_compile = time.perf_counter()
+
     value, grad = value_grad(points)
-    initial_eval_ms = (time.perf_counter() - initial_eval_start) * 1000
 
     def one_iteration(points, state, value, grad):
         direction, state, slope0 = make_direction(grad, state, points)
         slope0.block_until_ready()
 
-        points, value, grad, alpha, nb_evals = python_wolfe(
-            points,
-            value,
-            grad,
-            direction,
-            slope0,
-            value_grad,
-        )
+        points, value, grad, alpha, nb_evals = python_wolfe(points,value,grad,direction,slope0,value_grad,)
         return points, state, value, grad, alpha, nb_evals
 
-    history = []
     start_optimization = time.perf_counter()
-    time_to_loss = -1.0
-    peak = {"jax_peak_used": 0, "jax_peak_pool": 0, "nvidia_peak": 0}
-
     for idx in tqdm.tqdm(range(max_iter)):
         iteration_start = time.perf_counter()
 
         if idx == max_iter - 1:
             (points, state, value, grad, alpha, nb_evals), peak = measure_gpu_peak(
-                one_iteration,
-                points,
-                state,
-                value,
-                grad,
-                interval=0.02,
-            )
+                one_iteration,points, state, value, grad, interval=0.02,)
         else:
-            points, state, value, grad, alpha, nb_evals = one_iteration(
-                points, state, value, grad,
-            )
+            points, state, value, grad, alpha, nb_evals = one_iteration(points, state, value, grad)
 
         elapsed_iteration = time.perf_counter() - iteration_start
-        if idx == 0:
-            elapsed_iteration += initial_eval_ms / 1000.0
 
         value.block_until_ready()
         grad.block_until_ready()
         grad_norm = float(jnp.linalg.norm(grad))
         loss_value = float(value)
-        elapsed_time = round(time.perf_counter() - start_optimization + initial_eval_ms / 1000.0, 2)
+        elapsed_time = round(time.perf_counter() - start_total, 3)
 
         if time_to_loss < 0 and loss_value <= target_loss:
             time_to_loss = elapsed_time
 
-        raw_metrics = {
-            "iteration": idx,
-            "loss": loss_value,
+        raw_metrics = {"iteration": idx,"loss": loss_value,
             "grad_norm": grad_norm,
             "elapsed_time": elapsed_time,
             "iteration_time": round(elapsed_iteration, 4),
@@ -460,25 +324,17 @@ def optimize(points, sino,
         mlflow.log_metrics(raw_metrics, step=idx)
 
     end_optimization = time.perf_counter()
-    optimization_time = end_optimization - start_optimization + initial_eval_ms / 1000.0
-    total_time = warmup_time + optimization_time
+    optimization_time = end_optimization - start_optimization
+    total_time = end_optimization - start_total
+    avg_iteration_time_last_5 = sum(h["iteration_time"] for h in history[-5:]) / 5
     df_history = pd.DataFrame(history)
-    last_5 = df_history.tail(min(5, len(df_history)))
-    last_n = df_history.tail(min(avg_last_n, len(df_history)))
-
-    stats = jax.devices()[0].memory_stats() or {}
-    budget_gib = None if mem_budget_bytes is None else mem_budget_bytes / 2**30
-    peak_live_gib = stats.get("peak_bytes_in_use", 0) / 2**30
-    peak_pool_gib = stats.get("peak_pool_bytes", 0) / 2**30
 
     results = {
-        "time_1st_run_compile_": round(warmup_time, 3),
+        "time_1st_run_compile_": round(end_compile - start_total,3),
         "time_2_to_end_run": round(optimization_time, 3),
         "total_time": round(total_time, 3),
-        "avg_iteration_time_last_5": round(float(last_5["iteration_time"].mean()), 3),
-        "avg_iteration_time_last_n": round(float(last_n["iteration_time"].mean()), 3),
-        "final_loss": float(value),
-        "final_grad_norm": float(jnp.linalg.norm(grad)),
+        "avg_iteration_time_last_5": round(avg_iteration_time_last_5, 3),
+        "final_loss": float(value), "final_grad_norm": float(jnp.linalg.norm(grad)),
         "mean_linesearch_steps": round(float(df_history["num_linesearch_steps"].mean()), 2),
         "max_linesearch_steps": int(df_history["num_linesearch_steps"].max()),
         "time_to_loss": float(time_to_loss),
@@ -486,9 +342,6 @@ def optimize(points, sino,
         "jax_peak_pool_last_iter_MB": round(peak["jax_peak_pool"] / 1024**2, 2),
         "nvidia_peak_last_iter_MB": round(peak["nvidia_peak"] / 1024**2, 2),
         "chunk_size": int(C),
-        "budget_gib": -1.0 if budget_gib is None else float(budget_gib),
-        "process_peak_live_gib": float(peak_live_gib),
-        "process_peak_pool_gib": float(peak_pool_gib),
     }
 
     mlflow.log_metrics(results)
@@ -515,11 +368,10 @@ def run_experiments(params):
             sino,
             max_iter=params['max_iter'],
             max_linesearch_steps=params['max_linesearch_steps'],
-            initial_guess_strategy=params['initial_guess_strategy'],
             ext_dtype=params["ext_dtype"],
             batch_size=params['batch_size'],
             target_loss=params['target_loss'],
-            avg_last_n=10,
+
         )
 
         print(df_history.to_markdown(index=False))
@@ -538,14 +390,16 @@ if __name__ == '__main__':
                        nb_bins=4096,
                        batch_size="auto",  # use 2 to match Hermann's fixed batching
                        ext_dtype=jnp.float64,
+                       use_checkpoint="Custom",
                        max_iter=15,
                        max_linesearch_steps=4,
-                       initial_guess_strategy="one",
+                       initial_guess_strategy="custom",
                        seed=27,
-                       target_loss=1e-3)
+                       target_loss=1e-3,
+                       jax_default_matmul_precision =jax_default_matmul_precision)
 
     base_params['backend'] = "jax_B"
-    base_params['exp'] = "big_nb_pts"
+    base_params['exp_type'] = "big_nb_pts"
     base_params['variant'] = "B"
 
     run_experiments(base_params)

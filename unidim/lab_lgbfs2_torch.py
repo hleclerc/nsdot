@@ -102,6 +102,8 @@ def optimize(points, sino, max_iter=50, line_search_fn="strong_wolfe",
     bin_edges = torch.as_tensor(g.bin_edges, dtype=ext_dtype, device=DEVICE)
     bin_mass = torch.as_tensor(sino.values, dtype=ext_dtype, device=DEVICE)
     bin_mass = bin_mass / bin_mass.sum(dim=1, keepdim=True)
+    start_total = time.perf_counter()
+    time_to_loss = -1
 
     def fun(p):
         return loss_torch_map(p, normals, bin_mass, bin_edges, batch_size, ext_dtype, use_checkpoint)
@@ -149,7 +151,6 @@ def optimize(points, sino, max_iter=50, line_search_fn="strong_wolfe",
     torch.cuda.reset_peak_memory_stats(DEVICE.index)
     start_optimization = time.perf_counter()
     history = []
-    time_to_loss = -1
 
     for idx in tqdm.tqdm(range(max_iter)):
         iteration_start = time.perf_counter()
@@ -162,14 +163,17 @@ def optimize(points, sino, max_iter=50, line_search_fn="strong_wolfe",
             points_cpu = points.detach().cpu().numpy()
             plot_points(points_cpu, step=idx, img_dir=img_dir)
 
-        iteration_time = time.perf_counter() - iteration_start
-        elapsed_time = time.perf_counter() - start_optimization
+        elapsed_time = round(time.perf_counter() - start_total, 3)
+
+        if time_to_loss < 0 and loss_value <= target_loss:
+            time_to_loss = elapsed_time
+
         raw_metrics = {
             "iteration": idx,
             "loss": loss_value,
             "grad_norm": grad_norm,
-            "elapsed_time": round(elapsed_time, 3),
-            "iteration_time": round(iteration_time, 4),
+            "elapsed_time": round(time.perf_counter() - start_total,3),
+            "iteration_time": round(time.perf_counter() - iteration_start,4),
         }
         history.append(raw_metrics)
         mlflow.log_metrics(raw_metrics, step=idx)
@@ -179,14 +183,19 @@ def optimize(points, sino, max_iter=50, line_search_fn="strong_wolfe",
 
     torch.cuda.synchronize(DEVICE)
     mem_info_mb = get_torch_gpu_memory(DEVICE)
+
+
     end_optimization = time.perf_counter()
-    total_time = end_optimization - start_optimization
+    optimization_time = end_optimization - start_optimization
+    total_time = end_optimization - start_total
+
     avg_iteration_time_last_5 = sum(h["iteration_time"] for h in history[-5:]) / 5
     df_history = pd.DataFrame(history)
 
     print(f"time : {round(total_time,1)} s")
-    results = {"compile_time_1st_run": round(history[0]["iteration_time"], 3),
-               "total_time": round(total_time, 2),
+    results = {"time_1st_run_compile_": history[0]["iteration_time"],
+               "total_time": round(total_time,3),
+
                "avg_iteration_time_last_5": round(avg_iteration_time_last_5, 3),
                "final_loss": loss_value, "final_grad_norm": grad_norm,
                "time_to_loss": round(time_to_loss,1),
@@ -230,10 +239,10 @@ def run_experiments(params):
 
 base_params = dict(XLA_PYTHON_CLIENT_PREALLOCATE=XLA_PYTHON_CLIENT_PREALLOCATE,
                        XLA_PYTHON_CLIENT_MEM_FRACTION=XLA_PYTHON_CLIENT_MEM_FRACTION,
-                       nb_points=10_000,
+                       nb_points=100_000,
                        nb_angles=600,
                        nb_bins=4096,
-                       batch_size=1,
+                       batch_size=2,
                        ext_dtype=torch.float64,
                        max_iter=15,
                        use_checkpoint = False,
@@ -242,6 +251,7 @@ base_params = dict(XLA_PYTHON_CLIENT_PREALLOCATE=XLA_PYTHON_CLIENT_PREALLOCATE,
                        target_loss=1e-3)
 
 base_params['backend'] = "torch"
+base_params['exp_type'] = "big_nb_pts"
 run_experiments(base_params)
 
 

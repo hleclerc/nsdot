@@ -61,7 +61,9 @@ def optimize(points,sino,
     bin_edges = jnp.asarray(g.bin_edges,dtype=ext_dtype)
     bin_mass = jnp.asarray(sino.values,dtype=ext_dtype)
     bin_mass = bin_mass / bin_mass.sum(axis=1,keepdims=True)
-
+    history = []
+    start_total = time.perf_counter()
+    time_to_loss = -1
 
     def fun(p):
         # jax.debug.callback(count_fun_call,p,ordered=True,)
@@ -87,9 +89,7 @@ def optimize(points,sino,
 
         return p, state, value, grad
 
-    history = []
 
-    start_total = time.perf_counter()
     points, state, value, grad = step( points, state)
 
     value.block_until_ready()
@@ -102,7 +102,6 @@ def optimize(points,sino,
 
 
     start_optimization = time.perf_counter()
-    time_to_loss = -1
     for idx in tqdm.tqdm(range(1, max_iter)):
         iteration_start = time.perf_counter()
         if idx == max_iter - 1:
@@ -110,15 +109,16 @@ def optimize(points,sino,
                 step, points, state, interval=0.02,)
         else:
             points, state, value, grad = step(points, state)
+
         value.block_until_ready()
         grad.block_until_ready()
         grad_norm = float(jnp.linalg.norm(grad))
         loss_value = float(value)
+        elapsed_time = round(time.perf_counter() - start_total,3)
+
         if time_to_loss < 0 and loss_value <= target_loss:
             time_to_loss = elapsed_time
-        # print("Structure de state :", jax.tree_util.tree_structure(state))
-        # print("Valeurs de state :", state)
-        elapsed_time = round(time.perf_counter() - start_total,2)
+
         raw_metrics = {"iteration": idx, "loss": loss_value,
                         "grad_norm": grad_norm,
                         "elapsed_time" : elapsed_time,
@@ -137,7 +137,6 @@ def optimize(points,sino,
     # average_time = optimization_time / (max_iter - 2)
     avg_iteration_time_last_5 = sum(h["iteration_time"] for h in history[-5:]) / 5
     df_history = pd.DataFrame(history)
-    last_n = df_history.tail(avg_last_n)
     results = {"time_1st_run_compile_": round(end_compile - start_total,3),
                 "time_2_to_end_run": round(optimization_time,3),
                 "total_time": round(total_time,3),
@@ -207,8 +206,9 @@ if __name__ == '__main__':
                        seed=27,
                        target_loss=1e-3)
 
-    base_params['backend'] = "jax"
-    base_params['exp'] = "big_nb_pts"
+    base_params['backend'] = "jax_multi"
+    base_params['exp_type'] = "big_nb_pts"
+    run_experiments(base_params)
     # nb_angles_exp = [100, 200, 400, 600, 1000, 2000]
     # nb_bins_exp = [512, 1024, 2048, 4096, 8192]
     # nb_points_exp = [1_000, 5_000, 10_000, 20_000, 50_000]
@@ -230,4 +230,3 @@ if __name__ == '__main__':
     # for i, params in enumerate(experiments):
     #     print( f"\n\n########## " f"EXPERIMENT {i + 1}/{len(experiments)} " f"##########" )
     #     run_experiments(params)
-    run_experiments(base_params)
