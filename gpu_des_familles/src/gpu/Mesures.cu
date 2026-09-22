@@ -17,6 +17,7 @@
 #include "gpu/FilBrk2D.cuh"
 #include "gpu/FilRot2D.cuh"
 #include "gpu/FilNrm2D.cuh"
+#include "gpu/FilUni2D.cuh"
 #include "gpu/Fil3D.cuh"
 #include "gpu/Voies3D.cuh"
 
@@ -37,7 +38,8 @@ struct DiagrammeGpu<D,TK>::Impl {
     int         *ids = nullptr;
     double      *res = nullptr;
     int         *deb = nullptr, *deb2 = nullptr;
-    unsigned long long *stats = nullptr;             ///< 4 compteurs, pour les noyaux qui comptent     ///< les compteurs de debordement des deux passes
+    unsigned long long *stats = nullptr;
+    int         *cptr = nullptr;                     ///< le compteur des lanes persistantes             ///< 4 compteurs, pour les noyaux qui comptent     ///< les compteurs de debordement des deux passes
     int         *liste = nullptr;                    ///< les rangs qui ont deborde a la premiere passe
     int          n = 0, nn = 0;
     bool         poids = false;
@@ -87,6 +89,7 @@ DiagrammeGpu<D,TK>::DiagrammeGpu( const AaBspT<D> &arbre ) : impl( new Impl ) {
     CUDA_OK( cudaMalloc( &m.deb, sizeof( int ) ) );
     CUDA_OK( cudaMalloc( &m.deb2, sizeof( int ) ) );
     CUDA_OK( cudaMalloc( &m.stats, 4 * sizeof( unsigned long long ) ) );
+    CUDA_OK( cudaMalloc( &m.cptr, sizeof( int ) ) );
     CUDA_OK( cudaMalloc( &m.liste, m.n * sizeof( int ) ) );
     CUDA_OK( cudaDeviceSynchronize() );
     t_tele = now() - t0;
@@ -97,7 +100,7 @@ DiagrammeGpu<D,TK>::~DiagrammeGpu() {
     Impl &m = *impl;
     cudaFree( m.nodes );
     for ( int d = 0; d < D; ++d ) cudaFree( m.c[ d ] );
-    cudaFree( m.w ); cudaFree( m.ids ); cudaFree( m.res ); cudaFree( m.deb ); cudaFree( m.deb2 ); cudaFree( m.liste ); cudaFree( m.stats );
+    cudaFree( m.w ); cudaFree( m.ids ); cudaFree( m.res ); cudaFree( m.deb ); cudaFree( m.deb2 ); cudaFree( m.liste ); cudaFree( m.stats ); cudaFree( m.cptr );
     delete impl;
 }
 
@@ -198,6 +201,33 @@ Chrono lance2( const Impl &m, Variante v, int reps, std::vector<double> &res ) {
             case Variante::FILMIX12: return mix( std::integral_constant<int,12>{} );
             default:                 return mix( std::integral_constant<int,16>{} );
         }
+    }
+    if ( v == Variante::FILUNI8NP )                       // la boucle unique, un thread par cellule
+        return chrono<2,TK>( m, reps, res, [ & ]() {
+            noyau2_filuni<POIDS,8,false><<<grid, bloc>>>( ar, m.res, m.deb, m.liste, m.cptr );
+            int nd = 0;
+            CUDA_OK( cudaMemcpy( &nd, m.deb, sizeof( int ), cudaMemcpyDeviceToHost ) );
+            if ( nd == 0 ) return m.deb;
+            noyau2_filmix<POIDS,64,8,true><<<( nd + bloc - 1 ) / bloc, bloc>>>( ar, m.res, m.deb2, m.liste, nd );
+            return m.deb2;
+        } );
+    if ( v == Variante::FILUNI8 ) {
+        // les lanes persistantes : autant de threads que la carte en loge, chacun prend des cellules
+        int par_sm = 0, dev = 0;
+        CUDA_OK( cudaGetDevice( &dev ) );
+        CUDA_OK( cudaOccupancyMaxActiveBlocksPerMultiprocessor( &par_sm, noyau2_filuni<POIDS,8,true,TK>, bloc, 0 ) );
+        cudaDeviceProp prop;
+        CUDA_OK( cudaGetDeviceProperties( &prop, dev ) );
+        const int grid_p = par_sm * prop.multiProcessorCount;
+        return chrono<2,TK>( m, reps, res, [ & ]() {
+            CUDA_OK( cudaMemset( m.cptr, 0, sizeof( int ) ) );
+            noyau2_filuni<POIDS,8,true><<<grid_p, bloc>>>( ar, m.res, m.deb, m.liste, m.cptr );
+            int nd = 0;
+            CUDA_OK( cudaMemcpy( &nd, m.deb, sizeof( int ), cudaMemcpyDeviceToHost ) );
+            if ( nd == 0 ) return m.deb;
+            noyau2_filmix<POIDS,64,8,true><<<( nd + bloc - 1 ) / bloc, bloc>>>( ar, m.res, m.deb2, m.liste, nd );
+            return m.deb2;
+        } );
     }
     if ( v == Variante::FILNRM8 )
         return chrono<2,TK>( m, reps, res, [ & ]() {

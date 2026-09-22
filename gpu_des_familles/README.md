@@ -18,7 +18,7 @@ xmake run mesures --threads 8 --variante voies --load uniforme -n 1000000
 ```
 
 Les options communes (`-n`, `--load`, `--kernel`, `--maxnv`, `--leaf`, `--cases`, …) sont celles
-de `solvers_des_familles` (`src/bench/Args.h`), plus `--variante fil | filreg | filregc | filmix{4,6,8,12,16} | filbrk{6,8,10,12,16} | filbrk8nu | filrot{6,8} | filnrm8 | voies | voies16 |
+de `solvers_des_familles` (`src/bench/Args.h`), plus `--variante fil | filreg | filregc | filmix{4,6,8,12,16} | filbrk{6,8,10,12,16} | filbrk8nu | filrot{6,8} | filnrm8 | filuni8 | filuni8np | voies | voies16 |
 voies32 | paquet{8,32}x{1,2,4}[S] | toutes` et `--reps-gpu`. Sur la machine, `--threads 8` est à donner (`hardware_concurrency` rend 1
 dans le bac à sable) et **tout chronométrage passe par `job -b`**.
 
@@ -41,6 +41,8 @@ src/gpu/FilRot2D.cuh    le même avec le remontage par DÉCALAGE EN BARILLET au 
                         indexées
 src/gpu/FilNrm2D.cuh    la cellule NORMALISÉE AVANT la coupe : tout se lit à des positions fixes,
                         rien n'est recomposé après — LE GAGNANT en 2D à `R = 8`
+src/gpu/FilUni2D.cuh    le même en UNE SEULE BOUCLE ( un pas par itération ) et avec des lanes
+                        persistantes — mesuré, et perdu (§ 4)
 src/gpu/Voies2D.cuh     LA CELLULE SUR LES VOIES, 2D : voie = sommet, `V` = 8, 16 ou 32 voies par
                         cellule ; le débordement est une excursion sur la voie 0
 src/gpu/Paquet2D.cuh    PLUSIEURS CELLULES PAR VOIE, un parcours par warp, les plans d'une feuille
@@ -207,6 +209,25 @@ dans l'autre — non fait. `filrot6` 13.8 : `R = 6` reste perdant.
 propre germe en moins (7 %) : 8.7 → **7.7 ns/germe**, 20 → 19, 50 → 47. Ce qui reste en tête du
 profil : la première passe (`s` et le masque, 11 %), les barillets (17 %), le test d'élagage.
 
+**Une seule boucle, des lanes persistantes (`filuni`) : perdu, et pourquoi.** 6,8 threads actifs
+par warp, ce n'est pas les registres (72, 87 % d'occupation) : c'est de la divergence, de deux
+sources — les **phases** (un lane dépile un nœud, un autre teste un germe, un troisième coupe : le
+warp sérialise les trois chemins) et la **queue** (les 32 cellules d'un warp finissent à des
+moments différents, le warp vit jusqu'à la plus lente). Deux remèdes essayés : une seule boucle
+où chaque itération fait UN pas (le germe suivant de la feuille ouverte, sinon le nœud suivant de
+la pile, sinon la cellule est finie), l'état du parcours vivant dans le lane ; et des lanes
+persistantes (un lane qui finit prend une autre cellule par `atomicAdd`, autant de threads que
+la carte en loge). Résultat : la boucle unique seule 7.9 → **12.4** ns/germe (+57 %), avec les
+lanes persistantes **14.9**, 3,4 threads actifs par warp au lieu de 6,8, 3 800 instructions de
+warp par cellule au lieu de 1 800. Ce que ça enseigne : avec deux boucles imbriquées les lanes
+d'une même phase **avancent ensemble** — la boucle des germes d'une feuille tourne dix fois en
+lock-step pour tous ceux qui y sont — alors qu'une boucle unique remélange les phases à chaque
+itération et paie les trois chemins à chaque tour ; et les 32 cellules d'un warp, voisines dans
+l'arbre et parties ensemble, sont **corrélées en phase** — les lanes persistantes détruisent cette
+corrélation, et la queue qu'elles rattrapent vaut moins qu'elle. La divergence qui reste n'est
+pas une affaire de structure de boucle mais de cellules dissemblables dans un warp : c'est le
+tri par taille (§ 5).
+
 **Les micro-optimisations de `filbrk`** (`filbrk8nu` est sans) : une cellule non vide a trois
 sommets au moins et une coupe en laisse `nb_in + 2 ≥ 3`, donc les trois premières cases ne
 testent pas `i < nb` ; et `__builtin_expect` d'après les compteurs (58 % des plans ne coupent
@@ -354,8 +375,8 @@ réelle.
   parcours entre les 32 cellules d'un warp (6 actifs) — un tri des cellules par profondeur de
   parcours ou une pile en mémoire partagée ne changeraient pas le fond ; les 3 000 instructions
   par cellule sont à lire ligne à ligne comme pour le 3D.
-* **Les paquets, le test en bloc et les deux fils au push sont mesurés et perdent** (§ 4) : ne pas
-  y revenir sans une idée qui réduise les coupes transitoires.
+* **Les paquets, le test en bloc, les deux fils au push, la boucle unique et les lanes
+  persistantes sont mesurés et perdent** (§ 4) : ne pas y revenir sans une idée neuve.
 * **La coupe 3D à 800 instructions.** Les survivants en place plutôt que renumérotés (moins de
   `rassemble`, mais les trous du CPU à gérer par masques) ; les helpers `rang` / `nieme` appelés
   moins de fois (le nouveau numéro d'un voisin calculé une fois par sommet et non par octet) ;
