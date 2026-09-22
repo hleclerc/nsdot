@@ -54,15 +54,18 @@ reg=$DIR/$me.job
 etat() { printf '%s|%s|%s|%s\n' "$cls" "$1" "$(date +%H:%M:%S)" "$nom" >"$reg"; }
 trap 'rm -f "$reg"' EXIT
 
+# `flock` est un processus enfant qui herite des DEUX descripteurs : s'il attend `main` quand ce
+# script est tue, il survit, orphelin, et garde `queue` -- plus aucun travail ne passe. Chaque
+# `flock` ne recoit donc que le descripteur qu'il verrouille ( `9>&-` / `8>&-` ferme l'autre ).
 exec 9>$DIR/queue.lock 8>$DIR/main.lock
 if [ $cls = bench ]; then
     etat "attend"
-    flock -x 9                                           # plus personne ne passe la file
-    flock -x 8                                           # ceux qui tournent finissent
+    flock -x 9 8>&-                                      # plus personne ne passe la file
+    flock -x 8 9>&-                                      # ceux qui tournent finissent
     flock -u 9
 else
     etat "attend"
-    flock -s 9; flock -s 8; flock -u 9
+    flock -s 9 8>&-; flock -s 8 9>&-; flock -u 9
 fi
 etat "tourne"
 [ $quiet = 1 ] || echo "[job $me $cls] $nom" >&2

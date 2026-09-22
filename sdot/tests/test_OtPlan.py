@@ -5,11 +5,11 @@ from loom.testing import test, experiment, Param
 from sdot import Image, OtPlan, PowerDiagram, SumOfDiracs, SumOfGaussians, Visualizer, box_half_spaces, write_convergence_html
 
 
-# le domaine déborde `[ 0, 1 ]^d`, où vivent diracs et gaussiennes : la masse gaussienne hors du
-# domaine est PERDUE, et le solveur remet les masses cibles à l'échelle de ce que le domaine contient
-# ( `otplan/Solve.h` ) -- le plan est celui du transport vers la densité restreinte au domaine.
-# `atol` des tests : la masse cible d'un dirac est `1 / n`, et Newton converge au bruit du noyau.
-_BOX = ( [ -0.5, -0.5 ], [ 1.5, 1.5 ] )
+# le domaine VIENT DE LA DENSITÉ : le pavé d'une image, et pour des gaussiennes ( support non borné )
+# l'enveloppe des diracs ( `hull.py` ) -- la masse gaussienne hors de l'enveloppe est PERDUE, et le
+# solveur remet les masses cibles à l'échelle de ce que le domaine contient ( `otplan/Solve.h` ) :
+# le plan est celui du transport vers la densité restreinte au domaine. `atol` des tests : la masse
+# cible d'un dirac est `1 / n`, et Newton converge au bruit du noyau.
 
 
 def _overlapping_target( d, nb_gaussians, seed, spread = 0.12 ):
@@ -48,13 +48,13 @@ if test( "newton_matches_the_target_masses" ):
     dst = SumOfGaussians( numpy.array( [ [ 0.5, 0.5 ] ] ), numpy.array( [ 0.15 ] ),
                           weights = numpy.array( [ 1.0 ] ) )
 
-    plan = OtPlan( src, dst, boundaries = box_half_spaces( *_BOX ), max_iter = 50, mass_tol = 1e-12 )
+    plan = OtPlan( src, dst, max_iter = 50, mass_tol = 1e-12 )
 
     assert plan.converged, plan.stats
     got = numpy.asarray( plan.cell_masses ).reshape( -1 )
     assert numpy.allclose( got, _target_masses( plan ), atol = 1e-10 ), numpy.abs( got - _target_masses( plan ) ).max()
-    # la masse cible est celle des diracs, à la masse perdue hors du domaine près ( négligeable ici )
-    assert abs( plan.stats[ "masse_domaine" ] - 1 ) < 1e-6
+    # la masse cible est celle des diracs, à la masse perdue hors de l'enveloppe près
+    assert 0.7 < plan.stats[ "masse_domaine" ] < 1, plan.stats[ "masse_domaine" ]
 
 
 if test( "starting_from_nonzero_weights_still_converges" ):
@@ -67,7 +67,7 @@ if test( "starting_from_nonzero_weights_still_converges" ):
     dst = _overlapping_target( 2, 2, seed = 3 )
     w0 = rng.uniform( -0.003, 0.003, 18 )
 
-    plan = OtPlan( src, dst, boundaries = box_half_spaces( *_BOX ), weights0 = w0, max_iter = 50, mass_tol = 1e-12 )
+    plan = OtPlan( src, dst, weights0 = w0, max_iter = 50, mass_tol = 1e-12 )
 
     assert plan.converged and plan.stats[ "depart" ] == "weights0", plan.stats
     got = numpy.asarray( plan.cell_masses ).reshape( -1 )
@@ -84,7 +84,7 @@ if test( "no_cell_dies_even_with_scattered_targets" ):
     src = SumOfDiracs( pos )
     dst = _scattered_target( 2, 4, seed = 6 )
 
-    plan = OtPlan( src, dst, boundaries = box_half_spaces( *_BOX ), max_iter = 200, mass_tol = 1e-12 )
+    plan = OtPlan( src, dst, max_iter = 200, mass_tol = 1e-12 )
 
     assert all( h[ "min_measure" ] > 0 for h in plan.history ), min( h[ "min_measure" ] for h in plan.history )
     assert plan.converged, plan.stats
@@ -216,8 +216,8 @@ if test( "the_limits_step_reaches_the_same_plan_with_fewer_diagrams" ):
     src = SumOfDiracs( pos )
     dst = _scattered_target( 2, 4, seed = 6 )
     # ( sans la continuation : c'est le Newton direct, et ses reculs, qu'on compare ici )
-    a = OtPlan( src, dst, boundaries = box_half_spaces( *_BOX ), max_iter = 200, mass_tol = 1e-12, step = "trials", continuation = "never" )
-    b = OtPlan( src, dst, boundaries = box_half_spaces( *_BOX ), max_iter = 200, mass_tol = 1e-12, step = "limits", continuation = "never" )
+    a = OtPlan( src, dst, max_iter = 200, mass_tol = 1e-12, step = "trials", continuation = "never" )
+    b = OtPlan( src, dst, max_iter = 200, mass_tol = 1e-12, step = "limits", continuation = "never" )
     assert a.converged and b.converged, ( a.stats, b.stats )
     assert numpy.allclose( numpy.asarray( a.weights ), numpy.asarray( b.weights ), atol = 1e-9 )
     assert b.stats[ "nb_diag" ] <= a.stats[ "nb_diag" ], ( a.stats[ "nb_diag" ], b.stats[ "nb_diag" ] )
@@ -232,10 +232,9 @@ if test( "the_continuation_solves_what_direct_newton_cannot" ):
     pos = rng.uniform( 0, 1, size = ( 400, 2 ) )
     centres = numpy.array( [ [ 0.3, 0.3 ], [ 0.7, 0.35 ], [ 0.4, 0.75 ], [ 0.75, 0.7 ] ] )
     dst = SumOfGaussians( centres, 0.04 * numpy.array( [ 1, 0.7, 1.3, 1 ] ), weights = numpy.array( [ 0.35, 0.25, 0.25, 0.15 ] ) )
-    box = box_half_spaces( [ 0, 0 ], [ 1, 1 ] )
-    direct = OtPlan( SumOfDiracs( pos ), dst, boundaries = box, max_iter = 100, mass_rtol = 1e-6, continuation = "never" )
+    direct = OtPlan( SumOfDiracs( pos ), dst, max_iter = 100, mass_rtol = 1e-6, continuation = "never" )
     assert not direct.converged, direct.stats
-    plan = OtPlan( SumOfDiracs( pos ), dst, boundaries = box, max_iter = 100, mass_rtol = 1e-6 )
+    plan = OtPlan( SumOfDiracs( pos ), dst, max_iter = 100, mass_rtol = 1e-6 )
     assert plan.converged and plan.stats[ "nb_etapes" ] > 1, plan.stats
     got = numpy.asarray( plan.cell_masses ).reshape( -1 )
     assert numpy.allclose( got, _target_masses( plan ), rtol = 1e-5 ), numpy.abs( got / _target_masses( plan ) - 1 ).max()
@@ -255,7 +254,7 @@ if test( "the_continuation_solves_what_direct_newton_cannot" ):
 
 
 if test( "an_unbounded_domain_is_closed_by_the_hull_of_the_diracs" ):
-    # des gaussiennes SANS `boundaries` : le domaine est l'enveloppe des diracs ( `hull.py`, seize
+    # des gaussiennes ( support non borné ) : le domaine est l'enveloppe des diracs ( `hull.py`, seize
     # demi-plans qui s'appuient sur le nuage, les axes compris -> un pavé de départ et douze coupes ),
     # chaque dirac y est, le transport est celui vers la gaussienne restreinte à ce domaine
     rng = numpy.random.default_rng( 3 )
@@ -400,7 +399,7 @@ if p := experiment( "ot 2D newton",
     src = SumOfDiracs( pos )
     dst = _overlapping_target( 2, p.nb_gaussians, seed = p.seed + 1 )
 
-    plan = OtPlan( src, dst, boundaries = box_half_spaces( *_BOX ), max_iter = p.max_iter, keep_weights = True, verbose = True )
+    plan = OtPlan( src, dst, max_iter = p.max_iter, keep_weights = True, verbose = True )
     _report( p, plan, pos, "ot_2d_newton" )
 
 
@@ -416,5 +415,5 @@ if p := experiment( "ot 2D newton scattered",
     src = SumOfDiracs( pos )
     dst = _scattered_target( 2, p.nb_gaussians, seed = p.seed + 1 )
 
-    plan = OtPlan( src, dst, boundaries = box_half_spaces( *_BOX ), max_iter = p.max_iter, keep_weights = True, verbose = True )
+    plan = OtPlan( src, dst, max_iter = p.max_iter, keep_weights = True, verbose = True )
     _report( p, plan, pos, "ot_2d_newton_scattered" )

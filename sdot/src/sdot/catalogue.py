@@ -64,8 +64,8 @@ def provoke( device = None ):
                 plan.cost_and_position_grad()
             if d == 2:
                 sog = SumOfGaussians( positions = pos[ :4 ], sigmas = [ 0.1 ] * 4, weights = [ 1.0 ] * 4 )
-                OtPlan( SumOfDiracs( pos ), sog, boundaries = box_half_spaces( [ 0 ] * d, [ 1 ] * d ), max_iter = 20 )
-                OtPlan( SumOfDiracs( pos ), None, boundaries = box_half_spaces( [ 0 ] * d, [ 1 ] * d ), max_iter = 20 )
+                OtPlan( SumOfDiracs( pos ), sog, max_iter = 20 )
+                OtPlan( SumOfDiracs( pos ), None, max_iter = 20 )
 
     # la cellule seule, ce que `Cell` expose
     for d in ( 2, 3 ):

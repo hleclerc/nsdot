@@ -33,7 +33,7 @@ sdot/include/sdot/otplan/
   Limites.h       PdAlpha*, FournisseurListe, PolyCellule, Limites2D::alpha_min
   Continuation.h  Convolee<Dist>::at( s ), etapes( s0, ratio, s_min )
   Solve.h         resoudre<TK>( queue, pd, dom, dist, nu, w0, options, weights, hist, stats )
-sdot/src/sdot/OtPlan.py   la classe ; hull.py : l'enveloppe par demi-espaces d'appui
+sdot/src/sdot/OtPlan.py   la classe ; hull.py : l'enveloppe par demi-espaces d'appui (un noyau)
 ```
 
 **Les poids sont des SORTIES de l'appel.** Les entrées d'un `driver.call` sont en lecture seule ;
@@ -57,10 +57,20 @@ domaine, normalisée.
 balayage (`Balayage::mesures` → `diagram::memorise`), dans deux vues de sortie initialisées depuis
 les souvenirs d'avant ; un souvenir d'un essai refusé reste exact (il ne fait qu'ordonner les coupes).
 
-**Le domaine non borné** (des gaussiennes sans `boundaries`) est fermé par l'ENVELOPPE des diracs,
+**Le domaine vient de la densité, et d'elle seule** (plus de `boundaries` sur `OtPlan`) : le pavé
+d'une image ; quand le support ne borne rien (des gaussiennes, Lebesgue), l'ENVELOPPE des diracs
 approchée par l'extérieur : 16 demi-plans d'appui en 2D (les axes compris → un pavé de départ +
 12 coupes par cellule), 26 en 3D (`sdot/hull.py`). L'enveloppe exacte peut avoir `n` arêtes et
 chaque cellule est coupée par tous les plans du domaine : elle rendrait le diagramme quadratique.
+Le maximum sur les `n` germes est un noyau (`supporting_half_spaces`, un work-item par direction,
+là où vivent les positions) ; seuls les `K` décalages passent côté hôte, comme les demi-espaces
+d'une image, parce que `PowerDiagram` y lit la description du domaine pour poser sa cellule de
+départ.
+
+**Eigen et AMGCL sont téléchargés par la chaîne de compilation** (`loom/compilation/externals.py`,
+déclarés dans `sdot/__init__.py` : archive + SHA-256, une fois dans `~/.cache/sdot/ext/`, puis
+`-I` de toute compilation ; `SDOT_EXTERNALS=0` / `SDOT_EXT_DIR`) : les mêmes versions sur toute
+machine, wheels et catalogue compris, sans paquet système.
 
 **La continuation** se déclenche en `auto` quand le meilleur départ laisse une cellule sous
 `1e-2 × min ν` (`conv_threshold`) — les cas du banc où Newton direct stagne ont des cellules à
@@ -100,6 +110,3 @@ C'est le sur-coût par appel de loom, pas le solveur.
 - **Le relèvement minimal** (§ 8.4–8.5, l'enveloppe convexe de `(1−ε)p² − w`) : un départ
   admissible meilleur que la similitude quand les poids donnés vident des cellules ; le Voronoï
   suffit aujourd'hui.
-- `scripts/job` : un travail tué (`kill`) laisse son `flock` orphelin, qui garde `queue.lock` —
-  plus aucun travail générique ne passe. `flock -x 8 9>&-` (fermer le descripteur 9 dans l'enfant)
-  suffirait.

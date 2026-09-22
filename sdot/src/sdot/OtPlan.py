@@ -109,24 +109,25 @@ class _History( Aggregate ):
 class OtPlan:
     """voir la docstring du module"""
 
-    def __init__( self, src_dist, dst_dist, boundaries = None, accelerator = None, kernel_dtype = None,
+    def __init__( self, src_dist, dst_dist, accelerator = None, kernel_dtype = None,
                   weights0 = None, max_iter = 100, mass_tol = 1e-8, mass_rtol = 0.0, step = "auto",
                   linear_solver = "auto", keep_weights = False, verbose = False, t_min = 1e-10,
                   max_backtracks = 60, restart_factor = 4.0, memory = None,
                   continuation = "auto", conv_start = None, conv_ratio = 2 ** 0.5, conv_min = None, conv_threshold = 1e-2,
                   domain_margin = 0.0 ):
         """`src_dist` : une `SumOfDiracs` ( ses `weights`, normalisés, sont les masses cibles ).
-        `dst_dist` : la distribution CONTINUE contre laquelle intégrer ( `Image`, `SumOfGaussians`, ou `None` : la mesure de Lebesgue sur le domaine,
+        `dst_dist` : la distribution CONTINUE contre laquelle intégrer ( `Image`, `SumOfGaussians`, ou `None` : la mesure de Lebesgue sur l'enveloppe des diracs,
         ... ), normalisée -- puis remise à l'échelle de ce que le DOMAINE en contient ( voir
         `otplan/Solve.h` : ce qu'on résout est le transport vers la densité restreinte au domaine ).
 
-        `boundaries` / `accelerator` / `memory` : transmis tels quels au `PowerDiagram` ( voir
-        `PowerDiagram.__init__` ). Le domaine est le support de `dst_dist` ( une image ) intersecté
-        avec `boundaries` ; s'il n'est PAS BORNÉ ( des gaussiennes sans `boundaries` ), il est
-        complété par l'ENVELOPPE des diracs -- l'intersection de demi-espaces qui s'appuient sur le
-        nuage ( `hull.supporting_half_spaces` ), écartés de `domain_margin` : chaque dirac est dedans,
-        donc chaque cellule de Voronoï a une mesure positive, et le transport est celui vers la
-        densité restreinte à ce domaine ( `stats[ "masse_domaine" ]` dit ce qu'il en contient ).
+        `accelerator` / `memory` : transmis tels quels au `PowerDiagram` ( voir `PowerDiagram.__init__` ).
+
+        LE DOMAINE VIENT DE LA DENSITÉ, et d'elle seule : le support de `dst_dist` ( le pavé d'une
+        image ). S'il n'est PAS BORNÉ ( des gaussiennes, la mesure de Lebesgue ), c'est l'ENVELOPPE
+        des diracs -- l'intersection de demi-espaces qui s'appuient sur le nuage, un noyau
+        ( `hull.supporting_half_spaces` ), écartés de `domain_margin` : chaque dirac est dedans, donc
+        chaque cellule de Voronoï a une mesure positive, et le transport est celui vers la densité
+        restreinte à ce domaine ( `stats[ "masse_domaine" ]` dit ce qu'il en contient ).
 
         `kernel_dtype` : le flottant dans lequel la géométrie se coupe -- `FP64` par défaut ICI, et
         non `FP32` comme pour un diagramme seul : le banc l'a mesuré ( README § 4 ), l'amortissement
@@ -174,9 +175,9 @@ class OtPlan:
         if kernel_dtype is None:
             kernel_dtype = "FP64"
 
-        # le domaine, borné : le support de la densité et `boundaries` -- ou, s'ils ne bornent rien,
-        # l'enveloppe des diracs ( voir `hull.py` )
-        boundaries = self._bounded_domain( d, boundaries, float( domain_margin ) )
+        # le domaine, borné : le support de la densité -- ou, s'il ne borne rien, l'enveloppe des
+        # diracs ( voir `hull.py` )
+        boundaries = self._bounded_domain( d, float( domain_margin ) )
 
         # LE diagramme, bâti une fois sur les positions ( voir la docstring du module ) ; les poids
         # qu'il porte à un instant donné sont les derniers posés
@@ -280,30 +281,21 @@ class OtPlan:
                 entry[ "weights" ] = RealTensor[ pd.num_point ]( history.weights.raw[ s ] )
             self.history.append( entry )
 
-    def _bounded_domain( self, d, boundaries, margin ):
-        """`boundaries`, complétées par l'enveloppe des diracs si, avec le support de la densité,
-        elles ne bornent pas le domaine ( voir `__init__` )"""
-        planes = [] if boundaries is None else [ ( boundaries[ 0 ], boundaries[ 1 ] ) ]
+    def _bounded_domain( self, d, margin ):
+        """Rien si le support de la densité borne le domaine ( `PowerDiagram` l'ajoute lui-même ) ;
+        sinon l'enveloppe des diracs, à donner en `boundaries` ( voir `__init__` )"""
         support = None if self.dst_dist is None else self.dst_dist.bounding_half_spaces()
         if support is not None:
-            planes.append( support )
-        if planes:
-            dirs = [ d_ for d_, _ in planes ]
-            offs = [ o_ for _, o_ in planes ]
-            all_dirs = np.concatenate( [ np.asarray( x, dtype = float ).reshape( -1, d ) for x in dirs ] )
-            all_offs = np.concatenate( [ np.asarray( x, dtype = float ).reshape( -1 ) for x in offs ] )
-            if axis_aligned_box( all_dirs, all_offs ) is not None:
-                return boundaries                                    # un pavé : borné
+            dirs = np.asarray( support[ 0 ], dtype = float ).reshape( -1, d )
+            offs = np.asarray( support[ 1 ], dtype = float ).reshape( -1 )
+            if axis_aligned_box( dirs, offs ) is not None:
+                return None                                          # un pavé : borné
             dom = Cell.make_unbounded( d, kernel_dtype = "FP64" )   # un polytope quelconque : on le construit
-            for k in range( len( all_offs ) ):
-                dom.cut( all_dirs[ k ], float( all_offs[ k ] ) )
+            for k in range( len( offs ) ):
+                dom.cut( dirs[ k ], float( offs[ k ] ) )
             if dom.is_bounded:
-                return boundaries
-        hd, ho = supporting_half_spaces( self.src_dist.positions, margin = margin )
-        if boundaries is None:
-            return hd, ho
-        return ( np.concatenate( [ np.asarray( boundaries[ 0 ], dtype = float ).reshape( -1, d ), hd ] ),
-                 np.concatenate( [ np.asarray( boundaries[ 1 ], dtype = float ).reshape( -1 ), ho ] ) )
+                return None
+        return supporting_half_spaces( self.src_dist.positions, margin = margin )
 
     @property
     def converged( self ):

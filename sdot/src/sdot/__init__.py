@@ -10,6 +10,13 @@ _compilation.register_include_root( _here / "_include" if ( _here / "_include" )
 # the catalogue of precompiled kernels, when there is one: a wheel's `sdot/_catalogue`, built with
 # these very headers -- or, for a checkout, the directory `SDOT_CATALOGUE_DIR` names EXPLICITLY (a
 # checkout's headers move, a catalogue registered by default would silently serve stale binaries)
+# les solveurs lineaires du transport (`sdot/otplan/Lineaire.cpp`) : Eigen et AMGCL, en-tetes seuls,
+# que loom telecharge une fois dans son cache au premier noyau compile (`loom/compilation/externals.py`)
+_compilation.register_external( "eigen", "3.4.0", "https://gitlab.com/libeigen/eigen/-/archive/3.4.0/eigen-3.4.0.tar.gz",
+                                "8586084f71f9bde545ee7fa6d00288b264a2b7ac3607b974e54d13e7162c1c72" )
+_compilation.register_external( "amgcl", "1.4.4", "https://github.com/ddemidov/amgcl/archive/refs/tags/1.4.4.tar.gz",
+                                "02fd5418e14d669422f65fc739ce72bf9516ced2d8942574d4b8caa05dda9d8c" )
+
 from loom.compilation import catalogue as _catalogue
 _catalogue.register_catalogue( _os.environ[ "SDOT_CATALOGUE_DIR" ] if "SDOT_CATALOGUE_DIR" in _os.environ else _here / "_catalogue" )
 

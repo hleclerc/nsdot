@@ -1,7 +1,8 @@
 // L'UNITE DE DOMAINE des solveurs lineaires ( voir `Lineaire.h` ) : compilee une fois par
 // compilateur, liee par les noyaux qui nomment `sdot/otplan/Lineaire.cpp` dans leurs `sources`.
-// Eigen est cherche sous `<eigen3/...>` ( son emplacement Debian, dans un repertoire d'inclusion
-// par defaut ), AMGCL sous `<amgcl/...>` ; ce qui manque n'est simplement pas propose.
+// Eigen et AMGCL sont ceux que loom telecharge ( `sdot/__init__.py` -> `loom/compilation/externals.py`,
+// sur le chemin d'inclusion ), ou a defaut ceux du systeme ( `<eigen3/...>` ) ; ce qui manque n'est
+// simplement pas propose.
 
 #include "Lineaire.h"
 #include <algorithm>
@@ -25,14 +26,14 @@
 #  include <amgcl/solver/cg.hpp>
 #endif
 
-#if __has_include( <eigen3/Eigen/SparseCholesky> )
-#  define SDOT_EIGEN 1
-#  include <eigen3/Eigen/SparseCholesky>
-#  include <eigen3/Eigen/SparseCore>
-#elif __has_include( <Eigen/SparseCholesky> )
+#if __has_include( <Eigen/SparseCholesky> )
 #  define SDOT_EIGEN 1
 #  include <Eigen/SparseCholesky>
 #  include <Eigen/SparseCore>
+#elif __has_include( <eigen3/Eigen/SparseCholesky> )
+#  define SDOT_EIGEN 1
+#  include <eigen3/Eigen/SparseCholesky>
+#  include <eigen3/Eigen/SparseCore>
 #endif
 
 namespace sdot {
