@@ -51,6 +51,13 @@
 // le plan ( `bissect2c` : `off = 1/2 ( dx^2 + dy^2 )` ) et l'elagage ( `bilan_sommet_c` ). Le but
 // est la PRECISION en `float` : voir `Arbre.cuh` et le README § 3 bis.
 //
+// `FACETTES` : le noyau rend AUSSI, pour chaque cellule, ses facettes -- de quoi assembler la
+// hessienne du Newton ( `solver/Laplacien.h` : `c_ij = |facette| / ( 2 |p_i - p_j| )` ). Elles
+// sont deja dans la cellule : l'arete `k` va du sommet `k` au sommet `k + 1` et porte le `cid`
+// `c[ k ]` -- identifiant du voisin s'il est positif, cote de la boite s'il vaut `-1 - d`. On
+// ecrit la longueur et le voisin dans `R` cases par cellule, en SoA ( `[ case * n + id ]`, donc
+// des voies consecutives ecrivent des adresses consecutives ), `-1` pour les cases inutilisees.
+//
 // `BSM` force l'occupation ( `__launch_bounds__( 128, BSM )` : ptxas rabote les registres
 // pour loger `BSM` blocs par SM ) ; `BSM = 1` ne contraint rien.
 // =====================================================================================
@@ -142,7 +149,8 @@ __device__ __forceinline__ int coupe_msk( const Plan2<TK> &p, int nb, TK ( &x )[
 }
 
 template<bool POIDS, int BSM, bool CENTRE, int FIXE, class TK>
-__global__ void __launch_bounds__( 128, BSM ) noyau2_filmsk( Arbre<TK,2> ar, double *res, int *deborde, int *liste_deb ) {
+__global__ void __launch_bounds__( 128, BSM ) noyau2_filmsk( Arbre<TK,2> ar, double *res, int *deborde, int *liste_deb,
+                                                            int *fac_j = nullptr, TK *fac_l = nullptr, int NF = 0 ) {
     constexpr int R = 8, SUR = 3;
     const int k = blockIdx.x * blockDim.x + threadIdx.x;
     if ( k >= ar.n ) return;
@@ -205,6 +213,26 @@ __global__ void __launch_bounds__( 128, BSM ) noyau2_filmsk( Arbre<TK,2> ar, dou
     }
 
 fin:
+    // ---- LES FACETTES : une par arete dont le `cid` est un voisin
+    if ( fac_j ) {
+#pragma unroll
+        for ( int k = 0; k < R; ++k ) {
+            int j = -1000000;                        // case vide ( au-dela de `nb` )
+            TK  l = 0;
+            if ( k < nb ) {
+                const int kk = k + 1 < nb ? k + 1 : 0;
+                const TK dx = selR( x, kk ) - x[ k ], dy = selR( y, kk ) - y[ k ];
+                j = c[ k ];
+                l = sqrt( dx * dx + dy * dy );
+            }
+            fac_j[ size_t( k ) * ar.n + i0 ] = j;
+            fac_l[ size_t( k ) * ar.n + i0 ] = l;
+        }
+        for ( int k = R; k < NF; ++k ) {                 // `nb <= R` ici : le reste est vide
+            fac_j[ size_t( k ) * ar.n + i0 ] = -1000000;
+            fac_l[ size_t( k ) * ar.n + i0 ] = 0;
+        }
+    }
     const double area = nb > 0 ? aire_triee( x, y, nb ) : 0.0;
     if ( nb < 0 ) liste_deb[ atomicAdd( deborde, 1 ) ] = k;
     res[ i0 ] = area;

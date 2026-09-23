@@ -29,8 +29,13 @@ __device__ __forceinline__ T selR( const T ( &a )[ R ], int i ) {
 }
 
 /// `liste` : les rangs a faire ( `nullptr` : tous ) -- la seconde passe de `filbrk`.
+/// `fac_j` / `fac_l` / `NF` : les facettes, comme `noyau2_filmsk` -- indispensables ici, puisque
+/// c'est CE noyau qui finit les cellules que la premiere passe a fait deborder ( 13 % en uniforme )
+/// et que sans elles leur ligne de la hessienne serait vide. `fac_deb` compte celles dont le
+/// polygone final a plus de `NF` aretes.
 template<bool POIDS, int MaxNb, int R, bool CIDREG, class TK>
-__global__ void __launch_bounds__( 128 ) noyau2_filmix( Arbre<TK,2> ar, double *res, int *deborde, const int *liste = nullptr, int nl = 0 ) {
+__global__ void __launch_bounds__( 128 ) noyau2_filmix( Arbre<TK,2> ar, double *res, int *deborde, const int *liste = nullptr, int nl = 0,
+                                                        int *fac_j = nullptr, TK *fac_l = nullptr, int NF = 0, int *fac_deb = nullptr ) {
     static_assert( MaxNb <= 64 && R <= MaxNb && R >= 4, "les masques sont sur 64 bits, le carre tient dans les registres" );
     const int ti = blockIdx.x * blockDim.x + threadIdx.x;
     const int k = liste ? ( ti < nl ? liste[ ti ] : ar.n ) : ti;
@@ -150,6 +155,22 @@ __global__ void __launch_bounds__( 128 ) noyau2_filmix( Arbre<TK,2> ar, double *
     }
 
 fin:
+    // ---- LES FACETTES du polygone final ( `get_x` / `get_y` / `get_c` lisent registres ou queue )
+    if ( fac_j ) {
+        if ( nb > NF && fac_deb ) atomicAdd( fac_deb, 1 );
+        for ( int k = 0; k < NF; ++k ) {
+            int j = -1000000;
+            TK  l = 0;
+            if ( k < nb ) {
+                const int kk = k + 1 < nb ? k + 1 : 0;
+                const TK dx = get_x( kk ) - get_x( k ), dy = get_y( kk ) - get_y( k );
+                j = get_c( k );
+                l = sqrt( dx * dx + dy * dy );
+            }
+            fac_j[ size_t( k ) * ar.n + i0 ] = j;
+            fac_l[ size_t( k ) * ar.n + i0 ] = l;
+        }
+    }
     double area = 0;
     if ( nb > 0 ) {
         double a = 0;

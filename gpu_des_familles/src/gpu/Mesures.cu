@@ -505,6 +505,51 @@ Chrono lance3( const Impl &m, Variante v, int reps, std::vector<double> &res ) {
 } // namespace
 
 template<int D, class TK>
+Chrono DiagrammeGpu<D,TK>::facettes( int reps, std::vector<double> &res, std::vector<int> &fj, std::vector<double> &fl ) const {
+    if constexpr ( D != 2 ) {                            // les facettes ne sont rendues qu'en 2D
+        ( void ) reps; ( void ) res; ( void ) fj; ( void ) fl;
+        return Chrono{};
+    } else {
+    const Impl &m = *impl;
+    const Arbre<TK,2> ar = m.arbre();
+    const int bloc = 128, grid = ( m.n + bloc - 1 ) / bloc;
+    int *dj = nullptr;
+    TK  *dl = nullptr;
+    CUDA_OK( cudaMalloc( &dj, size_t( NF ) * m.n * sizeof( int ) ) );
+    CUDA_OK( cudaMalloc( &dl, size_t( NF ) * m.n * sizeof( TK ) ) );
+    // la virgule fixe 32 bits est RESERVEE AU `float` : en `double` elle detruit la precision
+    // ( 31 bits contre 53 ) -- voir `doc/04-echelle.md`
+    constexpr int FIX = sizeof( TK ) == 4 ? 32 : 0;
+    auto tour = [ & ]( auto pp ) {
+        constexpr bool POIDS = decltype( pp )::value;
+        Chrono ch = chrono<2,TK>( m, reps, res, [ & ]() {
+            noyau2_filmsk<POIDS,1,true,FIX><<<grid, bloc>>>( ar, m.res, m.deb, m.liste, dj, dl, NF );
+            int nd = 0;
+            CUDA_OK( cudaMemcpy( &nd, m.deb, sizeof( int ), cudaMemcpyDeviceToHost ) );
+            if ( nd == 0 ) return m.deb;
+            // la seconde passe rend AUSSI ses facettes : elle finit 13 % des cellules en uniforme
+            noyau2_filmix<POIDS,64,8,true><<<( nd + bloc - 1 ) / bloc, bloc>>>( ar, m.res, m.deb2, m.liste, nd, dj, dl, NF, m.cptr );
+            return m.deb2;
+        } );
+        infos( ch, noyau2_filmsk<POIDS,1,true,FIX,TK>, bloc );
+        return ch;
+    };
+    CUDA_OK( cudaMemset( m.cptr, 0, sizeof( int ) ) );   // les polygones finaux de plus de `NF` aretes
+    Chrono ch = m.poids ? tour( std::true_type{} ) : tour( std::false_type{} );
+    CUDA_OK( cudaMemcpy( &ch.deborde, m.cptr, sizeof( int ), cudaMemcpyDeviceToHost ) );
+    const double t0 = now();
+    fj.resize( size_t( NF ) * m.n );
+    std::vector<TK> tmp( size_t( NF ) * m.n );
+    CUDA_OK( cudaMemcpy( fj.data(), dj, fj.size() * sizeof( int ), cudaMemcpyDeviceToHost ) );
+    CUDA_OK( cudaMemcpy( tmp.data(), dl, tmp.size() * sizeof( TK ), cudaMemcpyDeviceToHost ) );
+    fl.assign( tmp.begin(), tmp.end() );
+    ch.retour += now() - t0;
+    cudaFree( dj ); cudaFree( dl );
+    return ch;
+    }
+}
+
+template<int D, class TK>
 Chrono DiagrammeGpu<D,TK>::mesures( Variante v, int maxnv, int reps, std::vector<double> &res ) const {
     const Impl &m = *impl;
     if constexpr ( D == 2 ) {

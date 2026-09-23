@@ -47,6 +47,13 @@ struct DiagrammeGpu {
     /// puis `reps` tours chronometres.
     Chrono mesures( Variante v, int maxnv, int reps, std::vector<double> &res ) const;
 
+    /// LES MESURES ET LES FACETTES ( 2D ) : le noyau `filmsk8f` rend en plus, pour chaque cellule,
+    /// jusqu'a `NF` aretes -- `fj[ s * n + i ]` l'identifiant du voisin ( `< 0` : un cote de la
+    /// boite, ou une case vide ) et `fl[ s * n + i ]` la longueur. De quoi assembler la hessienne
+    /// du Newton sans repasser par le CPU.
+    static constexpr int NF = 16;   ///< aretes gardees par cellule ( le polygone final en a 6 en moyenne )
+    Chrono facettes( int reps, std::vector<double> &res, std::vector<int> &fj, std::vector<double> &fl ) const;
+
     struct Impl;
     Impl  *impl;
     double t_tele = 0;

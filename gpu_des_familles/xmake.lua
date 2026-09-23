@@ -36,6 +36,22 @@ set_project( "gpu_des_familles" )
 set_languages( "c++20" )
 add_rules( "mode.release", "mode.debug" )
 
+-- LA CHAINE 2D : l'arbre ( CPU ), puis les mesures ET les facettes en un noyau, comparees au
+-- moteur CPU. Memes reglages que `mesures`, pour que le temoin soit le meme binaire.
+target( "chaine" )
+    set_kind( "binary" )
+    add_files( "src/mains/main_chaine.cpp", "../solvers_des_familles/src/bench/*.cpp", "src/gpu/*.cu" )
+    add_includedirs( "src", "../solvers_des_familles/src", "../sdot/include" )
+    set_rundir( "$(projectdir)" )
+    set_warnings( "all" )
+    if is_mode( "release" ) then
+        add_cxflags( "-O3", "-march=native", "-fno-math-errno", { force = true } )
+        add_defines( "NDEBUG" )
+    end
+    add_cugencodes( "sm_75" )
+    add_cuflags( "-O3", "-lineinfo", { force = true } )
+    add_syslinks( "pthread" )
+
 target( "bande" )
     set_kind( "binary" )
     add_files( "src/mains/main_bande.cu" )

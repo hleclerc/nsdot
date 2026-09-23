@@ -1,5 +1,39 @@
 # CE QUI RESTE
 
+## LA CHAÎNE 2D SUR GPU ( cible : `chaine` )
+
+Le squelette existe : `src/mains/main_chaine.cpp` fait l'arbre (CPU), le téléversement, puis
+**les mesures ET les facettes en un seul noyau**, et compare au moteur CPU poste par poste. Les
+facettes étaient le maillon manquant entre « mesurer des cellules » et « faire un Newton » : la
+hessienne du transport est le laplacien du graphe de Laguerre, `c_ij = |facette| / ( 2 |p_i - p_j| )`
+(`solver/Laplacien.h`), et ses coefficients sont **les arêtes de chaque cellule** — que le noyau
+portait déjà, chacune avec le `cid` de son voisin. `noyau2_filmsk` et `noyau2_filmix` les écrivent
+en SoA (`[ arête * n + identifiant ]`), `NF = 16` arêtes par cellule.
+
+| `double`, 10⁶ | CPU 8 fils | GPU | |
+|---|---|---|---|
+| uniforme | 203 ns/germe, 5 994 454 facettes | **95 ns/germe, 5 994 454** | ×2.1, **0 manquante, 0 en trop** |
+| lignes / Voronoï (10⁵) | 324 | 131 | ×2.5, 44 manquantes (3.0e-5 du poids) |
+| lignes / aires égales (10⁵) | 907 | 481 | ×1.9, 244 manquantes (1.7e-5 du poids) |
+
+En `float` sur l'uniforme : **23.7 ns/germe, ×8.5**, 261 manquantes et 251 en trop sur 6 M
+(2.8e-8 du poids) — des arêtes quasi nulles que le `float` fait apparaître ou disparaître.
+
+**Deux leçons de la mise au point.** D'abord, la première passe fait **déborder 13 % des cellules
+en uniforme** (`nn > R` pendant la construction, pas à l'arrivée) : c'est `filmix` qui les finit, et
+tant qu'il n'émettait pas de facettes il manquait 13 % de la hessienne — invisible sur les mesures,
+qui étaient justes. Ensuite, **juger un `c_ij` sur lui-même ne veut rien dire** : une arête quasi
+nulle a une erreur relative énorme et un poids nul ; le contrôle les rapporte au `c` moyen et pèse
+les non appariées.
+
+**Ce qui reste, dans l'ordre.** 1) Les quelques dizaines de cellules à plus de `NF` arêtes sur les
+nuages de lignes (compteur en place, `Chrono::deborde`). 2) L'assemblage CSR sur GPU (comptage +
+somme préfixe, deux passes). 3) Le gradient conjugué préconditionné. 4) La boucle de Newton et sa
+recherche linéaire. 5) Les densités, notamment l'image : intersecter la cellule avec la grille de
+pixels. 6) Et, mesuré comme le vrai goulot à grande échelle, **la construction de l'arbre sur
+GPU** (22 s à 3·10⁷ sur CPU contre 8 s de mesure GPU).
+
+
 * **`filnrm8` est la référence 2D** (7.7 ns/germe en uniforme, ×19 ; 19 et 47 sur les lignes,
   `filmix6` à égalité sur Laguerre). Ce qui reste de divergence (6,8 actifs sur 32) est mesuré
   incompressible à peu de frais : l'oracle du tri par coût ([§ profils](05-profils.md)) dit +38 % de lanes au mieux,
