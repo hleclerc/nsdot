@@ -17,7 +17,7 @@
 #include "bench/Dispatch.h"
 #include "solver/Laplacien.h"
 #include "gpu/Mesures.h"
-#include "gpu/Bsp2D.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -44,44 +44,9 @@ int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu, bool arbre_gp
     pd.build( nu.P, nu.W, nu.n, a.leaf );
     const double t_arbre = now() - t0;
 
-    // ---- L'ARBRE SUR GPU : construit, puis reinjecte dans un `AaBspT<2>` pour que le MEME moteur
-    //      de mesure le lise. Si les mesures tombent juste, l'arbre est bon.
-    double t_arbre_gpu = 0, ms_gpu = 0;
-    AaBspT<2> ag;
-    if ( arbre_gpu ) {
-        gpu::ArbreHote h;
-        t0 = now();
-        gpu::construit2( nu.P[ 0 ], nu.P[ 1 ], int( nu.n ), int( a.leaf ), h, &ms_gpu );
-        t_arbre_gpu = now() - t0;
-        ag.leaf_size = a.leaf;
-        ag.nodes.resize( h.nn );
-        for ( int i = 0; i < h.nn; ++i ) {
-            auto &d = ag.nodes[ i ];
-            // les boites sont calculees en `float` ( les atomiques entiers ) : on les ELARGIT d'un
-            // ulp pour qu'elles contiennent a coup sur les positions `double`, sinon l'elagage
-            // pourrait retrancher un germe legitime
-            for ( int k = 0; k < 2; ++k ) {
-                d.lo[ k ] = std::nextafter( double( h.lo[ 2 * i + k ] ), -1e300 );
-                d.hi[ k ] = std::nextafter( double( h.hi[ 2 * i + k ] ),  1e300 );
-            }
-            d.wm = {};
-            d.beg = h.beg[ i ]; d.end = h.end[ i ]; d.right = h.right[ i ];
-        }
-        ag.order.assign( h.order.begin(), h.order.end() );
-        // les positions sont RELUES EN `double` par la permutation : le GPU n'a trie que des
-        // `float`, mais la permutation qu'il rend est la seule chose dont l'arbre a besoin
-        for ( int k = 0; k < 2; ++k ) ag.p[ k ].resize( h.n );
-        for ( int k = 0; k < h.n; ++k )
-            for ( int d = 0; d < 2; ++d ) ag.p[ d ][ k ] = nu.P[ d ][ ag.order[ k ] ];
-        ag.pw.clear();
-        std::printf( "      arbre GPU %6.0f ms ( noyaux %6.1f ms ) contre %6.0f ms au CPU sur %d fils   x%.1f   %d noeuds contre %d\n",
-                     t_arbre_gpu * 1e3, ms_gpu, t_arbre * 1e3, a.par.threads, t_arbre / t_arbre_gpu,
-                     h.nn, int( pd.arbre.nodes.size() ) );
-    }
-
-    // ---- LE TEMOIN : mesures et facettes par le moteur CPU
+    // ---- LE TEMOIN : mesures et facettes par le moteur CPU. Le callback est appele DEPUIS LES
+    //      FILS : une liste par fil, comme `solver/Newton.h`.
     std::vector<TF> cpu;
-    // le callback est appele DEPUIS LES FILS : une liste par fil, comme `solver/Newton.h`
     std::vector<std::vector<Fa>> par_fil( std::max( a.par.threads, 1 ) );
     t0 = now();
     pd.measures_and_facets( cpu, a.par, [ & ]( int t, SI i, SI j, TF mes ) {
@@ -99,7 +64,17 @@ int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu, bool arbre_gp
                  t_cpu, t_cpu / nu.n * 1e9, fcpu.size() );
 
     // ---- LE GPU : le meme, en un noyau
-    gpu::DiagrammeGpu<D,TK> g( arbre_gpu ? ag : pd.arbre );
+    // ---- L'ARBRE : celui du CPU, ou bien construit SUR LE GPU et qui n'en redescend pas
+    double ms_gpu = 0, t_arbre_gpu = 0;
+    const double tg0 = now();
+    gpu::DiagrammeGpu<D,TK> g = arbre_gpu
+        ? gpu::DiagrammeGpu<D,TK>( nu.P, nu.W, int( nu.n ), int( a.leaf ), &ms_gpu )
+        : gpu::DiagrammeGpu<D,TK>( pd.arbre );
+    t_arbre_gpu = now() - tg0;
+    if ( arbre_gpu )
+        std::printf( "      arbre GPU %6.0f ms ( noyaux %6.1f ms ) contre %6.0f ms au CPU sur %d fils   x%.1f   %d noeuds contre %d\n",
+                     t_arbre_gpu * 1e3, ms_gpu, t_arbre * 1e3, a.par.threads, t_arbre / t_arbre_gpu,
+                     g.nb_noeuds(), int( pd.arbre.nodes.size() ) );
     std::vector<double> res, fl;
     std::vector<int> fj;
     const gpu::Chrono ch = g.facettes( reps_gpu, res, fj, fl );

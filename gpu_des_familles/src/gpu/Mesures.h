@@ -37,10 +37,15 @@ struct Chrono {
 template<int D, class TK>
 struct DiagrammeGpu {
     explicit DiagrammeGpu( const AaBspT<D> &arbre );
+
+    /// L'ARBRE CONSTRUIT SUR LE GPU, de bout en bout : rien ne redescend ( 2D ). `P[ d ][ i ]` les
+    /// positions, `W` les poids ou `nullptr`. `ms` rend le temps GPU de la construction.
+    DiagrammeGpu( const double *const *P, const double *W, int n, int leaf, double *ms = nullptr );
     ~DiagrammeGpu();
     DiagrammeGpu( const DiagrammeGpu & ) = delete;
     DiagrammeGpu &operator=( const DiagrammeGpu & ) = delete;
 
+    int nb_noeuds() const { return nn_pub; }
     double televersement() const { return t_tele; }     ///< le temps de la montee, en secondes
 
     /// `res[ id ]` pour chaque germe ; `maxnv` : 64 | 128 en 2D, 64 | 128 en 3D. Un tour de chauffe,
@@ -57,6 +62,7 @@ struct DiagrammeGpu {
     struct Impl;
     Impl  *impl;
     double t_tele = 0;
+    int    nn_pub = 0;
 };
 
 /// le nom de la carte, pour l'en-tete

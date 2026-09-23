@@ -49,29 +49,50 @@ Le **préordre** vient après : on remonte les tailles de sous-arbre (niveaux à
 redescend les indices (gauche = moi + 1, droit = moi + 1 + taille du gauche). La sortie a
 exactement la forme que `Arbre.cuh` attend.
 
-| uniforme | arbre CPU (8 fils) | arbre GPU | noyaux seuls | nœuds | mesures |
+Le **majorant affine des poids** (`accel/WeightMajorant.h`, le seul endroit du banc où une idée a
+rapporté un facteur) suit en **quatre passes** sur les germes, chacune une réduction par nœud faite
+en atomiques — chaque germe remonte sa branche depuis sa feuille, `parent` donnant un saut par
+niveau :
+
+* **A** — les sommes et les extrêmes (`Σw`, `Σy`, `w` min / max) ;
+* **B** — la matrice normale centrée et le second membre ; puis un thread par nœud résout le 2×2
+  et applique les garde-fous de pente (une pente qui, sur l'étendue du nœud, dépasse de loin
+  l'étalement des poids est un artefact du conditionnement) ;
+* **C** — l'étalement des résidus `w − a·y`, qui décide d'accepter la pente ou de la jeter (seuil
+  « nettement mieux que le hasard ») ;
+* **D** — `b = max( w − a·y )` avec les pentes **arrondies**, plus la marge de quelques ulp.
+
+Les atomiques flottantes ne somment pas dans le même ordre que le CPU, donc `a` peut différer d'un
+arrondi : sans importance, `a` est un **choix** et `b` est calculé après lui, avec marge — le
+majorant reste valide. Les min / max en `double` passent par le même codage entier ordonné, en 64
+bits.
+
+**Rien ne redescend** : `DiagrammeGpu` a un constructeur qui prend les positions et les poids bruts,
+construit l'arbre sur la carte et garde nœuds, permutation, positions permutées et codes en virgule
+fixe là où ils sont.
+
+| `double` | arbre CPU (8 fils) | arbre GPU (mur) | noyaux seuls | nœuds | mesures + facettes |
 |---|---|---|---|---|---|
-| 10⁶ | 306 ms | 302 ms (×1.0) | **43 ms (×7.1)** | 262 143 = 262 143 | 2.3e-10, 1 facette sur 6 M |
-| 10⁷ | 5525 ms | **877 ms (×6.3)** | **466 ms (×11.9)** | 2 097 151 = 2 097 151 | 2.5e-9, 7 sur 60 M |
+| uniforme 10⁶ | 301 ms | 287 ms (×1.0) | **44 ms (×6.8)** | 262 143 = 262 143 | exact, **0 facette manquante** |
+| uniforme 10⁷ | 5574 ms | **751 ms (×7.4)** | **474 ms (×11.8)** | 2 097 151 = 2 097 151 | exact, **0 manquante** |
+| lignes / Voronoï 10⁵ | 16 ms | 5 ms (×2.9) | 3.8 ms | 32 767 = 32 767 | 44 manquantes (NF > 16) |
+| **lignes / aires égales 10⁵ (Laguerre)** | 33 ms | **10 ms (×3.4)** | 7.1 ms | 32 767 = 32 767 | 2.0e-11, 244 manquantes |
 
-**L'arbre est le même que celui du CPU au nœud près**, et les mesures faites dessus sont justes
-(2.3e-10 en `double`). Deux points de mise au point valent d'être notés : les boîtes sont calculées
-en `float` (les atomiques sont entiers), donc elles sont **élargies d'un ulp** pour contenir à coup
-sûr les positions `double` — sinon l'élagage retrancherait un germe légitime ; et les positions
-permutées sont **relues en `double`** par la permutation, le GPU n'ayant trié que des `float`.
+**Le majorant affine fait bien son travail** : sur le nuage à aires égales, la mesure GPU coûte
+508 ns/germe avec l'arbre GPU contre 481 avec l'arbre CPU, soit +6 % — alors qu'un majorant
+constant coûterait, lui, un facteur (466 boîtes testées par cellule contre 135, `2d_des_familles`
+§ 6). Les pentes sont donc trouvées, à quelques arrondis près de celles du CPU.
 
-À 10⁶ le gain est mangé par les frais fixes (allocations, 16 Mo de montée, la reconstruction de
-l'`AaBspT` côté hôte) — d'où ×1.0 en temps de mur pour ×7.1 sur les noyaux. À 10⁷ ils s'amortissent
-et la **chaîne complète passe de 7.4 s à 1.9 s, ×3.9**. Ce qui reste à faire ici : garder l'arbre
-sur le GPU au lieu de le redescendre (la reconstruction hôte est la moitié du temps de mur à 10⁶),
-et le **majorant affine des poids**, sans lequel le Laguerre n'est pas couvert.
+Ce qui reste ici : le temps de mur à 10⁶ est encore dominé par ~250 ms de frais fixes (contexte
+CUDA et une vingtaine d'allocations), constants et donc invisibles à 10⁷ ; et les nœuds sont
+écrits en `float` pour la boîte (élargie d'un ulp) là où le CPU la garde en `double`.
 
 **Ce qui reste, dans l'ordre.** 1) Les quelques dizaines de cellules à plus de `NF` arêtes sur les
 nuages de lignes (compteur en place, `Chrono::deborde`). 2) L'assemblage CSR sur GPU (comptage +
 somme préfixe, deux passes). 3) Le gradient conjugué préconditionné. 4) La boucle de Newton et sa
 recherche linéaire. 5) Les densités, notamment l'image : intersecter la cellule avec la grille de
-pixels. 6) L'arbre gardé sur le GPU de bout
-en bout (il y est construit, § ci-dessus) et son majorant affine pour le Laguerre.
+pixels. 6) Les frais fixes de la
+construction (allocations en cache plutôt que refaites), et la 3D.
 
 
 * **`filnrm8` est la référence 2D** (7.7 ns/germe en uniforme, ×19 ; 19 et 47 sur les lignes,

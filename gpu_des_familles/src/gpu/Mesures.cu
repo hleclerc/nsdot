@@ -9,6 +9,7 @@
 // =====================================================================================
 
 #include "gpu/Mesures.h"
+#include "gpu/Bsp2D.cuh"
 #include "gpu/Fil2D.cuh"
 #include "gpu/Voies2D.cuh"
 #include "gpu/Paquet2D.cuh"
@@ -114,6 +115,35 @@ DiagrammeGpu<D,TK>::DiagrammeGpu( const AaBspT<D> &arbre ) : impl( new Impl ) {
     CUDA_OK( cudaMalloc( &m.stats, 4 * sizeof( unsigned long long ) ) );
     CUDA_OK( cudaMalloc( &m.cptr, sizeof( int ) ) );
     CUDA_OK( cudaMalloc( &m.liste, m.n * sizeof( int ) ) );
+    CUDA_OK( cudaDeviceSynchronize() );
+    t_tele = now() - t0;
+}
+
+/// L'ARBRE SUR LE GPU : la construction remplit directement les tampons de l'implementation, et
+/// rien ne repasse par l'hote ( ni noeuds, ni permutation, ni positions ).
+template<int D, class TK>
+DiagrammeGpu<D,TK>::DiagrammeGpu( const double *const *P, const double *W, int n, int leaf, double *ms )
+    : impl( new Impl ) {
+    const double t0 = now();
+    Impl &m = *impl;
+    m.n = n;
+    m.poids = W != nullptr;
+    if constexpr ( D == 2 ) {
+        SortieBsp<TK> s;
+        construit2_dev<TK>( P[ 0 ], P[ 1 ], W, n, leaf, s, ms );
+        m.nodes = s.nodes; m.nn = s.nn; m.ids = s.ids; m.w = s.w;
+        for ( int d = 0; d < 2; ++d ) { m.c[ d ] = s.c[ d ]; m.u[ d ] = s.u[ d ]; m.u64[ d ] = s.u64[ d ]; }
+        nn_pub = s.nn;
+    } else {
+        std::fprintf( stderr, "l'arbre sur GPU n'est fait qu'en 2D\n" );
+        std::exit( 2 );
+    }
+    CUDA_OK( cudaMalloc( &m.res, size_t( n ) * sizeof( double ) ) );
+    CUDA_OK( cudaMalloc( &m.deb, sizeof( int ) ) );
+    CUDA_OK( cudaMalloc( &m.deb2, sizeof( int ) ) );
+    CUDA_OK( cudaMalloc( &m.stats, 4 * sizeof( unsigned long long ) ) );
+    CUDA_OK( cudaMalloc( &m.cptr, sizeof( int ) ) );
+    CUDA_OK( cudaMalloc( &m.liste, size_t( n ) * sizeof( int ) ) );
     CUDA_OK( cudaDeviceSynchronize() );
     t_tele = now() - t0;
 }
