@@ -291,6 +291,52 @@ changent à chaque pas : la hiérarchie doit être remontée, et c'est notre 14 
 résolutions, AMGCL passerait devant d'un facteur 2.6. Le balayage complet est rejouable :
 `AMGCL_VAR` choisit la configuration, `AMG_K`, `AMG_NU` et `AMG_GROS` règlent la nôtre.
 
+### La prolongation lissée avec `cusparseSpGEMM` : écrite, mesurée, et elle PERD
+
+Le levier qu'on avait écarté, puis repris : `P̂ = P − ω D⁻¹ A P`, un pas de Jacobi appliqué à
+**l'opérateur d'interpolation lui-même**, qui arrondit les marches d'escalier de notre prolongation
+constante par morceaux. `P` a une entrée par ligne, `P̂` en a trois à cinq, et le grossier devient
+`P̂ᵀ A P̂` — un produit de trois matrices creuses. Fait à la main (triplets, tri, réduction) il
+donnerait ~10⁸ triplets à 10⁶ germes, soit 1.8 Go à trier ; **`cusparseSpGEMM` le fait à notre
+place**, et c'est ce qui rendait l'idée abordable. `src/gpu/Lisse2D.cuh`, derrière `AMG_LISSE=1`.
+
+Un détail épargne une addition creuse : le motif de `P` est **inclus** dans celui de `A P` (la
+ligne `i` de `A P` touche le paquet de chaque voisin de `i`, dont `i` lui-même). On calcule donc
+`A P`, on multiplie tout par `−ω / d_i`, et on ajoute un à la seule entrée qui tombe sur le paquet
+de `i`.
+
+**Ça marche, et la convergence fait ce qu'elle promet.** À 2·10⁵, avec le même cycle qu'avant
+(K sur 2 niveaux, ν = 2) : **35 itérations au lieu de 65**. Et avec un simple V-cycle, 64 au lieu
+de 169. La prolongation lissée vaut bien le K-cycle sur ce point.
+
+**Mais elle perd sur le temps, et de loin.** À 2·10⁵ :
+
+| | hiérarchie | itérations | résolution | **total** |
+|---|---|---|---|---|
+| non lissée, K = 2, ν = 2 | **4 ms** | 65 | **206 ms** | **210 ms** |
+| lissée, V-cycle, ν = 2 | 289 ms | 64 | 234 ms | 523 ms |
+| lissée, K = 2, ν = 2 | 289 ms | 35 | 442 ms | 731 ms |
+
+Deux raisons. La **mise en place coûte 289 ms contre 4** : trois SpGEMM, un tri de colonnes et une
+transposée par niveau. Et le **cycle devient plus cher par itération** parce que les matrices
+grossières sont bien plus denses — 3.65 ms par itération contre 3.17, alors qu'on fait *moins*
+d'itérations. Le gain en convergence est exactement mangé par le coût du cycle.
+
+**Et à 10⁶, elle se dégrade franchement** : le V-cycle **ne converge plus** (20 000 itérations,
+résidu 5.4e-10), et avec le K-cycle il faut **278 itérations et 6.9 s** contre 75 et 0.85 s pour
+la version non lissée. L'explication tient à notre agrégation : elle est **géométrique**
+(`rang >> 2`), ce qui convient à un Galerkin non lissé, qui préserve la localité — mais le
+grossier lissé a un stencil bien plus large, et des paquets de quatre rangs consécutifs n'y
+correspondent plus. **Une vraie agrégation lissée redérive ses paquets du graphe de force de
+connexion à chaque niveau**, ce que nous ne faisons pas. C'est ça qu'il faudrait ajouter, pas le
+produit triple — qui, lui, s'est révélé facile.
+
+**Conclusion de la manche.** Le K-cycle sur agrégation non lissée atteint la même convergence que
+l'agrégation lissée avec un V-cycle (65 contre 64 itérations à 2·10⁵), **pour une mise en place
+70 fois moins chère et un cycle moins dense**. C'est exactement l'argument d'AGMG contre
+l'agrégation lissée, et il se vérifie ici. Le code est gardé (`AMG_LISSE=1`) comme résultat négatif
+documenté ; le défaut par défaut reste l'agrégation non lissée.
+
 **Alléger le cycle : ce qui a marché et ce qui n'a pas.** Le détail ci-dessus désignait notre
 *résolution* comme le poste à travailler. Quatre pistes, mesurées à 10⁶ :
 

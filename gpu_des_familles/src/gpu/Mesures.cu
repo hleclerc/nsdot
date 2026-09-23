@@ -71,6 +71,8 @@ struct DiagrammeGpu<D,TK>::Impl {
     int          gros = 120;                         ///< lissages au niveau le plus grossier
     int          nu = 2;                             ///< lissages avant et apres, par niveau
     int          stop = 1000;                        ///< on arrete de grossir en dessous
+    int          lisse = 0;                          ///< la prolongation LISSEE ( `cusparseSpGEMM` )
+    cusparseHandle_t cus = nullptr;
     int         *rang_de = nullptr;                  ///< identifiant -> rang ( l'agregation du niveau fin )
     double      *acc = nullptr;                      ///< un scalaire de travail
     int          n = 0, nn = 0;
@@ -631,6 +633,7 @@ void DiagrammeGpu<D,TK>::monte_amg( const Hessienne &H ) {
         if ( l ) { cudaFree( v.row ); cudaFree( v.col ); cudaFree( v.val ); cudaFree( v.dia ); }
         cudaFree( v.x ); cudaFree( v.b ); cudaFree( v.r );
         cudaFree( v.v1 ); cudaFree( v.v2 ); cudaFree( v.t ); cudaFree( v.rc ); cudaFree( v.sc );
+        csr_libere( v.P ); csr_libere( v.R );
     }
     for ( int *p : m.map ) cudaFree( p );
     m.niv.clear(); m.map.clear();
@@ -638,6 +641,8 @@ void DiagrammeGpu<D,TK>::monte_amg( const Hessienne &H ) {
     if ( const char *e = std::getenv( "AMG_GROS" ) ) m.gros = std::atoi( e );
     if ( const char *e = std::getenv( "AMG_NU" ) ) m.nu = std::atoi( e );
     if ( const char *e = std::getenv( "AMG_STOP" ) ) m.stop = std::atoi( e );
+    if ( const char *e = std::getenv( "AMG_LISSE" ) ) m.lisse = std::atoi( e );
+    if ( m.lisse && ! m.cus ) cusparseCreate( &m.cus );
     if ( ! m.rang_de ) {
         CUDA_OK( cudaMalloc( &m.rang_de, size_t( m.n ) * sizeof( int ) ) );
         CUDA_OK( cudaMalloc( &m.acc, sizeof( double ) ) );
@@ -668,6 +673,57 @@ void DiagrammeGpu<D,TK>::monte_amg( const Hessienne &H ) {
         double *po, *po2;
         CUDA_OK( cudaMalloc( &cl, size_t( g.nnz ) * 8 ) ); CUDA_OK( cudaMalloc( &cl2, size_t( g.nnz ) * 8 ) );
         CUDA_OK( cudaMalloc( &po, size_t( g.nnz ) * 8 ) ); CUDA_OK( cudaMalloc( &po2, size_t( g.nnz ) * 8 ) );
+        if ( m.lisse ) {
+            // ---- LA PROLONGATION LISSEE. `A` en CSR ordinaire et trie, `P` tentative, puis
+            //      `P^ = P - omega D^-1 A P` en place sur `A P`, et `A_c = P^t ( A P^ )`.
+            constexpr double OMP = 0.7;
+            Csr A;
+            A.lignes = A.colonnes = g.n; A.nnz = g.nnz + g.n;
+            CUDA_OK( cudaMalloc( &A.row, size_t( A.lignes + 1 ) * 4 ) );
+            CUDA_OK( cudaMalloc( &A.col, size_t( A.nnz ) * 4 ) );
+            CUDA_OK( cudaMalloc( &A.val, size_t( A.nnz ) * 8 ) );
+            k_lis_plein<<<gr( g.n + 1 ), BL>>>( g.row, g.col, g.val, g.dia, A.row, A.col, A.val, g.n );
+            trie( m.cus, A );
+
+            Csr P0;
+            P0.lignes = g.n; P0.colonnes = nc; P0.nnz = g.n;
+            CUDA_OK( cudaMalloc( &P0.row, size_t( g.n + 1 ) * 4 ) );
+            CUDA_OK( cudaMalloc( &P0.col, size_t( g.n ) * 4 ) );
+            CUDA_OK( cudaMalloc( &P0.val, size_t( g.n ) * 8 ) );
+            k_lis_p0<<<gr( g.n + 1 ), BL>>>( mp, P0.row, P0.col, P0.val, g.n );
+
+            Csr Ph, APh, Ac, R;
+            spgemm( m.cus, A, P0, Ph );                  // `A P`, puis lisse EN PLACE
+            k_lis_lisse<<<gr( g.n ), BL>>>( Ph.row, Ph.col, Ph.val, g.dia, mp, OMP, g.n );
+            spgemm( m.cus, A, Ph, APh );
+            transpose( m.cus, Ph, R );
+            spgemm( m.cus, R, APh, Ac );
+
+            Niveau c2;
+            c2.n = nc;
+            CUDA_OK( cudaMalloc( &c2.row, size_t( nc + 1 ) * 4 ) );
+            CUDA_OK( cudaMalloc( &c2.dia, size_t( nc ) * 8 ) );
+            CUDA_OK( cudaMemset( c2.row, 0, size_t( nc + 1 ) * 4 ) );
+            k_lis_compte<<<gr( nc ), BL>>>( Ac.row, Ac.col, nc, c2.row );
+            void *ts2 = nullptr; size_t tso2 = 0;
+            cub::DeviceScan::ExclusiveSum( ts2, tso2, c2.row, c2.row, nc + 1 );
+            CUDA_OK( cudaMalloc( &ts2, tso2 ) );
+            CUDA_OK( cub::DeviceScan::ExclusiveSum( ts2, tso2, c2.row, c2.row, nc + 1 ) );
+            CUDA_OK( cudaMemcpy( &c2.nnz, c2.row + nc, 4, cudaMemcpyDeviceToHost ) );
+            CUDA_OK( cudaMalloc( &c2.col, size_t( c2.nnz ) * 4 ) );
+            CUDA_OK( cudaMalloc( &c2.val, size_t( c2.nnz ) * 8 ) );
+            k_lis_verse<<<gr( nc ), BL>>>( Ac.row, Ac.col, Ac.val, c2.row, c2.col, c2.val, c2.dia, nc );
+            CUDA_OK( cudaMalloc( &c2.x, size_t( nc ) * 8 ) ); CUDA_OK( cudaMalloc( &c2.b, size_t( nc ) * 8 ) );
+            CUDA_OK( cudaMalloc( &c2.r, size_t( nc ) * 8 ) );
+            CUDA_OK( cudaMalloc( &c2.v1, size_t( nc ) * 8 ) ); CUDA_OK( cudaMalloc( &c2.v2, size_t( nc ) * 8 ) );
+            CUDA_OK( cudaMalloc( &c2.t, size_t( nc ) * 8 ) );  CUDA_OK( cudaMalloc( &c2.rc, size_t( nc ) * 8 ) );
+            CUDA_OK( cudaMalloc( &c2.sc, 8 * 8 ) );
+            c2.P = Ph; c2.R = R;                         // gardes : le cycle s'en sert
+            csr_libere( A ); csr_libere( P0 ); csr_libere( APh ); csr_libere( Ac );
+            cudaFree( ts2 );
+            m.niv.push_back( c2 );
+            continue;
+        }
         CUDA_OK( cudaMemset( cpt, 0, 4 ) );
         k_amg_triples<<<gr( g.n ), BL>>>( g.row, g.col, g.val, mp, g.n, nc, cl, po, cpt );
         int nt = 0;
@@ -741,8 +797,12 @@ void DiagrammeGpu<D,TK>::cycle_v( int l ) {
     for ( int k = 0; k < NU; ++k )
         k_amg_jacobi<<<gr( g.n ), BL>>>( g.row, g.col, g.val, g.dia, g.x, g.b, OM, g.n );
     k_amg_residu<<<gr( g.n ), BL>>>( g.row, g.col, g.val, g.dia, g.x, g.b, g.r, g.n );
-    CUDA_OK( cudaMemsetAsync( c.b, 0, size_t( c.n ) * 8 ) );
-    k_amg_restreint<<<gr( g.n ), BL>>>( g.r, m.map[ l ], c.b, g.n );
+    if ( c.R.row ) {
+        k_lis_spmv<<<( c.n + BL - 1 ) / BL, BL>>>( c.R.row, c.R.col, c.R.val, g.r, c.b, c.n, false );
+    } else {
+        CUDA_OK( cudaMemsetAsync( c.b, 0, size_t( c.n ) * 8 ) );
+        k_amg_restreint<<<gr( g.n ), BL>>>( g.r, m.map[ l ], c.b, g.n );
+    }
 
     if ( l >= m.kcycle ) {
         cycle_v( l + 1 );
@@ -773,7 +833,8 @@ void DiagrammeGpu<D,TK>::cycle_v( int l ) {
         k_kc_c2<<<1,1>>>( rho1, a1, g2, b2, a2, c1, c2 );
         k_kc_comb<<<gc, BL>>>( c.x, c.v1, c.v2, c1, c2, c.n );
     }
-    k_amg_prolonge<<<gr( g.n ), BL>>>( g.x, c.x, m.map[ l ], g.n );
+    if ( c.P.row ) k_lis_spmv<<<gr( g.n ), BL>>>( c.P.row, c.P.col, c.P.val, c.x, g.x, g.n, true );
+    else           k_amg_prolonge<<<gr( g.n ), BL>>>( g.x, c.x, m.map[ l ], g.n );
     for ( int k = 0; k < NU; ++k )
         k_amg_jacobi<<<gr( g.n ), BL>>>( g.row, g.col, g.val, g.dia, g.x, g.b, OM, g.n );
 }

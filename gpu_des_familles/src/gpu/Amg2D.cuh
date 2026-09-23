@@ -29,6 +29,7 @@
 // direction de Newton a une constante pres.
 // =====================================================================================
 
+#include "gpu/Lisse2D.cuh"
 #include <cub/cub.cuh>
 
 namespace sf::gpu {
@@ -41,6 +42,7 @@ struct Niveau {
     double *x = nullptr, *b = nullptr, *r = nullptr;     ///< les vecteurs de travail du cycle
     double *v1 = nullptr, *v2 = nullptr, *t = nullptr, *rc = nullptr;   ///< ceux du K-cycle
     double *sc = nullptr;                                ///< huit scalaires, sur la carte
+    Csr     P, R;                                        ///< prolongation lissee et sa transposee
     int     n = 0, nnz = 0;
 };
 
