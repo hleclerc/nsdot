@@ -291,6 +291,51 @@ changent à chaque pas : la hiérarchie doit être remontée, et c'est notre 14 
 résolutions, AMGCL passerait devant d'un facteur 2.6. Le balayage complet est rejouable :
 `AMGCL_VAR` choisit la configuration, `AMG_K`, `AMG_NU` et `AMG_GROS` règlent la nôtre.
 
+### LE NEWTON COMPLET (`--newton K`)
+
+La boucle entière est sur la carte. `∂m/∂w = L` (augmenter `w_i` pousse les plans qui bordent la
+cellule `i`, donc l'agrandit), donc le pas résout `L d = m − ν` et va dans le sens `w ← w − t d`.
+
+**La recherche du pas (Kitagawa–Mérigot–Thibert).** Un pas est accepté si **aucune cellule ne
+disparaît** — c'est la condition qui mord, la fonctionnelle duale n'étant définie que là où toutes
+les cellules ont une masse — **et** si le résidu décroît d'au moins `t/2`. On divise par deux
+jusqu'à passer.
+
+**Le « meilleur coefficient de relaxation » n'est PAS le plus grand pas admissible.** On peut
+raffiner par dichotomie entre le dernier pas refusé et le premier accepté pour trouver le plus
+grand `t` qui passe ; mesuré, c'est **nuisible** (uniforme 2·10⁵) :
+
+| dichotomies de raffinement | 0 | 2 | 3 | 5 |
+|---|---|---|---|---|
+| itérations de Newton | **7** | 8 | 10 | 21 |
+| temps | **1.82 s** | 2.18 | 3.25 | 8.94 |
+
+La raison est nette dans la trace : le plus grand pas admissible laisse une cellule **au bord du
+vide** (5e-4 de la cible), ce qui rend la hessienne suivante épouvantable et force un pas minuscule
+à l'itération d'après. Le critère KMT est un **garde-fou, pas un objectif à maximiser**.
+
+**Ce qui marche, c'est une marge — et RELATIVE.** On exige que la plus petite cellule ne perde pas
+plus d'une fraction de ce qu'elle vaut *déjà* : `m_min(w − t d) ≥ f · m_min(w)`. Une marge
+*absolue* (« garder `f` fois la cible ») est inapplicable au départ, où les cellules sont déjà
+mille fois trop petites : aucun pas ne passe jamais. Avec la marge relative, `f` entre 0.25 et 0.8
+donne le même résultat — **20 diagrammes d'essai au lieu de 25, et −10 % de temps**. `f = 0.5`.
+
+**Newton inexact.** À tolérance de CG fixe, la direction devient du bruit dès que le résidu de
+Newton descend au même niveau, et la recherche linéaire ne trouve plus de pas — mesuré : arrêt sec
+à 1e-8. La tolérance suit donc la convergence (`tol = min( 1e-8, 0.05 · résidu relatif )`).
+
+| `double`, résidu visé 1e-7 | itérations | diagrammes | CG | **total** | résidu atteint |
+|---|---|---|---|---|---|
+| uniforme 10⁶ | **6** | 16 (2.38 s) | 301 it. (3.54 s) | **6.09 s** | 4.7e-10 |
+| lignes / Voronoï 10⁵ | 23 | 101 (4.06 s) | 1557 it. (4.75 s) | 8.84 s | 1.36e-8 |
+| lignes / aires égales 10⁵ | 23 | 101 (4.06 s) | 1560 it. (4.73 s) | 8.83 s | 1.37e-8 |
+
+Sur l'uniforme, la convergence quadratique est franche : 5.6e-3 → 1.5e-4 → 1.8e-6 → 4.7e-10, et la
+plus petite cellule remonte de 0.7 % de la cible à exactement 1.00. Sur les nuages de lignes le
+résidu **plafonne à 1e-8** : c'est le plancher de précision de la hessienne sur cette géométrie
+(ses `c_ij` y ont un écart max de 3e-9, § plus haut) — bien au-delà de ce qu'une application
+demande, mais c'est la limite, et elle est géométrique, pas algorithmique.
+
 ### La prolongation lissée avec `cusparseSpGEMM` : écrite, mesurée, et elle PERD
 
 Le levier qu'on avait écarté, puis repris : `P̂ = P − ω D⁻¹ A P`, un pas de Jacobi appliqué à

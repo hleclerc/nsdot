@@ -36,6 +36,7 @@
 #include <type_traits>
 #include <algorithm>
 #include <numeric>
+#include <cstring>
 
 namespace sf::gpu {
 
@@ -622,6 +623,51 @@ double DiagrammeGpu<D,TK>::assemble( Hessienne &H ) {
     }
 }
 
+/// `|| m - cible ||` et la plus petite mesure, en un noyau ( warp, bloc, un atomique ).
+__global__ void k_residu( const double *res, double cible, double *b, double *acc, int n ) {
+    __shared__ double ps[ 32 ], pm[ 32 ];
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    const double m = i < n ? res[ i ] : 0.0;
+    double s = i < n ? ( m - cible ) * ( m - cible ) : 0.0;
+    double mn = i < n ? m : 1e300;
+    if ( b && i < n ) b[ i ] = m - cible;
+#pragma unroll
+    for ( int d = 16; d; d >>= 1 ) { s += __shfl_down_sync( 0xffffffffu, s, d ); mn = fmin( mn, __shfl_down_sync( 0xffffffffu, mn, d ) ); }
+    const int voie = threadIdx.x & 31, warp = threadIdx.x >> 5;
+    if ( voie == 0 ) { ps[ warp ] = s; pm[ warp ] = mn; }
+    __syncthreads();
+    if ( warp == 0 ) {
+        const bool ok = voie < ( blockDim.x >> 5 );
+        s = ok ? ps[ voie ] : 0.0;
+        mn = ok ? pm[ voie ] : 1e300;
+#pragma unroll
+        for ( int d = 16; d; d >>= 1 ) { s += __shfl_down_sync( 0xffffffffu, s, d ); mn = fmin( mn, __shfl_down_sync( 0xffffffffu, mn, d ) ); }
+        if ( voie == 0 ) { atomicAdd( acc, s ); atomicMin( ( unsigned long long * ) ( acc + 1 ), ordd( mn ) ); }
+    }
+}
+
+template<int D, class TK>
+double DiagrammeGpu<D,TK>::residu( double cible, double *mini, double *b ) const {
+    Impl &m = *impl;
+    const int BL = 256, gr = ( m.n + BL - 1 ) / BL;
+    if ( ! m.acc ) CUDA_OK( cudaMalloc( &m.acc, 4 * sizeof( double ) ) );
+    const double init[ 2 ] = { 0.0, 0.0 };
+    CUDA_OK( cudaMemcpy( m.acc, init, sizeof( init ), cudaMemcpyHostToDevice ) );
+    const unsigned long long haut = 0xffffffffffffffffull;   // `ordd` du plus grand : le min part de la
+    CUDA_OK( cudaMemcpy( m.acc + 1, &haut, 8, cudaMemcpyHostToDevice ) );
+    k_residu<<<gr, BL>>>( m.res, cible, b, m.acc, m.n );
+    double s = 0;
+    unsigned long long om = 0;
+    CUDA_OK( cudaMemcpy( &s, m.acc, 8, cudaMemcpyDeviceToHost ) );
+    CUDA_OK( cudaMemcpy( &om, m.acc + 1, 8, cudaMemcpyDeviceToHost ) );
+    // le meme codage entier ordonne que les boites ( `Bsp2D.cuh` ), decode ici
+    const long long bits = ( long long ) ( ( om >> 63 ) ? ( om & 0x7fffffffffffffffull ) : ~om );
+    double mn;
+    std::memcpy( &mn, &bits, 8 );
+    if ( mini ) *mini = mn;
+    return std::sqrt( s );
+}
+
 /// LA HIERARCHIE : Galerkin niveau par niveau, l'agregation etant `>> 2` sur les rangs.
 template<int D, class TK>
 void DiagrammeGpu<D,TK>::monte_amg( const Hessienne &H ) {
@@ -645,7 +691,7 @@ void DiagrammeGpu<D,TK>::monte_amg( const Hessienne &H ) {
     if ( m.lisse && ! m.cus ) cusparseCreate( &m.cus );
     if ( ! m.rang_de ) {
         CUDA_OK( cudaMalloc( &m.rang_de, size_t( m.n ) * sizeof( int ) ) );
-        CUDA_OK( cudaMalloc( &m.acc, sizeof( double ) ) );
+        CUDA_OK( cudaMalloc( &m.acc, 4 * sizeof( double ) ) );   // le CG en veut un, `residu` deux
         k_amg_rang<<<gr( m.n ), BL>>>( m.ids, m.rang_de, m.n );
     }
 

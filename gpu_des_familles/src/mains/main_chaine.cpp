@@ -37,7 +37,8 @@ struct Fa { int i, j; double c; };
 bool avant( const Fa &a, const Fa &b ) { return a.i != b.i ? a.i < b.i : a.j < b.j; }
 
 template<class PD>
-int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu, bool arbre_gpu, int iterations ) {
+int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu, bool arbre_gpu, int iterations,
+            int newton, int raff, double marge, double tol ) {
     constexpr int D = PD::dim;
     using TK = typename PD::TKernel;
     static_assert( D == 2, "la chaine est 2D" );
@@ -160,10 +161,10 @@ int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu, bool arbre_gp
     std::sort( ecarts.begin(), ecarts.end() );
     const auto qu = [ & ]( double f ) { return ecarts.empty() ? 0.0 : ecarts[ std::min( ecarts.size() - 1, size_t( f * ecarts.size() ) ) ] / cmoy; };
     const double perdu = ( csom + csom2 ) / ctot;
-    const double tol = sizeof( TK ) == 4 ? 1e-3 : 1e-9;
+    const double tolf = sizeof( TK ) == 4 ? 1e-3 : 1e-9;   // le seuil du controle des facettes
     // en `float` le critere porte sur le p99 : la queue des `c_ij` est faite d'aretes quasi nulles
     // que le `float` fait apparaitre ou disparaitre, de poids negligeable ( voir `perdu` )
-    bool ok = perdu < tol && ( sizeof( TK ) == 4 ? qu( 0.99 ) < 1e-2 : qu( 0.9999 ) < 1e-9 );
+    bool ok = perdu < tolf && ( sizeof( TK ) == 4 ? qu( 0.99 ) < 1e-2 : qu( 0.9999 ) < 1e-9 );
     std::printf( "      controle  somme %.9f  ecart mesure %.1e  |  c_ij : median %.1e, p99 %.1e, p99.99 %.1e, max %.1e ( rapportes au c moyen )\n",
                  somme, ecart_m, qu( 0.5 ), qu( 0.99 ), qu( 0.9999 ), ecart_c / cmoy );
     std::printf( "                facettes manquantes %d, en trop %d -- %.2e du poids total%s\n",
@@ -347,6 +348,93 @@ int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu, bool arbre_gp
         ok = ok && cok;
     }
 
+    // ---- LE NEWTON COMPLET. La hessienne du dual est `d m / d w = L` ( augmenter `w_i` pousse
+    //      les plans qui bordent la cellule `i`, donc l'agrandit ), donc le pas resout `L d = m - v`
+    //      et va dans le sens `w <- w - t d`.
+    //
+    //      LA RECHERCHE DU PAS ( Kitagawa-Merigot-Thibert ) : un pas est accepte si AUCUNE CELLULE
+    //      NE DISPARAIT -- c'est la condition qui mord, la fonctionnelle duale n'etant definie que
+    //      la ou toutes les cellules ont une masse -- ET si le residu decroit d'au moins `t / 2`.
+    //      On divise par deux jusqu'a passer, puis on RAFFINE PAR DICHOTOMIE entre le dernier pas
+    //      refuse et le premier accepte : c'est le « meilleur coefficient de relaxation », et il
+    //      compte, parce qu'un pas deux fois trop petit coute une iteration de Newton entiere.
+    if ( newton > 0 && arbre_gpu ) {
+        const double cible = 1.0 / double( nu.n );
+        const double norme = cible * std::sqrt( double( nu.n ) );
+        std::vector<TF> w( nu.n, 0.0 ), w2( nu.n ), dh( nu.n );
+        double *db = nullptr, *dd = nullptr;
+        cudaMalloc( &db, nu.n * sizeof( double ) );
+        cudaMalloc( &dd, nu.n * sizeof( double ) );
+
+        const double tn0 = now();
+        double t_diag = 0, t_lin = 0;
+        int nb_diag = 0, nb_cg = 0;
+        g.tour_newton( w.data() ); ++nb_diag;
+        double mini = 0;
+        double err = g.residu( cible, &mini, db );
+        std::printf( "      NEWTON    depart : residu %.3e, plus petite cellule %.2e de la cible\n",
+                     err / norme, mini / cible );
+
+        int it = 0;
+        for ( ; it < newton && err > tol * norme; ++it ) {
+            gpu::Hessienne H;
+            const double tl0 = now();
+            g.assemble( H );
+            g.monte_amg( H );
+            double ms_cg = 0, r_cg = 0;
+            // NEWTON INEXACT : la tolerance du CG suit la convergence ( suite de forcage ). A
+            // tolerance fixe, la direction devient du bruit des que le residu de Newton descend au
+            // meme niveau -- et la recherche lineaire ne trouve plus de pas ( mesure : arret a
+            // 1e-8 sur les nuages de lignes ).
+            const double tol_cg = std::max( 1e-14, std::min( 1e-8, 0.05 * err / norme ) );
+            const int its = g.resout( H, db, dd, tol_cg, 20000, &ms_cg, &r_cg );
+            t_lin += now() - tl0;
+            nb_cg += its > 0 ? its : 0;
+            cudaMemcpy( dh.data(), dd, nu.n * sizeof( double ), cudaMemcpyDeviceToHost );
+
+            // l'essai d'un pas : le diagramme aux poids `w - t d`, puis les deux criteres
+            double e2 = 0, m2 = 0;
+            auto essai = [ & ]( double t ) {
+                for ( SI i = 0; i < nu.n; ++i ) w2[ i ] = w[ i ] - t * dh[ i ];
+                const double td0 = now();
+                g.tour_newton( w2.data() );
+                t_diag += now() - td0;
+                ++nb_diag;
+                e2 = g.residu( cible, &m2, nullptr );
+                // `marge` : la plus petite cellule ne doit pas perdre plus qu'une fraction de ce
+                // qu'elle vaut DEJA. Le critere KMT nu ( `marge = 0` ) autorise un pas qui la laisse
+                // au bord du vide -- admissible, et desastreux pour l'iteration suivante ; une marge
+                // ABSOLUE, elle, serait increvable au depart, ou les cellules sont deja minuscules.
+                return m2 > 0 && m2 >= marge * mini && e2 <= ( 1 - t / 2 ) * err;
+            };
+
+            double t = 1, t_ok = 0;
+            int essais = 0;
+            for ( ; t > 1e-13; t *= 0.5 ) { ++essais; if ( essai( t ) ) { t_ok = t; break; } }
+            if ( t_ok == 0 ) { std::printf( "      NEWTON    pas trouve, arret\n" ); break; }
+            // LE MEILLEUR COEFFICIENT : entre le dernier refuse et le premier accepte
+            double lo = t_ok, hi = std::min( 1.0, 2 * t_ok );
+            for ( int k = 0; k < raff && t_ok < 1.0; ++k ) {
+                const double mid = 0.5 * ( lo + hi );
+                ++essais;
+                if ( essai( mid ) ) { lo = mid; t_ok = mid; } else hi = mid;
+            }
+            for ( SI i = 0; i < nu.n; ++i ) w[ i ] -= t_ok * dh[ i ];
+            const double td0 = now();
+            g.tour_newton( w.data() );                   // l'etat doit finir sur le pas RETENU
+            t_diag += now() - td0;
+            ++nb_diag;
+            err = g.residu( cible, &mini, db );
+            std::printf( "      NEWTON %2d  pas %.4f ( %d essais ), CG %4d it., residu %.3e, plus petite %.2e\n",
+                         it + 1, t_ok, essais, its, err / norme, mini / cible );
+        }
+        const double t_tot = now() - tn0;
+        std::printf( "      NEWTON    %d iterations, %.2f s ( %d diagrammes %.2f s, %d it. de CG %.2f s ), residu final %.3e%s\n",
+                     it, t_tot, nb_diag, t_diag, nb_cg, t_lin, err / norme,
+                     err <= tol * norme ? "" : "   <-- PAS CONVERGE" );
+        cudaFree( db ); cudaFree( dd );
+    }
+
     // ---- LE REGIME AMORTI : `iterations` tours de Newton ( poids neufs, majorants, mesures et
     //      facettes ), l'arbre construit UNE FOIS. C'est le cout qui compte pour un solveur : les
     //      frais fixes ( contexte CUDA, allocations ) sont derriere, et rien ne redescend.
@@ -397,18 +485,27 @@ int main( int argc, char **argv ) {
     Args a;
     int reps_gpu = 10;
     bool arbre_gpu = false;
-    int iterations = 1;
+    int iterations = 1, newton = 0, raff = 0;
+    double marge = 0.5, tol = 1e-7;
     for ( int i = 1; i < argc; ++i ) {
         const std::string s = argv[ i ];
         if ( a.parse( s, i, argc, argv ) ) continue;
         if ( s == "--reps-gpu" && i + 1 < argc ) { reps_gpu = std::atoi( argv[ ++i ] ); continue; }
         if ( s == "--arbre-gpu" ) { arbre_gpu = true; continue; }
         if ( s == "--iterations" && i + 1 < argc ) { iterations = std::atoi( argv[ ++i ] ); continue; }
+        if ( s == "--newton" && i + 1 < argc ) { newton = std::atoi( argv[ ++i ] ); continue; }
+        if ( s == "--raffine" && i + 1 < argc ) { raff = std::atoi( argv[ ++i ] ); continue; }
+        if ( s == "--marge" && i + 1 < argc ) { marge = std::atof( argv[ ++i ] ); continue; }
+        if ( s == "--tol" && i + 1 < argc ) { tol = std::atof( argv[ ++i ] ); continue; }
         std::printf( "usage: chaine [options]\n" );
         Args::usage();
         std::printf( "  --reps-gpu R    repetitions du noyau GPU, minimum       (10)\n"
                      "  --arbre-gpu     construire l'arbre sur le GPU, et l'y garder\n"
-                     "  --iterations K  le REGIME AMORTI : K tours de Newton apres une seule construction\n" );
+                     "  --iterations K  le REGIME AMORTI : K tours de Newton apres une seule construction\n"
+                     "  --newton K      le NEWTON COMPLET, au plus K iterations\n"
+                     "  --raffine R     dichotomies pour le meilleur pas apres la premiere acceptation (0 : nuisible)\n"
+                     "  --marge F       toute cellule doit garder F fois ce qu elle vaut deja (0.5)\n"
+                     "  --tol T         residu relatif vise sur les mesures (1e-7)\n" );
         return s == "--help" || s == "-h" ? 0 : 1;
     }
     a.dims = 2;
@@ -417,7 +514,7 @@ int main( int argc, char **argv ) {
     int bad = 0;
     for ( const Nuage<2> &nu : a.nuages<2>() ) {
         if ( nu.absent ) { std::printf( "  %-28s : ABSENT ( --cases DIR )\n", nu.nom.c_str() ); continue; }
-        bad += dispatch<2>( a, [ & ]( auto tag ) { return chaine<typename decltype( tag )::type>( a, nu, reps_gpu, arbre_gpu, iterations ); } );
+        bad += dispatch<2>( a, [ & ]( auto tag ) { return chaine<typename decltype( tag )::type>( a, nu, reps_gpu, arbre_gpu, iterations, newton, raff, marge, tol ); } );
     }
     return bad ? 1 : 0;
 }

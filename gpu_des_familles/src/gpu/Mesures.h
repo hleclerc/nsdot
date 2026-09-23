@@ -72,6 +72,11 @@ struct DiagrammeGpu {
     int resout( const Hessienne &H, const double *b, double *x, double tol, int maxit,
                 double *ms = nullptr, double *res = nullptr );
 
+    /// `|| m - cible ||` ( norme deux ) et, par `mini`, LA PLUS PETITE MESURE -- c'est elle qui
+    /// dit si une cellule est sur le point de disparaitre, donc si le pas est trop grand.
+    /// `b` ( device, `n` doubles ) recoit `m - cible` CENTRE, le second membre du pas de Newton.
+    double residu( double cible, double *mini, double *b = nullptr ) const;
+
     /// la hierarchie du multigrille, montee depuis `H` ( le motif ne change pas dans un Newton,
     /// seuls les coefficients -- a remonter quand ils bougent )
     void monte_amg( const Hessienne &H );
