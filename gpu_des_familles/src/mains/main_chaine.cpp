@@ -16,6 +16,7 @@
 
 #include "bench/Dispatch.h"
 #include "solver/Laplacien.h"
+#include "solver/Lineaire.h"
 #include <cuda_runtime.h>
 #include "gpu/Mesures.h"
 
@@ -284,6 +285,26 @@ int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu, bool arbre_gp
         for ( SI i = 0; i < nu.n; ++i ) ec_d = std::max( ec_d, std::fabs( dg[ i ] - dc[ i ] ) );
         const bool cok = its > 0 && r_cg < 1e-9 && ec_d < 1e-6 * ech_d;
         std::printf( "      AMG       hierarchie montee en %6.0f ms\n", t_amg * 1e3 );
+#ifdef SF_AMGCL
+        // LE TEMOIN DE REFERENCE : AMGCL, agregation LISSEE + SPAI0, sur le systeme reduit
+        {
+            Amg ref;
+            ref.tol = 1e-10;
+            std::vector<TF> dref;
+            const double tr0 = now();
+            ref.resout( lap, bb, dref );
+            const double t_ref = now() - tr0;
+            double mr = 0;
+            for ( SI i = 0; i < nu.n; ++i ) mr += dref[ i ];
+            mr /= nu.n;
+            double ecr = 0, echr = 0;
+            for ( SI i = 0; i < nu.n; ++i ) { echr = std::max( echr, std::fabs( dref[ i ] - mr ) ); }
+            for ( SI i = 0; i < nu.n; ++i ) ecr = std::max( ecr, std::fabs( dg[ i ] - ( dref[ i ] - mr ) ) );
+            std::printf( "      %-9s %4d iterations, %7.0f ms au CPU ( hierarchie %4.0f + resolution %4.0f ), ecart a nous %.1e relatif\n",
+                         ref.nom(), ref.st.nb_iter, t_ref * 1e3, ref.st.t_hier * 1e3, ref.st.t_res * 1e3,
+                         echr > 0 ? ecr / echr : 0.0 );
+        }
+#endif
         std::printf( "      CG        %4d iterations, residu relatif %.1e, %7.1f ms sur GPU contre %7.0f ms au CPU ( %d it. )   x%.1f\n",
                      its, r_cg, ms_cg, t_cgc * 1e3, itc, t_cgc * 1e3 / ms_cg );
         std::printf( "                | d |_max %.3e, ecart au CG du CPU %.1e ( soit %.1e relatif )%s\n",

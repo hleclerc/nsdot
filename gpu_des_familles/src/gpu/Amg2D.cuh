@@ -39,6 +39,8 @@ struct Niveau {
     int    *row = nullptr, *col = nullptr;
     double *val = nullptr, *dia = nullptr;
     double *x = nullptr, *b = nullptr, *r = nullptr;     ///< les vecteurs de travail du cycle
+    double *v1 = nullptr, *v2 = nullptr, *t = nullptr, *rc = nullptr;   ///< ceux du K-cycle
+    double *sc = nullptr;                                ///< huit scalaires, sur la carte
     int     n = 0, nnz = 0;
 };
 
@@ -139,6 +141,51 @@ __global__ void k_amg_somme( const double *u, double *acc, int n ) {
 __global__ void k_amg_rang( const int *ids, int *rang_de, int n ) {
     const int k = blockIdx.x * blockDim.x + threadIdx.x;
     if ( k < n ) rang_de[ ids[ k ] ] = k;
+}
+
+// ---------------------------------------------------------------- LE K-CYCLE
+//
+// Le defaut mesure de l'agregation non lissee est que LA CORRECTION GROSSIERE EST TROP FAIBLE et
+// que l'erreur s'accumule d'un niveau a l'autre ( descendre a 16 inconnues au lieu de 1000 faisait
+// passer de 168 a 411 iterations ). Le K-cycle y repond non pas en changeant `P` -- ce que fait la
+// prolongation lissee, au prix d'un vrai produit triple creux -- mais en ACCELERANT CHAQUE NIVEAU
+// PAR KRYLOV : au lieu d'un appel recursif, DEUX pas d'un gradient conjugue sur le systeme
+// grossier, dont le preconditionneur est le niveau d'en dessous.
+//
+// Les coefficients restent sur la carte ( un thread les calcule ) : sans ca, chaque niveau de
+// chaque cycle couterait une synchronisation.
+
+__global__ void k_kc_c1( const double *rho1, const double *a1, double *c1 ) {
+    *c1 = *rho1 != 0 ? *a1 / *rho1 : 0.0;
+}
+/// `rc = b - c1 t`, le residu apres le premier pas
+__global__ void k_kc_rc( double *rc, const double *b, const double *t, const double *c1, int n ) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if ( i < n ) rc[ i ] = b[ i ] - *c1 * t[ i ];
+}
+/// les coefficients du second pas : `rho2 = b2 - g2^2 / rho1`, et la correction de `c1`
+__global__ void k_kc_c2( const double *rho1, const double *a1, const double *g2, const double *b2,
+                         const double *a2, double *c1, double *c2 ) {
+    const double r1 = *rho1, r2 = *b2 - ( *g2 ) * ( *g2 ) / ( r1 != 0 ? r1 : 1.0 );
+    *c2 = r2 != 0 ? *a2 / r2 : 0.0;
+    *c1 = ( r1 != 0 ? *a1 / r1 : 0.0 ) - ( r1 != 0 && r2 != 0 ? ( *g2 ) * ( *a2 ) / ( r1 * r2 ) : 0.0 );
+}
+__global__ void k_kc_comb( double *x, const double *v1, const double *v2,
+                           const double *c1, const double *c2, int n ) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if ( i < n ) x[ i ] = *c1 * v1[ i ] + *c2 * v2[ i ];
+}
+__global__ void k_amg_matvec( const int *row, const int *col, const double *val, const double *dia,
+                              const double *x, double *y, int n ) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if ( i >= n ) return;
+    double s = dia[ i ] * x[ i ];
+    for ( int p = row[ i ]; p < row[ i + 1 ]; ++p ) s -= val[ p ] * x[ col[ p ] ];
+    y[ i ] = s;
+}
+__global__ void k_amg_copie( double *dst, const double *src, int n ) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if ( i < n ) dst[ i ] = src[ i ];
 }
 
 /// la projection sur la moyenne nulle : le noyau du laplacien

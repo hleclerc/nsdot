@@ -224,13 +224,60 @@ et `b = mesures − cible` est déjà de somme nulle.
 **×20 à ×46 d'itérations en moins**, la hiérarchie se montant en 15 ms à 10⁶. Les solutions
 coïncident avec le CG du CPU à 1e-10 près, une fois les deux jauges recentrées.
 
-**Ce que ça ne fait pas.** 168 itérations à 2·10⁵ et 357 à 10⁶ : le nombre d'itérations croît
+### Le K-cycle, et la comparaison à AMGCL
+
+Le V-cycle ci-dessus laissait un défaut net : **168 itérations à 2·10⁵ et 357 à 10⁶**, donc une
+croissance encore en √n, et descendre à 16 inconnues au lieu de 1000 la faisait passer à **411**.
+Les deux symptômes disent la même chose : *la correction grossière est trop faible et l'erreur
+s'accumule d'un niveau à l'autre*. Deux remèdes classiques :
+
+* **la prolongation lissée** remplace `P` (une marche d'escalier : tous les germes d'un paquet
+  reçoivent la même valeur) par `( I − ω D⁻¹A ) P`, c'est-à-dire un pas de Jacobi appliqué à
+  *l'opérateur d'interpolation lui-même*, ce qui arrondit les marches. C'est ce que fait AMGCL.
+  Le prix est un vrai **produit triple creux** `P̂ᵀ A P̂`, lourd sur GPU en mémoire comme en code ;
+* **le K-cycle** ne touche ni à `P` ni au Galerkin : au lieu d'appeler récursivement le niveau
+  grossier *une fois*, on y fait **deux pas d'un gradient conjugué** dont le préconditionneur est
+  le niveau d'en dessous — on accélère chaque niveau par Krylov, récursivement. C'est l'idée
+  d'AGMG, et elle vise exactement notre symptôme.
+
+C'est le K-cycle qui est implémenté. Les coefficients des deux pas restent **sur la carte** (un
+thread les calcule), sinon chaque niveau de chaque cycle coûterait une synchronisation. Deux
+réglages comptent, et ils ont été balayés :
+
+| (2·10⁵) | V pur | K sur 1 niveau | **K sur 2** | K sur 3 | K sur 4 |
+|---|---|---|---|---|---|
+| itérations | 169 | 82 | **67** | 61 | 61 |
+| temps, 60 lissages au plus grossier | 269 ms | 148 | **143** | 214 | 356 |
+| temps, 300 lissages | 332 ms | 285 | 396 | 721 | 1369 |
+
+Le K-cycle visite le niveau `l` **2ˡ fois** : au-delà de deux niveaux accélérés, le coût des
+visites mange le gain en itérations, et le niveau le plus grossier doit être lissé peu (60 fois,
+pas 300) pour la même raison. **K sur deux niveaux, 60 lissages** : c'est le réglage retenu.
+
+**Contre AMGCL** (agrégation *lissée* + SPAI0, le témoin de référence, CPU 8 fils avec OpenMP) :
+
+| `double`, résidu 1e-10 | | itérations | hiérarchie | résolution | **total** |
+|---|---|---|---|---|---|
+| uniforme 2·10⁵ | AMGCL | 42 | 118 ms | 244 ms | 379 ms |
+| | **nous (GPU)** | 67 | **5 ms** | 142 ms | **142 ms** — ×2.7 |
+| uniforme 10⁶ | AMGCL | 49 | 736 ms | 1713 ms | 2539 ms |
+| | **nous (GPU)** | 85 | **15 ms** | 883 ms | **883 ms** — ×2.8 |
+
+Les solutions coïncident à 2e-11. **Oui, on est meilleur** — ×2.7 à ×2.8 en temps de mur, avec
+1.6 fois plus d'itérations mais chacune sur la carte, et surtout une **hiérarchie 49 fois moins
+chère à monter** (15 ms contre 736), ce qui pèse lourd dans un Newton où elle se remonte à chaque
+pas puisque les coefficients changent.
+
+**Et la loi d'échelle est réparée** : nos itérations passent de 67 à 85 pour un `n` multiplié par
+cinq (×1.27), celles d'AMGCL de 42 à 49 (×1.17). Le K-cycle a fait, sans produit triple creux, ce
+que la prolongation lissée fait chez AMGCL.
+
+**Ce que le V-cycle seul ne faisait pas.** 168 itérations à 2·10⁵ et 357 à 10⁶ : le nombre d'itérations croît
 encore comme √n, avec une constante 22 fois meilleure. Un vrai multigrille serait indépendant de
 `n` ; celui-ci ne l'est pas, parce que l'agrégation est **non lissée** — c'est sa faiblesse
 connue, et elle se voit aussi en descendant plus bas : s'arrêter à 16 inconnues au lieu de 1000
 fait passer de 168 à **411** itérations, la dégradation classique avec le nombre de niveaux.
-Ce qui manquerait : une prolongation lissée (`P ← ( I − ω D⁻¹A ) P`), ou un K-cycle. Les deux sont
-du travail réel, et le gain restant est un facteur 2 à 3 au plus sur ce qui est déjà acquis.
+C'est ce que le K-cycle a corrigé (§ ci-dessus).
 
 **Ce qui reste, dans l'ordre.** 1) Les quelques dizaines de cellules à plus de `NF` arêtes sur les
 nuages de lignes (compteur en place, `Chrono::deborde`). 2) L'assemblage CSR sur GPU (comptage +

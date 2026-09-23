@@ -67,6 +67,8 @@ struct DiagrammeGpu<D,TK>::Impl {
     double      *cgv = nullptr;                      ///< `r, z, p, q` bout a bout, plus six scalaires
     std::vector<Niveau> niv;                         ///< la hierarchie du multigrille
     std::vector<int *>  map;                         ///< `map[ l ][ i ]` : le paquet du niveau `l + 1`
+    int          kcycle = 2;                         ///< niveaux acceleres par Krylov ( 0 : V pur )
+    int          gros = 60;                          ///< lissages au niveau le plus grossier
     int         *rang_de = nullptr;                  ///< identifiant -> rang ( l'agregation du niveau fin )
     double      *acc = nullptr;                      ///< un scalaire de travail
     int          n = 0, nn = 0;
@@ -622,9 +624,16 @@ void DiagrammeGpu<D,TK>::monte_amg( const Hessienne &H ) {
     Impl &m = *impl;
     const int BL = 256;
     auto gr = [ & ]( int k ) { return ( k + BL - 1 ) / BL; };
-    for ( Niveau &v : m.niv ) { cudaFree( v.row ); cudaFree( v.col ); cudaFree( v.val ); cudaFree( v.dia ); cudaFree( v.x ); cudaFree( v.b ); cudaFree( v.r ); }
+    for ( size_t l = 0; l < m.niv.size(); ++l ) {
+        Niveau &v = m.niv[ l ];
+        if ( l ) { cudaFree( v.row ); cudaFree( v.col ); cudaFree( v.val ); cudaFree( v.dia ); }
+        cudaFree( v.x ); cudaFree( v.b ); cudaFree( v.r );
+        cudaFree( v.v1 ); cudaFree( v.v2 ); cudaFree( v.t ); cudaFree( v.rc ); cudaFree( v.sc );
+    }
     for ( int *p : m.map ) cudaFree( p );
     m.niv.clear(); m.map.clear();
+    if ( const char *e = std::getenv( "AMG_K" ) ) m.kcycle = std::atoi( e );
+    if ( const char *e = std::getenv( "AMG_GROS" ) ) m.gros = std::atoi( e );
     if ( ! m.rang_de ) {
         CUDA_OK( cudaMalloc( &m.rang_de, size_t( m.n ) * sizeof( int ) ) );
         CUDA_OK( cudaMalloc( &m.acc, sizeof( double ) ) );
@@ -681,6 +690,9 @@ void DiagrammeGpu<D,TK>::monte_amg( const Hessienne &H ) {
         CUDA_OK( cudaMalloc( &c.dia, size_t( nc ) * 8 ) );
         CUDA_OK( cudaMalloc( &c.x, size_t( nc ) * 8 ) ); CUDA_OK( cudaMalloc( &c.b, size_t( nc ) * 8 ) );
         CUDA_OK( cudaMalloc( &c.r, size_t( nc ) * 8 ) );
+        CUDA_OK( cudaMalloc( &c.v1, size_t( nc ) * 8 ) ); CUDA_OK( cudaMalloc( &c.v2, size_t( nc ) * 8 ) );
+        CUDA_OK( cudaMalloc( &c.t, size_t( nc ) * 8 ) );  CUDA_OK( cudaMalloc( &c.rc, size_t( nc ) * 8 ) );
+        CUDA_OK( cudaMalloc( &c.sc, 8 * 8 ) );
         CUDA_OK( cudaMemset( c.row, 0, size_t( nc + 1 ) * 4 ) );
         k_amg_compte<<<gr( nun ), BL>>>( cl, nun, nc, c.row );
         void *ts = nullptr; size_t tso = 0;
@@ -698,11 +710,9 @@ void DiagrammeGpu<D,TK>::monte_amg( const Hessienne &H ) {
     }
     cudaFree( cpt );
     // le niveau fin a besoin de ses vecteurs de travail lui aussi
-    if ( ! m.niv[ 0 ].r ) {
-        CUDA_OK( cudaMalloc( &m.niv[ 0 ].r, size_t( m.n ) * 8 ) );
-        CUDA_OK( cudaMalloc( &m.niv[ 0 ].x, size_t( m.n ) * 8 ) );
-        CUDA_OK( cudaMalloc( &m.niv[ 0 ].b, size_t( m.n ) * 8 ) );
-    }
+    CUDA_OK( cudaMalloc( &m.niv[ 0 ].r, size_t( m.n ) * 8 ) );
+    CUDA_OK( cudaMalloc( &m.niv[ 0 ].x, size_t( m.n ) * 8 ) );
+    CUDA_OK( cudaMalloc( &m.niv[ 0 ].b, size_t( m.n ) * 8 ) );
 }
 
 /// UN CYCLE EN V : lissage, restriction, recursion, prolongation, lissage
@@ -716,7 +726,7 @@ void DiagrammeGpu<D,TK>::cycle_v( int l ) {
     constexpr int NU = 2;                                // pre et post, pour la symetrie
     CUDA_OK( cudaMemsetAsync( g.x, 0, size_t( g.n ) * 8 ) );
     if ( l + 1 == int( m.niv.size() ) ) {                // le plus grossier : on lisse longtemps
-        for ( int k = 0; k < 300; ++k )
+        for ( int k = 0; k < m.gros; ++k )
             k_amg_jacobi<<<gr( g.n ), BL>>>( g.row, g.col, g.val, g.dia, g.x, g.b, OM, g.n );
         return;
     }
@@ -726,7 +736,36 @@ void DiagrammeGpu<D,TK>::cycle_v( int l ) {
     k_amg_residu<<<gr( g.n ), BL>>>( g.row, g.col, g.val, g.dia, g.x, g.b, g.r, g.n );
     CUDA_OK( cudaMemsetAsync( c.b, 0, size_t( c.n ) * 8 ) );
     k_amg_restreint<<<gr( g.n ), BL>>>( g.r, m.map[ l ], c.b, g.n );
-    cycle_v( l + 1 );
+
+    if ( l >= m.kcycle ) {
+        cycle_v( l + 1 );
+    } else {
+        // LE K-CYCLE : deux pas d'un gradient conjugue sur le systeme grossier, preconditionnes
+        // par le niveau d'en dessous. `sc` : rho1, a1, g2, b2, a2, c1, c2, libre.
+        const int gc = ( c.n + BL - 1 ) / BL;
+        double *rho1 = c.sc, *a1 = c.sc + 1, *g2 = c.sc + 2, *b2 = c.sc + 3, *a2 = c.sc + 4,
+               *c1 = c.sc + 5, *c2 = c.sc + 6;
+        auto dot = [ & ]( const double *u, const double *v, double *acc ) {
+            k_cg_zero<<<1,1>>>( acc );
+            k_cg_dot<<<gc, BL>>>( u, v, acc, c.n );
+        };
+        k_amg_copie<<<gc, BL>>>( c.rc, c.b, c.n );       // le second membre du premier pas
+        cycle_v( l + 1 );                                // v1 = M^-1 b_c
+        k_amg_copie<<<gc, BL>>>( c.v1, c.x, c.n );
+        k_amg_matvec<<<gc, BL>>>( c.row, c.col, c.val, c.dia, c.v1, c.t, c.n );
+        dot( c.v1, c.t, rho1 );
+        dot( c.v1, c.rc, a1 );
+        k_kc_c1<<<1,1>>>( rho1, a1, c1 );
+        k_kc_rc<<<gc, BL>>>( c.b, c.rc, c.t, c1, c.n );  // le residu devient le second membre
+        cycle_v( l + 1 );                                // v2 = M^-1 r
+        k_amg_copie<<<gc, BL>>>( c.v2, c.x, c.n );
+        dot( c.v2, c.t, g2 );
+        dot( c.v2, c.b, a2 );
+        k_amg_matvec<<<gc, BL>>>( c.row, c.col, c.val, c.dia, c.v2, c.t, c.n );
+        dot( c.v2, c.t, b2 );
+        k_kc_c2<<<1,1>>>( rho1, a1, g2, b2, a2, c1, c2 );
+        k_kc_comb<<<gc, BL>>>( c.x, c.v1, c.v2, c1, c2, c.n );
+    }
     k_amg_prolonge<<<gr( g.n ), BL>>>( g.x, c.x, m.map[ l ], g.n );
     for ( int k = 0; k < NU; ++k )
         k_amg_jacobi<<<gr( g.n ), BL>>>( g.row, g.col, g.val, g.dia, g.x, g.b, OM, g.n );
