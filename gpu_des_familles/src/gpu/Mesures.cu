@@ -52,6 +52,9 @@ struct DiagrammeGpu<D,TK>::Impl {
     unsigned long long *stats = nullptr;
     int         *cptr = nullptr;                     ///< le compteur des lanes persistantes             ///< 4 compteurs, pour les noyaux qui comptent     ///< les compteurs de debordement des deux passes
     int         *liste = nullptr;                    ///< les rangs qui ont deborde a la premiere passe
+    void        *sortie = nullptr;                   ///< `SortieBsp<TK>*` quand l'arbre vient du GPU
+    int         *fac_j = nullptr;                    ///< les facettes, allouees une fois pour toutes
+    TK          *fac_l = nullptr;
     int          n = 0, nn = 0;
     bool         poids = false;
 
@@ -122,7 +125,8 @@ DiagrammeGpu<D,TK>::DiagrammeGpu( const AaBspT<D> &arbre ) : impl( new Impl ) {
 /// L'ARBRE SUR LE GPU : la construction remplit directement les tampons de l'implementation, et
 /// rien ne repasse par l'hote ( ni noeuds, ni permutation, ni positions ).
 template<int D, class TK>
-DiagrammeGpu<D,TK>::DiagrammeGpu( const double *const *P, const double *W, int n, int leaf, double *ms )
+DiagrammeGpu<D,TK>::DiagrammeGpu( const double *const *P, const double *W, int n, int leaf, double *ms,
+                                  bool pour_newton )
     : impl( new Impl ) {
     const double t0 = now();
     Impl &m = *impl;
@@ -130,9 +134,10 @@ DiagrammeGpu<D,TK>::DiagrammeGpu( const double *const *P, const double *W, int n
     m.poids = W != nullptr;
     if constexpr ( D == 2 ) {
         SortieBsp<TK> s;
-        construit2_dev<TK>( P[ 0 ], P[ 1 ], W, n, leaf, s, ms );
+        construit2_dev<TK>( P[ 0 ], P[ 1 ], W, n, leaf, s, ms, pour_newton );
         m.nodes = s.nodes; m.nn = s.nn; m.ids = s.ids; m.w = s.w;
         for ( int d = 0; d < 2; ++d ) { m.c[ d ] = s.c[ d ]; m.u[ d ] = s.u[ d ]; m.u64[ d ] = s.u64[ d ]; }
+        m.sortie = new SortieBsp<TK>( s );
         nn_pub = s.nn;
     } else {
         std::fprintf( stderr, "l'arbre sur GPU n'est fait qu'en 2D\n" );
@@ -154,6 +159,8 @@ DiagrammeGpu<D,TK>::~DiagrammeGpu() {
     cudaFree( m.nodes );
     for ( int d = 0; d < D; ++d ) { cudaFree( m.c[ d ] ); cudaFree( m.u[ d ] ); cudaFree( m.u64[ d ] ); }
     cudaFree( m.w ); cudaFree( m.ids ); cudaFree( m.res ); cudaFree( m.deb ); cudaFree( m.deb2 ); cudaFree( m.liste ); cudaFree( m.stats ); cudaFree( m.cptr );
+    cudaFree( m.fac_j ); cudaFree( m.fac_l );
+    if ( m.sortie ) { libere_atelier<TK>( *( SortieBsp<TK> * ) m.sortie ); delete ( SortieBsp<TK> * ) m.sortie; }
     delete impl;
 }
 
@@ -533,6 +540,61 @@ Chrono lance3( const Impl &m, Variante v, int reps, std::vector<double> &res ) {
 }
 
 } // namespace
+
+/// DES POIDS NEUFS sur le meme arbre : que les majorants, et pas une allocation.
+template<int D, class TK>
+double DiagrammeGpu<D,TK>::refresh_poids( const double *W ) {
+    if constexpr ( D != 2 ) { ( void ) W; return 0; }
+    else {
+        SortieBsp<TK> *s = ( SortieBsp<TK> * ) impl->sortie;
+        if ( ! s || ! s->at.cru ) { std::fprintf( stderr, "refresh_poids demande `pour_newton`\n" ); std::exit( 2 ); }
+        impl->poids = true;
+        impl->w = s->w;
+        return rafraichit_poids_dev<TK>( *s, W );
+    }
+}
+
+/// UN TOUR DE NEWTON, de bout en bout sur la carte : poids, majorants, mesures, facettes.
+template<int D, class TK>
+double DiagrammeGpu<D,TK>::tour_newton( const double *W ) {
+    if constexpr ( D != 2 ) { ( void ) W; return 0; }
+    else {
+        Impl &m = *impl;
+        if ( ! m.fac_j ) {
+            CUDA_OK( cudaMalloc( &m.fac_j, size_t( NF ) * m.n * sizeof( int ) ) );
+            CUDA_OK( cudaMalloc( &m.fac_l, size_t( NF ) * m.n * sizeof( TK ) ) );
+        }
+        const Arbre<TK,2> ar = m.arbre();
+        const int bloc = 128, grid = ( m.n + bloc - 1 ) / bloc;
+        constexpr int FIX = sizeof( TK ) == 4 ? 32 : 0;
+        cudaEvent_t e0, e1;
+        CUDA_OK( cudaEventCreate( &e0 ) ); CUDA_OK( cudaEventCreate( &e1 ) );
+        CUDA_OK( cudaEventRecord( e0 ) );
+        if ( W ) {
+            SortieBsp<TK> *s = ( SortieBsp<TK> * ) m.sortie;
+            m.poids = true; m.w = s->w;
+            rafraichit_poids_dev<TK>( *s, W );
+        }
+        CUDA_OK( cudaMemsetAsync( m.deb, 0, sizeof( int ) ) );
+        CUDA_OK( cudaMemsetAsync( m.deb2, 0, sizeof( int ) ) );
+        auto tour = [ & ]( auto pp ) {
+            constexpr bool POIDS = decltype( pp )::value;
+            noyau2_filmsk<POIDS,1,true,FIX><<<grid, bloc>>>( ar, m.res, m.deb, m.liste, m.fac_j, m.fac_l, NF );
+            int nd = 0;
+            CUDA_OK( cudaMemcpy( &nd, m.deb, sizeof( int ), cudaMemcpyDeviceToHost ) );
+            if ( nd )
+                noyau2_filmix<POIDS,64,8,true><<<( nd + bloc - 1 ) / bloc, bloc>>>( ar, m.res, m.deb2, m.liste, nd, m.fac_j, m.fac_l, NF, m.cptr );
+        };
+        if ( m.poids ) tour( std::true_type{} ); else tour( std::false_type{} );
+        CUDA_OK( cudaEventRecord( e1 ) );
+        CUDA_OK( cudaEventSynchronize( e1 ) );
+        float t = 0;
+        CUDA_OK( cudaEventElapsedTime( &t, e0, e1 ) );
+        CUDA_OK( cudaGetLastError() );
+        cudaEventDestroy( e0 ); cudaEventDestroy( e1 );
+        return t;
+    }
+}
 
 template<int D, class TK>
 Chrono DiagrammeGpu<D,TK>::facettes( int reps, std::vector<double> &res, std::vector<int> &fj, std::vector<double> &fl ) const {

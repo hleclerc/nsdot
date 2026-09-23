@@ -83,6 +83,35 @@ fixe là où ils sont.
 constant coûterait, lui, un facteur (466 boîtes testées par cellule contre 135, `2d_des_familles`
 § 6). Les pentes sont donc trouvées, à quelques arrondis près de celles du CPU.
 
+### Le régime de Newton : `refresh_poids` et les tampons gardés
+
+Dans une boucle de Newton **les positions ne bougent pas, seuls les poids changent** : il n'y a
+donc ni tri, ni boîtes, ni permutation à refaire — seulement les majorants. `pour_newton = true`
+à la construction garde l'atelier (structure des nœuds, place de chacun, branche de chaque germe,
+accumulateurs, positions en `double` dans l'ordre de l'arbre), et `refresh_poids( W )` rejoue les
+seules passes A→D. **Pas une allocation.**
+
+| lignes / aires égales, 10⁵ (Laguerre) | |
+|---|---|
+| construction complète, CPU 8 fils | 34 ms |
+| construction complète, GPU (noyaux) | 7.1 ms |
+| **majorants refaits seuls, GPU** | **3.27 ms (×10 sur le CPU)** |
+
+Et `tour_newton( W )` fait le tour complet sur la carte — poids, majorants, mesures **et**
+facettes — sans qu'un octet redescende. C'est le coût de régime, celui qui compte pour un solveur,
+et le banc le mesure sur `--iterations K` après une seule construction :
+
+| `double`, 20 tours | GPU par tour | CPU par tour | |
+|---|---|---|---|
+| uniforme 10⁶ (Voronoï) | **97 ms** | 183 ms | ×1.9 |
+| lignes / Voronoï 10⁵ | **13.7 ms** | 18.1 ms | ×1.3 |
+| lignes / aires égales 10⁵ (Laguerre) | **55.4 ms** | 82.6 ms | ×1.5 |
+
+Les ×1.3 à ×1.9 ne sont pas flatteurs, et ils disent où en est la chaîne : le tour est maintenant
+**dominé par la mesure elle-même en `double`** (96 des 97 ms sur l'uniforme), c'est-à-dire par le
+FP64 à 1/32 de Turing. Ni l'arbre, ni les majorants, ni le trafic ne pèsent plus. Sur une carte à
+FP64 rapide le même tour tomberait vers 7 ms, et le rapport au CPU avec.
+
 Ce qui reste ici : le temps de mur à 10⁶ est encore dominé par ~250 ms de frais fixes (contexte
 CUDA et une vingtaine d'allocations), constants et donc invisibles à 10⁷ ; et les nœuds sont
 écrits en `float` pour la boîte (élargie d'un ulp) là où le CPU la garde en `double`.

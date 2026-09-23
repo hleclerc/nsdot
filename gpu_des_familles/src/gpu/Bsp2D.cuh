@@ -324,6 +324,27 @@ __global__ void k_parents( const Cru *cru, int *parent, int *feuille_de, int tot
     parent[ c.droit ] = i;
 }
 
+/// les poids neufs, relus par la permutation ( l'arbre ne bouge pas )
+template<class TK>
+__global__ void k_poids( const double *w, const int *ids, double *tw, TK *cw, int n ) {
+    const int k = blockIdx.x * blockDim.x + threadIdx.x;
+    if ( k >= n ) return;
+    const double v = w[ ids[ k ] ];
+    tw[ k ] = v;
+    cw[ k ] = TK( v );
+}
+
+/// CE QU'IL FAUT GARDER pour refaire les majorants sans retrier : la structure de l'arbre, la
+/// place de chaque noeud, la branche de chaque germe, les accumulateurs, et les positions en
+/// `double` dans l'ordre de l'arbre. Le regime de Newton ne change que les poids.
+struct AtelierBsp {
+    Cru    *cru = nullptr;
+    int    *place = nullptr, *parent = nullptr, *feuille = nullptr;
+    Maj    *maj = nullptr;
+    double *tx = nullptr, *ty = nullptr, *tw = nullptr, *dpw = nullptr;
+    int     n = 0, nn = 0;
+};
+
 /// ce que la construction laisse SUR LE GPU
 template<class TK>
 struct SortieBsp {
@@ -334,6 +355,7 @@ struct SortieBsp {
     int         *u[ 2 ] = {};                            ///< virgule fixe 32 bits
     long long   *u64[ 2 ] = {};                          ///< virgule fixe 64 bits
     int          n = 0, nn = 0;
+    AtelierBsp   at;                                     ///< garde si `garde` : voir `rafraichit_poids`
 };
 
 #define BSP_OK( x ) do { cudaError_t e_ = ( x ); if ( e_ != cudaSuccess ) { \
@@ -342,7 +364,7 @@ struct SortieBsp {
 /// LA CONSTRUCTION, de bout en bout sur le GPU. `ms` rend le temps GPU seul.
 template<class TK>
 void construit2_dev( const double *px_h, const double *py_h, const double *w_h, int n, int leaf,
-                     SortieBsp<TK> &s, double *ms ) {
+                     SortieBsp<TK> &s, double *ms, bool garde = false ) {
     const int BL = 256;
     auto gr = [ & ]( int m ) { return ( m + BL - 1 ) / BL; };
     const int cap = 4 * ( n / ( leaf > 1 ? leaf : 1 ) + 8 );
@@ -368,10 +390,10 @@ void construit2_dev( const double *px_h, const double *py_h, const double *w_h, 
     BSP_OK( cudaMalloc( &compteur, 4 ) );
     BSP_OK( cudaMemcpy( dpx, px_h, n * 8, cudaMemcpyHostToDevice ) );
     BSP_OK( cudaMemcpy( dpy, py_h, n * 8, cudaMemcpyHostToDevice ) );
-    if ( w_h ) {
+    if ( w_h || garde ) {                                // `garde` : Newton viendra avec des poids
         BSP_OK( cudaMalloc( &dpw, n * 8 ) ); BSP_OK( cudaMalloc( &tw, n * 8 ) );
-        BSP_OK( cudaMemcpy( dpw, w_h, n * 8, cudaMemcpyHostToDevice ) );
         BSP_OK( cudaMalloc( &maj, size_t( cap ) * sizeof( Maj ) ) );
+        if ( w_h ) BSP_OK( cudaMemcpy( dpw, w_h, n * 8, cudaMemcpyHostToDevice ) );
     }
 
     void *tmp = nullptr; size_t tmp_o = 0;
@@ -423,16 +445,21 @@ void construit2_dev( const double *px_h, const double *py_h, const double *w_h, 
         BSP_OK( cudaMalloc( &s.u[ d ], n * 4 ) );
         BSP_OK( cudaMalloc( &s.u64[ d ], size_t( n ) * 8 ) );
     }
-    if ( w_h ) BSP_OK( cudaMalloc( &s.w, size_t( n ) * sizeof( TK ) ) );
+    if ( w_h || garde ) BSP_OK( cudaMalloc( &s.w, size_t( n ) * sizeof( TK ) ) );
     BSP_OK( cudaMemcpy( s.ids, ord, n * 4, cudaMemcpyDeviceToDevice ) );
     k_cueille<TK><<<gr( n ), BL>>>( dpx, dpy, dpw, ord, s.c[ 0 ], s.c[ 1 ], s.w,
                                     s.u[ 0 ], s.u[ 1 ], s.u64[ 0 ], s.u64[ 1 ], n );
 
-    // ---- LE MAJORANT AFFINE ( Laguerre seulement )
-    if ( w_h ) {
-        k_cueille<double><<<gr( n ), BL>>>( dpx, dpy, dpw, ord, tx, ty, tw,
+    // ---- ce dont le majorant a besoin : les positions en `double` dans l'ordre de l'arbre, et
+    //      la branche de chaque germe. Prepare aussi quand l'arbre est bati sans poids mais que
+    //      Newton viendra ( `garde` ).
+    if ( w_h || garde ) {
+        k_cueille<double><<<gr( n ), BL>>>( dpx, dpy, dpw, ord, tx, ty, w_h ? tw : nullptr,
                                             s.u[ 0 ], s.u[ 1 ], s.u64[ 0 ], s.u64[ 1 ], n );
         k_parents<<<gr( total ), BL>>>( cru, parent, feuille, total );
+    }
+    // ---- LE MAJORANT AFFINE ( Laguerre seulement )
+    if ( w_h ) {
         k_maj_init<<<gr( total ), BL>>>( maj, total );
         k_maj_a<<<gr( n ), BL>>>( tw, tx, ty, feuille, parent, maj, n );
         k_maj_b<<<gr( n ), BL>>>( tw, tx, ty, feuille, parent, cru, maj, n );
@@ -450,14 +477,62 @@ void construit2_dev( const double *px_h, const double *py_h, const double *w_h, 
     if ( ms ) *ms = t;
     BSP_OK( cudaGetLastError() );
 
-    cudaFree( dpx ); cudaFree( dpy ); cudaFree( dpw ); cudaFree( tx ); cudaFree( ty ); cudaFree( tw );
+    cudaFree( dpx ); cudaFree( dpy );
     cudaFree( cx ); cudaFree( cy ); cudaFree( cx2 ); cudaFree( cy2 );
     cudaFree( ord ); cudaFree( ord2 ); cudaFree( nde ); cudaFree( nde2 );
-    cudaFree( val ); cudaFree( perm ); cudaFree( feuille );
-    cudaFree( clef ); cudaFree( clef2 ); cudaFree( cru ); cudaFree( maj );
-    cudaFree( taille ); cudaFree( pre ); cudaFree( place ); cudaFree( parent );
+    cudaFree( val ); cudaFree( perm );
+    cudaFree( clef ); cudaFree( clef2 );
+    cudaFree( taille ); cudaFree( pre );
     cudaFree( compteur ); cudaFree( tmp );
+    if ( garde ) {                                       // le regime de Newton : on garde tout
+        s.at.cru = cru; s.at.place = place; s.at.parent = parent; s.at.feuille = feuille;
+        s.at.maj = maj; s.at.tx = tx; s.at.ty = ty; s.at.tw = tw; s.at.dpw = dpw;
+        s.at.n = n; s.at.nn = total;
+    } else {
+        cudaFree( dpw ); cudaFree( tx ); cudaFree( ty ); cudaFree( tw );
+        cudaFree( feuille ); cudaFree( cru ); cudaFree( maj );
+        cudaFree( place ); cudaFree( parent );
+    }
     cudaEventDestroy( e0 ); cudaEventDestroy( e1 );
+}
+
+/// DES POIDS NEUFS SUR LE MEME ARBRE : seuls les majorants bougent -- ni tri, ni boites, ni
+/// permutation. C'est le regime de Newton ( `AaBspT::refresh_weights` ). Rend le temps GPU en ms.
+template<class TK>
+double rafraichit_poids_dev( SortieBsp<TK> &s, const double *w_h ) {
+    const int BL = 256;
+    auto gr = [ & ]( int m ) { return ( m + BL - 1 ) / BL; };
+    AtelierBsp &at = s.at;
+    const int n = at.n, total = at.nn;
+
+    cudaEvent_t e0, e1;
+    BSP_OK( cudaEventCreate( &e0 ) ); BSP_OK( cudaEventCreate( &e1 ) );
+    BSP_OK( cudaEventRecord( e0 ) );
+    BSP_OK( cudaMemcpyAsync( at.dpw, w_h, n * 8, cudaMemcpyHostToDevice ) );
+    k_poids<TK><<<gr( n ), BL>>>( at.dpw, s.ids, at.tw, s.w, n );
+    k_maj_init<<<gr( total ), BL>>>( at.maj, total );
+    k_maj_a<<<gr( n ), BL>>>( at.tw, at.tx, at.ty, at.feuille, at.parent, at.maj, n );
+    k_maj_b<<<gr( n ), BL>>>( at.tw, at.tx, at.ty, at.feuille, at.parent, at.cru, at.maj, n );
+    k_maj_pente<<<gr( total ), BL>>>( at.cru, at.maj, total );
+    k_maj_c<<<gr( n ), BL>>>( at.tw, at.tx, at.ty, at.feuille, at.parent, at.maj, n );
+    k_maj_garde<<<gr( total ), BL>>>( at.cru, at.maj, total );
+    k_maj_d<<<gr( n ), BL>>>( at.tw, at.tx, at.ty, at.feuille, at.parent, at.maj, n );
+    k_ecrit<TK><<<gr( total ), BL>>>( at.cru, at.maj, at.place, true, s.nodes, total );
+    BSP_OK( cudaEventRecord( e1 ) );
+    BSP_OK( cudaEventSynchronize( e1 ) );
+    float t = 0;
+    BSP_OK( cudaEventElapsedTime( &t, e0, e1 ) );
+    BSP_OK( cudaGetLastError() );
+    cudaEventDestroy( e0 ); cudaEventDestroy( e1 );
+    return t;
+}
+
+/// rend tout ce que `garde` avait retenu
+template<class TK>
+void libere_atelier( SortieBsp<TK> &s ) {
+    cudaFree( s.at.cru ); cudaFree( s.at.place ); cudaFree( s.at.parent ); cudaFree( s.at.feuille );
+    cudaFree( s.at.maj ); cudaFree( s.at.tx ); cudaFree( s.at.ty ); cudaFree( s.at.tw ); cudaFree( s.at.dpw );
+    s.at = AtelierBsp{};
 }
 
 } // namespace

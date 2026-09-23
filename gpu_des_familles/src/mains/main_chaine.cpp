@@ -34,7 +34,7 @@ struct Fa { int i, j; double c; };
 bool avant( const Fa &a, const Fa &b ) { return a.i != b.i ? a.i < b.i : a.j < b.j; }
 
 template<class PD>
-int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu, bool arbre_gpu ) {
+int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu, bool arbre_gpu, int iterations ) {
     constexpr int D = PD::dim;
     using TK = typename PD::TKernel;
     static_assert( D == 2, "la chaine est 2D" );
@@ -68,7 +68,7 @@ int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu, bool arbre_gp
     double ms_gpu = 0, t_arbre_gpu = 0;
     const double tg0 = now();
     gpu::DiagrammeGpu<D,TK> g = arbre_gpu
-        ? gpu::DiagrammeGpu<D,TK>( nu.P, nu.W, int( nu.n ), int( a.leaf ), &ms_gpu )
+        ? gpu::DiagrammeGpu<D,TK>( nu.P, nu.W, int( nu.n ), int( a.leaf ), &ms_gpu, true )
         : gpu::DiagrammeGpu<D,TK>( pd.arbre );
     t_arbre_gpu = now() - tg0;
     if ( arbre_gpu )
@@ -165,6 +165,39 @@ int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu, bool arbre_gp
                  somme, ecart_m, qu( 0.5 ), qu( 0.99 ), qu( 0.9999 ), ecart_c / cmoy );
     std::printf( "                facettes manquantes %d, en trop %d -- %.2e du poids total%s\n",
                  manque, en_trop, perdu, ok ? "" : "   <-- FAUX" );
+    // ---- LE REGIME AMORTI : `iterations` tours de Newton ( poids neufs, majorants, mesures et
+    //      facettes ), l'arbre construit UNE FOIS. C'est le cout qui compte pour un solveur : les
+    //      frais fixes ( contexte CUDA, allocations ) sont derriere, et rien ne redescend.
+    if ( iterations > 1 && arbre_gpu ) {
+        std::vector<TF> W( nu.n );
+        for ( SI i = 0; i < nu.n; ++i ) W[ i ] = nu.W ? nu.W[ i ] : TF( 0 );
+        g.tour_newton( nu.W ? W.data() : nullptr );      // la chauffe
+        double t_r = 0;
+        if ( nu.W ) {                                    // les majorants SEULS : ni tri, ni boites
+            g.refresh_poids( W.data() );
+            for ( int it = 0; it < iterations; ++it ) t_r += g.refresh_poids( W.data() );
+            t_r /= iterations;
+            std::printf( "      REGIME    majorants refaits seuls : %6.2f ms contre %6.0f ms de construction complete au CPU   x%.0f\n",
+                         t_r, t_arbre * 1e3, t_arbre * 1e3 / t_r );
+        }
+        double t_g = 0;
+        for ( int it = 0; it < iterations; ++it ) t_g += g.tour_newton( nu.W ? W.data() : nullptr );
+
+        std::vector<TF> c2;
+        const double tc0 = now();
+        for ( int it = 0; it < iterations; ++it ) {
+            if ( nu.W ) pd.set_weights( W.data(), a.par );
+            std::vector<std::vector<Fa>> pf( std::max( a.par.threads, 1 ) );
+            pd.measures_and_facets( c2, a.par, [ & ]( int t, SI i, SI j, TF mes ) {
+                double d2 = 0;
+                for ( int d = 0; d < D; ++d ) { const double e = nu.P[ d ][ j ] - nu.P[ d ][ i ]; d2 += e * e; }
+                if ( d2 > 0 ) pf[ t ].push_back( Fa{ int( i ), int( j ), mes / ( 2 * std::sqrt( d2 ) ) } );
+            } );
+        }
+        const double t_c = now() - tc0;
+        std::printf( "      REGIME    %d tours de Newton : GPU %7.1f ms au tour ( %.3f s ), CPU %7.1f ms au tour ( %.3f s )   x%.1f\n",
+                     iterations, t_g / iterations, t_g * 1e-3, t_c / iterations * 1e3, t_c, t_c * 1e3 / t_g );
+    }
     return ! ok;
 }
 
@@ -174,15 +207,18 @@ int main( int argc, char **argv ) {
     Args a;
     int reps_gpu = 10;
     bool arbre_gpu = false;
+    int iterations = 1;
     for ( int i = 1; i < argc; ++i ) {
         const std::string s = argv[ i ];
         if ( a.parse( s, i, argc, argv ) ) continue;
         if ( s == "--reps-gpu" && i + 1 < argc ) { reps_gpu = std::atoi( argv[ ++i ] ); continue; }
         if ( s == "--arbre-gpu" ) { arbre_gpu = true; continue; }
+        if ( s == "--iterations" && i + 1 < argc ) { iterations = std::atoi( argv[ ++i ] ); continue; }
         std::printf( "usage: chaine [options]\n" );
         Args::usage();
         std::printf( "  --reps-gpu R    repetitions du noyau GPU, minimum       (10)\n"
-                     "  --arbre-gpu     construire l'arbre sur le GPU ( 2D, Voronoi )\n" );
+                     "  --arbre-gpu     construire l'arbre sur le GPU, et l'y garder\n"
+                     "  --iterations K  le REGIME AMORTI : K tours de Newton apres une seule construction\n" );
         return s == "--help" || s == "-h" ? 0 : 1;
     }
     a.dims = 2;
@@ -191,7 +227,7 @@ int main( int argc, char **argv ) {
     int bad = 0;
     for ( const Nuage<2> &nu : a.nuages<2>() ) {
         if ( nu.absent ) { std::printf( "  %-28s : ABSENT ( --cases DIR )\n", nu.nom.c_str() ); continue; }
-        bad += dispatch<2>( a, [ & ]( auto tag ) { return chaine<typename decltype( tag )::type>( a, nu, reps_gpu, arbre_gpu ); } );
+        bad += dispatch<2>( a, [ & ]( auto tag ) { return chaine<typename decltype( tag )::type>( a, nu, reps_gpu, arbre_gpu, iterations ); } );
     }
     return bad ? 1 : 0;
 }

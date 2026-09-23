@@ -40,7 +40,17 @@ struct DiagrammeGpu {
 
     /// L'ARBRE CONSTRUIT SUR LE GPU, de bout en bout : rien ne redescend ( 2D ). `P[ d ][ i ]` les
     /// positions, `W` les poids ou `nullptr`. `ms` rend le temps GPU de la construction.
-    DiagrammeGpu( const double *const *P, const double *W, int n, int leaf, double *ms = nullptr );
+    DiagrammeGpu( const double *const *P, const double *W, int n, int leaf, double *ms = nullptr,
+                  bool pour_newton = false );
+
+    /// DES POIDS NEUFS SUR LE MEME ARBRE ( regime de Newton ) : seuls les majorants sont refaits,
+    /// ni tri ni boites ni permutation, et aucune allocation. Rend le temps GPU en ms.
+    /// Demande `pour_newton` a la construction.
+    double refresh_poids( const double *W );
+
+    /// UN TOUR DE NEWTON cote GPU : poids neufs, majorants refaits, puis mesures ET facettes --
+    /// rien ne redescend, pas une allocation. Rend le temps GPU en ms. C'est le cout de regime.
+    double tour_newton( const double *W );
     ~DiagrammeGpu();
     DiagrammeGpu( const DiagrammeGpu & ) = delete;
     DiagrammeGpu &operator=( const DiagrammeGpu & ) = delete;
