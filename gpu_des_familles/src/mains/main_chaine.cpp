@@ -19,6 +19,7 @@
 #include "solver/Lineaire.h"
 #include <cuda_runtime.h>
 #include "gpu/Mesures.h"
+#include "gpu/RefAmgcl.h"
 
 #include <algorithm>
 #include <cmath>
@@ -305,6 +306,34 @@ int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu, bool arbre_gp
                          echr > 0 ? ecr / echr : 0.0 );
         }
 #endif
+        // ---- LE MEME AMGCL, MAIS SUR LA CARTE : la seule comparaison a plateforme egale.
+        //      `AMGCL_VAR` choisit la configuration ( par defaut on les essaie toutes ).
+        {
+            std::vector<int> ptr, cl;
+            std::vector<double> vl;
+            const double tf0 = now();
+            lap.crs_reduit( ptr, cl, vl );
+            const double t_forme = now() - tf0;
+            const int mred = int( nu.n ) - 1;
+            std::vector<double> rb( mred ), sol( mred );
+            for ( SI i = 1; i < nu.n; ++i ) rb[ i - 1 ] = bb[ i ];
+            const char *choix = std::getenv( "AMGCL_VAR" );
+            for ( int v = choix ? std::atoi( choix ) : 0; v < 5; ++v ) {
+                int it = 0; double er = 0, th = 0, tr = 0;
+                gpu::amgcl_cuda( mred, ptr, cl, vl, rb, sol, 1e-10, 20000, v, &it, &er, &th, &tr );
+                std::vector<double> dr( nu.n, 0.0 );
+                for ( SI i = 1; i < nu.n; ++i ) dr[ i ] = sol[ i - 1 ];
+                double mr = 0;
+                for ( SI i = 0; i < nu.n; ++i ) mr += dr[ i ];
+                mr /= nu.n;
+                double ec = 0, ech = 0;
+                for ( SI i = 0; i < nu.n; ++i ) { ech = std::max( ech, std::fabs( dr[ i ] - mr ) ); ec = std::max( ec, std::fabs( dg[ i ] - ( dr[ i ] - mr ) ) ); }
+                std::printf( "      %-24s %5d it., %7.0f ms ( mise en forme %4.0f + hierarchie %4.0f + resolution %5.0f ), residu %.1e, ecart a nous %.1e\n",
+                             gpu::amgcl_cuda_nom( v ), it, ( t_forme + th + tr ) * 1e3, t_forme * 1e3, th * 1e3, tr * 1e3,
+                             er, ech > 0 ? ec / ech : 0.0 );
+                if ( choix ) break;
+            }
+        }
         std::printf( "      CG        %4d iterations, residu relatif %.1e, %7.1f ms sur GPU contre %7.0f ms au CPU ( %d it. )   x%.1f\n",
                      its, r_cg, ms_cg, t_cgc * 1e3, itc, t_cgc * 1e3 / ms_cg );
         std::printf( "                | d |_max %.3e, ecart au CG du CPU %.1e ( soit %.1e relatif )%s\n",

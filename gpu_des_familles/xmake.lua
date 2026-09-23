@@ -53,7 +53,7 @@ target( "chaine" )
     add_sysincludedirs( "/usr/include/eigen3" )
     -- AMGCL est le temoin de reference : il lui faut OpenMP, sinon la comparaison est truquee
     add_cxflags( "-fopenmp", { force = true } )
-    add_syslinks( "gomp" )
+    add_syslinks( "gomp", "cusparse" )
     
     add_syslinks( "pthread" )
 

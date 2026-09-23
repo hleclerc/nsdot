@@ -254,25 +254,48 @@ Le K-cycle visite le niveau `l` **2ˡ fois** : au-delà de deux niveaux accélé
 visites mange le gain en itérations, et le niveau le plus grossier doit être lissé peu (60 fois,
 pas 300) pour la même raison. **K sur deux niveaux, 60 lissages** : c'est le réglage retenu.
 
-**Contre AMGCL** (agrégation *lissée* + SPAI0, le témoin de référence, CPU 8 fils avec OpenMP) :
+**Contre AMGCL, à plateforme égale.** Comparer notre multigrille GPU au CPU ne prouvait rien : il
+fallait le comparer à **AMGCL sur la même carte**, avec son backend CUDA (`src/gpu/RefAmgcl.cu`) et
+en balayant ses configurations. Le backend CUDA d'AMGCL n'accepte pas Gauss-Seidel (séquentiel par
+nature) ; restent `spai0`, `damped_jacobi` et `chebyshev` comme lisseurs, et
+`smoothed_aggregation`, `aggregation` (non lissée, comme la nôtre) et `ruge_stuben` comme
+grossissements. Uniforme 10⁶, `double`, résidu 1e-10, **tout sur le RTX 2080 Ti** :
 
-| `double`, résidu 1e-10 | | itérations | hiérarchie | résolution | **total** |
+| | itér. | mise en forme | hiérarchie | résolution | **total** |
 |---|---|---|---|---|---|
-| uniforme 2·10⁵ | AMGCL | 42 | 118 ms | 244 ms | 379 ms |
-| | **nous (GPU)** | 67 | **5 ms** | 142 ms | **142 ms** — ×2.7 |
-| uniforme 10⁶ | AMGCL | 49 | 736 ms | 1713 ms | 2539 ms |
-| | **nous (GPU)** | 85 | **15 ms** | 883 ms | **883 ms** — ×2.8 |
+| AMGCL/CUDA agrégation lissée + spai0 | 49 | 62 ms | 3341 ms | **229 ms** | 3632 ms |
+| AMGCL/CUDA agrégation lissée + Jacobi | 46 | 62 | 3422 | **211 ms** | 3695 ms |
+| AMGCL/CUDA agrégation lissée + Chebyshev | 145 | 62 | 3342 | 1827 | 5230 ms |
+| AMGCL/CUDA **agrégation non lissée + spai0** | 74 | 62 | 1782 | 331 | **2177 ms** |
+| AMGCL/CUDA Ruge-Stuben + spai0 | 30 | 62 | 4230 | 164 | 4456 ms |
+| **nous** | 85 | 0 | **14 ms** | 873 ms | **887 ms** |
 
-Les solutions coïncident à 2e-11. **Oui, on est meilleur** — ×2.7 à ×2.8 en temps de mur, avec
-1.6 fois plus d'itérations mais chacune sur la carte, et surtout une **hiérarchie 49 fois moins
-chère à monter** (15 ms contre 736), ce qui pèse lourd dans un Newton où elle se remonte à chaque
-pas puisque les coefficients changent.
+**Sur le total, nous gagnons ×2.5** contre la meilleure configuration d'AMGCL. Mais le détail dit
+autre chose, et il faut le dire :
 
-**Et la loi d'échelle est réparée** : nos itérations passent de 67 à 85 pour un `n` multiplié par
-cinq (×1.27), celles d'AMGCL de 42 à 49 (×1.17). Le K-cycle a fait, sans produit triple creux, ce
-que la prolongation lissée fait chez AMGCL.
+* **notre mise en place est 130 fois moins chère** (14 ms contre 1782) — et c'est tout notre
+  avantage. La raison est qu'**AMGCL construit sa hiérarchie sur le CPU** : ses temps de hiérarchie
+  en CUDA sont ceux du CPU, parfois pires, alors que sa résolution, elle, profite bien de la carte.
+  Chez nous l'agrégation est un décalage et le Galerkin est un tri sur la carte ;
+* **notre résolution est 2.6 fois plus lente** (873 ms pour 85 itérations contre 331 pour 74).
+  Par itération : 10.3 ms contre 4.5. Notre cycle coûte plus cher — le K-cycle visite le niveau `l`
+  deux puissance `l` fois, et on lisse deux fois avant et deux fois après là où AMGCL lisse une
+  fois avec `spai0`. C'est là qu'il reste un facteur deux à trois à prendre ;
+* **la prolongation lissée d'AMGCL tient ses promesses sur la convergence** : 49 itérations contre
+  74 pour la même agrégation non lissée, et 85 pour la nôtre. Notre K-cycle rattrape l'essentiel
+  de l'écart mais pas tout.
 
-**Ce que le V-cycle seul ne faisait pas.** 168 itérations à 2·10⁵ et 357 à 10⁶ : le nombre d'itérations croît
+**Et le contexte décide.** Dans un Newton, les positions ne bougent pas mais les *coefficients*
+changent à chaque pas : la hiérarchie doit être remontée, et c'est notre 14 ms contre leurs
+1782 ms qui compte. Si au contraire on pouvait figer la hiérarchie et ne refaire que les
+résolutions, AMGCL passerait devant d'un facteur 2.6. Le balayage complet est rejouable :
+`AMGCL_VAR` choisit la configuration, `AMG_K`, `AMG_NU` et `AMG_GROS` règlent la nôtre.
+
+Notre propre balayage (2·10⁵) : **`AMG_NU = 1` ne converge pas** (le cycle se dégrade trop), deux
+lissages avant et après sont le minimum ; `AMG_GROS` vaut mieux à 30 pour 2·10⁵ (118 ms contre 144)
+mais à **60 pour 10⁶** (873 ms contre 1085) — c'est 60 qui est retenu, la grande taille décidant.
+
+**Ce que le V-cycle seul ne faisait pas.****Ce que le V-cycle seul ne faisait pas.** 168 itérations à 2·10⁵ et 357 à 10⁶ : le nombre d'itérations croît
 encore comme √n, avec une constante 22 fois meilleure. Un vrai multigrille serait indépendant de
 `n` ; celui-ci ne l'est pas, parce que l'agrégation est **non lissée** — c'est sa faiblesse
 connue, et elle se voit aussi en descendant plus bas : s'arrêter à 16 inconnues au lieu de 1000

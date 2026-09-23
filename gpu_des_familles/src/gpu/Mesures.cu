@@ -69,6 +69,7 @@ struct DiagrammeGpu<D,TK>::Impl {
     std::vector<int *>  map;                         ///< `map[ l ][ i ]` : le paquet du niveau `l + 1`
     int          kcycle = 2;                         ///< niveaux acceleres par Krylov ( 0 : V pur )
     int          gros = 60;                          ///< lissages au niveau le plus grossier
+    int          nu = 2;                             ///< lissages avant et apres, par niveau
     int         *rang_de = nullptr;                  ///< identifiant -> rang ( l'agregation du niveau fin )
     double      *acc = nullptr;                      ///< un scalaire de travail
     int          n = 0, nn = 0;
@@ -634,6 +635,7 @@ void DiagrammeGpu<D,TK>::monte_amg( const Hessienne &H ) {
     m.niv.clear(); m.map.clear();
     if ( const char *e = std::getenv( "AMG_K" ) ) m.kcycle = std::atoi( e );
     if ( const char *e = std::getenv( "AMG_GROS" ) ) m.gros = std::atoi( e );
+    if ( const char *e = std::getenv( "AMG_NU" ) ) m.nu = std::atoi( e );
     if ( ! m.rang_de ) {
         CUDA_OK( cudaMalloc( &m.rang_de, size_t( m.n ) * sizeof( int ) ) );
         CUDA_OK( cudaMalloc( &m.acc, sizeof( double ) ) );
@@ -723,7 +725,7 @@ void DiagrammeGpu<D,TK>::cycle_v( int l ) {
     auto gr = [ & ]( int k ) { return ( k + BL - 1 ) / BL; };
     Niveau &g = m.niv[ l ];
     constexpr double OM = 0.7;
-    constexpr int NU = 2;                                // pre et post, pour la symetrie
+    const int NU = m.nu;                                 // pre et post, pour la symetrie
     CUDA_OK( cudaMemsetAsync( g.x, 0, size_t( g.n ) * 8 ) );
     if ( l + 1 == int( m.niv.size() ) ) {                // le plus grossier : on lisse longtemps
         for ( int k = 0; k < m.gros; ++k )
