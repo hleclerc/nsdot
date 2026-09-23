@@ -101,6 +101,9 @@ int mesure( const Args &a, const Opt &o, const Nuage<PD::dim> &nu ) {
         std::printf( "      %-8s %8.4f s  %7.1f ns/germe  x%-5.1f  somme %.9f  ecart max %.1e  retour %.0f ms%s%s\n",
                      gpu::nom( v ), ch.noyau, ch.noyau / nu.n * 1e9, t_cpu / ch.noyau, somme, ecart, ch.retour * 1e3,
                      ch.deborde ? "   <-- DEBORDE" : "", ok ? "" : "   <-- FAUX" );
+        if ( ch.regs )
+            std::printf( "        %d registres, %d blocs par SM, occupation %.0f %%, memoire locale %d octets%s\n",
+                         ch.regs, ch.blocs, ch.occup * 100, ch.local, ch.local > 192 ? "   <-- DEBORDEMENT DE REGISTRES" : "" );
         if ( ch.deborde )
             std::printf( "        %d cellules ont deborde ( --maxnv %d )\n", ch.deborde, 2 * a.nv( D ) );
         if ( ch.stats[ 0 ] )
@@ -138,7 +141,7 @@ int main( int argc, char **argv ) {
         if ( s == "--reps-gpu" && i + 1 < argc ) { o.reps_gpu = std::atoi( argv[ ++i ] ); continue; }
         std::printf( "usage: mesures [options]\n" );
         Args::usage();
-        std::printf( "  --variante V    fil | filreg | filregc | filmix{4,6,8,12,16} | filbrk{6,8,10,12,16} | filbrk8nu | filrot{6,8} | filnrm8 | filord8 | filsuc8 | filmsk8 | filmsk8i | filuni8 | filuni8np | filshm8 | filnrm8tri | filnrm8tril | filph8 | filph8g | filph8b | filph8a | filph8c | filph8o | voies | voies16 | voies32 | paquet{8,32}x{1,2,4}[S] | toutes ( plusieurs : separees par des virgules )\n"
+        std::printf( "  --variante V    fil | filreg | filregc | filmix{4,6,8,12,16} | filbrk{6,8,10,12,16} | filbrk8nu | filrot{6,8} | filnrm8 | filord8 | filsuc8 | filmsk8 | filmsk8c{6,8} | filnrm8c{6,8} | filuni8 | filuni8np | filshm8 | filnrm8tri | filnrm8tril | filph8 | filph8g | filph8b | filph8a | filph8c | filph8o | voies | voies16 | voies32 | paquet{8,32}x{1,2,4}[S] | toutes ( plusieurs : separees par des virgules )\n"
                      "  --reps-gpu R    repetitions du noyau GPU, minimum       (10)\n" );
         return s == "--help" || s == "-h" ? 0 : 1;
     }

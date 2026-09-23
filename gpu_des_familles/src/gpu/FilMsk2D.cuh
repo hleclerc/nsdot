@@ -1,55 +1,48 @@
 #pragma once
 
 // =====================================================================================
-// LES REGISTRES RESTENT TRIES ( `filnrm` / `filrot` ), MAIS LA FRONTIERE EST CUEILLIE PAR DES
-// MASQUES PARTAGES ENTRE x, y ET c ( idee de H. L. ).
+// `filnrm` / `filrot` AVEC DES MASQUES DE ROLE ET UN SEUL BARILLET ( idee de H. L. ).
+// Les registres restent TRIES -- les sommets sont toujours en `0 .. nb - 1` -- et deux choses
+// changent par rapport a `filrot` :
 //
-// `filord` et `filsuc` laissaient les sommets sur place et payaient le desordre ; ici on garde
-// l'ordre -- les sommets sont toujours en `0 .. nb - 1` -- et on ne change QUE deux choses :
+//   1. LES QUATRE SOMMETS DE LA FRONTIERE sortent de QUATRE MASQUES DE ROLE de huit bits,
+//      fabriques en quatre instructions a partir de `m`, `prev` et `next`. Chacun n'a qu'UN SEUL
+//      BIT, puisque la plage exterieure est un arc cyclique contigu :
+//          r0 = ~m & next    ( dedans, le suivant dehors    -> `v_j0` )
+//          r1 =  m & ~prev   ( dehors, le precedent dedans  -> `v_i1`, l'entree )
+//          r2 =  m & ~next   ( dehors, le suivant dedans    -> `v_j2` )
+//          r3 = ~m & prev    ( dedans, le precedent dehors  -> `v_j3` )
+//      Un `__ffs` donne l'indice, et « la plage boucle » se lit `r1 > r2` ( les deux masques sont
+//      one-hot : les comparer, c'est comparer `i1` et `j2` ). `filrot` faisait le meme travail en
+//      deux `__ffs` puis quatre corrections cycliques ( `i1 ? i1 - 1 : nb - 1` ... ).
 //
-//   1. LA CUEILLETTE DES QUATRE SOMMETS DE LA FRONTIERE. Au lieu de quatre indices ( `j0`, `i1`,
-//      `j2`, `j3` ) suivis de neuf lectures a indice dynamique ( `selR` : un compare et un
-//      `select` par case ), on fabrique QUATRE MASQUES DE ROLE de huit bits, chacun a un seul
-//      bit -- ils sortent de `m`, `prev` et `next` en quatre instructions :
-//          r0 = ~m & next   ( dedans, le suivant dehors  -> `v_j0` )
-//          r1 =  m & ~prev  ( dehors, le precedent dedans -> `v_i1` )
-//          r2 =  m & ~next  ( dehors, le suivant dedans   -> `v_j2` )
-//          r3 = ~m & prev   ( dedans, le precedent dehors -> `v_j3` )
-//      puis, case par case, UN MASQUE PLEIN par role ( `0` ou `-1` ), PARTAGE par `x`, `y` et
-//      `c` : `ax0 |= bits( x[ i ] ) & k0` -- sur le GPU c'est un seul `LOP3` ( `et` puis `ou` en
-//      une instruction ). Plus un indice dynamique, plus un compare par case et par valeur.
+//      ( La variante ou les quatre masques servaient DIRECTEMENT a cueillir `x`, `y` et `c` par
+//        des `et` / `ou` pleine largeur a ete ecrite et mesuree : +11 % d'instructions. Le partage
+//        entre les trois tableaux existait deja -- ptxas met un seul `ISETP.EQ` par case en
+//        facteur de trois `SEL` -- et un masque plein coute deux a trois instructions la ou un
+//        predicat en coute une. Voir README § 4. )
 //
-//   2. LE REMONTAGE EN UN SEUL BARILLET. `filrot` traite le cas `d == -1` ( une seule coupe
-//      sortante, le cas le plus frequent ) par une copie decalee a droite, soit un `select` de
-//      plus par case et par tableau. Ici on decale A PRIORI d'UNE CASE, ce qui est GRATUIT -- un
-//      simple renommage de registres a la compilation -- en travaillant sur `u[ k ] = v[ k - 1 ]`
-//      de neuf cases, et le barillet part de `e = d + 1 >= 0`. Un etage de moins a ecrire, trois
-//      tableaux au lieu de six chez `filnrm`.
+//   2. LE REMONTAGE TIENT EN UN SEUL BARILLET. La sortie est
+//          new[ o ] = o < a ? old[ o ] : o == a ? A : o == a + 1 ? B : old[ o + d ]
+//      avec `( a, d ) = ( 0, j3 - 2 )` si la plage boucle, `( i1, nb_out - 2 )` sinon. Le `d`
+//      peut valoir -1 ( une seule coupe sortante : le cas le plus frequent ), et `filrot` payait
+//      ce cas par une copie decalee a droite -- un `select` de plus par case et par tableau.
+//      Ici on decale A PRIORI d'une case, ce qui est GRATUIT ( un renommage de registres a la
+//      compilation ) : on travaille sur `u[ k ] = old[ k - 1 ]`, neuf cases, et le barillet part
+//      de `e = d + 1 >= 0`. Mesure : -8 % d'instructions et -8 % de temps contre `filrot8`.
 //
-// `MASQ = false` garde le meme remontage mais cueille par indices ( `__ffs` + `selR` ) : c'est
-// la mesure temoin qui isole ce que les masques valent.
+// Trois tableaux temporaires de neuf cases, contre les huit de huit de `filnrm` : 96 registres en
+// `double` et 58 en `float`, contre 128 et 74 -- LE PLUS PETIT NOYAU DE LA FAMILLE, a +5 % de
+// temps. `BSM` force l'occupation ( `__launch_bounds__( 128, BSM )` : ptxas rabote les registres
+// pour loger `BSM` blocs par SM ) ; `BSM = 1` ne contraint rien.
 // =====================================================================================
 
 #include "gpu/FilNrm2D.cuh"
 
 namespace sf::gpu {
 
-/// le flottant vu comme un mot d'entiers, pour les `et` / `ou` masques
-template<class TK> struct Mot;
-template<> struct Mot<float> {
-    using U = unsigned;
-    static __device__ __forceinline__ U     de( float v )  { return __float_as_uint( v ); }
-    static __device__ __forceinline__ float vers( U b )    { return __uint_as_float( b ); }
-};
-template<> struct Mot<double> {
-    using U = unsigned long long;
-    static __device__ __forceinline__ U      de( double v ) { return ( U ) __double_as_longlong( v ); }
-    static __device__ __forceinline__ double vers( U b )    { return __longlong_as_double( ( long long ) b ); }
-};
-
-template<bool POIDS, bool MASQ, class TK>
-__global__ void __launch_bounds__( 128 ) noyau2_filmsk( Arbre<TK,2> ar, double *res, int *deborde, int *liste_deb ) {
-    using U = typename Mot<TK>::U;
+template<bool POIDS, int BSM, class TK>
+__global__ void __launch_bounds__( 128, BSM ) noyau2_filmsk( Arbre<TK,2> ar, double *res, int *deborde, int *liste_deb ) {
     constexpr int R = 8, SUR = 3;
     const int k = blockIdx.x * blockDim.x + threadIdx.x;
     if ( k >= ar.n ) return;
@@ -91,7 +84,7 @@ __global__ void __launch_bounds__( 128 ) noyau2_filmsk( Arbre<TK,2> ar, double *
         for ( int q = nd.beg; q < nd.end; ++q ) {
             const Plan2<TK> p = bissect2<POIDS>( ar, q, p0[ 0 ], p0[ 1 ], w0 );
 
-            // ---- LA PREMIERE PASSE : le masque `m` des sommets dehors
+            // ---- LA PREMIERE PASSE : `m`, le masque des sommets dehors
             unsigned m = 0;
 #pragma unroll
             for ( int i = 0; i < R; ++i ) {
@@ -103,124 +96,46 @@ __global__ void __launch_bounds__( 128 ) noyau2_filmsk( Arbre<TK,2> ar, double *
             const unsigned valid = ( 1u << nb ) - 1;
             if ( IMPROBABLE( m == valid ) ) { nb = 0; goto fin; }
 
-            // ---- LES QUATRE MASQUES DE ROLE, un seul bit chacun ( la plage dehors est contigue )
+            // ---- LES QUATRE MASQUES DE ROLE, un seul bit chacun
             const unsigned prev = ( ( m << 1 ) | ( m >> ( nb - 1 ) ) ) & valid;
             const unsigned next = ( ( m >> 1 ) | ( m << ( nb - 1 ) ) ) & valid;
             const unsigned r0 = ~m & next & valid;      // `v_j0` : dedans, le suivant dehors
             const unsigned r1 =  m & ~prev;             // `v_i1` : dehors, le precedent dedans
             const unsigned r2 =  m & ~next;             // `v_j2` : dehors, le suivant dedans
             const unsigned r3 = ~m & prev & valid;      // `v_j3` : dedans, le precedent dehors
+            const int j0 = __ffs( int( r0 ) ) - 1, i1 = __ffs( int( r1 ) ) - 1;
+            const int j2 = __ffs( int( r2 ) ) - 1, j3 = __ffs( int( r3 ) ) - 1;
             const int nb_out = __popc( m );
             const int nn = nb - nb_out + 2;
             if ( IMPROBABLE( nn > R ) ) { nb = -1; goto fin; }   // pour la seconde passe
 
-            TK x0v, y0v, x1v, y1v, x2v, y2v, x3v, y3v;
-            int bid;
-            if constexpr ( MASQ ) {
-                // ---- LA CUEILLETTE PAR MASQUES, DEROULEE A LA MAIN, CASE PAR CASE.
-                //      `b?` : le bit du role pour cette case ; `- U( b? )` : le masque plein.
-                //      Les quatre masques d'une case servent a `x`, a `y` et ( pour `r2` ) a `c`.
-                U ax0 = 0, ay0 = 0, ax1 = 0, ay1 = 0, ax2 = 0, ay2 = 0, ax3 = 0, ay3 = 0;
-                unsigned ac2 = 0;
-
-                { const unsigned b0 = r0 & 1u, b1 = r1 & 1u, b2 = r2 & 1u, b3 = r3 & 1u;
-                  const U bx = Mot<TK>::de( x[ 0 ] ), by = Mot<TK>::de( y[ 0 ] );
-                  ax0 |= bx & -U( b0 ); ay0 |= by & -U( b0 );
-                  ax1 |= bx & -U( b1 ); ay1 |= by & -U( b1 );
-                  ax2 |= bx & -U( b2 ); ay2 |= by & -U( b2 ); ac2 |= unsigned( c[ 0 ] ) & -b2;
-                  ax3 |= bx & -U( b3 ); ay3 |= by & -U( b3 ); }
-
-                { const unsigned b0 = ( r0 >> 1 ) & 1u, b1 = ( r1 >> 1 ) & 1u, b2 = ( r2 >> 1 ) & 1u, b3 = ( r3 >> 1 ) & 1u;
-                  const U bx = Mot<TK>::de( x[ 1 ] ), by = Mot<TK>::de( y[ 1 ] );
-                  ax0 |= bx & -U( b0 ); ay0 |= by & -U( b0 );
-                  ax1 |= bx & -U( b1 ); ay1 |= by & -U( b1 );
-                  ax2 |= bx & -U( b2 ); ay2 |= by & -U( b2 ); ac2 |= unsigned( c[ 1 ] ) & -b2;
-                  ax3 |= bx & -U( b3 ); ay3 |= by & -U( b3 ); }
-
-                { const unsigned b0 = ( r0 >> 2 ) & 1u, b1 = ( r1 >> 2 ) & 1u, b2 = ( r2 >> 2 ) & 1u, b3 = ( r3 >> 2 ) & 1u;
-                  const U bx = Mot<TK>::de( x[ 2 ] ), by = Mot<TK>::de( y[ 2 ] );
-                  ax0 |= bx & -U( b0 ); ay0 |= by & -U( b0 );
-                  ax1 |= bx & -U( b1 ); ay1 |= by & -U( b1 );
-                  ax2 |= bx & -U( b2 ); ay2 |= by & -U( b2 ); ac2 |= unsigned( c[ 2 ] ) & -b2;
-                  ax3 |= bx & -U( b3 ); ay3 |= by & -U( b3 ); }
-
-                { const unsigned b0 = ( r0 >> 3 ) & 1u, b1 = ( r1 >> 3 ) & 1u, b2 = ( r2 >> 3 ) & 1u, b3 = ( r3 >> 3 ) & 1u;
-                  const U bx = Mot<TK>::de( x[ 3 ] ), by = Mot<TK>::de( y[ 3 ] );
-                  ax0 |= bx & -U( b0 ); ay0 |= by & -U( b0 );
-                  ax1 |= bx & -U( b1 ); ay1 |= by & -U( b1 );
-                  ax2 |= bx & -U( b2 ); ay2 |= by & -U( b2 ); ac2 |= unsigned( c[ 3 ] ) & -b2;
-                  ax3 |= bx & -U( b3 ); ay3 |= by & -U( b3 ); }
-
-                { const unsigned b0 = ( r0 >> 4 ) & 1u, b1 = ( r1 >> 4 ) & 1u, b2 = ( r2 >> 4 ) & 1u, b3 = ( r3 >> 4 ) & 1u;
-                  const U bx = Mot<TK>::de( x[ 4 ] ), by = Mot<TK>::de( y[ 4 ] );
-                  ax0 |= bx & -U( b0 ); ay0 |= by & -U( b0 );
-                  ax1 |= bx & -U( b1 ); ay1 |= by & -U( b1 );
-                  ax2 |= bx & -U( b2 ); ay2 |= by & -U( b2 ); ac2 |= unsigned( c[ 4 ] ) & -b2;
-                  ax3 |= bx & -U( b3 ); ay3 |= by & -U( b3 ); }
-
-                { const unsigned b0 = ( r0 >> 5 ) & 1u, b1 = ( r1 >> 5 ) & 1u, b2 = ( r2 >> 5 ) & 1u, b3 = ( r3 >> 5 ) & 1u;
-                  const U bx = Mot<TK>::de( x[ 5 ] ), by = Mot<TK>::de( y[ 5 ] );
-                  ax0 |= bx & -U( b0 ); ay0 |= by & -U( b0 );
-                  ax1 |= bx & -U( b1 ); ay1 |= by & -U( b1 );
-                  ax2 |= bx & -U( b2 ); ay2 |= by & -U( b2 ); ac2 |= unsigned( c[ 5 ] ) & -b2;
-                  ax3 |= bx & -U( b3 ); ay3 |= by & -U( b3 ); }
-
-                { const unsigned b0 = ( r0 >> 6 ) & 1u, b1 = ( r1 >> 6 ) & 1u, b2 = ( r2 >> 6 ) & 1u, b3 = ( r3 >> 6 ) & 1u;
-                  const U bx = Mot<TK>::de( x[ 6 ] ), by = Mot<TK>::de( y[ 6 ] );
-                  ax0 |= bx & -U( b0 ); ay0 |= by & -U( b0 );
-                  ax1 |= bx & -U( b1 ); ay1 |= by & -U( b1 );
-                  ax2 |= bx & -U( b2 ); ay2 |= by & -U( b2 ); ac2 |= unsigned( c[ 6 ] ) & -b2;
-                  ax3 |= bx & -U( b3 ); ay3 |= by & -U( b3 ); }
-
-                { const unsigned b0 = ( r0 >> 7 ) & 1u, b1 = ( r1 >> 7 ) & 1u, b2 = ( r2 >> 7 ) & 1u, b3 = ( r3 >> 7 ) & 1u;
-                  const U bx = Mot<TK>::de( x[ 7 ] ), by = Mot<TK>::de( y[ 7 ] );
-                  ax0 |= bx & -U( b0 ); ay0 |= by & -U( b0 );
-                  ax1 |= bx & -U( b1 ); ay1 |= by & -U( b1 );
-                  ax2 |= bx & -U( b2 ); ay2 |= by & -U( b2 ); ac2 |= unsigned( c[ 7 ] ) & -b2;
-                  ax3 |= bx & -U( b3 ); ay3 |= by & -U( b3 ); }
-
-                x0v = Mot<TK>::vers( ax0 ); y0v = Mot<TK>::vers( ay0 );
-                x1v = Mot<TK>::vers( ax1 ); y1v = Mot<TK>::vers( ay1 );
-                x2v = Mot<TK>::vers( ax2 ); y2v = Mot<TK>::vers( ay2 );
-                x3v = Mot<TK>::vers( ax3 ); y3v = Mot<TK>::vers( ay3 );
-                bid = int( ac2 );
-            } else {
-                // ---- LE TEMOIN : par indices, comme `filrot`
-                const int j0 = __ffs( int( r0 ) ) - 1, i1 = __ffs( int( r1 ) ) - 1;
-                const int j2 = __ffs( int( r2 ) ) - 1, j3 = __ffs( int( r3 ) ) - 1;
-                x0v = selR( x, j0 ); y0v = selR( y, j0 );
-                x1v = selR( x, i1 ); y1v = selR( y, i1 );
-                x2v = selR( x, j2 ); y2v = selR( y, j2 );
-                x3v = selR( x, j3 ); y3v = selR( y, j3 );
-                bid = selR( c, j2 );
-            }
-
             // ---- LES DEUX POINTS CREES ; `s` recalcule pour les quatre ( un `fma` chacun )
+            const TK x0v = selR( x, j0 ), y0v = selR( y, j0 ), x1v = selR( x, i1 ), y1v = selR( y, i1 );
+            const TK x2v = selR( x, j2 ), y2v = selR( y, j2 ), x3v = selR( x, j3 ), y3v = selR( y, j3 );
+            const int bid = selR( c, j2 );
             const TK s0 = p.dx * x0v + p.dy * y0v - p.off, s1 = p.dx * x1v + p.dy * y1v - p.off;
             const TK s2 = p.dx * x2v + p.dy * y2v - p.off, s3 = p.dx * x3v + p.dy * y3v - p.off;
             const TK ta = s0 / ( s0 - s1 ), tb = s3 / ( s3 - s2 );
             const TK pax = x0v + ( x1v - x0v ) * ta, pay = y0v + ( y1v - y0v ) * ta;
             const TK pbx = x3v + ( x2v - x3v ) * tb, pby = y3v + ( y2v - y3v ) * tb;
 
-            // ---- LE REMONTAGE : `new[ o ] = o < a ? old[ o ] : o == a ? A : o == a + 1 ? B :
-            //      old[ o + d ]`, avec `d >= -1`. On pose `u[ k ] = old[ k - 1 ]` ( GRATUIT : un
-            //      renommage ) et `e = d + 1 >= 0`, d'ou `old[ o + d ] = u[ o + e ]` : UN SEUL
-            //      barillet, trois etages, la meme condition pour les trois tableaux.
+            // ---- LE REMONTAGE : `u[ k ] = old[ k - 1 ]` ( gratuit ), puis UN barillet de `e`
             const bool boucle = r1 > r2;                        // `i1 > j2` : la plage dehors boucle
-            const int  a = boucle ? 0 : __ffs( int( r1 ) ) - 1;
-            const int  e = boucle ? __ffs( int( r3 ) ) - 2 : nb_out - 1;
+            const int  a = boucle ? 0 : i1;
+            const int  e = boucle ? j3 - 1 : nb_out - 1;        // `= d + 1 >= 0`
             TK  ux[ R + 1 ], uy[ R + 1 ];
             int uc[ R + 1 ];
             ux[ 0 ] = x[ 0 ]; uy[ 0 ] = y[ 0 ]; uc[ 0 ] = c[ 0 ];   // jamais lu : `o + e >= 1`
 #pragma unroll
             for ( int o = 1; o < R + 1; ++o ) { ux[ o ] = x[ o - 1 ]; uy[ o ] = y[ o - 1 ]; uc[ o ] = c[ o - 1 ]; }
-            const bool e1 = e & 1, e2 = e & 2, e4 = e & 4;
+            // trois etages, la meme condition pour les trois tableaux ; les cases au-dela de
+            // `o + e = R` ne servent jamais ( `o < nn` et `nn - 1 + e <= R` ), d'ou les bornes
 #pragma unroll
-            for ( int o = 0; o + 1 < R + 1; ++o ) { ux[ o ] = e1 ? ux[ o + 1 ] : ux[ o ]; uy[ o ] = e1 ? uy[ o + 1 ] : uy[ o ]; uc[ o ] = e1 ? uc[ o + 1 ] : uc[ o ]; }
+            for ( int b = 1; b < R + 1; b *= 2 ) {
+                const bool on = e & b;
 #pragma unroll
-            for ( int o = 0; o + 2 < R + 1; ++o ) { ux[ o ] = e2 ? ux[ o + 2 ] : ux[ o ]; uy[ o ] = e2 ? uy[ o + 2 ] : uy[ o ]; uc[ o ] = e2 ? uc[ o + 2 ] : uc[ o ]; }
-#pragma unroll
-            for ( int o = 0; o + 4 < R + 1; ++o ) { ux[ o ] = e4 ? ux[ o + 4 ] : ux[ o ]; uy[ o ] = e4 ? uy[ o + 4 ] : uy[ o ]; uc[ o ] = e4 ? uc[ o + 4 ] : uc[ o ]; }
+                for ( int o = 0; o + b < R + 1; ++o ) { ux[ o ] = on ? ux[ o + b ] : ux[ o ]; uy[ o ] = on ? uy[ o + b ] : uy[ o ]; uc[ o ] = on ? uc[ o + b ] : uc[ o ]; }
+            }
 #pragma unroll
             for ( int o = 0; o < R; ++o ) {
                 if ( o >= SUR && o >= nn ) break;

@@ -113,6 +113,25 @@ DiagrammeGpu<D,TK>::~DiagrammeGpu() {
 
 namespace {
 
+/// CE QUE LE NOYAU COUTE EN REGISTRES, et combien de blocs le SM en loge. La question n'est pas
+/// oiseuse : la grille est toujours largement plus grande que la carte ( un thread par cellule,
+/// des milliers de blocs pour 68 SM ), donc ce qui limite le nombre de threads EN VOL est
+/// uniquement l'occupation -- les registres par thread, arrondis par l'unite d'allocation.
+template<class F>
+void infos( Chrono &ch, F noy, int bloc ) {
+    cudaFuncAttributes at;
+    if ( cudaFuncGetAttributes( &at, noy ) != cudaSuccess ) return;
+    int par_sm = 0, dev = 0;
+    cudaGetDevice( &dev );
+    cudaOccupancyMaxActiveBlocksPerMultiprocessor( &par_sm, noy, bloc, 0 );
+    cudaDeviceProp prop;
+    cudaGetDeviceProperties( &prop, dev );
+    ch.regs = at.numRegs;
+    ch.blocs = par_sm;
+    ch.local = int( at.localSizeBytes );
+    ch.occup = double( par_sm * bloc ) / prop.maxThreadsPerMultiProcessor;
+}
+
 /// LE LANCEMENT d'un noyau deja choisi : `lance()` fait tout ( une ou deux passes ) et rend le
 /// compteur de debordement qui fait foi.
 template<int D, class TK, class Impl>
@@ -322,19 +341,42 @@ Chrono lance2( const Impl &m, Variante v, int reps, std::vector<double> &res ) {
             return m.deb2;
         } );
     }
-    if ( v == Variante::FILMSK8 || v == Variante::FILMSK8I ) {
+    if ( v == Variante::FILMSK8 || v == Variante::FILMSK8C6 || v == Variante::FILMSK8C8 ) {
+        // `BSM` : le nombre de blocs par SM que ptxas doit garantir -- il rabote les registres
+        // pour y arriver. A 128 threads par bloc sur Turing ( 64 Ko de registres, 32 warps ) :
+        // 4 blocs <=> 128 registres, 5 <=> 102, 6 <=> 85, 8 <=> 64 et l'occupation pleine
         auto msk = [ & ]( auto mm ) {
-            constexpr bool MASQ = decltype( mm )::value;
-            return chrono<2,TK>( m, reps, res, [ & ]() {
-                noyau2_filmsk<POIDS,MASQ><<<grid, bloc>>>( ar, m.res, m.deb, m.liste );
+            constexpr int BSM = decltype( mm )::value;
+            Chrono ch = chrono<2,TK>( m, reps, res, [ & ]() {
+                noyau2_filmsk<POIDS,BSM><<<grid, bloc>>>( ar, m.res, m.deb, m.liste );
                 int nd = 0;
                 CUDA_OK( cudaMemcpy( &nd, m.deb, sizeof( int ), cudaMemcpyDeviceToHost ) );
                 if ( nd == 0 ) return m.deb;
                 noyau2_filmix<POIDS,64,8,true><<<( nd + bloc - 1 ) / bloc, bloc>>>( ar, m.res, m.deb2, m.liste, nd );
                 return m.deb2;
             } );
+            infos( ch, noyau2_filmsk<POIDS,BSM,TK>, bloc );
+            return ch;
         };
-        return v == Variante::FILMSK8 ? msk( std::true_type{} ) : msk( std::false_type{} );
+        return v == Variante::FILMSK8   ? msk( std::integral_constant<int,1>{} )
+             : v == Variante::FILMSK8C6 ? msk( std::integral_constant<int,6>{} )
+             :                            msk( std::integral_constant<int,8>{} );
+    }
+    if ( v == Variante::FILNRM8C6 || v == Variante::FILNRM8C8 ) {
+        auto nrm = [ & ]( auto mm ) {
+            constexpr int BSM = decltype( mm )::value;
+            Chrono ch = chrono<2,TK>( m, reps, res, [ & ]() {
+                noyau2_filnrm<POIDS,8,BSM><<<grid, bloc>>>( ar, m.res, m.deb, m.liste );
+                int nd = 0;
+                CUDA_OK( cudaMemcpy( &nd, m.deb, sizeof( int ), cudaMemcpyDeviceToHost ) );
+                if ( nd == 0 ) return m.deb;
+                noyau2_filmix<POIDS,64,8,true><<<( nd + bloc - 1 ) / bloc, bloc>>>( ar, m.res, m.deb2, m.liste, nd );
+                return m.deb2;
+            } );
+            infos( ch, noyau2_filnrm<POIDS,8,BSM,TK>, bloc );
+            return ch;
+        };
+        return v == Variante::FILNRM8C6 ? nrm( std::integral_constant<int,6>{} ) : nrm( std::integral_constant<int,8>{} );
     }
     if ( v == Variante::FILSUC8 )
         return chrono<2,TK>( m, reps, res, [ & ]() {
@@ -354,8 +396,8 @@ Chrono lance2( const Impl &m, Variante v, int reps, std::vector<double> &res ) {
             noyau2_filmix<POIDS,64,8,true><<<( nd + bloc - 1 ) / bloc, bloc>>>( ar, m.res, m.deb2, m.liste, nd );
             return m.deb2;
         } );
-    if ( v == Variante::FILNRM8 )
-        return chrono<2,TK>( m, reps, res, [ & ]() {
+    if ( v == Variante::FILNRM8 ) {
+        Chrono ch = chrono<2,TK>( m, reps, res, [ & ]() {
             noyau2_filnrm<POIDS,8><<<grid, bloc>>>( ar, m.res, m.deb, m.liste );
             int nd = 0;
             CUDA_OK( cudaMemcpy( &nd, m.deb, sizeof( int ), cudaMemcpyDeviceToHost ) );
@@ -363,6 +405,9 @@ Chrono lance2( const Impl &m, Variante v, int reps, std::vector<double> &res ) {
             noyau2_filmix<POIDS,64,8,true><<<( nd + bloc - 1 ) / bloc, bloc>>>( ar, m.res, m.deb2, m.liste, nd );
             return m.deb2;
         } );
+        infos( ch, noyau2_filnrm<POIDS,8,1,TK>, bloc );
+        return ch;
+    }
     if ( v == Variante::FILROT6 || v == Variante::FILROT8 ) {
         auto rot = [ & ]( auto rr ) {
             constexpr int R = decltype( rr )::value;

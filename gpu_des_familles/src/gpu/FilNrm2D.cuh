@@ -38,8 +38,8 @@ __device__ __forceinline__ void barillet_d( T ( &a )[ R ], int e ) {
 
 /// `liste` : les rangs a faire, dans cet ordre ( `nullptr` : tous, dans l'ordre de l'arbre ) ;
 /// `cout` : si donne, le cout de chaque cellule ( plans + boites testes ) y est ecrit, par rang.
-template<bool POIDS, int R, class TK>
-__global__ void __launch_bounds__( 128 ) noyau2_filnrm( Arbre<TK,2> ar, double *res, int *deborde, int *liste_deb,
+template<bool POIDS, int R, int BSM = 1, class TK>
+__global__ void __launch_bounds__( 128, BSM ) noyau2_filnrm( Arbre<TK,2> ar, double *res, int *deborde, int *liste_deb,
                                                           const int *liste = nullptr, int nl = 0, int *cout = nullptr ) {
     constexpr int SUR = 3;
     static_assert( R >= 4 && R <= 32, "le carre tient dans les registres, le masque dans 32 bits" );
