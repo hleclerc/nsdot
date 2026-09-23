@@ -18,10 +18,22 @@
 #include <cstdlib>
 #include <cstdio>
 #include <string>
+#include <algorithm>
 
 using namespace sf;
 
 namespace {
+
+/// `liste` : `toutes`, un nom, ou plusieurs separes par des virgules
+bool choisie( const std::string &liste, const char *nom ) {
+    if ( liste == "toutes" ) return true;
+    for ( size_t b = 0; b <= liste.size(); ) {
+        const size_t e = std::min( liste.find( ',', b ), liste.size() );
+        if ( liste.compare( b, e - b, nom ) == 0 ) return true;
+        b = e + 1;
+    }
+    return false;
+}
 
 struct Opt {
     std::string variante = "toutes";
@@ -62,7 +74,7 @@ int mesure( const Args &a, const Opt &o, const Nuage<PD::dim> &nu ) {
     const double moyenne = somme_cpu / nu.n;
     for ( int iv = 0; iv < int( gpu::Variante::NB ); ++iv ) {
         const gpu::Variante v = gpu::Variante( iv );
-        if ( o.variante != "toutes" && o.variante != gpu::nom( v ) ) continue;
+        if ( ! choisie( o.variante, gpu::nom( v ) ) ) continue;
         if ( D == 3 && v != gpu::Variante::FIL && v != gpu::Variante::VOIES ) continue;   // en 3D « voies » est le warp
         const gpu::Chrono ch = g.mesures( v, a.nv( D ), o.reps_gpu, res );
         // l'ecart d'une cellule est rapporte a ELLE ( ou a la moyenne si elle est plus petite ). En
@@ -126,7 +138,7 @@ int main( int argc, char **argv ) {
         if ( s == "--reps-gpu" && i + 1 < argc ) { o.reps_gpu = std::atoi( argv[ ++i ] ); continue; }
         std::printf( "usage: mesures [options]\n" );
         Args::usage();
-        std::printf( "  --variante V    fil | filreg | filregc | filmix{4,6,8,12,16} | filbrk{6,8,10,12,16} | filbrk8nu | filrot{6,8} | filnrm8 | filord8 | filsuc8 | filuni8 | filuni8np | filshm8 | filnrm8tri | filnrm8tril | filph8 | filph8g | filph8b | filph8a | filph8c | filph8o | voies | voies16 | voies32 | paquet{8,32}x{1,2,4}[S] | toutes (toutes)\n"
+        std::printf( "  --variante V    fil | filreg | filregc | filmix{4,6,8,12,16} | filbrk{6,8,10,12,16} | filbrk8nu | filrot{6,8} | filnrm8 | filord8 | filsuc8 | filmsk8 | filmsk8i | filuni8 | filuni8np | filshm8 | filnrm8tri | filnrm8tril | filph8 | filph8g | filph8b | filph8a | filph8c | filph8o | voies | voies16 | voies32 | paquet{8,32}x{1,2,4}[S] | toutes ( plusieurs : separees par des virgules )\n"
                      "  --reps-gpu R    repetitions du noyau GPU, minimum       (10)\n" );
         return s == "--help" || s == "-h" ? 0 : 1;
     }

@@ -18,7 +18,7 @@ xmake run mesures --threads 8 --variante voies --load uniforme -n 1000000
 ```
 
 Les options communes (`-n`, `--load`, `--kernel`, `--maxnv`, `--leaf`, `--cases`, …) sont celles
-de `solvers_des_familles` (`src/bench/Args.h`), plus `--variante fil | filreg | filregc | filmix{4,6,8,12,16} | filbrk{6,8,10,12,16} | filbrk8nu | filrot{6,8} | filnrm8 | filord8 | filsuc8 | filuni8 | filuni8np | filshm8 | filnrm8tri | filnrm8tril | filph8 | filph8g | filph8b | filph8a | filph8c | filph8o | voies | voies16 |
+de `solvers_des_familles` (`src/bench/Args.h`), plus `--variante fil | filreg | filregc | filmix{4,6,8,12,16} | filbrk{6,8,10,12,16} | filbrk8nu | filrot{6,8} | filnrm8 | filord8 | filsuc8 | filmsk8 | filmsk8i | filuni8 | filuni8np | filshm8 | filnrm8tri | filnrm8tril | filph8 | filph8g | filph8b | filph8a | filph8c | filph8o | voies | voies16 |
 voies32 | paquet{8,32}x{1,2,4}[S] | toutes` et `--reps-gpu`. Sur la machine, `--threads 8` est à donner (`hardware_concurrency` rend 1
 dans le bac à sable) et **tout chronométrage passe par `job -b`**.
 
@@ -44,6 +44,9 @@ src/gpu/FilNrm2D.cuh    la cellule NORMALISÉE AVANT la coupe : tout se lit à d
 src/gpu/FilOrd2D.cuh    LES SOMMETS NE BOUGENT PLUS : un registre de 64 bits porte l'ordre
                         cyclique ( un octet = le slot, en one-hot ) — −21 % de registres, à
                         vitesse égale (§ 4)
+src/gpu/FilMsk2D.cuh    registres TRIÉS, mais la frontière cueillie par des masques de rôle
+                        partagés entre x, y et c, et le remontage en UN SEUL barillet — le noyau
+                        le plus petit de la famille : 96 / 58 registres (§ 4)
 src/gpu/FilSuc2D.cuh    TOUT EN MASQUES : la cellule est une relation de succession ( deux
                         registres `succ` / `pred` ), plus une position ni un index — mêmes
                         registres, même vitesse (§ 4)
@@ -514,6 +517,62 @@ Bilan de la famille « masques » : **même vitesse, 21 % de registres en moins*
 nettement plus simple (plus de barillet, plus de tableau temporaire). Un bon point de départ pour
 la 3D ou pour une carte où la pression de registres décide — pas un gain en 2D ici.
 
+**Les masques, mais sur des registres TRIÉS (`filmsk8`, idée de H. L.).** `filord` et `filsuc`
+payaient le désordre : les sommets restant sur place, il fallait « refaire » `x`, `y` et `c` à
+chaque lecture. On revient donc à `filnrm` — les sommets sont toujours en `0 .. nb - 1` — et on ne
+change que la *cueillette* des quatre sommets de la frontière. Quatre **masques de rôle** de huit
+bits sortent de `m`, `prev` et `next` en quatre instructions, chacun avec un seul bit puisque la
+plage extérieure est un arc contigu :
+
+```
+r0 = ~m & next   ( dedans, le suivant dehors   -> v_j0 )      r2 = m & ~next   ( -> v_j2 )
+r3 = ~m & prev   ( dedans, le précédent dehors -> v_j3 )      r1 = m & ~prev   ( -> v_i1 )
+```
+
+puis, case par case (déroulé à la main dans le fichier), un **masque plein** par rôle — `0` ou
+`-1` — **partagé par `x`, `y` et `c`** : `ax0 |= bits( x[ i ] ) & k0` est un seul `LOP3` sur le
+GPU. Plus un indice dynamique, plus un `selR`.
+
+Le remontage change aussi, et là c'est un gain net. `filrot` traitait le cas `d == -1` (une seule
+coupe sortante, le cas le plus fréquent) par une copie décalée à droite, soit un `select` de plus
+par case et par tableau. Ici on décale **a priori d'une case** — ce qui est *gratuit*, un simple
+renommage de registres à la compilation — en travaillant sur `u[ k ] = v[ k - 1 ]` de neuf cases,
+et le barillet part de `e = d + 1 ≥ 0`. Trois tableaux temporaires au lieu des huit de `filnrm`.
+`filmsk8i` est le témoin : même remontage, mais cueillette par indices (`__ffs` + `selR`).
+
+| ns/germe (`float`) | uniforme | lignes V | lignes L | registres (double / float) | instr (uniforme) | inst/cycle |
+|---|---|---|---|---|---|---|
+| `filnrm8` | **7.7** | **19.0** | **46.2** | 128 / 74 | **1414 M** | 2.96 |
+| `filrot8` | 8.8 | 19.9 | 49.4 | 106 / 64 | 1808 M | 3.07 |
+| `filmsk8i` (rôles par indices) | 8.1 | 18.9 | 47.3 | **96 / 59** | 1667 M | **3.21** |
+| `filmsk8` (rôles par masques) | 8.6 | 20.5 | 46.3 | **96 / 58** | 1852 M | 3.19 |
+
+Deux enseignements nets.
+
+* **Le barillet unique gagne** : `filmsk8i` contre `filrot8`, c'est −8 % d'instructions et −8 %
+  de temps sur les trois nuages, pour un décalage préalable qui ne coûte rien.
+* **La cueillette par masques perd** : +11 % d'instructions (1852 contre 1667 M) pour 8.6 contre
+  8.1. La raison est que **le partage était déjà là**. `selR( x, j )`, `selR( y, j )` et
+  `selR( c, j )` émettent *un seul* `ISETP.EQ j, i` par case, réutilisé par trois `SEL` — ptxas le
+  met en facteur tout seul. Le compte : côté indices, 4 rôles × 8 cases de compare (32) plus
+  9 × 8 `SEL` (72) ≈ 104 ; côté masques, 4 × 8 fabrications de masque plein (`-( ( r >> i ) & 1 )`,
+  deux à trois instructions chacune, ≈ 96) plus 9 × 8 `LOP3` (72) ≈ 168. L'écart mesuré,
+  ≈ 77 instructions par coupe, tombe pile dessus. Un prédicat est *déjà* un masque partagé sur
+  cette machine, et il se fabrique en une instruction au lieu de trois.
+
+Les masques **ne sont pas pour rien** pour autant : ils font gagner un peu d'ILP (3.19 contre 2.96
+instructions émises par cycle — les huit cases sont indépendantes là où la chaîne
+compare → `select` ne l'est pas), simplement pas assez pour payer les instructions en plus.
+
+Et surtout, le vrai gain de cette manche est ailleurs : **`filmsk8` est le noyau le plus petit de
+toute la famille — 96 registres en `double`, 58 en `float`, contre 128 / 74 pour `filnrm8`
+(−25 % / −22 %) — et il garde les registres TRIÉS**, ce que `filord` et `filsuc` avaient abandonné
+pour le même prix. Ce sont les huit tableaux temporaires de `filnrm` (les deux barillets de
+normalisation, doublés en `double`) qui partent : il n'en reste trois, de neuf cases. C'est donc
+le candidat à porter dans le noyau des phases, où la pression de registres est le seul frein qui
+reste (§ plus bas : 168 registres en `double`, 130 en `float`, et le palier des quatre blocs par
+SM est à ≤ 128).
+
 Mesuré aussi : **les registres tombent de 121–128 à 96 en `double`, de 68 à 58 en `float`**
 (−21 % et −14 %), et le temps est à 3–5 % près celui de `filnrm8` (8.0 / 19.4 / 47.1 en `float` contre
 7.6 / 17.8 / 45.1) : les instructions entières du masque et les écritures masquées rendent ce que
@@ -678,6 +737,11 @@ réelle.
 * **Les paquets, le test en bloc, les deux fils au push, la boucle unique, les lanes
   persistantes, la rotation en mémoire partagée et le tri par coût sont mesurés et perdent**
   (§ 4) : ne pas y revenir sans une idée neuve.
+* **`filmsk8` / `filmsk8i` sont le même algorithme que `filnrm8` à 96 / 58 registres au lieu de
+  128 / 74** (−25 %), registres triés compris, pour +5 % de temps (§ 4) : c'est le noyau à porter
+  dans le noyau des phases, dont le seul frein restant est l'occupation. Le barillet unique y
+  gagne 8 % à lui seul ; la cueillette par masques, elle, perd — un prédicat SASS est déjà un
+  masque partagé entre `x`, `y` et `c`, et il coûte une instruction au lieu de trois.
 * **L'ordre dans un registre (`filord8`) et la succession en masques (`filsuc8`) coûtent 21 % de
   registres en moins à vitesse égale** (§ 4) ; leur limite est la longueur de la chaîne de
   dépendances, pas le nombre d'instructions.
