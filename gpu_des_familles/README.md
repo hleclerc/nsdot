@@ -18,7 +18,7 @@ xmake run mesures --threads 8 --variante voies --load uniforme -n 1000000
 ```
 
 Les options communes (`-n`, `--load`, `--kernel`, `--maxnv`, `--leaf`, `--cases`, …) sont celles
-de `solvers_des_familles` (`src/bench/Args.h`), plus `--variante fil | filreg | filregc | filmix{4,6,8,12,16} | filbrk{6,8,10,12,16} | filbrk8nu | filrot{6,8} | filnrm8 | filord8 | filsuc8 | filmsk8 | filmsk8c{6,8} | filnrm8c{6,8} | filuni8 | filuni8np | filshm8 | filnrm8tri | filnrm8tril | filph8 | filph8g | filph8b | filph8a | filph8c | filph8o | filph8m | filph8m4 | voies | voies16 |
+de `solvers_des_familles` (`src/bench/Args.h`), plus `--variante fil | filreg | filregc | filmix{4,6,8,12,16} | filbrk{6,8,10,12,16} | filbrk8nu | filrot{6,8} | filnrm8 | filord8 | filsuc8 | filmsk8 | filmsk8g | filmsk8c{6,8} | filnrm8c{6,8} | filuni8 | filuni8np | filshm8 | filnrm8tri | filnrm8tril | filph8 | filph8g | filph8b | filph8a | filph8c | filph8o | filph8m | filph8m4 | voies | voies16 |
 voies32 | paquet{8,32}x{1,2,4}[S] | toutes` et `--reps-gpu`. Sur la machine, `--threads 8` est à donner (`hardware_concurrency` rend 1
 dans le bac à sable) et **tout chronométrage passe par `job -b`**.
 
@@ -819,16 +819,62 @@ Deux choses ne se voient pas dans le tableau.
   qu'aucune ligne de TFLOPS ne montre. À 10⁹ l'arbre fait 9.2 Gio et plus rien ne tient, sur
   aucune carte.
 
-**Le levier qui changerait le verdict.** L'erreur en √n du `float` n'est pas fatale : elle vient de
-ce que `bissect2` travaille en coordonnées **absolues** —
+**Ce qui changerait le verdict** (piste écrite et mesurée : voir juste après). Une partie de
+l'erreur du `float` vient de ce que `bissect2` travaille en coordonnées **absolues** —
 `off = ½ ( dx·( xj + x0 ) + dy·( yj + y0 ) )`, où `dx` est petit (~1/√n) mais `xj + x0` est
 d'ordre 1, si bien que `off` perd `log₂ √n` bits par rapport à la taille de la cellule. Dans un
 repère **centré sur le germe** (`x0 = y0 = 0`), la même expression devient `off = ½ ( dx² + dy² )`
 et tout est à l'échelle de la cellule : la précision relative redeviendrait indépendante de `n`.
-Le changement est petit — décaler la boîte initiale de `p0`, décaler les boîtes des nœuds dans
-`bilan_sommet` / `proximite`, l'aire par le lacet étant déjà invariante par translation. **Si ça
-marche, le `float` redevient utilisable à 10⁹, et alors c'est la RTX PRO 6000 qui gagne, largement
-et pour bien moins cher.** C'est le test à faire avant de choisir une carte.
+**Écrit et mesuré : ça ne suffit pas** — la perte est en amont, dans le stockage des positions en
+`float`. Le verdict reste donc **H100 / A100**.
+
+## Le repère centré sur le germe : écrit, mesuré, et il ne sert PAS à ça
+
+D'abord une correction de méthode, qui change les chiffres de précision de tout ce qui précède.
+Le banc comparait le GPU au **témoin CPU dans le MÊME flottant** — deux calculs également faux et
+*corrélés* : on mesurait leur écart, pas leur justesse. `--temoin-double` rejoue le nuage avec le
+moteur `double` et compare à lui. En `float` :
+
+| écart max par cellule | 10⁵ | 10⁶ | 10⁷ | lignes V (10⁵) | lignes L (10⁵) |
+|---|---|---|---|---|---|
+| contre le témoin `float` (ce qu'on lisait) | 1.0e-4 | 3.9e-4 | 1.7e-3 | 9.7e-5 | 1.1e-3 |
+| **contre le témoin `double` (la vérité)** | **5.7e-4** | **4.8e-3** | **3.0e-2** | 2.4e-3 | **2.7e+00** |
+
+Le `float` est **déjà à 3 % d'erreur par cellule à 10⁷**, pas 0.17 %, et sur les lignes à aires
+égales (Laguerre à poids forts) il est **complètement faux dès 10⁵**. (L'écart *max* est une
+statistique d'extrême : une part de sa croissance vient de ce qu'on tire plus de cellules. La
+conclusion ne change pas.)
+
+Ensuite le repère centré lui-même (`filmsk8g`) : `bissect2c` donne `off = ½ ( dx² + dy² )`,
+`bilan_sommet_c` décale la boîte du nœud, la coupe et l'aire ne changent pas d'une ligne (le lacet
+est invariant par translation). **Et la précision ne bouge pas** : 5.6e-4 / 4.9e-3 / 3.0e-2 contre
+5.7e-4 / 4.8e-3 / 3.0e-2. **L'hypothèse est réfutée.**
+
+La raison est que **la précision est perdue AVANT le noyau**. `ar.c[ d ][ q ]` est stocké en
+`float` : `xj` et `x0` portent déjà chacun ~3e-8 d'erreur absolue, donc `dx = xj - x0` aussi,
+quelle que soit la suite. Les germes eux-mêmes sont déplacés, la vraie bissectrice avec eux, et
+**aucune reformulation ne rattrape ça**. Centrer supprime la cancellation *arithmétique* (dans
+`off` et dans `s`), qui n'était pas le terme dominant.
+
+Ce que la manche rapporte quand même : **−4 % en `double`**, `off = ½ ( dx² + dy² )` étant plus
+court que `½ ( dx ( xj + x0 ) + dy ( yj + y0 ) )`. Confirmé sur deux tailles, au-dessus du
+plancher de bruit :
+
+| `double`, ns/germe | 10⁶ | 10⁷ |
+|---|---|---|
+| `filnrm8` | 100.4 | 107.9 |
+| `filmsk8` | 101.4 | 108.7 |
+| `filmsk8g` (repère centré) | **96.7** | **104.7** |
+
+**`filmsk8g` est donc le meilleur noyau 2D en `double`** — la précision qui compte à 10⁹ — et il y
+est avec 96 registres contre 128.
+
+**La vraie piste pour du `float` à 10⁹** : pas la formule, le **stockage des positions**. En
+**virgule fixe 32 bits** sur [0,1], la résolution est 2.3e-10 au lieu de 6e-8 — 260× mieux **pour
+les mêmes quatre octets** — et `dx` se forme par une soustraction entière *exacte* suivie d'une
+conversion, deux instructions. Combinée au repère centré (déjà écrit, et qui supprime la
+cancellation arithmétique restante), c'est la seule route vers un `float` utilisable à grande
+échelle. Il faudrait passer les boîtes des nœuds en virgule fixe aussi.
 
 
 # 4. CE QUE LE PROFIL DIT (`ncu`)
