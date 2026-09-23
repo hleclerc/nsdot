@@ -730,6 +730,21 @@ descente de l'arbre grandit, en log `n` (16 niveaux à 10⁶, 22 à 3·10⁷), e
 majorant affine en absorbe l'essentiel. Le 14.7 à 10⁵ n'est pas de la mauvaise échelle mais son
 contraire : le noyau ne dure que 1.5 ms, les frais fixes de lancement dominent.
 
+L'oracle de coût (`filnrm8tri` avec `MESURES_DEBUG=1`) dit exactement ce qui grandit et ce qui ne
+grandit pas :
+
+| par cellule | 10⁵ | 10⁶ | 10⁷ |
+|---|---|---|---|
+| feuilles visitées (moyenne / médiane / p99 / max) | 4.13 / 4 / 8 / 13 | 3.80 / 4 / 8 / 13 | 3.43 / 3 / 7 / 14 |
+| coût total (plans + boîtes testés) | 65.3 | 73.4 | **81.4** |
+
+Les **feuilles visitées ne croissent pas** — elles décroissent même un peu : c'est le voisinage de
+la cellule, et il ne dépend pas de `n`. Ce qui croît, c'est la descente : +8 unités de coût par
+décade, soit **+12 % par décade**, pour ~3.3 niveaux d'arbre de plus. Extrapolé à 10⁹ : ~97 contre
+81 à 10⁷, **+19 %** — et comme ces unités-là sont des tests de boîte (trois `fma` et un compare,
+bien élagués) et non des coupes, le temps mesuré bouge encore moins. C'est la traduction chiffrée
+du « travail par cellule constant ».
+
 **Le schéma par phases, lui, PERD à l'échelle.** Son avance en `double` s'érode : −19 % à 10⁵,
 −14 % à 10⁶ et 10⁷, **−3 % seulement à 3·10⁷**. La fenêtre de cellules en vol est FIXE
 (`grid × CAP` = 104 448 slots) ; à mesure que `n` grandit elle couvre une fraction décroissante du
