@@ -68,8 +68,9 @@ struct DiagrammeGpu<D,TK>::Impl {
     std::vector<Niveau> niv;                         ///< la hierarchie du multigrille
     std::vector<int *>  map;                         ///< `map[ l ][ i ]` : le paquet du niveau `l + 1`
     int          kcycle = 2;                         ///< niveaux acceleres par Krylov ( 0 : V pur )
-    int          gros = 60;                          ///< lissages au niveau le plus grossier
+    int          gros = 120;                         ///< lissages au niveau le plus grossier
     int          nu = 2;                             ///< lissages avant et apres, par niveau
+    int          stop = 1000;                        ///< on arrete de grossir en dessous
     int         *rang_de = nullptr;                  ///< identifiant -> rang ( l'agregation du niveau fin )
     double      *acc = nullptr;                      ///< un scalaire de travail
     int          n = 0, nn = 0;
@@ -636,6 +637,7 @@ void DiagrammeGpu<D,TK>::monte_amg( const Hessienne &H ) {
     if ( const char *e = std::getenv( "AMG_K" ) ) m.kcycle = std::atoi( e );
     if ( const char *e = std::getenv( "AMG_GROS" ) ) m.gros = std::atoi( e );
     if ( const char *e = std::getenv( "AMG_NU" ) ) m.nu = std::atoi( e );
+    if ( const char *e = std::getenv( "AMG_STOP" ) ) m.stop = std::atoi( e );
     if ( ! m.rang_de ) {
         CUDA_OK( cudaMalloc( &m.rang_de, size_t( m.n ) * sizeof( int ) ) );
         CUDA_OK( cudaMalloc( &m.acc, sizeof( double ) ) );
@@ -653,7 +655,7 @@ void DiagrammeGpu<D,TK>::monte_amg( const Hessienne &H ) {
     // on s'arrete a MILLE inconnues. Descendre plus bas a ete essaye et PERD ( 411 iterations au
     // lieu de 168 a n = 2e5 ) : c'est la degradation connue de l'agregation non lissee avec le
     // nombre de niveaux, et trois cents lissages de Jacobi suffisent a ce niveau-la.
-    for ( int l = 0; m.niv[ l ].n > 1000 && l < 24; ++l ) {
+    for ( int l = 0; m.niv[ l ].n > m.stop && l < 24; ++l ) {
         const Niveau &g = m.niv[ l ];
         const int nc = ( g.n + 3 ) / 4;
         int *mp = nullptr;
@@ -727,7 +729,10 @@ void DiagrammeGpu<D,TK>::cycle_v( int l ) {
     constexpr double OM = 0.7;
     const int NU = m.nu;                                 // pre et post, pour la symetrie
     CUDA_OK( cudaMemsetAsync( g.x, 0, size_t( g.n ) * 8 ) );
-    if ( l + 1 == int( m.niv.size() ) ) {                // le plus grossier : on lisse longtemps
+    if ( l + 1 == int( m.niv.size() ) ) {
+        // les `m.gros` lissages en UN SEUL noyau ( `k_amg_gros` ) ont ete essayes et PERDENT :
+        // un seul bloc n'occupe qu'un SM sur soixante-huit, et la perte de parallelisme coute
+        // plus que les soixante lancements epargnes ( 969 ms contre 873 a n = 1e6 ).
         for ( int k = 0; k < m.gros; ++k )
             k_amg_jacobi<<<gr( g.n ), BL>>>( g.row, g.col, g.val, g.dia, g.x, g.b, OM, g.n );
         return;

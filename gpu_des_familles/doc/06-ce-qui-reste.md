@@ -291,11 +291,40 @@ changent à chaque pas : la hiérarchie doit être remontée, et c'est notre 14 
 résolutions, AMGCL passerait devant d'un facteur 2.6. Le balayage complet est rejouable :
 `AMGCL_VAR` choisit la configuration, `AMG_K`, `AMG_NU` et `AMG_GROS` règlent la nôtre.
 
-Notre propre balayage (2·10⁵) : **`AMG_NU = 1` ne converge pas** (le cycle se dégrade trop), deux
-lissages avant et après sont le minimum ; `AMG_GROS` vaut mieux à 30 pour 2·10⁵ (118 ms contre 144)
-mais à **60 pour 10⁶** (873 ms contre 1085) — c'est 60 qui est retenu, la grande taille décidant.
+**Alléger le cycle : ce qui a marché et ce qui n'a pas.** Le détail ci-dessus désignait notre
+*résolution* comme le poste à travailler. Quatre pistes, mesurées à 10⁶ :
 
-**Ce que le V-cycle seul ne faisait pas.****Ce que le V-cycle seul ne faisait pas.** 168 itérations à 2·10⁵ et 357 à 10⁶ : le nombre d'itérations croît
+* **fusionner les lissages du niveau le plus grossier en un seul noyau — PERDU.** Ce niveau fait
+  moins de mille inconnues et était lissé 120 fois, soit autant de lancements, multipliés par les
+  quatre visites du K-cycle : des centaines de lancements par préconditionnement. Réécrit en **un**
+  noyau (un bloc, deux tampons en mémoire partagée, `__syncthreads` entre deux balayages) il donne
+  **969 ms au lieu de 873** : un seul bloc n'occupe qu'un SM sur soixante-huit, et la perte de
+  parallélisme coûte plus que les lancements épargnés. Gardé en commentaire dans `cycle_v` ;
+* **moins de niveaux — PERDU franchement.** Arrêter de grossir plus tôt réduit les visites en 2ˡ,
+  mais dégrade la convergence bien plus vite : arrêt à 1000 → 75 itérations et 846 ms ; à 4000 →
+  86 et 973 ; à 16000 → 113 et 1312 ; à 64000 → 236 et 4800 ;
+* **plus de lissages au niveau grossier — GAGNÉ, modestement.** 30 → 111 itérations et 1084 ms ;
+  60 → 85 et 890 ; **120 → 75 et 853** ; 240 → 73 et 983, le lissage coûtant alors plus qu'il ne
+  rapporte. `AMG_GROS = 120` est le réglage retenu ;
+* **`ν = 3` — neutre.** 62 itérations au lieu de 75, mais 897 ms au lieu de 853 : le lissage
+  supplémentaire coûte exactement ce qu'il rapporte. `ν = 2` reste.
+
+Bilan : **890 → 849 ms, −4.6 %**, et ×2.5 sur la meilleure configuration d'AMGCL/CUDA. Les nuages
+de lignes en profitent davantage (133 → 73 itérations et 235 → 216 ms sur Voronoï, 173 → 62 et
+299 → 178 sur les aires égales).
+
+**Et c'est un plateau, le compte le dit.** Notre cycle fait cinq produits matrice-vecteur par
+visite et le K-cycle visite le niveau `l` 2^min(l,2) fois, soit ≈ 9.2 n opérations de ligne ; le
+V(1,1) d'AMGCL avec `spai0` en fait ≈ 4 n. Le rapport 2.3 qu'on calcule est exactement le 2.5
+qu'on mesure par itération (11.3 ms contre 4.5). Pour descendre il faudrait passer à `ν = 1` et au
+V-cycle simple, ce que seule une **meilleure convergence** autorise — donc la prolongation lissée.
+Le réglage du cycle est allé au bout de ce qu'il pouvait donner ; le levier restant est celui qu'on
+avait écarté.
+
+`CHAINE_RAPIDE` saute les témoins CPU et AMGCL, pour balayer des réglages sans les payer à chaque
+point.
+
+Notre propre balayage (2·10⁵) :**Ce que le V-cycle seul ne faisait pas.****Ce que le V-cycle seul ne faisait pas.** 168 itérations à 2·10⁵ et 357 à 10⁶ : le nombre d'itérations croît
 encore comme √n, avec une constante 22 fois meilleure. Un vrai multigrille serait indépendant de
 `n` ; celui-ci ne l'est pas, parce que l'agrégation est **non lissée** — c'est sa faiblesse
 connue, et elle se voit aussi en descendant plus bas : s'arrêter à 16 inconnues au lieu de 1000

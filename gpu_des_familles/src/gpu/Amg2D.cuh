@@ -110,6 +110,30 @@ __global__ void k_amg_jacobi( const int *row, const int *col, const double *val,
     x[ i ] += omega * ( b[ i ] - s ) / dia[ i ];
 }
 
+/// LE NIVEAU LE PLUS GROSSIER EN UN SEUL NOYAU. Il fait moins de mille inconnues, donc il tient
+/// dans UN bloc et dans la memoire partagee : les soixante lissages deviennent une boucle avec un
+/// `__syncthreads` entre deux, au lieu de soixante lancements. Et comme le K-cycle le visite
+/// quatre fois par application, c'etaient 244 lancements par preconditionnement -- le quart du
+/// temps de resolution, en frais de lancement purs.
+/// Jacobi a besoin de l'ancien `x` pour toutes les cases : deux tampons partages, alternes.
+__global__ void k_amg_gros( const int *row, const int *col, const double *val, const double *dia,
+                            double *x, const double *b, double omega, int n, int nsweep ) {
+    extern __shared__ double sh[];
+    double *u = sh, *v = sh + n;
+    for ( int i = threadIdx.x; i < n; i += blockDim.x ) u[ i ] = 0;
+    __syncthreads();
+    for ( int k = 0; k < nsweep; ++k ) {
+        for ( int i = threadIdx.x; i < n; i += blockDim.x ) {
+            double s = dia[ i ] * u[ i ];
+            for ( int p = row[ i ]; p < row[ i + 1 ]; ++p ) s -= val[ p ] * u[ col[ p ] ];
+            v[ i ] = u[ i ] + omega * ( b[ i ] - s ) / dia[ i ];
+        }
+        __syncthreads();
+        double *t = u; u = v; v = t;
+    }
+    for ( int i = threadIdx.x; i < n; i += blockDim.x ) x[ i ] = u[ i ];
+}
+
 __global__ void k_amg_restreint( const double *r, const int *m, double *bc, int n ) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if ( i < n ) atomicAdd( &bc[ m[ i ] ], r[ i ] );

@@ -238,7 +238,9 @@ int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu, bool arbre_gp
         cudaMemcpy( dg.data(), dd, nu.n * sizeof( double ), cudaMemcpyDeviceToHost );
         cudaFree( db ); cudaFree( dd );
 
-        // le meme CG, sur le CPU : jauge `d_0 = 0`, preconditionneur Jacobi
+        // le meme CG, sur le CPU : jauge `d_0 = 0`, preconditionneur Jacobi. `CHAINE_RAPIDE`
+        // le saute ( et AMGCL avec ), pour balayer des reglages sans le payer a chaque point.
+        const bool rapide = std::getenv( "CHAINE_RAPIDE" ) != nullptr;
         std::vector<double> dc( nu.n, 0.0 ), rr( bb ), zz( nu.n ), pp( nu.n ), qq( nu.n );
         rr[ 0 ] = 0;                                     // sa jauge : la ligne zero est rayee
         auto applique_cpu = [ & ]( const std::vector<double> &v, std::vector<double> &y ) {
@@ -251,13 +253,14 @@ int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu, bool arbre_gp
             }
         };
         const double tc0 = now();
+        int itc = 0;
+        if ( ! rapide ) {
         double nb2 = 0;
         for ( SI i = 0; i < nu.n; ++i ) nb2 += rr[ i ] * rr[ i ];
         for ( SI i = 0; i < nu.n; ++i ) zz[ i ] = i ? rr[ i ] / lap.dia[ i ] : 0.0;
         pp = zz;
         double rz = 0;
         for ( SI i = 0; i < nu.n; ++i ) rz += rr[ i ] * zz[ i ];
-        int itc = 0;
         for ( double r2 = nb2; itc < 20000 && r2 > 1e-20 * nb2; ++itc ) {
             applique_cpu( pp, qq );
             double pq = 0;
@@ -273,6 +276,7 @@ int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu, bool arbre_gp
             rz = rz2;
             for ( SI i = 0; i < nu.n; ++i ) pp[ i ] = zz[ i ] + be * pp[ i ];
         }
+        }
         const double t_cgc = now() - tc0;
 
         // les deux jauges ( moyenne nulle cote GPU, `d_0 = 0` cote CPU ) donnent la meme direction
@@ -284,9 +288,10 @@ int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu, bool arbre_gp
         double ech_d = 0, ec_d = 0;
         for ( SI i = 0; i < nu.n; ++i ) ech_d = std::max( ech_d, std::fabs( dc[ i ] ) );
         for ( SI i = 0; i < nu.n; ++i ) ec_d = std::max( ec_d, std::fabs( dg[ i ] - dc[ i ] ) );
-        const bool cok = its > 0 && r_cg < 1e-9 && ec_d < 1e-6 * ech_d;
+        const bool cok = its > 0 && r_cg < 1e-9 && ( rapide || ec_d < 1e-6 * ech_d );
         std::printf( "      AMG       hierarchie montee en %6.0f ms\n", t_amg * 1e3 );
 #ifdef SF_AMGCL
+        if ( ! rapide )
         // LE TEMOIN DE REFERENCE : AMGCL, agregation LISSEE + SPAI0, sur le systeme reduit
         {
             Amg ref;
@@ -318,7 +323,8 @@ int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu, bool arbre_gp
             std::vector<double> rb( mred ), sol( mred );
             for ( SI i = 1; i < nu.n; ++i ) rb[ i - 1 ] = bb[ i ];
             const char *choix = std::getenv( "AMGCL_VAR" );
-            for ( int v = choix ? std::atoi( choix ) : 0; v < 5; ++v ) {
+            // `CHAINE_RAPIDE` : aucune variante, on balaie nos reglages sans payer le temoin
+            for ( int v = rapide ? 5 : ( choix ? std::atoi( choix ) : 0 ); v < 5; ++v ) {
                 int it = 0; double er = 0, th = 0, tr = 0;
                 gpu::amgcl_cuda( mred, ptr, cl, vl, rb, sol, 1e-10, 20000, v, &it, &er, &th, &tr );
                 std::vector<double> dr( nu.n, 0.0 );
