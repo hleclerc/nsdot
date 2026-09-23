@@ -22,6 +22,16 @@ inline const char *nom( Variante v ) {
 /// `paquet V x K` : `V` voies par cellule, `K` cellules par voie, un parcours par warp ( 2D )
 inline bool paquet( Variante v ) { return v >= Variante::PAQ8x1 && v < Variante::NB; }
 
+/// LA HESSIENNE assemblee sur la carte : le CSR des hors-diagonaux et la diagonale. Les pointeurs
+/// sont DEVICE et appartiennent au diagramme ; `nnz = row[ n ]`.
+struct Hessienne {
+    const int    *row = nullptr;    ///< `n + 1` bornes de ligne
+    const int    *col = nullptr;    ///< `nnz` colonnes, NON TRIEES ( un CG n'en a pas besoin )
+    const double *val = nullptr;    ///< `nnz` coefficients `c_ij > 0` ; le signe moins est dans la matrice
+    const double *dia = nullptr;    ///< `L_ii`, la somme de la ligne
+    int n = 0, nnz = 0;
+};
+
 /// les chiffres d'un `mesures`
 struct Chrono {
     double noyau  = 0;      ///< le noyau seul, en secondes, MINIMUM des repetitions ( evenements CUDA )
@@ -51,6 +61,13 @@ struct DiagrammeGpu {
     /// UN TOUR DE NEWTON cote GPU : poids neufs, majorants refaits, puis mesures ET facettes --
     /// rien ne redescend, pas une allocation. Rend le temps GPU en ms. C'est le cout de regime.
     double tour_newton( const double *W );
+
+    /// L'ASSEMBLAGE de la hessienne depuis les facettes deja sur la carte : compter, scanner,
+    /// remplir. Rend le temps GPU en ms. Demande un `tour_newton` ou un `facettes` avant.
+    double assemble( Hessienne &H );
+
+    /// `y = L x` sur la carte ( pointeurs device ), pour verifier et pour le gradient conjugue
+    void applique( const Hessienne &H, const double *x, double *y ) const;
     ~DiagrammeGpu();
     DiagrammeGpu( const DiagrammeGpu & ) = delete;
     DiagrammeGpu &operator=( const DiagrammeGpu & ) = delete;
@@ -66,7 +83,7 @@ struct DiagrammeGpu {
     /// jusqu'a `NF` aretes -- `fj[ s * n + i ]` l'identifiant du voisin ( `< 0` : un cote de la
     /// boite, ou une case vide ) et `fl[ s * n + i ]` la longueur. De quoi assembler la hessienne
     /// du Newton sans repasser par le CPU.
-    static constexpr int NF = 16;   ///< aretes gardees par cellule ( le polygone final en a 6 en moyenne )
+    static constexpr int NF = 32;   ///< aretes gardees par cellule ( le polygone final en a 6 en moyenne )
     Chrono facettes( int reps, std::vector<double> &res, std::vector<int> &fj, std::vector<double> &fl ) const;
 
     struct Impl;

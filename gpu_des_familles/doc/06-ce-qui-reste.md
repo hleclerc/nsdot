@@ -116,6 +116,49 @@ Ce qui reste ici : le temps de mur à 10⁶ est encore dominé par ~250 ms de fr
 CUDA et une vingtaine d'allocations), constants et donc invisibles à 10⁷ ; et les nœuds sont
 écrits en `float` pour la boîte (élargie d'un ulp) là où le CPU la garde en `double`.
 
+### La hessienne assemblee sur la carte
+
+La hessienne du transport est le laplacien du graphe de Laguerre
+(`c_ij = |facette| / ( 2 |p_i − p_j| )`, `L_ii = Σ_j c_ij`, `L_ij = −c_ij`). Les facettes sortent
+déjà du noyau de mesure, `NF = 32` cases par cellule en SoA : l'assemblage est donc **compter,
+scanner, remplir** — les trois passes d'un CSR, **sans un tri**.
+
+* **compter** — une ligne par thread, `NF` lectures espacées de `n`, donc des voies consécutives
+  lisent des adresses consécutives : tout est coalescé ;
+* **scanner** — une somme préfixe exclusive (CUB) donne `row` ;
+* **remplir** — la même boucle écrit `col`, `val`, et accumule la diagonale au passage.
+
+Les colonnes ne sont pas triées : un gradient conjugué n'en a pas besoin (le CPU les trie pour un
+solveur direct). Une ligne sans voisin est neutralisée à un, comme au CPU.
+
+| `double` | GPU | CPU 8 fils | | coefficients |
+|---|---|---|---|---|
+| uniforme 10⁶ | **4.9 ms** | 59 ms | **×12** | 5 994 454 = 5 994 454 |
+| lignes / Voronoï 10⁵ | 0.49 ms | 3 ms | ×5 | 594 694 = 594 694 |
+| lignes / aires égales 10⁵ | 0.49 ms | 3 ms | ×5 | 594 300 = 594 300 |
+
+**La vérification** est un produit `y = L x` sur un vecteur quelconque — un seul nombre exerce
+toute la matrice — plus la propriété de noyau `L · 1 = 0`, ligne par ligne. Écart au CPU :
+**7.0e-14 relatif** sur l'uniforme, 1.5e-13 et 1.4e-15 sur les lignes ; `| L · 1 |` à 5e-16
+partout. `NF` est passé de 16 à 32 : à 16 il restait 44 et 244 cellules à plus d'arêtes sur les
+nuages de lignes, et elles perdaient leurs facettes. **Il n'en reste aucune.**
+
+### Le tour de Newton complet
+
+`tour_newton( W )` puis `assemble( H )` font le tour entier sur la carte — poids, majorants,
+mesures, facettes, hessienne — sans qu'un octet redescende. `--iterations K` le mesure après une
+seule construction :
+
+| `double`, 20 tours complets | GPU par tour | CPU par tour | |
+|---|---|---|---|
+| uniforme 10⁶ | **101 ms** | 408 ms | **×4.0** |
+| lignes / Voronoï 10⁵ | **13.9 ms** | 28.1 ms | ×2.0 |
+| lignes / aires égales 10⁵ (Laguerre) | **54.7 ms** | 92.6 ms | ×1.7 |
+
+Sur l'uniforme, les 101 ms se répartissent en **96 de mesure**, 5 d'assemblage, et rien d'autre :
+ni l'arbre (construit une fois), ni les majorants (3.3 ms quand il y a des poids), ni le trafic.
+Le tour est donc **borné par le FP64 à 1/32 de Turing**, et c'est tout ce qui reste à gagner ici.
+
 **Ce qui reste, dans l'ordre.** 1) Les quelques dizaines de cellules à plus de `NF` arêtes sur les
 nuages de lignes (compteur en place, `Chrono::deborde`). 2) L'assemblage CSR sur GPU (comptage +
 somme préfixe, deux passes). 3) Le gradient conjugué préconditionné. 4) La boucle de Newton et sa

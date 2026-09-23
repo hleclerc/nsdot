@@ -16,6 +16,7 @@
 
 #include "bench/Dispatch.h"
 #include "solver/Laplacien.h"
+#include <cuda_runtime.h>
 #include "gpu/Mesures.h"
 
 #include <algorithm>
@@ -160,11 +161,58 @@ int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu, bool arbre_gp
     const double tol = sizeof( TK ) == 4 ? 1e-3 : 1e-9;
     // en `float` le critere porte sur le p99 : la queue des `c_ij` est faite d'aretes quasi nulles
     // que le `float` fait apparaitre ou disparaitre, de poids negligeable ( voir `perdu` )
-    const bool ok = perdu < tol && ( sizeof( TK ) == 4 ? qu( 0.99 ) < 1e-2 : qu( 0.9999 ) < 1e-9 );
+    bool ok = perdu < tol && ( sizeof( TK ) == 4 ? qu( 0.99 ) < 1e-2 : qu( 0.9999 ) < 1e-9 );
     std::printf( "      controle  somme %.9f  ecart mesure %.1e  |  c_ij : median %.1e, p99 %.1e, p99.99 %.1e, max %.1e ( rapportes au c moyen )\n",
                  somme, ecart_m, qu( 0.5 ), qu( 0.99 ), qu( 0.9999 ), ecart_c / cmoy );
     std::printf( "                facettes manquantes %d, en trop %d -- %.2e du poids total%s\n",
                  manque, en_trop, perdu, ok ? "" : "   <-- FAUX" );
+    // ---- LA HESSIENNE : assemblee sur la carte, verifiee contre `solver/Laplacien.h` par un
+    //      produit `y = L x` sur un vecteur quelconque ( un seul nombre exerce toute la matrice ),
+    //      plus la propriete de noyau `L . 1 = 0`, ligne par ligne.
+    if ( arbre_gpu ) {
+        gpu::Hessienne H;
+        const double t_h = g.assemble( H );
+
+        std::vector<Facette> fa;
+        fa.reserve( fcpu.size() );
+        for ( const Fa &f : fcpu ) fa.push_back( Facette{ f.i, f.j, f.c } );
+        Laplacien lap;
+        const double tl0 = now();
+        lap.assemble( nu.n, fa );
+        const double t_lc = now() - tl0;
+
+        std::vector<double> x( nu.n ), yg( nu.n ), yc( nu.n ), un( nu.n, 1.0 );
+        for ( SI i = 0; i < nu.n; ++i ) x[ i ] = std::sin( 0.7 * double( i ) + 1.0 );
+        for ( SI i = 0; i < nu.n; ++i ) {
+            double sc = lap.dia[ i ] * x[ i ];
+            for ( SI p = lap.row[ i ]; p < lap.row[ i + 1 ]; ++p ) sc -= lap.c[ p ] * x[ lap.col[ p ] ];
+            yc[ i ] = sc;
+        }
+        double *dx, *dy;
+        cudaMalloc( &dx, nu.n * sizeof( double ) ); cudaMalloc( &dy, nu.n * sizeof( double ) );
+        cudaMemcpy( dx, x.data(), nu.n * sizeof( double ), cudaMemcpyHostToDevice );
+        g.applique( H, dx, dy );
+        cudaMemcpy( yg.data(), dy, nu.n * sizeof( double ), cudaMemcpyDeviceToHost );
+        cudaMemcpy( dx, un.data(), nu.n * sizeof( double ), cudaMemcpyHostToDevice );
+        g.applique( H, dx, dy );
+        std::vector<double> y1( nu.n );
+        cudaMemcpy( y1.data(), dy, nu.n * sizeof( double ), cudaMemcpyDeviceToHost );
+        cudaFree( dx ); cudaFree( dy );
+
+        double ech = 0, ecart = 0, noyau = 0;
+        for ( SI i = 0; i < nu.n; ++i ) ech = std::max( ech, std::fabs( yc[ i ] ) );
+        for ( SI i = 0; i < nu.n; ++i ) {
+            ecart = std::max( ecart, std::fabs( yg[ i ] - yc[ i ] ) );
+            noyau = std::max( noyau, std::fabs( y1[ i ] ) / std::max( lap.dia[ i ], 1e-300 ) );
+        }
+        const bool hok = H.nnz == int( lap.row[ nu.n ] ) && ecart < 1e-9 * ech && noyau < 1e-12;
+        std::printf( "      HESSIENNE %6.2f ms sur GPU contre %6.0f ms au CPU ( assemblage seul )   x%.0f   %d coefficients contre %d\n",
+                     t_h, t_lc * 1e3, t_lc * 1e3 / t_h, H.nnz, int( lap.row[ nu.n ] ) );
+        std::printf( "                | L x |_max %.3e, ecart au CPU %.1e ( soit %.1e relatif ), | L . 1 | %.1e%s\n",
+                     ech, ecart, ech > 0 ? ecart / ech : 0.0, noyau, hok ? "" : "   <-- FAUX" );
+        ok = ok && hok;
+    }
+
     // ---- LE REGIME AMORTI : `iterations` tours de Newton ( poids neufs, majorants, mesures et
     //      facettes ), l'arbre construit UNE FOIS. C'est le cout qui compte pour un solveur : les
     //      frais fixes ( contexte CUDA, allocations ) sont derriere, et rien ne redescend.
@@ -181,21 +229,29 @@ int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu, bool arbre_gp
                          t_r, t_arbre * 1e3, t_arbre * 1e3 / t_r );
         }
         double t_g = 0;
-        for ( int it = 0; it < iterations; ++it ) t_g += g.tour_newton( nu.W ? W.data() : nullptr );
+        gpu::Hessienne H2;
+        for ( int it = 0; it < iterations; ++it ) {
+            t_g += g.tour_newton( nu.W ? W.data() : nullptr );
+            t_g += g.assemble( H2 );                     // le tour COMPLET : jusqu'a la hessienne
+        }
 
         std::vector<TF> c2;
         const double tc0 = now();
+        Laplacien lap2;
         for ( int it = 0; it < iterations; ++it ) {
             if ( nu.W ) pd.set_weights( W.data(), a.par );
-            std::vector<std::vector<Fa>> pf( std::max( a.par.threads, 1 ) );
+            std::vector<std::vector<Facette>> pf( std::max( a.par.threads, 1 ) );
             pd.measures_and_facets( c2, a.par, [ & ]( int t, SI i, SI j, TF mes ) {
                 double d2 = 0;
                 for ( int d = 0; d < D; ++d ) { const double e = nu.P[ d ][ j ] - nu.P[ d ][ i ]; d2 += e * e; }
-                if ( d2 > 0 ) pf[ t ].push_back( Fa{ int( i ), int( j ), mes / ( 2 * std::sqrt( d2 ) ) } );
+                if ( d2 > 0 ) pf[ t ].push_back( Facette{ i, j, mes / ( 2 * std::sqrt( d2 ) ) } );
             } );
+            std::vector<Facette> tout;
+            for ( const auto &v : pf ) tout.insert( tout.end(), v.begin(), v.end() );
+            lap2.assemble( nu.n, tout );                 // le tour COMPLET, des deux cotes
         }
         const double t_c = now() - tc0;
-        std::printf( "      REGIME    %d tours de Newton : GPU %7.1f ms au tour ( %.3f s ), CPU %7.1f ms au tour ( %.3f s )   x%.1f\n",
+        std::printf( "      REGIME    %d tours complets ( poids, majorants, mesures, facettes, hessienne ) : GPU %7.1f ms au tour ( %.3f s ), CPU %7.1f ms au tour ( %.3f s )   x%.1f\n",
                      iterations, t_g / iterations, t_g * 1e-3, t_c / iterations * 1e3, t_c, t_c * 1e3 / t_g );
     }
     return ! ok;

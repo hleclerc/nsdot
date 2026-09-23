@@ -10,6 +10,7 @@
 
 #include "gpu/Mesures.h"
 #include "gpu/Bsp2D.cuh"
+#include "gpu/Hess2D.cuh"
 #include "gpu/Fil2D.cuh"
 #include "gpu/Voies2D.cuh"
 #include "gpu/Paquet2D.cuh"
@@ -55,6 +56,12 @@ struct DiagrammeGpu<D,TK>::Impl {
     void        *sortie = nullptr;                   ///< `SortieBsp<TK>*` quand l'arbre vient du GPU
     int         *fac_j = nullptr;                    ///< les facettes, allouees une fois pour toutes
     TK          *fac_l = nullptr;
+    int         *hrow = nullptr, *hcol = nullptr;    ///< la hessienne, idem
+    double      *hval = nullptr, *hdia = nullptr;
+    double      *pid[ 2 ] = {};                      ///< positions dans l'ordre DE L'APPELANT
+    void        *hscan = nullptr;                    ///< le tampon du scan CUB
+    size_t       hscan_o = 0;
+    int          hcap = 0;                           ///< places allouees pour `col` / `val`
     int          n = 0, nn = 0;
     bool         poids = false;
 
@@ -160,6 +167,8 @@ DiagrammeGpu<D,TK>::~DiagrammeGpu() {
     for ( int d = 0; d < D; ++d ) { cudaFree( m.c[ d ] ); cudaFree( m.u[ d ] ); cudaFree( m.u64[ d ] ); }
     cudaFree( m.w ); cudaFree( m.ids ); cudaFree( m.res ); cudaFree( m.deb ); cudaFree( m.deb2 ); cudaFree( m.liste ); cudaFree( m.stats ); cudaFree( m.cptr );
     cudaFree( m.fac_j ); cudaFree( m.fac_l );
+    cudaFree( m.hrow ); cudaFree( m.hcol ); cudaFree( m.hval ); cudaFree( m.hdia ); cudaFree( m.hscan );
+    for ( int d = 0; d < 2; ++d ) cudaFree( m.pid[ d ] );
     if ( m.sortie ) { libere_atelier<TK>( *( SortieBsp<TK> * ) m.sortie ); delete ( SortieBsp<TK> * ) m.sortie; }
     delete impl;
 }
@@ -554,6 +563,60 @@ double DiagrammeGpu<D,TK>::refresh_poids( const double *W ) {
     }
 }
 
+/// L'ASSEMBLAGE : compter, scanner, remplir.
+template<int D, class TK>
+double DiagrammeGpu<D,TK>::assemble( Hessienne &H ) {
+    if constexpr ( D != 2 ) { ( void ) H; return 0; }
+    else {
+        Impl &m = *impl;
+        const int BL = 256, gr = ( m.n + BL - 1 ) / BL;
+        if ( ! m.hrow ) {
+            CUDA_OK( cudaMalloc( &m.hrow, size_t( m.n + 1 ) * sizeof( int ) ) );
+            CUDA_OK( cudaMalloc( &m.hdia, size_t( m.n ) * sizeof( double ) ) );
+            for ( int d = 0; d < 2; ++d ) CUDA_OK( cudaMalloc( &m.pid[ d ], size_t( m.n ) * sizeof( double ) ) );
+            SortieBsp<TK> *s = ( SortieBsp<TK> * ) m.sortie;
+            if ( ! s || ! s->at.tx ) { std::fprintf( stderr, "assemble demande `pour_newton`\n" ); std::exit( 2 ); }
+            k_hess_pos<<<gr, BL>>>( s->at.tx, s->at.ty, m.ids, m.pid[ 0 ], m.pid[ 1 ], m.n );
+            CUDA_OK( cub::DeviceScan::ExclusiveSum( m.hscan, m.hscan_o, m.hrow, m.hrow, m.n + 1 ) );
+            CUDA_OK( cudaMalloc( &m.hscan, m.hscan_o ) );
+        }
+        cudaEvent_t e0, e1;
+        CUDA_OK( cudaEventCreate( &e0 ) ); CUDA_OK( cudaEventCreate( &e1 ) );
+        CUDA_OK( cudaEventRecord( e0 ) );
+        k_hess_compte<<<gr, BL>>>( m.fac_j, m.n, NF, m.hrow );
+        CUDA_OK( cudaMemsetAsync( m.hrow + m.n, 0, sizeof( int ) ) );
+        size_t o = m.hscan_o;
+        CUDA_OK( cub::DeviceScan::ExclusiveSum( m.hscan, o, m.hrow, m.hrow, m.n + 1 ) );
+        int nnz = 0;
+        CUDA_OK( cudaMemcpy( &nnz, m.hrow + m.n, sizeof( int ), cudaMemcpyDeviceToHost ) );
+        if ( nnz > m.hcap ) {                            // on ne retrecit jamais
+            cudaFree( m.hcol ); cudaFree( m.hval );
+            m.hcap = nnz + nnz / 8 + 1024;
+            CUDA_OK( cudaMalloc( &m.hcol, size_t( m.hcap ) * sizeof( int ) ) );
+            CUDA_OK( cudaMalloc( &m.hval, size_t( m.hcap ) * sizeof( double ) ) );
+        }
+        k_hess_remplit<TK><<<gr, BL>>>( m.fac_j, m.fac_l, m.pid[ 0 ], m.pid[ 1 ], m.hrow, m.n, NF,
+                                        m.hcol, m.hval, m.hdia );
+        CUDA_OK( cudaEventRecord( e1 ) );
+        CUDA_OK( cudaEventSynchronize( e1 ) );
+        float t = 0;
+        CUDA_OK( cudaEventElapsedTime( &t, e0, e1 ) );
+        CUDA_OK( cudaGetLastError() );
+        cudaEventDestroy( e0 ); cudaEventDestroy( e1 );
+        H.row = m.hrow; H.col = m.hcol; H.val = m.hval; H.dia = m.hdia; H.n = m.n; H.nnz = nnz;
+        return t;
+    }
+}
+
+template<int D, class TK>
+void DiagrammeGpu<D,TK>::applique( const Hessienne &H, const double *x, double *y ) const {
+    if constexpr ( D == 2 ) {
+        const int BL = 256;
+        k_hess_mul<<<( H.n + BL - 1 ) / BL, BL>>>( H.row, H.col, H.val, H.dia, x, y, H.n );
+        CUDA_OK( cudaDeviceSynchronize() );
+    }
+}
+
 /// UN TOUR DE NEWTON, de bout en bout sur la carte : poids, majorants, mesures, facettes.
 template<int D, class TK>
 double DiagrammeGpu<D,TK>::tour_newton( const double *W ) {
@@ -605,10 +668,14 @@ Chrono DiagrammeGpu<D,TK>::facettes( int reps, std::vector<double> &res, std::ve
     const Impl &m = *impl;
     const Arbre<TK,2> ar = m.arbre();
     const int bloc = 128, grid = ( m.n + bloc - 1 ) / bloc;
-    int *dj = nullptr;
-    TK  *dl = nullptr;
-    CUDA_OK( cudaMalloc( &dj, size_t( NF ) * m.n * sizeof( int ) ) );
-    CUDA_OK( cudaMalloc( &dl, size_t( NF ) * m.n * sizeof( TK ) ) );
+    // les MEMES tampons que `tour_newton` et `assemble` : alloues une fois pour toutes
+    Impl &mm = *impl;
+    if ( ! mm.fac_j ) {
+        CUDA_OK( cudaMalloc( &mm.fac_j, size_t( NF ) * m.n * sizeof( int ) ) );
+        CUDA_OK( cudaMalloc( &mm.fac_l, size_t( NF ) * m.n * sizeof( TK ) ) );
+    }
+    int *dj = mm.fac_j;
+    TK  *dl = mm.fac_l;
     // la virgule fixe 32 bits est RESERVEE AU `float` : en `double` elle detruit la precision
     // ( 31 bits contre 53 ) -- voir `doc/04-echelle.md`
     constexpr int FIX = sizeof( TK ) == 4 ? 32 : 0;
@@ -636,7 +703,6 @@ Chrono DiagrammeGpu<D,TK>::facettes( int reps, std::vector<double> &res, std::ve
     CUDA_OK( cudaMemcpy( tmp.data(), dl, tmp.size() * sizeof( TK ), cudaMemcpyDeviceToHost ) );
     fl.assign( tmp.begin(), tmp.end() );
     ch.retour += now() - t0;
-    cudaFree( dj ); cudaFree( dl );
     return ch;
     }
 }
