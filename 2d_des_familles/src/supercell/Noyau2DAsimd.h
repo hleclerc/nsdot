@@ -172,8 +172,8 @@ void deborde( V, V, VI, Fourn *f, Atl *a, Local<Fourn> *loc ) {
 template<class Fourn, class Atl>
 inline void carre_unite( Fourn *f, Atl *a ) {
     Local<Fourn> loc{};                                  // vit et meurt avec la cellule
-    alignas( 32 ) static const float cx[ 8 ] = { 0, 1, 1, 0, 0, 0, 0, 0 };
-    alignas( 32 ) static const float cy[ 8 ] = { 0, 0, 1, 1, 0, 0, 0, 0 };
+    alignas( 32 ) static const float cx[ 8 ] =       { 0, 1, 1, 0, 0, 0, 0, 0 };
+    alignas( 32 ) static const float cy[ 8 ] =       { 0, 0, 1, 1, 0, 0, 0, 0 };
     alignas( 32 ) static const asimd::SI32 ci[ 8 ] = { -1, -2, -3, -4, 0, 0, 0, 0 };
     noyau<4>( V::load_aligned( cx ), V::load_aligned( cy ), VI::load_aligned( ci ), f, a, &loc );
 }
