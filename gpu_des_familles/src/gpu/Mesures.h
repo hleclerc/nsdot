@@ -72,6 +72,11 @@ struct DiagrammeGpu {
     int resout( const Hessienne &H, const double *b, double *x, double tol, int maxit,
                 double *ms = nullptr, double *res = nullptr );
 
+    /// la hierarchie du multigrille, montee depuis `H` ( le motif ne change pas dans un Newton,
+    /// seuls les coefficients -- a remonter quand ils bougent )
+    void monte_amg( const Hessienne &H );
+    void cycle_v( int niveau );
+
     /// `y = L x` sur la carte ( pointeurs device ), pour verifier et pour le gradient conjugue
     void applique( const Hessienne &H, const double *x, double *y ) const;
     ~DiagrammeGpu();

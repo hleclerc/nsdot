@@ -217,10 +217,19 @@ int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu, bool arbre_gp
         std::vector<double> bb( nu.n );
         const double cible = 1.0 / double( nu.n );
         for ( SI i = 0; i < nu.n; ++i ) bb[ i ] = res[ i ] - cible;
-        bb[ 0 ] = 0;
+        // `b` doit etre ORTHOGONAL AUX CONSTANTES : c'est la condition de compatibilite du
+        // laplacien, et la somme des mesures ne vaut un qu'a l'arrondi pres. Les deux jauges
+        // ( moyenne nulle cote GPU, `d_0 = 0` cote CPU ) ne donnent la meme direction que la.
+        double mb = 0;
+        for ( SI i = 0; i < nu.n; ++i ) mb += bb[ i ];
+        mb /= nu.n;
+        for ( SI i = 0; i < nu.n; ++i ) bb[ i ] -= mb;
         double *db, *dd;
         cudaMalloc( &db, nu.n * sizeof( double ) ); cudaMalloc( &dd, nu.n * sizeof( double ) );
         cudaMemcpy( db, bb.data(), nu.n * sizeof( double ), cudaMemcpyHostToDevice );
+        const double ta0 = now();
+        g.monte_amg( H );                                // la hierarchie du multigrille
+        const double t_amg = now() - ta0;
         double ms_cg = 0, r_cg = 0;
         const int its = g.resout( H, db, dd, 1e-10, 20000, &ms_cg, &r_cg );
         std::vector<double> dg( nu.n );
@@ -229,6 +238,7 @@ int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu, bool arbre_gp
 
         // le meme CG, sur le CPU : jauge `d_0 = 0`, preconditionneur Jacobi
         std::vector<double> dc( nu.n, 0.0 ), rr( bb ), zz( nu.n ), pp( nu.n ), qq( nu.n );
+        rr[ 0 ] = 0;                                     // sa jauge : la ligne zero est rayee
         auto applique_cpu = [ & ]( const std::vector<double> &v, std::vector<double> &y ) {
             y[ 0 ] = 0;
             for ( SI i = 1; i < nu.n; ++i ) {
@@ -263,10 +273,17 @@ int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu, bool arbre_gp
         }
         const double t_cgc = now() - tc0;
 
+        // les deux jauges ( moyenne nulle cote GPU, `d_0 = 0` cote CPU ) donnent la meme direction
+        // a une constante pres : on centre les deux avant de comparer
+        double mg = 0, mc = 0;
+        for ( SI i = 0; i < nu.n; ++i ) { mg += dg[ i ]; mc += dc[ i ]; }
+        mg /= nu.n; mc /= nu.n;
+        for ( SI i = 0; i < nu.n; ++i ) { dg[ i ] -= mg; dc[ i ] -= mc; }
         double ech_d = 0, ec_d = 0;
         for ( SI i = 0; i < nu.n; ++i ) ech_d = std::max( ech_d, std::fabs( dc[ i ] ) );
         for ( SI i = 0; i < nu.n; ++i ) ec_d = std::max( ec_d, std::fabs( dg[ i ] - dc[ i ] ) );
         const bool cok = its > 0 && r_cg < 1e-9 && ec_d < 1e-6 * ech_d;
+        std::printf( "      AMG       hierarchie montee en %6.0f ms\n", t_amg * 1e3 );
         std::printf( "      CG        %4d iterations, residu relatif %.1e, %7.1f ms sur GPU contre %7.0f ms au CPU ( %d it. )   x%.1f\n",
                      its, r_cg, ms_cg, t_cgc * 1e3, itc, t_cgc * 1e3 / ms_cg );
         std::printf( "                | d |_max %.3e, ecart au CG du CPU %.1e ( soit %.1e relatif )%s\n",

@@ -196,6 +196,42 @@ chantier suivant n'est pas d'accélérer ce CG, c'est de lui donner un **précon
 multi-niveaux** — la hiérarchie se construit une fois par motif (les positions ne bougent pas dans
 un Newton) et se réutilise à chaque tour, ce qui est exactement le régime qu'on mesure ici.
 
+### Le multigrille algébrique maison
+
+**L'agrégation est gratuite, et c'est tout l'intérêt.** Les germes sont rangés **dans l'ordre de
+l'arbre**, qui est une courbe remplissante : des rangs consécutifs sont voisins dans le plan.
+Agréger, c'est donc `rang >> 2` — quatre germes par paquet, sans noyau d'appariement, sans
+matching, sans compaction. Et comme les indices d'agrégat restent ordonnés par rang, le niveau
+suivant s'agrège pareil (`a >> 2`). **La hiérarchie entière tient dans un décalage entier.**
+
+Le grossier est le produit de Galerkin `A_c = Pᵀ A P` avec `P` constant par morceaux. Sur un
+laplacien de graphe c'est encore un laplacien : il suffit de sommer les poids d'arêtes entre
+paquets, et la diagonale est la somme de la ligne. Un triplet par arête, un tri (CUB), une
+réduction par clef, et le CSR sort de là.
+
+Cycle en V, Jacobi amorti (ω = 0.7) deux fois avant et deux fois après — même `ω`, donc
+l'opérateur est symétrique et le CG l'accepte. **La jauge passe de `x₀ = 0` à moyenne nulle** :
+c'est la bonne pour un multigrille (projeter est symétrique là où rayer une ligne ne l'est pas),
+et `b = mesures − cible` est déjà de somme nulle.
+
+| `double`, résidu 1e-10 | itérations Jacobi | **itérations AMG** | GPU | CPU 8 fils (Jacobi) | |
+|---|---|---|---|---|---|
+| uniforme 10⁶ | 8167 | **357** | **3.22 s** | 314 s | **×97** |
+| uniforme 2·10⁵ | 3656 | **168** | 0.33 s | 19.6 s | ×59 |
+| lignes / Voronoï 10⁵ | 3631 | **133** | 0.23 s | 6.5 s | ×28 |
+| lignes / aires égales 10⁵ | 7981 | **173** | 0.30 s | 13.7 s | ×46 |
+
+**×20 à ×46 d'itérations en moins**, la hiérarchie se montant en 15 ms à 10⁶. Les solutions
+coïncident avec le CG du CPU à 1e-10 près, une fois les deux jauges recentrées.
+
+**Ce que ça ne fait pas.** 168 itérations à 2·10⁵ et 357 à 10⁶ : le nombre d'itérations croît
+encore comme √n, avec une constante 22 fois meilleure. Un vrai multigrille serait indépendant de
+`n` ; celui-ci ne l'est pas, parce que l'agrégation est **non lissée** — c'est sa faiblesse
+connue, et elle se voit aussi en descendant plus bas : s'arrêter à 16 inconnues au lieu de 1000
+fait passer de 168 à **411** itérations, la dégradation classique avec le nombre de niveaux.
+Ce qui manquerait : une prolongation lissée (`P ← ( I − ω D⁻¹A ) P`), ou un K-cycle. Les deux sont
+du travail réel, et le gain restant est un facteur 2 à 3 au plus sur ce qui est déjà acquis.
+
 **Ce qui reste, dans l'ordre.** 1) Les quelques dizaines de cellules à plus de `NF` arêtes sur les
 nuages de lignes (compteur en place, `Chrono::deborde`). 2) L'assemblage CSR sur GPU (comptage +
 somme préfixe, deux passes). 3) Le gradient conjugué préconditionné. 4) La boucle de Newton et sa

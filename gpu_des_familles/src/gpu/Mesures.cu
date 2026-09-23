@@ -12,6 +12,7 @@
 #include "gpu/Bsp2D.cuh"
 #include "gpu/Hess2D.cuh"
 #include "gpu/Cg2D.cuh"
+#include "gpu/Amg2D.cuh"
 #include "gpu/Fil2D.cuh"
 #include "gpu/Voies2D.cuh"
 #include "gpu/Paquet2D.cuh"
@@ -64,6 +65,10 @@ struct DiagrammeGpu<D,TK>::Impl {
     size_t       hscan_o = 0;
     int          hcap = 0;                           ///< places allouees pour `col` / `val`
     double      *cgv = nullptr;                      ///< `r, z, p, q` bout a bout, plus six scalaires
+    std::vector<Niveau> niv;                         ///< la hierarchie du multigrille
+    std::vector<int *>  map;                         ///< `map[ l ][ i ]` : le paquet du niveau `l + 1`
+    int         *rang_de = nullptr;                  ///< identifiant -> rang ( l'agregation du niveau fin )
+    double      *acc = nullptr;                      ///< un scalaire de travail
     int          n = 0, nn = 0;
     bool         poids = false;
 
@@ -611,6 +616,122 @@ double DiagrammeGpu<D,TK>::assemble( Hessienne &H ) {
     }
 }
 
+/// LA HIERARCHIE : Galerkin niveau par niveau, l'agregation etant `>> 2` sur les rangs.
+template<int D, class TK>
+void DiagrammeGpu<D,TK>::monte_amg( const Hessienne &H ) {
+    Impl &m = *impl;
+    const int BL = 256;
+    auto gr = [ & ]( int k ) { return ( k + BL - 1 ) / BL; };
+    for ( Niveau &v : m.niv ) { cudaFree( v.row ); cudaFree( v.col ); cudaFree( v.val ); cudaFree( v.dia ); cudaFree( v.x ); cudaFree( v.b ); cudaFree( v.r ); }
+    for ( int *p : m.map ) cudaFree( p );
+    m.niv.clear(); m.map.clear();
+    if ( ! m.rang_de ) {
+        CUDA_OK( cudaMalloc( &m.rang_de, size_t( m.n ) * sizeof( int ) ) );
+        CUDA_OK( cudaMalloc( &m.acc, sizeof( double ) ) );
+        k_amg_rang<<<gr( m.n ), BL>>>( m.ids, m.rang_de, m.n );
+    }
+
+    // le niveau zero est la hessienne elle-meme ( on ne la recopie pas )
+    Niveau f;
+    f.row = ( int * ) H.row; f.col = ( int * ) H.col; f.val = ( double * ) H.val; f.dia = ( double * ) H.dia;
+    f.n = H.n; f.nnz = H.nnz;
+    m.niv.push_back( f );
+
+    int *cpt = nullptr;
+    CUDA_OK( cudaMalloc( &cpt, sizeof( int ) ) );
+    // on s'arrete a MILLE inconnues. Descendre plus bas a ete essaye et PERD ( 411 iterations au
+    // lieu de 168 a n = 2e5 ) : c'est la degradation connue de l'agregation non lissee avec le
+    // nombre de niveaux, et trois cents lissages de Jacobi suffisent a ce niveau-la.
+    for ( int l = 0; m.niv[ l ].n > 1000 && l < 24; ++l ) {
+        const Niveau &g = m.niv[ l ];
+        const int nc = ( g.n + 3 ) / 4;
+        int *mp = nullptr;
+        CUDA_OK( cudaMalloc( &mp, size_t( g.n ) * sizeof( int ) ) );
+        if ( l == 0 ) k_amg_map_fin<<<gr( g.n ), BL>>>( m.rang_de, mp, g.n );
+        else          k_amg_map<<<gr( g.n ), BL>>>( mp, g.n );
+        m.map.push_back( mp );
+
+        unsigned long long *cl, *cl2;
+        double *po, *po2;
+        CUDA_OK( cudaMalloc( &cl, size_t( g.nnz ) * 8 ) ); CUDA_OK( cudaMalloc( &cl2, size_t( g.nnz ) * 8 ) );
+        CUDA_OK( cudaMalloc( &po, size_t( g.nnz ) * 8 ) ); CUDA_OK( cudaMalloc( &po2, size_t( g.nnz ) * 8 ) );
+        CUDA_OK( cudaMemset( cpt, 0, 4 ) );
+        k_amg_triples<<<gr( g.n ), BL>>>( g.row, g.col, g.val, mp, g.n, nc, cl, po, cpt );
+        int nt = 0;
+        CUDA_OK( cudaMemcpy( &nt, cpt, 4, cudaMemcpyDeviceToHost ) );
+
+        void *tmp = nullptr; size_t to = 0;
+        cub::DeviceRadixSort::SortPairs( tmp, to, cl, cl2, po, po2, nt );
+        CUDA_OK( cudaMalloc( &tmp, to ) );
+        CUDA_OK( cub::DeviceRadixSort::SortPairs( tmp, to, cl, cl2, po, po2, nt ) );
+        int *nu = nullptr;
+        CUDA_OK( cudaMalloc( &nu, 4 ) );
+        void *tr = nullptr; size_t tro = 0;
+        cub::DeviceReduce::ReduceByKey( tr, tro, cl2, cl, po2, po, nu, ::cuda::std::plus<double>{}, nt );
+        CUDA_OK( cudaMalloc( &tr, tro ) );
+        CUDA_OK( cub::DeviceReduce::ReduceByKey( tr, tro, cl2, cl, po2, po, nu, ::cuda::std::plus<double>{}, nt ) );
+        int nun = 0;
+        CUDA_OK( cudaMemcpy( &nun, nu, 4, cudaMemcpyDeviceToHost ) );
+
+        Niveau c;
+        c.n = nc; c.nnz = nun;
+        CUDA_OK( cudaMalloc( &c.row, size_t( nc + 1 ) * 4 ) );
+        CUDA_OK( cudaMalloc( &c.col, size_t( nun ) * 4 ) );
+        CUDA_OK( cudaMalloc( &c.val, size_t( nun ) * 8 ) );
+        CUDA_OK( cudaMalloc( &c.dia, size_t( nc ) * 8 ) );
+        CUDA_OK( cudaMalloc( &c.x, size_t( nc ) * 8 ) ); CUDA_OK( cudaMalloc( &c.b, size_t( nc ) * 8 ) );
+        CUDA_OK( cudaMalloc( &c.r, size_t( nc ) * 8 ) );
+        CUDA_OK( cudaMemset( c.row, 0, size_t( nc + 1 ) * 4 ) );
+        k_amg_compte<<<gr( nun ), BL>>>( cl, nun, nc, c.row );
+        void *ts = nullptr; size_t tso = 0;
+        cub::DeviceScan::ExclusiveSum( ts, tso, c.row, c.row, nc + 1 );
+        CUDA_OK( cudaMalloc( &ts, tso ) );
+        CUDA_OK( cub::DeviceScan::ExclusiveSum( ts, tso, c.row, c.row, nc + 1 ) );
+        int *at = nullptr;
+        CUDA_OK( cudaMalloc( &at, size_t( nc ) * 4 ) );
+        CUDA_OK( cudaMemset( at, 0, size_t( nc ) * 4 ) );
+        k_amg_place<<<gr( nun ), BL>>>( cl, po, nun, nc, c.row, at, c.col, c.val );
+        k_amg_dia<<<gr( nc ), BL>>>( c.row, c.val, c.dia, nc );
+        cudaFree( cl ); cudaFree( cl2 ); cudaFree( po ); cudaFree( po2 );
+        cudaFree( tmp ); cudaFree( tr ); cudaFree( ts ); cudaFree( nu ); cudaFree( at );
+        m.niv.push_back( c );
+    }
+    cudaFree( cpt );
+    // le niveau fin a besoin de ses vecteurs de travail lui aussi
+    if ( ! m.niv[ 0 ].r ) {
+        CUDA_OK( cudaMalloc( &m.niv[ 0 ].r, size_t( m.n ) * 8 ) );
+        CUDA_OK( cudaMalloc( &m.niv[ 0 ].x, size_t( m.n ) * 8 ) );
+        CUDA_OK( cudaMalloc( &m.niv[ 0 ].b, size_t( m.n ) * 8 ) );
+    }
+}
+
+/// UN CYCLE EN V : lissage, restriction, recursion, prolongation, lissage
+template<int D, class TK>
+void DiagrammeGpu<D,TK>::cycle_v( int l ) {
+    Impl &m = *impl;
+    const int BL = 256;
+    auto gr = [ & ]( int k ) { return ( k + BL - 1 ) / BL; };
+    Niveau &g = m.niv[ l ];
+    constexpr double OM = 0.7;
+    constexpr int NU = 2;                                // pre et post, pour la symetrie
+    CUDA_OK( cudaMemsetAsync( g.x, 0, size_t( g.n ) * 8 ) );
+    if ( l + 1 == int( m.niv.size() ) ) {                // le plus grossier : on lisse longtemps
+        for ( int k = 0; k < 300; ++k )
+            k_amg_jacobi<<<gr( g.n ), BL>>>( g.row, g.col, g.val, g.dia, g.x, g.b, OM, g.n );
+        return;
+    }
+    Niveau &c = m.niv[ l + 1 ];
+    for ( int k = 0; k < NU; ++k )
+        k_amg_jacobi<<<gr( g.n ), BL>>>( g.row, g.col, g.val, g.dia, g.x, g.b, OM, g.n );
+    k_amg_residu<<<gr( g.n ), BL>>>( g.row, g.col, g.val, g.dia, g.x, g.b, g.r, g.n );
+    CUDA_OK( cudaMemsetAsync( c.b, 0, size_t( c.n ) * 8 ) );
+    k_amg_restreint<<<gr( g.n ), BL>>>( g.r, m.map[ l ], c.b, g.n );
+    cycle_v( l + 1 );
+    k_amg_prolonge<<<gr( g.n ), BL>>>( g.x, c.x, m.map[ l ], g.n );
+    for ( int k = 0; k < NU; ++k )
+        k_amg_jacobi<<<gr( g.n ), BL>>>( g.row, g.col, g.val, g.dia, g.x, g.b, OM, g.n );
+}
+
 /// LE GRADIENT CONJUGUE PRECONDITIONNE. Les scalaires restent sur la carte ; seul le test d'arret
 /// redescend un nombre par iteration.
 template<int D, class TK>
@@ -631,9 +752,23 @@ int DiagrammeGpu<D,TK>::resout( const Hessienne &H, const double *b, double *x, 
         CUDA_OK( cudaEventRecord( e0 ) );
         CUDA_OK( cudaMemsetAsync( x, 0, size_t( n ) * sizeof( double ) ) );
         CUDA_OK( cudaMemcpyAsync( r, b, size_t( n ) * sizeof( double ), cudaMemcpyDeviceToDevice ) );
-        CUDA_OK( cudaMemsetAsync( r, 0, sizeof( double ) ) );          // la jauge : `b[ 0 ] = 0`
+        auto centre = [ & ]( double *v ) {              // la jauge : moyenne nulle
+            k_cg_zero<<<1,1>>>( m.acc );
+            k_amg_somme<<<gr, BL>>>( v, m.acc, n );
+            k_amg_centre<<<gr, BL>>>( v, m.acc, n );
+        };
+        auto precond = [ & ]( const double *rr, double *zz ) {
+            if ( m.niv.size() > 1 ) {                    // le multigrille
+                CUDA_OK( cudaMemcpyAsync( m.niv[ 0 ].b, rr, size_t( n ) * sizeof( double ), cudaMemcpyDeviceToDevice ) );
+                cycle_v( 0 );
+                CUDA_OK( cudaMemcpyAsync( zz, m.niv[ 0 ].x, size_t( n ) * sizeof( double ), cudaMemcpyDeviceToDevice ) );
+            } else
+                k_cg_prec<<<gr, BL>>>( rr, H.dia, zz, n );
+            centre( zz );
+        };
+        centre( r );
         dot( r, r, sbb );
-        k_cg_prec<<<gr, BL>>>( r, H.dia, z, n );
+        precond( r, z );
         CUDA_OK( cudaMemcpyAsync( p, z, size_t( n ) * sizeof( double ), cudaMemcpyDeviceToDevice ) );
         dot( r, z, srz );
         double bb = 0;
@@ -649,7 +784,7 @@ int DiagrammeGpu<D,TK>::resout( const Hessienne &H, const double *b, double *x, 
             dot( r, r, sbb );
             CUDA_OK( cudaMemcpy( &rr, sbb, sizeof( double ), cudaMemcpyDeviceToHost ) );
             if ( rr <= cible ) { ++it; break; }
-            k_cg_prec<<<gr, BL>>>( r, H.dia, z, n );
+            precond( r, z );
             dot( r, z, srz2 );
             k_cg_beta<<<1,1>>>( srz2, srz, sbe );
             k_cg_dir<<<gr, BL>>>( p, z, sbe, n );

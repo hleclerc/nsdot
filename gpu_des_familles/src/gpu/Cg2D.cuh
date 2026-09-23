@@ -23,17 +23,15 @@
 namespace sf::gpu {
 namespace {
 
-/// `y = A x` avec la jauge : la colonne zero est sautee, la ligne zero rend zero
+/// `y = L x`. LA JAUGE EST LA MOYENNE NULLE : le laplacien a les constantes pour noyau, `b` est
+/// deja de somme nulle, et c'est la PROJECTION qui tient lieu de jauge -- symetrique, la ou rayer
+/// une ligne ne l'est pas ( et incompatible avec un multigrille ).
 __global__ void k_cg_mul( const int *row, const int *col, const double *val, const double *dia,
                           const double *x, double *y, int n ) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if ( i >= n ) return;
-    if ( i == 0 ) { y[ 0 ] = 0; return; }
     double s = dia[ i ] * x[ i ];
-    for ( int p = row[ i ]; p < row[ i + 1 ]; ++p ) {
-        const int j = col[ p ];
-        if ( j ) s -= val[ p ] * x[ j ];                 // la colonne zero est rayee
-    }
+    for ( int p = row[ i ]; p < row[ i + 1 ]; ++p ) s -= val[ p ] * x[ col[ p ] ];
     y[ i ] = s;
 }
 
@@ -68,7 +66,7 @@ __global__ void k_cg_avance( double *x, double *r, const double *p, const double
 __global__ void k_cg_prec( const double *r, const double *dia, double *z, int n ) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if ( i >= n ) return;
-    z[ i ] = i ? r[ i ] / dia[ i ] : 0.0;
+    z[ i ] = r[ i ] / dia[ i ];
 }
 __global__ void k_cg_dir( double *p, const double *z, const double *beta, int n ) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
