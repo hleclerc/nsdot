@@ -847,14 +847,24 @@ conclusion ne change pas.)
 
 Ensuite le repère centré lui-même (`filmsk8g`) : `bissect2c` donne `off = ½ ( dx² + dy² )`,
 `bilan_sommet_c` décale la boîte du nœud, la coupe et l'aire ne changent pas d'une ligne (le lacet
-est invariant par translation). **Et la précision ne bouge pas** : 5.6e-4 / 4.9e-3 / 3.0e-2 contre
-5.7e-4 / 4.8e-3 / 3.0e-2. **L'hypothèse est réfutée.**
+est invariant par translation). Et **l'écart max ne bouge pas** : 5.6e-4 / 4.9e-3 / 3.0e-2 contre
+5.7e-4 / 4.8e-3 / 3.0e-2.
 
-La raison est que **la précision est perdue AVANT le noyau**. `ar.c[ d ][ q ]` est stocké en
-`float` : `xj` et `x0` portent déjà chacun ~3e-8 d'erreur absolue, donc `dx = xj - x0` aussi,
-quelle que soit la suite. Les germes eux-mêmes sont déplacés, la vraie bissectrice avec eux, et
-**aucune reformulation ne rattrape ça**. Centrer supprime la cancellation *arithmétique* (dans
-`off` et dans `s`), qui n'était pas le terme dominant.
+Sauf que **l'écart max est le mauvais chiffre** — c'est une statistique d'extrême, fixée par une
+poignée de cellules dégénérées (une arête presque tangente au plan : `s0 ≈ s1`, et `ta = s0 /
+( s0 - s1 )` perd tout), et qui grandit toute seule quand on tire plus de cellules. Le banc
+imprime maintenant les **quantiles** de l'écart relatif, et ils disent autre chose (uniforme, 10⁶) :
+
+| | moyenne | médiane | p99 | p99.99 | max |
+|---|---|---|---|---|---|
+| `filnrm8` (absolu) | 4.3e-5 | 3.2e-5 | 1.8e-4 | 7.6e-4 | 4.8e-3 |
+| `filmsk8g` (centré) | 2.1e-5 | **1.4e-5** | 1.1e-4 | 7.7e-4 | 4.9e-3 |
+
+**Le repère centré divise l'erreur de la cellule ordinaire par 2.3.** Il ne touche pas à la queue,
+parce que là c'est le conditionnement de l'intersection qui parle, pas la formulation. La part
+qu'il ne peut pas atteindre, elle, est **perdue avant le noyau** : `ar.c[ d ][ q ]` est stocké en
+`float`, donc `xj` et `x0` portent déjà ~3e-8 d'erreur absolue et `dx = xj - x0` avec eux. D'où la
+suite.
 
 Ce que la manche rapporte quand même : **−4 % en `double`**, `off = ½ ( dx² + dy² )` étant plus
 court que `½ ( dx ( xj + x0 ) + dy ( yj + y0 ) )`. Confirmé sur deux tailles, au-dessus du
@@ -869,12 +879,57 @@ plancher de bruit :
 **`filmsk8g` est donc le meilleur noyau 2D en `double`** — la précision qui compte à 10⁹ — et il y
 est avec 96 registres contre 128.
 
-**La vraie piste pour du `float` à 10⁹** : pas la formule, le **stockage des positions**. En
-**virgule fixe 32 bits** sur [0,1], la résolution est 2.3e-10 au lieu de 6e-8 — 260× mieux **pour
-les mêmes quatre octets** — et `dx` se forme par une soustraction entière *exacte* suivie d'une
-conversion, deux instructions. Combinée au repère centré (déjà écrit, et qui supprime la
-cancellation arithmétique restante), c'est la seule route vers un `float` utilisable à grande
-échelle. Il faudrait passer les boîtes des nœuds en virgule fixe aussi.
+## La virgule fixe 32 bits (`filmsk8f`)
+
+Le `float` range [0,1] avec un pas de ~6e-8 près de 1 ; en **virgule fixe sur 31 bits** le pas est
+**uniforme et vaut 2⁻³⁰ = 9.3e-10**, soit ~64× mieux **pour les mêmes quatre octets**. Et la
+différence de deux positions devient une **soustraction entière exacte**, convertie ensuite en
+flottant avec toute sa précision relative. [0,1] devient [0, 2³⁰], si bien que le sommet du carré
+unité tombe pile et que la cellule de départ est exacte. `bissect2f` fait
+`dx = TK( u[ q ] - u0 ) × 2⁻³⁰`, puis `off = ½ ( dx² + dy² )` comme le repère centré.
+
+Écart relatif contre le témoin `double`, en `float` :
+
+| uniforme, 10⁶ | moyenne | médiane | p99 | p99.99 | max |
+|---|---|---|---|---|---|
+| `filnrm8` | 4.3e-5 | 3.2e-5 | 1.8e-4 | 7.6e-4 | 4.8e-3 |
+| `filmsk8g` (centré) | 2.1e-5 | 1.4e-5 | 1.1e-4 | 7.7e-4 | 4.9e-3 |
+| `filmsk8f` (centré + fixe) | **1.3e-5** | **6.8e-6** | **8.8e-5** | **2.4e-4** | **1.4e-3** |
+
+| uniforme, 10⁷ | moyenne | médiane | p99 | p99.99 | max |
+|---|---|---|---|---|---|
+| `filnrm8` | 1.4e-4 | 1.0e-4 | 5.7e-4 | 2.3e-3 | 3.0e-2 |
+| `filmsk8g` | 6.5e-5 | 4.3e-5 | 3.5e-4 | 2.3e-3 | 3.0e-2 |
+| `filmsk8f` | **4.0e-5** | **2.0e-5** | **2.8e-4** | **7.9e-4** | **9.9e-3** |
+
+| lignes / Voronoï, 10⁵ | médiane | p99 | max | | lignes / aires égales, 10⁵ | médiane | p99 | max |
+|---|---|---|---|---|---|---|---|---|
+| `filnrm8` | 3.4e-6 | 3.0e-5 | 2.4e-3 | | `filnrm8` | 2.0e-3 | 2.2e-1 | 2.7 |
+| `filmsk8f` | **8.2e-7** | **1.4e-5** | **2.1e-4** | | `filmsk8f` | **5.4e-4** | 1.2e-1 | 2.3 |
+
+**Les deux changements ensemble divisent l'erreur de la cellule ordinaire par 4 à 5, et l'écart max
+par 3 à 11**, pour **+1 % de temps** (8.2 contre 8.1 ns/germe à 10⁶) et **pas un octet de plus**
+(le tableau `float` des positions n'est plus nécessaire, `p0` se reconstruit depuis la virgule
+fixe).
+
+Et surtout, **la médiane retrouve la loi en √n propre** : 6.8e-6 à 10⁶, 2.0e-5 à 10⁷, soit ×2.9
+par décade contre ×3.16 attendu. **Extrapolée à 10⁹ : 2e-4 de médiane** — 0.02 % sur une cellule
+ordinaire, ce qui est utilisable. La queue, elle, garde son exposant : p99.99 ~8e-3 et max ~0.5 à
+10⁹, donc une cellule sur 10⁴ à 1 % près et quelques-unes fausses.
+
+Deux réserves qui comptent.
+
+* **La virgule fixe 31 bits est réservée au `float`.** En `double` elle *détruit* la précision
+  (1.2e-4 au lieu de 2.1e-10 : 31 bits contre 53) — mesuré, `filmsk8f` en `double` est faux. Pour
+  le `double` il faudrait une virgule fixe 64 bits, donc huit octets.
+* **Le Laguerre à poids forts reste hors-jeu en `float`** : médiane 5.4e-4 dès 10⁵ et p99 à 12 %,
+  même avec la virgule fixe. Or c'est exactement le cas du transport optimal.
+
+**Conséquence pour le choix de carte.** Pour du Voronoï ou du Laguerre à poids faibles, le `float`
+devient défendable à 10⁹ et la **RTX PRO 6000** reprend l'avantage (1.65 contre 3.5 ns/germe
+projetés, 96 Go, et un L2 qui tiendrait l'arbre). Pour du Laguerre à poids forts — le transport
+optimal — le `double` reste obligatoire et c'est **H100 / A100**. Le choix de carte est donc en
+réalité un choix sur le *type de problème*, pas sur le noyau.
 
 
 # 4. CE QUE LE PROFIL DIT (`ncu`)

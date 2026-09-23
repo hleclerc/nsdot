@@ -31,6 +31,7 @@ struct Arbre {
     const Noeud<TK,D> *nodes;
     const TK          *c[ D ];  ///< positions, ordre de l'arbre
     const TK          *w;       ///< poids, idem ( `nullptr` en Voronoi )
+    const int         *u[ D ];  ///< positions en VIRGULE FIXE ( echelle `ECH_FIXE` ), meme ordre
     const int         *ids;     ///< rang -> identifiant
     int                n;
 };
@@ -49,6 +50,28 @@ __device__ __forceinline__ Plan2<TK> bissect2( const Arbre<TK,2> &ar, int q, TK 
     p.dx  = xj - x0;
     p.dy  = yj - y0;
     p.off = TK( 0.5 ) * ( p.dx * ( xj + x0 ) + p.dy * ( yj + y0 ) );
+    if constexpr ( POIDS ) p.off += TK( 0.5 ) * ( w0 - ar.w[ q ] );
+    p.id  = ar.ids[ q ];
+    return p;
+}
+
+// LA VIRGULE FIXE. Le `float` range `[ 0, 1 ]` avec un pas qui vaut `~6e-8` pres de 1 : une
+// cellule de cote `1/sqrt( n )` n'a donc plus que `sqrt( n ) x 6e-8` de precision RELATIVE, et
+// cette perte est faite AVANT le noyau, dans le stockage. En virgule fixe sur 31 bits le pas est
+// UNIFORME et vaut `2^-30 = 9.3e-10`, soit ~64 fois mieux, POUR LES MEMES QUATRE OCTETS -- et la
+// difference de deux positions est une soustraction entiere EXACTE, convertie ensuite en flottant
+// avec toute sa precision relative. `[ 0, 1 ]` devient `[ 0, 2^30 ]` ( le sommet du carre unite
+// tombe pile sur `2^30` ), et l'ecart tient toujours dans un `int`.
+constexpr int    ECH_FIXE = 1 << 30;
+constexpr double INV_FIXE = 1.0 / double( ECH_FIXE );
+
+/// le plan bissecteur DANS LE REPERE DU GERME, les positions lues en virgule fixe
+template<bool POIDS, class TK>
+__device__ __forceinline__ Plan2<TK> bissect2f( const Arbre<TK,2> &ar, int q, int ux0, int uy0, TK w0 ) {
+    Plan2<TK> p;
+    p.dx  = TK( ar.u[ 0 ][ q ] - ux0 ) * TK( INV_FIXE );   // soustraction EXACTE, puis conversion
+    p.dy  = TK( ar.u[ 1 ][ q ] - uy0 ) * TK( INV_FIXE );
+    p.off = TK( 0.5 ) * ( p.dx * p.dx + p.dy * p.dy );
     if constexpr ( POIDS ) p.off += TK( 0.5 ) * ( w0 - ar.w[ q ] );
     p.id  = ar.ids[ q ];
     return p;

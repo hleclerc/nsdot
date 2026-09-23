@@ -39,6 +39,10 @@
 //
 // Trois tableaux temporaires de neuf cases, contre les huit de huit de `filnrm` : 96 registres en
 // `double` et 58 en `float`, contre 128 et 74 -- LE PLUS PETIT NOYAU DE LA FAMILLE, a +5 % de
+// `FIXE` : les positions sont lues en VIRGULE FIXE ( `Arbre.cuh` ) -- `dx` devient une
+// soustraction entiere exacte, et le pas de quantification passe de ~6e-8 a 9.3e-10 pour les
+// memes quatre octets. Implique `CENTRE`, qui seul lui donne son sens.
+//
 // `CENTRE` : la cellule vit dans le REPERE DU GERME ( les sommets comptent a partir de `p0` ).
 // Rien ne change dans la coupe -- l'aire par le lacet est invariante par translation, et
 // `coupe_msk` ne voit que des differences -- seuls changent le carre de depart ( decale de `p0` ),
@@ -135,12 +139,14 @@ __device__ __forceinline__ int coupe_msk( const Plan2<TK> &p, int nb, TK ( &x )[
     return nn;
 }
 
-template<bool POIDS, int BSM, bool CENTRE, class TK>
+template<bool POIDS, int BSM, bool CENTRE, bool FIXE, class TK>
 __global__ void __launch_bounds__( 128, BSM ) noyau2_filmsk( Arbre<TK,2> ar, double *res, int *deborde, int *liste_deb ) {
     constexpr int R = 8, SUR = 3;
     const int k = blockIdx.x * blockDim.x + threadIdx.x;
     if ( k >= ar.n ) return;
-    const TK p0[ 2 ] = { ar.c[ 0 ][ k ], ar.c[ 1 ][ k ] };
+    const int u0[ 2 ] = { FIXE ? ar.u[ 0 ][ k ] : 0, FIXE ? ar.u[ 1 ][ k ] : 0 };
+    const TK p0[ 2 ] = { FIXE ? TK( u0[ 0 ] ) * TK( INV_FIXE ) : ar.c[ 0 ][ k ],
+                         FIXE ? TK( u0[ 1 ] ) * TK( INV_FIXE ) : ar.c[ 1 ][ k ] };
     const TK w0 = POIDS ? ar.w[ k ] : TK( 0 );
     const int i0 = ar.ids[ k ];
 
@@ -148,8 +154,12 @@ __global__ void __launch_bounds__( 128, BSM ) noyau2_filmsk( Arbre<TK,2> ar, dou
     int c[ R ];
 #pragma unroll
     for ( int i = 0; i < R; ++i ) {
-        x[ i ] = TK( i == 1 || i == 2 ) - ( CENTRE ? p0[ 0 ] : TK( 0 ) );
-        y[ i ] = TK( i == 2 || i == 3 ) - ( CENTRE ? p0[ 1 ] : TK( 0 ) );
+        // le carre unite, dans le repere du germe. En virgule fixe le sommet tombe pile sur
+        // `2^30`, donc le cote de la cellule de depart est EXACT
+        x[ i ] = FIXE ? TK( ( i == 1 || i == 2 ? ECH_FIXE : 0 ) - u0[ 0 ] ) * TK( INV_FIXE )
+                      : TK( i == 1 || i == 2 ) - ( CENTRE ? p0[ 0 ] : TK( 0 ) );
+        y[ i ] = FIXE ? TK( ( i == 2 || i == 3 ? ECH_FIXE : 0 ) - u0[ 1 ] ) * TK( INV_FIXE )
+                      : TK( i == 2 || i == 3 ) - ( CENTRE ? p0[ 1 ] : TK( 0 ) );
         c[ i ] = i < 4 ? -1 - i : 0;
     }
     int nb = 4;
@@ -180,7 +190,8 @@ __global__ void __launch_bounds__( 128, BSM ) noyau2_filmsk( Arbre<TK,2> ar, dou
         }
 
         for ( int q = nd.beg; q < nd.end; ++q ) {
-            const Plan2<TK> p = CENTRE ? bissect2c<POIDS>( ar, q, p0[ 0 ], p0[ 1 ], w0 )
+            const Plan2<TK> p = FIXE   ? bissect2f<POIDS>( ar, q, u0[ 0 ], u0[ 1 ], w0 )
+                              : CENTRE ? bissect2c<POIDS>( ar, q, p0[ 0 ], p0[ 1 ], w0 )
                                        : bissect2<POIDS>( ar, q, p0[ 0 ], p0[ 1 ], w0 );
             nb = coupe_msk( p, nb, x, y, c );
             if ( IMPROBABLE( nb <= 0 ) ) goto fin;

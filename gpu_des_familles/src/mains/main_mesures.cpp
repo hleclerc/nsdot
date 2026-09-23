@@ -97,10 +97,18 @@ int mesure( const Args &a, const Opt &o, const Nuage<PD::dim> &nu ) {
         // la somme, elle, est tenue a 1e-6. En `double` l'ecart est celui de l'ordre des operations
         double somme = 0, ecart = 0;
         int non_ecrites = 0;
+        // l'ecart MAX est une statistique d'extreme : il grandit avec le nombre de cellules tirees,
+        // et quelques cellules degenerees ( une arete presque tangente au plan, `s0 ~ s1` ) le
+        // fixent a elles seules. Les QUANTILES disent ce que vaut une cellule ordinaire -- c'est
+        // ce qui compte pour un Newton sur les mesures.
+        std::vector<double> errs;
+        if ( ! ref.empty() ) errs.reserve( nu.n );
         for ( SI i = 0; i < nu.n; ++i ) {
             if ( std::isnan( res[ i ] ) ) { if ( non_ecrites++ < 5 ) std::printf( "        cellule %d ( rang %d ) non ecrite\n", int( i ), int( rang_de[ i ] ) ); continue; }
             somme += res[ i ];
-            ecart = std::max( ecart, std::fabs( res[ i ] - temoin[ i ] ) / std::max( double( temoin[ i ] ), moyenne ) );
+            const double e = std::fabs( res[ i ] - temoin[ i ] ) / std::max( double( temoin[ i ] ), moyenne );
+            ecart = std::max( ecart, e );
+            if ( ! ref.empty() ) errs.push_back( e );
         }
         if ( non_ecrites ) std::printf( "        %d cellules NON ECRITES\n", non_ecrites );
         if ( std::getenv( "MESURES_DEBUG" ) ) {
@@ -115,6 +123,14 @@ int mesure( const Args &a, const Opt &o, const Nuage<PD::dim> &nu ) {
         std::printf( "      %-8s %8.4f s  %7.1f ns/germe  x%-5.1f  somme %.9f  ecart max %.1e  retour %.0f ms%s%s\n",
                      gpu::nom( v ), ch.noyau, ch.noyau / nu.n * 1e9, t_cpu / ch.noyau, somme, ecart, ch.retour * 1e3,
                      ch.deborde ? "   <-- DEBORDE" : "", ok ? "" : "   <-- FAUX" );
+        if ( ! errs.empty() ) {
+            std::sort( errs.begin(), errs.end() );
+            const auto q = [ & ]( double p ) { return errs[ std::min( errs.size() - 1, size_t( p * errs.size() ) ) ]; };
+            double moy = 0;
+            for ( double e : errs ) moy += e;
+            std::printf( "        ecart relatif : moyenne %.1e, mediane %.1e, p99 %.1e, p99.99 %.1e, max %.1e\n",
+                         moy / errs.size(), q( 0.5 ), q( 0.99 ), q( 0.9999 ), errs.back() );
+        }
         if ( ch.regs )
             std::printf( "        %d registres, %d blocs par SM, occupation %.0f %%, memoire locale %d octets%s\n",
                          ch.regs, ch.blocs, ch.occup * 100, ch.local, ch.local > 192 ? "   <-- DEBORDEMENT DE REGISTRES" : "" );
@@ -156,7 +172,7 @@ int main( int argc, char **argv ) {
         if ( s == "--temoin-double" ) { o.temoin_double = true; continue; }
         std::printf( "usage: mesures [options]\n" );
         Args::usage();
-        std::printf( "  --variante V    fil | filreg | filregc | filmix{4,6,8,12,16} | filbrk{6,8,10,12,16} | filbrk8nu | filrot{6,8} | filnrm8 | filord8 | filsuc8 | filmsk8 | filmsk8g | filmsk8c{6,8} | filnrm8c{6,8} | filuni8 | filuni8np | filshm8 | filnrm8tri | filnrm8tril | filph8 | filph8g | filph8b | filph8a | filph8c | filph8o | filph8m | filph8m4 | voies | voies16 | voies32 | paquet{8,32}x{1,2,4}[S] | toutes ( plusieurs : separees par des virgules )\n"
+        std::printf( "  --variante V    fil | filreg | filregc | filmix{4,6,8,12,16} | filbrk{6,8,10,12,16} | filbrk8nu | filrot{6,8} | filnrm8 | filord8 | filsuc8 | filmsk8 | filmsk8g | filmsk8f | filmsk8c{6,8} | filnrm8c{6,8} | filuni8 | filuni8np | filshm8 | filnrm8tri | filnrm8tril | filph8 | filph8g | filph8b | filph8a | filph8c | filph8o | filph8m | filph8m4 | voies | voies16 | voies32 | paquet{8,32}x{1,2,4}[S] | toutes ( plusieurs : separees par des virgules )\n"
                      "  --reps-gpu R    repetitions du noyau GPU, minimum       (10)\n"
                      "  --temoin-double le temoin de precision en double, meme si --kernel float\n" );
         return s == "--help" || s == "-h" ? 0 : 1;

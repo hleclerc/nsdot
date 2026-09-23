@@ -26,6 +26,7 @@
 #include "gpu/Fil3D.cuh"
 #include "gpu/Voies3D.cuh"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <type_traits>
@@ -41,6 +42,7 @@ template<int D, class TK>
 struct DiagrammeGpu<D,TK>::Impl {
     Noeud<TK,D> *nodes = nullptr;
     TK          *c[ D ] = {};
+    int         *u[ D ] = {};                        ///< les memes en virgule fixe
     TK          *w = nullptr;
     int         *ids = nullptr;
     double      *res = nullptr;
@@ -54,7 +56,7 @@ struct DiagrammeGpu<D,TK>::Impl {
     Arbre<TK,D> arbre() const {
         Arbre<TK,D> a;
         a.nodes = nodes;
-        for ( int d = 0; d < D; ++d ) a.c[ d ] = c[ d ];
+        for ( int d = 0; d < D; ++d ) { a.c[ d ] = c[ d ]; a.u[ d ] = u[ d ]; }
         a.w = w; a.ids = ids; a.n = n;
         return a;
     }
@@ -80,10 +82,19 @@ DiagrammeGpu<D,TK>::DiagrammeGpu( const AaBspT<D> &arbre ) : impl( new Impl ) {
     CUDA_OK( cudaMemcpy( m.nodes, nds.data(), m.nn * sizeof( Noeud<TK,D> ), cudaMemcpyHostToDevice ) );
 
     std::vector<TK> tmp( m.n );
+    std::vector<int> fix( m.n );
     for ( int d = 0; d < D; ++d ) {
-        for ( int k = 0; k < m.n; ++k ) tmp[ k ] = TK( arbre.seed_c( k, d ) );
+        for ( int k = 0; k < m.n; ++k ) {
+            const double v = arbre.seed_c( k, d );
+            tmp[ k ] = TK( v );
+            // la virgule fixe : `[ 0, 1 ] -> [ 0, 2^30 ]`, arrondi au plus proche, borne
+            const double f = std::round( v * double( ECH_FIXE ) );
+            fix[ k ] = int( std::min( std::max( f, 0.0 ), double( ECH_FIXE ) ) );
+        }
         CUDA_OK( cudaMalloc( &m.c[ d ], m.n * sizeof( TK ) ) );
         CUDA_OK( cudaMemcpy( m.c[ d ], tmp.data(), m.n * sizeof( TK ), cudaMemcpyHostToDevice ) );
+        CUDA_OK( cudaMalloc( &m.u[ d ], m.n * sizeof( int ) ) );
+        CUDA_OK( cudaMemcpy( m.u[ d ], fix.data(), m.n * sizeof( int ), cudaMemcpyHostToDevice ) );
     }
     if ( m.poids ) {
         for ( int k = 0; k < m.n; ++k ) tmp[ k ] = TK( arbre.seed_w( k ) );
@@ -106,7 +117,7 @@ template<int D, class TK>
 DiagrammeGpu<D,TK>::~DiagrammeGpu() {
     Impl &m = *impl;
     cudaFree( m.nodes );
-    for ( int d = 0; d < D; ++d ) cudaFree( m.c[ d ] );
+    for ( int d = 0; d < D; ++d ) { cudaFree( m.c[ d ] ); cudaFree( m.u[ d ] ); }
     cudaFree( m.w ); cudaFree( m.ids ); cudaFree( m.res ); cudaFree( m.deb ); cudaFree( m.deb2 ); cudaFree( m.liste ); cudaFree( m.stats ); cudaFree( m.cptr );
     delete impl;
 }
@@ -344,29 +355,31 @@ Chrono lance2( const Impl &m, Variante v, int reps, std::vector<double> &res ) {
             return m.deb2;
         } );
     }
-    if ( v == Variante::FILMSK8 || v == Variante::FILMSK8G || v == Variante::FILMSK8C6 || v == Variante::FILMSK8C8 ) {
+    if ( v == Variante::FILMSK8 || v == Variante::FILMSK8G || v == Variante::FILMSK8F || v == Variante::FILMSK8C6 || v == Variante::FILMSK8C8 ) {
         // `BSM` : le nombre de blocs par SM que ptxas doit garantir -- il rabote les registres
         // pour y arriver. A 128 threads par bloc sur Turing ( 64 Ko de registres, 32 warps ) :
         // 4 blocs <=> 128 registres, 5 <=> 102, 6 <=> 85, 8 <=> 64 et l'occupation pleine
-        auto msk = [ & ]( auto mm, auto gg ) {
+        auto msk = [ & ]( auto mm, auto gg, auto ff ) {
             constexpr int BSM = decltype( mm )::value;
-            constexpr bool CENTRE = decltype( gg )::value;
+            constexpr bool CENTRE = decltype( gg )::value, FIXE = decltype( ff )::value;
             Chrono ch = chrono<2,TK>( m, reps, res, [ & ]() {
-                noyau2_filmsk<POIDS,BSM,CENTRE><<<grid, bloc>>>( ar, m.res, m.deb, m.liste );
+                noyau2_filmsk<POIDS,BSM,CENTRE,FIXE><<<grid, bloc>>>( ar, m.res, m.deb, m.liste );
                 int nd = 0;
                 CUDA_OK( cudaMemcpy( &nd, m.deb, sizeof( int ), cudaMemcpyDeviceToHost ) );
                 if ( nd == 0 ) return m.deb;
                 noyau2_filmix<POIDS,64,8,true><<<( nd + bloc - 1 ) / bloc, bloc>>>( ar, m.res, m.deb2, m.liste, nd );
                 return m.deb2;
             } );
-            infos( ch, noyau2_filmsk<POIDS,BSM,CENTRE,TK>, bloc );
+            infos( ch, noyau2_filmsk<POIDS,BSM,CENTRE,FIXE,TK>, bloc );
             return ch;
         };
         using I1 = std::integral_constant<int,1>;
-        return v == Variante::FILMSK8   ? msk( I1{}, std::false_type{} )
-             : v == Variante::FILMSK8G  ? msk( I1{}, std::true_type{} )    // le repere centre sur le germe
-             : v == Variante::FILMSK8C6 ? msk( std::integral_constant<int,6>{}, std::false_type{} )
-             :                            msk( std::integral_constant<int,8>{}, std::false_type{} );
+        using F = std::false_type; using T = std::true_type;
+        return v == Variante::FILMSK8   ? msk( I1{}, F{}, F{} )
+             : v == Variante::FILMSK8G  ? msk( I1{}, T{}, F{} )    // le repere centre sur le germe
+             : v == Variante::FILMSK8F  ? msk( I1{}, T{}, T{} )    // + les positions en virgule fixe
+             : v == Variante::FILMSK8C6 ? msk( std::integral_constant<int,6>{}, F{}, F{} )
+             :                            msk( std::integral_constant<int,8>{}, F{}, F{} );
     }
     if ( v == Variante::FILNRM8C6 || v == Variante::FILNRM8C8 ) {
         auto nrm = [ & ]( auto mm ) {
