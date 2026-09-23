@@ -17,6 +17,7 @@
 #include "bench/Dispatch.h"
 #include "solver/Laplacien.h"
 #include "gpu/Mesures.h"
+#include "gpu/Bsp2D.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -33,7 +34,7 @@ struct Fa { int i, j; double c; };
 bool avant( const Fa &a, const Fa &b ) { return a.i != b.i ? a.i < b.i : a.j < b.j; }
 
 template<class PD>
-int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu ) {
+int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu, bool arbre_gpu ) {
     constexpr int D = PD::dim;
     using TK = typename PD::TKernel;
     static_assert( D == 2, "la chaine est 2D" );
@@ -42,6 +43,41 @@ int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu ) {
     double t0 = now();
     pd.build( nu.P, nu.W, nu.n, a.leaf );
     const double t_arbre = now() - t0;
+
+    // ---- L'ARBRE SUR GPU : construit, puis reinjecte dans un `AaBspT<2>` pour que le MEME moteur
+    //      de mesure le lise. Si les mesures tombent juste, l'arbre est bon.
+    double t_arbre_gpu = 0, ms_gpu = 0;
+    AaBspT<2> ag;
+    if ( arbre_gpu ) {
+        gpu::ArbreHote h;
+        t0 = now();
+        gpu::construit2( nu.P[ 0 ], nu.P[ 1 ], int( nu.n ), int( a.leaf ), h, &ms_gpu );
+        t_arbre_gpu = now() - t0;
+        ag.leaf_size = a.leaf;
+        ag.nodes.resize( h.nn );
+        for ( int i = 0; i < h.nn; ++i ) {
+            auto &d = ag.nodes[ i ];
+            // les boites sont calculees en `float` ( les atomiques entiers ) : on les ELARGIT d'un
+            // ulp pour qu'elles contiennent a coup sur les positions `double`, sinon l'elagage
+            // pourrait retrancher un germe legitime
+            for ( int k = 0; k < 2; ++k ) {
+                d.lo[ k ] = std::nextafter( double( h.lo[ 2 * i + k ] ), -1e300 );
+                d.hi[ k ] = std::nextafter( double( h.hi[ 2 * i + k ] ),  1e300 );
+            }
+            d.wm = {};
+            d.beg = h.beg[ i ]; d.end = h.end[ i ]; d.right = h.right[ i ];
+        }
+        ag.order.assign( h.order.begin(), h.order.end() );
+        // les positions sont RELUES EN `double` par la permutation : le GPU n'a trie que des
+        // `float`, mais la permutation qu'il rend est la seule chose dont l'arbre a besoin
+        for ( int k = 0; k < 2; ++k ) ag.p[ k ].resize( h.n );
+        for ( int k = 0; k < h.n; ++k )
+            for ( int d = 0; d < 2; ++d ) ag.p[ d ][ k ] = nu.P[ d ][ ag.order[ k ] ];
+        ag.pw.clear();
+        std::printf( "      arbre GPU %6.0f ms ( noyaux %6.1f ms ) contre %6.0f ms au CPU sur %d fils   x%.1f   %d noeuds contre %d\n",
+                     t_arbre_gpu * 1e3, ms_gpu, t_arbre * 1e3, a.par.threads, t_arbre / t_arbre_gpu,
+                     h.nn, int( pd.arbre.nodes.size() ) );
+    }
 
     // ---- LE TEMOIN : mesures et facettes par le moteur CPU
     std::vector<TF> cpu;
@@ -63,7 +99,7 @@ int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu ) {
                  t_cpu, t_cpu / nu.n * 1e9, fcpu.size() );
 
     // ---- LE GPU : le meme, en un noyau
-    gpu::DiagrammeGpu<D,TK> g( pd.arbre );
+    gpu::DiagrammeGpu<D,TK> g( arbre_gpu ? ag : pd.arbre );
     std::vector<double> res, fl;
     std::vector<int> fj;
     const gpu::Chrono ch = g.facettes( reps_gpu, res, fj, fl );
@@ -162,13 +198,16 @@ int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu ) {
 int main( int argc, char **argv ) {
     Args a;
     int reps_gpu = 10;
+    bool arbre_gpu = false;
     for ( int i = 1; i < argc; ++i ) {
         const std::string s = argv[ i ];
         if ( a.parse( s, i, argc, argv ) ) continue;
         if ( s == "--reps-gpu" && i + 1 < argc ) { reps_gpu = std::atoi( argv[ ++i ] ); continue; }
+        if ( s == "--arbre-gpu" ) { arbre_gpu = true; continue; }
         std::printf( "usage: chaine [options]\n" );
         Args::usage();
-        std::printf( "  --reps-gpu R    repetitions du noyau GPU, minimum       (10)\n" );
+        std::printf( "  --reps-gpu R    repetitions du noyau GPU, minimum       (10)\n"
+                     "  --arbre-gpu     construire l'arbre sur le GPU ( 2D, Voronoi )\n" );
         return s == "--help" || s == "-h" ? 0 : 1;
     }
     a.dims = 2;
@@ -177,7 +216,7 @@ int main( int argc, char **argv ) {
     int bad = 0;
     for ( const Nuage<2> &nu : a.nuages<2>() ) {
         if ( nu.absent ) { std::printf( "  %-28s : ABSENT ( --cases DIR )\n", nu.nom.c_str() ); continue; }
-        bad += dispatch<2>( a, [ & ]( auto tag ) { return chaine<typename decltype( tag )::type>( a, nu, reps_gpu ); } );
+        bad += dispatch<2>( a, [ & ]( auto tag ) { return chaine<typename decltype( tag )::type>( a, nu, reps_gpu, arbre_gpu ); } );
     }
     return bad ? 1 : 0;
 }

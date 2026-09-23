@@ -26,12 +26,52 @@ qui étaient justes. Ensuite, **juger un `c_ij` sur lui-même ne veut rien dire*
 nulle a une erreur relative énorme et un poids nul ; le contrôle les rapporte au `c` moyen et pèse
 les non appariées.
 
+## L'ARBRE CONSTRUIT SUR LE GPU ( `src/gpu/Bsp2D.cu`, `--arbre-gpu` )
+
+Le CPU est récursif : boîte englobante serrée, coupe **médiane par rang** sur l'axe le plus long
+(`nth_element`), feuille dès que la tranche tient dans `leaf`. Le GPU fait la même chose **niveau
+par niveau** :
+
+1. **Les boîtes, par atomiques.** Chaque germe connaît son nœud et pousse sa position dans son
+   min / max. Les flottants passent par un **codage entier ordonné** (bit de signe retourné,
+   négatifs complémentés) qui rend `atomicMin` / `atomicMax` exacts — et qui sert **aussi** de clef
+   de tri, gratuitement.
+2. **L'axe le plus long**, un thread par nœud, et la décision feuille / coupe.
+3. **Le tri.** Une coupe médiane par rang, c'est « trier la tranche et prendre le milieu ». Les
+   tranches étant contiguës, **un seul tri radix global** sur la clef `( beg << 32 ) | coordonnée`
+   trie toutes les tranches à la fois, sans segmentation. `beg` et non le numéro du nœud : il est
+   constant sur la tranche **et croissant avec la position**, donc les tranches ne se mélangent
+   pas — y compris celles des feuilles déjà finies, que leur clef basse nulle et la stabilité du
+   tri laissent en place. C'est le seul poste coûteux : `log2( n / leaf )` tris de `n` clefs.
+4. **Les fils**, deux par nœud coupé, pris sur un compteur atomique.
+
+Le **préordre** vient après : on remonte les tailles de sous-arbre (niveaux à l'envers) puis on
+redescend les indices (gauche = moi + 1, droit = moi + 1 + taille du gauche). La sortie a
+exactement la forme que `Arbre.cuh` attend.
+
+| uniforme | arbre CPU (8 fils) | arbre GPU | noyaux seuls | nœuds | mesures |
+|---|---|---|---|---|---|
+| 10⁶ | 306 ms | 302 ms (×1.0) | **43 ms (×7.1)** | 262 143 = 262 143 | 2.3e-10, 1 facette sur 6 M |
+| 10⁷ | 5525 ms | **877 ms (×6.3)** | **466 ms (×11.9)** | 2 097 151 = 2 097 151 | 2.5e-9, 7 sur 60 M |
+
+**L'arbre est le même que celui du CPU au nœud près**, et les mesures faites dessus sont justes
+(2.3e-10 en `double`). Deux points de mise au point valent d'être notés : les boîtes sont calculées
+en `float` (les atomiques sont entiers), donc elles sont **élargies d'un ulp** pour contenir à coup
+sûr les positions `double` — sinon l'élagage retrancherait un germe légitime ; et les positions
+permutées sont **relues en `double`** par la permutation, le GPU n'ayant trié que des `float`.
+
+À 10⁶ le gain est mangé par les frais fixes (allocations, 16 Mo de montée, la reconstruction de
+l'`AaBspT` côté hôte) — d'où ×1.0 en temps de mur pour ×7.1 sur les noyaux. À 10⁷ ils s'amortissent
+et la **chaîne complète passe de 7.4 s à 1.9 s, ×3.9**. Ce qui reste à faire ici : garder l'arbre
+sur le GPU au lieu de le redescendre (la reconstruction hôte est la moitié du temps de mur à 10⁶),
+et le **majorant affine des poids**, sans lequel le Laguerre n'est pas couvert.
+
 **Ce qui reste, dans l'ordre.** 1) Les quelques dizaines de cellules à plus de `NF` arêtes sur les
 nuages de lignes (compteur en place, `Chrono::deborde`). 2) L'assemblage CSR sur GPU (comptage +
 somme préfixe, deux passes). 3) Le gradient conjugué préconditionné. 4) La boucle de Newton et sa
 recherche linéaire. 5) Les densités, notamment l'image : intersecter la cellule avec la grille de
-pixels. 6) Et, mesuré comme le vrai goulot à grande échelle, **la construction de l'arbre sur
-GPU** (22 s à 3·10⁷ sur CPU contre 8 s de mesure GPU).
+pixels. 6) L'arbre gardé sur le GPU de bout
+en bout (il y est construit, § ci-dessus) et son majorant affine pour le Laguerre.
 
 
 * **`filnrm8` est la référence 2D** (7.7 ns/germe en uniforme, ×19 ; 19 et 47 sur les lignes,
