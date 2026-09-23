@@ -1,8 +1,9 @@
 #pragma once
 
+#include <loom/support/common_macros.h> // HD
+
 #include "OtPlan1d.h"
 #include <loom/support/atomic_add.h>
-#include <SYCL/sycl.hpp>
 #include <cstdint>
 #include <bit>
 
@@ -11,7 +12,7 @@
 
 namespace sdot {
 
-UTP void DTP::sort_diracs( auto &&sorted_indices, auto &&radix_tmp, auto &&sorted_pos,
+UTP HD void DTP::sort_diracs( auto &&sorted_indices, auto &&radix_tmp, auto &&sorted_pos,
                             int local_index, int local_size, auto &&group, auto &&local_scratch, auto &&sub_group ) const {
     // Sort the diracs by position INTO `sorted_indices` (a per-GROUP scratch row, shared by every
     // work-item of the group). We do NOT argsort (`std::sort` on indices with a comparator that reads
@@ -40,7 +41,7 @@ UTP void DTP::sort_diracs( auto &&sorted_indices, auto &&radix_tmp, auto &&sorte
         u ^= ( u & 0x80000000u ) ? 0xFFFFFFFFu : 0x80000000u;       // IEEE float -> order-preserving uint32
         sorted_indices( i ) = ( SI( u >> 1 ) << 32 ) | SI( i );     // key (31 bits) high, index (32 bits) low; stays positive
     }
-    sycl::group_barrier( group );
+    group_barrier( group );
 
     // LSD radix sort (stable, O(n) -- no comparisons) over the top 32 bits of the packed KEY (bits
     // 32..63; the low 32 index bits ride along, ties keep input order), `NB_BITS` at a time.
@@ -109,7 +110,7 @@ UTP void DTP::sort_diracs( auto &&sorted_indices, auto &&radix_tmp, auto &&sorte
 
         for ( SI b = local_index; b < SI( 2 * num_sg + 1 ) * NB_BUCKETS; b += local_size )
             local_scratch[ b ] = 0;
-        sycl::group_barrier( group );
+        group_barrier( group );
 
         // histogram BUILD: every lane of this sub-group strides over ITS sub-group's chunk, each
         // element bumping its digit's shared counter via a LOCAL atomic -- safe/order-independent
@@ -119,7 +120,7 @@ UTP void DTP::sort_diracs( auto &&sorted_indices, auto &&radix_tmp, auto &&sorte
             const SI v = src( i );
             atomic_add_local( local_scratch[ hist_row + SI( ( v >> shift ) & ( NB_BUCKETS - 1 ) ) ], std::int32_t( 1 ) );
         }
-        sycl::group_barrier( group );
+        group_barrier( group );
 
         // two-level exclusive scan, split so its O(NB_BUCKETS) part runs IN PARALLEL across the group
         // instead of leader-serial. Each work-item now owns a DISJOINT slice of buckets `b` and, for
@@ -136,7 +137,7 @@ UTP void DTP::sort_diracs( auto &&sorted_indices, auto &&radix_tmp, auto &&sorte
             }
             local_scratch[ bucket_start_row + b ] = std::int32_t( run ); // bucket TOTAL, for now
         }
-        sycl::group_barrier( group );
+        group_barrier( group );
 
         if ( local_index == 0 ) {
             SI off = 0;
@@ -146,7 +147,7 @@ UTP void DTP::sort_diracs( auto &&sorted_indices, auto &&radix_tmp, auto &&sorte
                 off += c;
             }
         }
-        sycl::group_barrier( group );
+        group_barrier( group );
 
         // SCATTER, wave by wave (one `sgs`-sized wave per iteration, in increasing index order --
         // deterministic, the same property that makes the outer chunking stable). Finding each lane's
@@ -179,7 +180,7 @@ UTP void DTP::sort_diracs( auto &&sorted_indices, auto &&radix_tmp, auto &&sorte
                 b = int( ( v >> shift ) & ( NB_BUCKETS - 1 ) );
                 atomic_or_local( local_scratch[ match_row + b ], std::int32_t( std::uint32_t( 1 ) << sg_lid ) );
             }
-            sycl::group_barrier( sub_group ); // every lane's OR visible before any lane reads its mask
+            group_barrier( sub_group ); // every lane's OR visible before any lane reads its mask
 
             // `leader` only matters to decide THIS lane's own yes/no -- collapse it to `is_leader`
             // immediately instead of carrying the full lane index across the barrier below.
@@ -197,7 +198,7 @@ UTP void DTP::sort_diracs( auto &&sorted_indices, auto &&radix_tmp, auto &&sorte
             // every active lane's READ of `base` above must complete before the leader's WRITE below --
             // NOT guaranteed by SIMT reconvergence alone on independent-thread-scheduling hardware
             // (Volta+, includes this Turing target) without an explicit barrier between the two.
-            sycl::group_barrier( sub_group );
+            group_barrier( sub_group );
 
             if ( is_leader ) {
                 atomic_add_local( local_scratch[ hist_row + b ], std::int32_t( popc ) ); // popc == the group's TOTAL size for the leader
@@ -208,9 +209,9 @@ UTP void DTP::sort_diracs( auto &&sorted_indices, auto &&radix_tmp, auto &&sorte
             // dependency on the leader's bump, so this can run without waiting for it.
             if ( b >= 0 )
                 dst( local_scratch[ bucket_start_row + b ] + base + popc - 1 ) = v;
-            sycl::group_barrier( sub_group ); // cursor bump + mask reset visible before the next wave reads them
+            group_barrier( sub_group ); // cursor bump + mask reset visible before the next wave reads them
         }
-        sycl::group_barrier( group );
+        group_barrier( group );
     };
     for ( int p = 0; p < NB_PASSES; ++p ) {
         const int shift = 32 + p * NB_BITS;
@@ -230,10 +231,10 @@ UTP void DTP::sort_diracs( auto &&sorted_indices, auto &&radix_tmp, auto &&sorte
     }
     // the caller (`update_outputs`/`update_outputs_bwd`) then reads the FULL `[0,nb)` range from a
     // single (leader) work-item -- every work-item must have finished writing its chunk first.
-    sycl::group_barrier( group );
+    group_barrier( group );
 }
 
-UTP typename DTP::TF DTP::chunked_weight_prefix( auto &&sorted_indices, auto &&group_scan, SI lo, SI hi,
+UTP HD typename DTP::TF DTP::chunked_weight_prefix( auto &&sorted_indices, auto &&group_scan, SI lo, SI hi,
                                                    int local_index, int local_size, auto &&group ) const {
     // This work-item's cumulative SOURCE weight at its OWN chunk start `lo` (sorted order) -- the
     // `Image::udp_at` argument letting it jump straight to its chunk's starting `Udp` state. Much
@@ -243,7 +244,7 @@ UTP typename DTP::TF DTP::chunked_weight_prefix( auto &&sorted_indices, auto &&g
     for ( SI k = lo; k < hi; ++k )
         local_sum += TF( src_dist.weights( ::num_dirac = sorted_indices( k ) ) );
     group_scan( local_index ) = local_sum;
-    sycl::group_barrier( group );
+    group_barrier( group );
 
     if ( local_index == 0 ) {
         TF run = 0;
@@ -253,7 +254,7 @@ UTP typename DTP::TF DTP::chunked_weight_prefix( auto &&sorted_indices, auto &&g
             run += v;
         }
     }
-    sycl::group_barrier( group );
+    group_barrier( group );
 
     return group_scan( local_index ); // W_lo_t
 }
@@ -263,7 +264,7 @@ UTP typename DTP::TF DTP::chunked_weight_prefix( auto &&sorted_indices, auto &&g
 // `update_outputs_presorted` (order already provided -- e.g. computed by `jnp.argsort` upstream of
 // this kernel, see `OtPlan1d.py`'s `update_outputs_presorted`; see [[jax-sort-lax-scan]]). Kept as
 // its own method (not inlined into both callers) so the two entry points cannot drift apart.
-UTP void DTP::sweep_outputs( auto &&sorted_indices, auto &&sorted_pos, auto &&group_scan,
+UTP HD void DTP::sweep_outputs( auto &&sorted_indices, auto &&sorted_pos, auto &&group_scan,
                               int local_index, int local_size, auto &&group ) {
     // Forward = COST, plus the barycenters ONLY when `barycenters` is a bound output (the caller set
     // `with_barycenters`). When it is not, it is a NoneTensor (no `operator=`) so the guarded write
@@ -302,7 +303,7 @@ UTP void DTP::sweep_outputs( auto &&sorted_indices, auto &&sorted_pos, auto &&gr
     // combine the `local_size` partial costs into the group's `cost` -- same barrier+group_scan
     // reduction idiom as the cooperative scans above.
     group_scan( local_index ) = local_cost;
-    sycl::group_barrier( group );
+    group_barrier( group );
     if ( local_index == 0 ) {
         nb_diracs.set( src_dist.nb_diracs );
         TF total = 0;
@@ -313,10 +314,10 @@ UTP void DTP::sweep_outputs( auto &&sorted_indices, auto &&sorted_pos, auto &&gr
     // the group's scratch rows are REUSED for the next angle this group strides onto (see
     // FfiCodeParallel's `group_index` docstring): every work-item must wait for the leader to finish
     // reading `group_scan` above before any of them starts overwriting it.
-    sycl::group_barrier( group );
+    group_barrier( group );
 }
 
-UTP void DTP::update_outputs( auto &&sorted_indices, auto &&radix_tmp, auto &&sorted_pos,
+UTP HD void DTP::update_outputs( auto &&sorted_indices, auto &&radix_tmp, auto &&sorted_pos,
                                auto &&group_scan,
                                int local_index, int local_size, auto &&group, auto &&local_scratch, auto &&sub_group ) {
     sort_diracs( sorted_indices, radix_tmp, sorted_pos, local_index, local_size, group, local_scratch, sub_group );
@@ -326,7 +327,7 @@ UTP void DTP::update_outputs( auto &&sorted_indices, auto &&radix_tmp, auto &&so
 // Entry point for a PRE-sorted order (`sorted_indices`/`sorted_pos` already filled by the caller --
 // no `sort_diracs`/`radix_tmp`/`local_scratch`/`sub_group`, none of which the sweep itself needs).
 // See [[jax-sort-lax-scan]].
-UTP void DTP::update_outputs_presorted( auto &&sorted_indices, auto &&sorted_pos, auto &&group_scan,
+UTP HD void DTP::update_outputs_presorted( auto &&sorted_indices, auto &&sorted_pos, auto &&group_scan,
                                          int local_index, int local_size, auto &&group ) {
     sweep_outputs( sorted_indices, sorted_pos, group_scan, local_index, local_size, group );
 }
@@ -343,7 +344,7 @@ UTP void DTP::update_outputs_presorted( auto &&sorted_indices, auto &&sorted_pos
 // us as a `NoneTensor` (no `operator=`), so its block must vanish -- see [[differentiation]].
 // Everything runs inside a SYCL kernel, so NO std::vector / dynamic allocation: the per-dirac
 // suffix sum is carried by two scalars instead of an array.
-UTP void DTP::sweep_outputs_bwd( auto &&grad_plan, auto &&sorted_indices, auto &&sorted_pos, auto &&group_scan,
+UTP HD void DTP::sweep_outputs_bwd( auto &&grad_plan, auto &&sorted_indices, auto &&sorted_pos, auto &&group_scan,
                                   int local_index, int local_size, auto &&group ) const {
     const TF g = grad_plan.cost; // scalar cotangent seeding `cost`
     const SI nb = src_dist.weights.size();
@@ -425,7 +426,7 @@ UTP void DTP::sweep_outputs_bwd( auto &&grad_plan, auto &&sorted_indices, auto &
                 const SI hi_c = ( nb_cells * SI( local_index + 1 ) ) / local_size;
                 for ( SI c = lo_c; c < hi_c; ++c )
                     grad_plan.dst_dist.values( c ) = 0;
-                sycl::group_barrier( group ); // every zero-write visible before any += below
+                group_barrier( group ); // every zero-write visible before any += below
             }
 
             // phase 1: this work-item's chunk phi SUBTOTAL.
@@ -449,7 +450,7 @@ UTP void DTP::sweep_outputs_bwd( auto &&grad_plan, auto &&sorted_indices, auto &
             }
 
             group_scan( local_index ) = phi_sub;
-            sycl::group_barrier( group );
+            group_barrier( group );
             if ( local_index == 0 ) {
                 TF run = 0;
                 for ( int t = 0; t < local_size; ++t ) {
@@ -459,7 +460,7 @@ UTP void DTP::sweep_outputs_bwd( auto &&grad_plan, auto &&sorted_indices, auto &
                 }
                 group_scan( local_size ) = run; // broadcast slot: phi_total
             }
-            sycl::group_barrier( group );
+            group_barrier( group );
             const TF pref_lo = group_scan( local_index );
             const TF phi_total = group_scan( local_size );
 
@@ -500,10 +501,10 @@ UTP void DTP::sweep_outputs_bwd( auto &&grad_plan, auto &&sorted_indices, auto &
     }
     // scratch rows reused by the next angle this group strides onto -- every work-item must wait for
     // every other to finish reading them before any of them starts overwriting it.
-    sycl::group_barrier( group );
+    group_barrier( group );
 }
 
-UTP void DTP::update_outputs_bwd( auto &&grad_plan, auto &&sorted_indices, auto &&radix_tmp, auto &&sorted_pos,
+UTP HD void DTP::update_outputs_bwd( auto &&grad_plan, auto &&sorted_indices, auto &&radix_tmp, auto &&sorted_pos,
                                    auto &&group_scan,
                                    int local_index, int local_size, auto &&group, auto &&local_scratch, auto &&sub_group ) const {
     // The scratch is PER-GROUP and transient (not a forward residual), so the order is RE-DERIVED
@@ -522,7 +523,7 @@ UTP void DTP::update_outputs_bwd( auto &&grad_plan, auto &&sorted_indices, auto 
 }
 
 // Entry point for a PRE-sorted order -- see `update_outputs_presorted`'s docstring, [[jax-sort-lax-scan]].
-UTP void DTP::update_outputs_bwd_presorted( auto &&grad_plan, auto &&sorted_indices, auto &&sorted_pos, auto &&group_scan,
+UTP HD void DTP::update_outputs_bwd_presorted( auto &&grad_plan, auto &&sorted_indices, auto &&sorted_pos, auto &&group_scan,
                                              int local_index, int local_size, auto &&group ) const {
     sweep_outputs_bwd( grad_plan, sorted_indices, sorted_pos, group_scan, local_index, local_size, group );
 }

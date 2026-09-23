@@ -1,0 +1,5 @@
+-std=c++20
+-Wall
+-Isrc
+-I../solvers_des_familles/src
+-I../sdot/include

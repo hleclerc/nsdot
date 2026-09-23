@@ -63,3 +63,5 @@ octave*
 
 attic
 .aider*
+sdot/catalogue/*
+!sdot/catalogue/README.md

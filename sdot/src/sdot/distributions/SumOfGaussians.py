@@ -1,3 +1,5 @@
+import numpy
+
 from loom.tensor import Axis, CtShapeVar, RealTensor, ShapeVar
 from loom.util import ComputedAttribute
 
@@ -34,14 +36,16 @@ class SumOfGaussians( Distribution ):
     `gradient_at`, et où accumuler `d rho / d paramètres`. Elle ne sait rien des cellules, et
     `PowerDiagram` ne sait rien des gaussiennes : c'est exactement le partage qu'on veut éprouver.
 
-    = Support non borné
+    = Le support
 
-    Contrairement à une image, elle ne donne pas de `bounding_half_spaces` : la tronquer perdrait de
-    la masse, et pas dans le dos de l'appelant. Il faut donc lui donner un `box` (ou des
-    `boundaries`) -- sans quoi les cellules du bord restent infinies et `measures` y répond
-    `TF::max`, faute de simplices qui veuillent dire quelque chose. La masse hors du domaine est
-    alors perdue, et la somme des mesures vaut la masse cible MOINS ces queues : c'est la vérité de
-    ce qu'on a demandé, pas une erreur numérique.
+    Une gaussienne n'en a pas, mais au-delà de quelques écarts-types il ne reste rien : le support
+    que la distribution DÉCLARE ( `bounding_half_spaces` ) est le pavé `[ c_i - k s_i, c_i + k s_i ]`
+    réuni sur les gaussiennes, `k = support_sigmas` ( 6 par défaut : la queue au-delà pèse 2e-9 ).
+    C'est ce qui borne le domaine d'un transport ( `OtPlan` : le domaine vient de la densité, et
+    d'elle seule ) et ce que `PowerDiagram` ajoute à ses demi-espaces. `support_sigmas = None` : pas
+    de support déclaré -- les cellules du bord restent infinies et `measures` y répond `TF::max`,
+    à moins d'un `boundaries`. La masse hors du domaine est perdue, et la somme des mesures vaut la
+    masse cible MOINS les queues : c'est la vérité de ce qu'on a demandé, pas une erreur numérique.
     """
 
     nb_gaussians     : ShapeVar
@@ -56,10 +60,12 @@ class SumOfGaussians( Distribution ):
 
     current_mass     : ComputedAttribute[ RealTensor, ( "weights", ) ]
 
-    def __init__( self, positions, sigmas, weights = None, target_mass = 1.0, **kwargs ):
+    def __init__( self, positions, sigmas, weights = None, target_mass = 1.0, support_sigmas = 6.0, **kwargs ):
         """`positions` : `[ n, d ]`. `sigmas` : `[ n ]` (isotrope). `weights` : `[ n ]`, la MASSE de
-        chaque gaussienne -- toutes égales par défaut."""
+        chaque gaussienne -- toutes égales par défaut. `support_sigmas` : le support déclaré, en
+        écarts-types ( voir la docstring de la classe ) ; `None` pour ne pas en déclarer."""
         self.__base_init__( positions = positions, sigmas = sigmas, target_mass = target_mass, **kwargs )
+        self.support_sigmas = None if support_sigmas is None else float( support_sigmas )
         if weights is not None:
             self.weights = weights
         elif self.weights.is_undefined:
@@ -85,7 +91,24 @@ class SumOfGaussians( Distribution ):
 
             current_mass = self.target_mass,
             batch_axes = self.batch_axes,
+            support_sigmas = self.support_sigmas,
         )
+
+    def bounding_half_spaces( self ):
+        """le pavé `[ c_i - k s_i, c_i + k s_i ]` réuni sur les gaussiennes ( voir la docstring de la
+        classe ) -- `None` sans `support_sigmas`, ou quand les paramètres ne sont pas lisibles côté
+        hôte ( sous `jit` ) : borner est une optimisation, elle ne doit pas casser l'appel"""
+        if self.support_sigmas is None:
+            return None
+        try:
+            d = int( self.nb_dims.value )
+            c = numpy.asarray( self.positions, dtype = float ).reshape( -1, d )
+            s = numpy.asarray( self.sigmas, dtype = float ).reshape( -1, 1 )
+        except ( TypeError, ValueError ):
+            return None
+        lo = ( c - self.support_sigmas * s ).min( axis = 0 )
+        hi = ( c + self.support_sigmas * s ).max( axis = 0 )
+        return numpy.concatenate( [ numpy.eye( d ), -numpy.eye( d ) ] ), numpy.concatenate( [ hi, -lo ] )
 
     def _update_current_mass( self ):
         # réduction sur l'axe des GAUSSIENNES seulement, pour qu'un éventuel axe de batch survive

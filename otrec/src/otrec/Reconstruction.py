@@ -26,7 +26,7 @@ import numpy as np
 from loom import Tensor, driver
 
 from .Sinogram import Sinogram
-from .models import DiracModel, DiskModel, Model
+from .models import DiracModel, DiskModel, Model, ProjectedDiracModel
 from .optimizers import FusedLBFGS, LBFGS
 from .viz.points_html import export_positions_html
 
@@ -61,6 +61,8 @@ class Reconstruction:
                   extent: float | None = None, seed: int = 0,
                   record: bool = False, record_every: int = 1, verbose: bool = False ) -> None:
         self.sinogram = sinogram
+        #: la dimension de l'espace des points : 2 pour un `Sinogram`, 3 pour des `Radiographs`
+        self.dim = int( getattr( sinogram, "world_dim", 2 ) )
 
         self.radius = radius
         self.nb_pixels = nb_pixels
@@ -112,8 +114,8 @@ class Reconstruction:
         if isinstance( points, Reconstruction ):
             points = points.points
         raw = points.raw if isinstance( points, Tensor ) else driver.array( np.asarray( points, dtype = float ) )
-        if raw.ndim != 2 or raw.shape[ 1 ] != 2:
-            raise ValueError( f"points doit être de shape [ n, 2 ], reçu { tuple( raw.shape ) }" )
+        if raw.ndim != 2 or raw.shape[ 1 ] != self.dim:
+            raise ValueError( f"points doit être de shape [ n, { self.dim } ], reçu { tuple( raw.shape ) }" )
         self.points = Tensor.wrap( raw, [ "num_point", "dim" ] )
         return self
 
@@ -138,10 +140,20 @@ class Reconstruction:
 
     def random_points( self, nb_points: int, extent: float | None = None,
                        seed: int | None = None ) -> "Reconstruction":
-        """`nb_points` positions 2D tirées uniformément dans [ -extent/2, extent/2 ]^2."""
+        """`nb_points` positions tirées uniformément dans [ -extent/2, extent/2 ]^dim."""
         rng = np.random.default_rng( self._next_seed( seed ) )
         e = float( extent if extent is not None else self.extent )
-        return self.set_points( ( rng.random( ( nb_points, 2 ) ) - 0.5 ) * e )
+        return self.set_points( ( rng.random( ( nb_points, self.dim ) ) - 0.5 ) * e )
+
+    def hull_points( self, nb_points: int, extent: float | None = None, seed: int | None = None,
+                     threshold: float = 0.0 ) -> "Reconstruction":
+        """`nb_points` positions tirées dans l'ENVELOPPE VISUELLE de la donnée ( les points dont
+        toutes les projections tombent sur de la matière -- voir `Radiographs.visual_hull_points` ),
+        au lieu du cube entier : le point de départ qu'un transport 2D par angle demande."""
+        hull = getattr( self.sinogram, "visual_hull_points", None )
+        if hull is None:
+            raise TypeError( f"{ type( self.sinogram ).__name__ } ne sait pas tirer dans son enveloppe visuelle" )
+        return self.set_points( hull( nb_points, seed = self._next_seed( seed ), extent = extent, threshold = threshold ) )
 
     def split( self, factor: int = 4, noise_frac: float = 0.05,
                seed: int | None = None ) -> "Reconstruction":
@@ -168,7 +180,11 @@ class Reconstruction:
 
     # -- modèles et optimiseur ---------------------------------------------
 
-    def dirac_model( self, with_barycenters: bool | None = None ) -> DiracModel:
+    def dirac_model( self, with_barycenters: bool | None = None, **kwargs ) -> Model:
+        """Le modèle diracs de la donnée : `DiracModel` sur un `Sinogram`, `ProjectedDiracModel`
+        sur des `Radiographs` ( `kwargs` -> ce dernier : `background`, `max_iter`, ... )."""
+        if self.dim == 3:
+            return ProjectedDiracModel( self.sinogram, **kwargs )
         return DiracModel( self.sinogram,
                            with_barycenters = self.with_barycenters if with_barycenters is None else with_barycenters )
 
@@ -242,7 +258,10 @@ class Reconstruction:
         """
         if self.points is None:
             raise ValueError( "aucun point de départ -- appeler `random_points` ou `set_points` d'abord" )
-        optimizer = optimizer if optimizer is not None else self.default_optimizer( max_iter, ftol, min_iter, disp_tol )
+        # un modèle qui n'a QUE l'évaluation fusionnée ( `ProjectedDiracModel` ) impose l'optimiseur
+        # qui la consomme
+        fused_only = getattr( model, "fused_only", False )
+        optimizer = optimizer if optimizer is not None else self.default_optimizer( max_iter, ftol, min_iter, disp_tol, fused = fused_only )
 
         p = self.points.raw
         loss_before = float( model.cost( model.wrap( p ) ) )
@@ -304,7 +323,11 @@ class Reconstruction:
         `benchmarks/execution_speed/benchmark_fused.py`) : force l'optimiseur par défaut à
         `FusedLBFGS` (voir `default_optimizer`), sauf si `optimizer` est fourni explicitement.
         """
-        model = self.dirac_model( with_barycenters )
+        model_kwargs = { k: kwargs.pop( k ) for k in ( "background", ) if k in kwargs }
+        model = self.dirac_model( with_barycenters, **model_kwargs )
+        # un modèle qui n'a QUE l'évaluation fusionnée ( `ProjectedDiracModel` ) impose son optimiseur
+        if getattr( model, "fused_only", False ):
+            backend = "sycl"
         if backend == "sycl":
             kwargs.setdefault( "optimizer", self.default_optimizer(
                 kwargs.get( "max_iter" ), kwargs.get( "ftol" ),
@@ -335,6 +358,38 @@ class Reconstruction:
             self.split( factor = split_before, noise_frac = split_noise_frac )
         return self.run( self.disk_model( radius, nb_pixels, max_chunk_elems ), **kwargs )
 
+    def anneal_blur( self, blurs = ( 1.0, 0.25, 0.06, 0.015, 0.0 ), model_kwargs = None,
+                     stage_callback = None, **kwargs ) -> "Reconstruction":
+        """Des projections FLOUTÉES d'abord, resserrées étage par étage : pour chaque `sigma` de
+        `blurs` ( en fraction de l'étendue du détecteur ; `0` = la donnée telle quelle ), le modèle
+        diracs de la donnée floutée ( `Radiographs.blurred` / `Sinogram.blurred` ) est descendu depuis
+        le nuage courant. `kwargs` -> `run` ( `max_iter`, ... ), `model_kwargs` -> `dirac_model`.
+
+        Pourquoi : les projections ont des ZÉROS, et tout ce qui y projette est sans cellule ni
+        gradient -- le transport 2D par angle est alors aussi mal conditionné qu'il est loin. À
+        l'échelle du domaine, la donnée floutée est une bosse positive partout et le nuage s'y
+        range en douceur ; chaque étage suivant part d'un nuage déjà à sa place pour une cible à
+        peine plus nette. Mesuré ( 3000 diracs, `OtPlan` Newton ) : floutée à l'échelle du domaine,
+        la cible se résout en 6 à 11 pas depuis N'IMPORTE quel nuage ( l'enveloppe visuelle, le
+        cube, ou même hors du détecteur -- la similitude de `OtPlan` ( `otplan/Solve.h` ) s'en
+        charge ), là où la donnée nette demande 34 pas depuis l'enveloppe et ne converge pas du
+        tout depuis le cube.
+        """
+        blurred = getattr( self.sinogram, "blurred", None )
+        if blurred is None:
+            raise TypeError( f"{ type( self.sinogram ).__name__ } ne sait pas se flouter" )
+        data = self.sinogram
+        try:
+            for stage, sigma in enumerate( blurs ):
+                self.sinogram = blurred( sigma * getattr( data, "extent_u", data.extent ) ) if sigma > 0 else data
+                model = self.dirac_model( **( model_kwargs or {} ) )
+                self.run( model, label = f"{ model.name } flou { sigma:g}", **kwargs )
+                if stage_callback is not None:
+                    stage_callback( stage, sigma, self.points )
+        finally:
+            self.sinogram = data
+        return self
+
     def multiscale( self, nb_points_final: int, nb_points_init: int = 1000, factor: int = 4,
                     noise_frac: float = 0.05, model: Model | None = None,
                     optimizer_factory = None, stage_callback = None, **kwargs ) -> "Reconstruction":
@@ -348,13 +403,22 @@ class Reconstruction:
         bonne structure GLOBALE et n'a plus qu'à raffiner LOCALEMENT : bien mieux conditionné.
 
         Part du nuage courant s'il y en a un (on peut donc raffiner un résultat existant), sinon
-        d'un tirage uniforme de `nb_points_init` points. `optimizer_factory( n )`, s'il est fourni,
-        donne l'optimiseur de l'étage à `n` points ; `stage_callback( stage, n, points )` est appelé
-        après convergence de chaque étage, avant le split suivant.
+        d'un tirage de `nb_points_init` points -- dans l'enveloppe visuelle quand la donnée sait
+        la tirer (`hull_points`, des `Radiographs`), uniforme sinon. `optimizer_factory( n )`, s'il
+        est fourni, donne l'optimiseur de l'étage à `n` points ; `stage_callback( stage, n, points )`
+        est appelé après convergence de chaque étage, avant le split suivant.
+
+        En 3D c'est aussi ce qui rend les gros nuages abordables : chaque étage part d'un nuage
+        déjà bien placé, donc ses ajustements par angle (`ProjectedDiracModel`) démarrent près
+        de leur solution -- là où un nuage tiré d'un coup à `nb_points_final` les fait repartir du
+        Voronoï à chaque évaluation.
         """
         model = model or self.default_model()
         if self.points is None:
-            self.random_points( nb_points_init )
+            if getattr( self.sinogram, "visual_hull_points", None ) is not None:
+                self.hull_points( nb_points_init )
+            else:
+                self.random_points( nb_points_init )
 
         stage = 0
         while True:

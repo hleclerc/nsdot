@@ -6,48 +6,37 @@ class SpatialAccelerator( Aggregate ):
 
     Un accélérateur ne sait pas ce qu'est une cellule. Il connaît la répartition des germes dans
     l'espace, et il en tire une ÉNUMÉRATION : au lieu des `n - 1` bissectrices que
-    `PowerDiagram.cxx::make_cell` essaie une par une, il propose les germes proches d'abord et
-    s'arrête d'explorer une région dès que l'appelant lui dit qu'elle ne peut plus rien couper.
-    C'est le seul endroit où le `O(n²)` se joue -- la géométrie, elle, ne change pas d'un iota.
+    `PowerDiagram_Plain` essaie une par une, il propose les germes proches d'abord et s'arrête
+    d'explorer une région dès que l'appelant lui dit qu'elle ne peut plus rien couper. C'est le
+    seul endroit où le `O(n²)` se joue -- la géométrie, elle, ne change pas d'un iota.
+
+    Un accélérateur est aussi un ORDRE de stockage : `PowerDiagram_Bsp` range les germes comme
+    l'arbre les regroupe (`seed_indices`), et c'est ce rangement, autant que l'élagage, qui fait
+    la vitesse (une feuille se lit d'un seul tenant).
 
     = Le contrat, côté C++
 
-    La structure C++ engendrée par la sous-classe doit offrir :
+    La CELLULE dirige (`cell/Moteur.h`) : elle demande un demi-espace à un FOURNISSEUR, coupe,
+    redemande. Un accélérateur est donc, côté kernel, un fournisseur -- un objet dont la méthode
 
-        void for_each_candidate( const auto &from, SI i0, auto &&scratch,
-                                 auto &&may_cut, auto &&cut_with ) const;
+        template<class Etat> bool suivant( const Etat &e, Local &l, Plane<TK,D> &p );
 
-    `from` est le point d'où l'exploration rayonne (le germe `i0`), `scratch` le tampon de
-    travail que `thread_scratch` a déclaré, et les deux derniers arguments sont des CALLBACKS
-    fournis par l'appelant :
+    remplit le prochain plan et rend `true`, ou `false` quand il n'a plus rien ; `e` est la
+    cellule telle qu'elle est DEVENUE (ses sommets, en registres ou en mémoire, voir `cell/Etat.h`)
+    et `l` un état que le moteur loge par cellule (la pile d'une descente d'arbre, par exemple).
+    C'est là que vivent l'élagage et l'ordre des candidats ; le moteur, lui, n'a aucune politique.
 
-    - `may_cut( lo, hi, wa, wb ) -> bool` : « un germe posé n'importe où dans la boîte
-      `[ lo, hi ]`, de poids majoré par `wa . y + wb`, pourrait-il encore entamer ce qu'il reste
-      de la cellule ? ». CONSERVATIF : il ne rend `false` que lorsqu'il est sûr. C'est l'appelant
-      qui tient la cellule, donc c'est lui qui répond ;
-    - `cut_with( i1 ) -> bool` : applique la coupe du germe `i1`. `false` = tout arrêter (capacité
-      dépassée, ou cellule devenue vide).
-
-    L'accélérateur doit visiter TOUT germe que `may_cut` n'a pas exclu, `i0` excepté. Rien de
-    plus : ni l'ordre exact, ni le fait de repasser deux fois sur un germe (ce serait seulement
-    du travail perdu) ne font partie du contrat. Ce qui en fait partie, et qui est la seule chose
-    dont dépend la CORRECTION, c'est de ne jamais taire un germe que `may_cut` a admis.
-
-    La forme de la région est donc, aujourd'hui, une boîte alignée sur les axes plus un majorant
-    AFFINE des poids -- ce que `AaBsp` produit. Un accélérateur qui bornerait ses régions
-    autrement (sphères, plans obliques) demanderait d'élargir ce couple, pas de le remplacer :
-    `may_cut` est écrit une fois, chez l'appelant, et c'est lui qui saurait quoi faire de la
-    nouvelle forme.
+    `AaBsp` est le seul accélérateur aujourd'hui, et son fournisseur est
+    `cell/Fournisseurs.h::FournisseurBsp`, qui lit ses tenseurs (`node_box`, `node_begin` /
+    `node_end`, `seed_indices`, le majorant affine des poids) et élague par `cell/Elagage.h` --
+    exact : une boîte n'est rejetée que si AUCUN sommet de la cellule ne peut être coupé par un
+    germe qui s'y trouve. Un autre accélérateur demanderait son propre fournisseur ET son propre
+    stockage (`PowerDiagram_Xxx.py` / `.h`, sur le modèle de `PowerDiagram_Bsp`), dont
+    `fournisseur<TK>( k0 )` le rend.
 
     = Le contrat, côté Python
 
-    Deux méthodes, toutes deux avec un défaut vide, parce qu'un accélérateur n'a pas forcément
-    besoin de mémoire de travail :
-
-    - `thread_scratch( num_thread )` -- le tampon PAR WORK-ITEM dont la marche a besoin, ou
-      `None` ;
-    - `bytes_per_thread()` -- ce qu'il pèse, pour que l'appelant en tienne compte quand il décide
-      combien de work-items il peut se permettre.
+    `nb_seeds()`, pour que le diagramme vérifie que l'accélérateur indexe bien SES germes.
     """
 
     def nb_seeds( self ):
@@ -59,10 +48,3 @@ class SpatialAccelerator( Aggregate ):
         """
         return None
 
-    def thread_scratch( self, num_thread ):
-        """Le tampon de travail d'UN work-item, batché sur `num_thread` -- ou `None`."""
-        return None
-
-    def bytes_per_thread( self ):
-        """Ce que `thread_scratch` immobilise par work-item, en octets."""
-        return 0

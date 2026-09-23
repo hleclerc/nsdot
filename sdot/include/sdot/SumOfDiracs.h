@@ -18,17 +18,17 @@ struct SumOfDiracs {
     // Here the position is a plain buffer read of dim 0, and the gradient a per-angle buffer write.
 
     /// This dirac's 1D coordinate (the value OtPlan1d sorts and sweeps on).
-    TF position( SI i ) const { return positions( ::num_dirac = i, dim = 0 ); }
+    HD TF position( SI i ) const { return positions( ::num_dirac = i, dim = 0 ); }
 
     /// Compile-time: is the position gradient wanted for this source? (lets OtPlan1d skip the whole
     /// re-sort + re-sweep of the positions-grad block when it is not). Returns the `is_valid()`
     /// compile-time flag of the member `add_position_grad` would write.
-    auto position_grad_wanted( auto &&grad_src ) const { return grad_src.positions.is_valid(); }
+    HD auto position_grad_wanted( auto &&grad_src ) const { return grad_src.positions.is_valid(); }
 
     /// Accumulate d cost / d position(i) into the gradient twin `grad_src`. Guarded at compile time:
     /// an unperturbed input reaches us as a NoneTensor (no `operator=`), so the write must vanish.
     /// A per-angle buffer, so each angle writes its OWN slot -- a plain `=`, no cross-angle race.
-    void add_position_grad( auto &&grad_src, SI i, TF grad_s ) const {
+    HD void add_position_grad( auto &&grad_src, SI i, TF grad_s ) const {
         if constexpr ( CT_VALUE( grad_src.positions.is_valid() ) )
             grad_src.positions( ::num_dirac = i, dim = 0 ) = grad_s;
     }
@@ -36,7 +36,7 @@ struct SumOfDiracs {
     /// No-op: `add_position_grad` here is a plain per-angle `=` (no cross-angle accumulation), so
     /// there is nothing to clear first (mirrors `ProjectedSumOfDiracs::zero_position_grad`, called
     /// unconditionally by `OtPlan1d.py`'s `bwd_setup_code` regardless of which source is used).
-    void zero_position_grad( auto &&, auto && ) const {}
+    HD void zero_position_grad( auto &&, auto && ) const {}
 };
 
 }

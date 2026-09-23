@@ -15,7 +15,7 @@ resolve as `sdot/generated/...`. Write-if-changed keeps a deterministic content 
 mtimes (hence rebuilds).
 """
 
-from . import build_dir, cpp_include_root
+from . import build_dir, include_roots
 
 
 def manual_header( rel_path: str ) -> str | None:
@@ -26,8 +26,7 @@ def manual_header( rel_path: str ) -> str | None:
     written by hand (the user's `struct` drops in the generated macros and adds its own code);
     without one, the struct is generated WHOLE and needs no C++ at all. Only the sources are
     consulted -- a generated header (under the build tree) is never a manual override of itself."""
-    root = cpp_include_root()
-    return rel_path if ( root / rel_path ).is_file() else None
+    return rel_path if any( ( root / rel_path ).is_file() for root in include_roots() ) else None
 
 
 def include_root():
@@ -41,9 +40,19 @@ def include_root():
 def shared_header( rel_path: str, content: str ) -> str:
     """Ensure `content` lives at `rel_path` (e.g. `sdot/generated/axes/num_vertex.h`) under
     `include_root()`, writing only when the bytes would differ, and return `rel_path` -- the
-    string to `#include`."""
+    string to `#include`.
+
+    What this process already wrote is remembered: a call renders its headers EVERY time it runs
+    (not only when it compiles), and re-reading each one from disk to find it unchanged was ~30
+    file reads per call -- more than the kernel itself, on a small problem."""
+    if _written.get( rel_path ) == content:
+        return rel_path
     path = include_root() / rel_path
     if not ( path.exists() and path.read_text() == content ):
         path.parent.mkdir( parents = True, exist_ok = True )
         path.write_text( content )
+    _written[ rel_path ] = content
     return rel_path
+
+
+_written = {}

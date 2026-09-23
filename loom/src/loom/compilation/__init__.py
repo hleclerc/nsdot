@@ -1,10 +1,7 @@
-from ..devices.Device import Device
 from pathlib import Path
-import subprocess
 import tempfile
 import hashlib
 import getpass
-import shutil
 import sys
 import os
 
@@ -21,27 +18,43 @@ def _dev_repo_root():
     return candidate if ( candidate / "loom" / "include" / "loom" ).is_dir() else None
 
 
-def cpp_include_root():
-    """The `-I` root so `#include <sdot/Cell.h>` resolves, from a dev checkout OR an
-    installed wheel.
-
-    Dev: `<repo>/sdot/include` (edit C++ without rebuilding the wheel). Installed: the
-    `sdot/_include` tree the wheel ships next to the package (pure `__file__`-relative,
-    no repo assumption). The generated headers live elsewhere, on their own `-I` root --
-    see generated_headers.include_root().
-    """
+def loom_include_root() -> Path:
+    """The `-I` root so `#include <loom/support/...>` resolves: `<repo>/loom/include` from a dev
+    checkout (edit C++ without rebuilding the wheel), the `loom/_include` tree the wheel ships next
+    to the package otherwise (pure `__file__`-relative, no repo assumption)."""
     dev_root = _dev_repo_root()
     if dev_root is not None:
-        return dev_root / "sdot" / "include"
-
+        return dev_root / "loom" / "include"
     packaged = Path( __file__ ).resolve().parents[ 1 ] / "_include"
-    if ( packaged / "sdot" / "Cell.h" ).is_file():
+    if ( packaged / "loom" / "support" ).is_dir():
         return packaged
+    raise RuntimeError( "loom: cannot locate the C++ header tree (neither a dev checkout's "
+                        "loom/include nor the packaged loom/_include were found) -- broken install?" )
 
-    raise RuntimeError(
-        "sdot: cannot locate the C++ header tree (neither a dev checkout's sdot/include nor "
-        "the packaged sdot/_include were found) -- broken install?"
-    )
+
+# The C++ roots of the packages built ON loom (sdot's `sdot/include`, holding `sdot/` and
+# `asimd/`): each registers its own at import (`register_include_root`), from a checkout or a
+# wheel alike -- loom does not know who uses it. Generated headers live elsewhere, on their own
+# root (`generated_headers.include_root()`).
+_registered_include_roots = []
+
+
+def register_include_root( path ):
+    path = Path( path ).resolve()
+    if path not in _registered_include_roots:
+        _registered_include_roots.append( path )
+
+
+def include_roots() -> list:
+    """The `-I` roots of the HAND-WRITTEN C++ (loom's, then the registered ones), in order."""
+    return [ loom_include_root(), *_registered_include_roots ]
+
+
+def cpp_include_root():
+    """The first registered root -- historically sdot's `sdot/include`. Prefer `include_roots()`."""
+    if _registered_include_roots:
+        return _registered_include_roots[ 0 ]
+    return loom_include_root()
 
 
 def _is_writable_dir( path: Path ):
@@ -94,12 +107,27 @@ def build_dir():
       1. `SDOT_BUILD_DIR` if set (explicit override).
       2. Dev checkout: `<repo>/build` when writable, else a stable per-user directory
          under the system temp dir (used when the checkout is read-only).
-      3. Installed wheel (no dev checkout): the per-user cache root, the same convention
-         as the AdaptiveCpp toolchain -- never inside the venv/site-packages.
+      3. Installed wheel (no dev checkout): the per-user cache root (`cache_root`) -- never
+         inside the venv/site-packages.
 
     The chosen directory is created if needed and returned as a `Path`.
+
+    The answer is CACHED per `SDOT_BUILD_DIR` value: it is asked on every generated header of every
+    call (`generated_headers.shared_header`), and probing writability each time -- a `mkdir`, a
+    probe file, an `unlink` -- was measured at a third of the per-call overhead of a small kernel.
     """
     override = os.getenv( "SDOT_BUILD_DIR" )
+    cached = _build_dir_cache.get( override )
+    if cached is not None:
+        return cached
+    path = _build_dir_cache[ override ] = _resolve_build_dir( override )
+    return path
+
+
+_build_dir_cache = {}
+
+
+def _resolve_build_dir( override ):
     if override:
         path = Path( override ).expanduser()
         path.mkdir( parents = True, exist_ok = True )
@@ -115,87 +143,84 @@ def build_dir():
         fallback.mkdir( parents = True, exist_ok = True )
         return fallback
 
-    # installed wheel: no meaningful in-tree default -- reuse the same per-user cache
-    # convention as the AdaptiveCpp toolchain itself. (local import avoids a circular
-    # import between this module and adaptive_cpp.)
-    from .adaptive_cpp import cache_root
+    # installed wheel: no meaningful in-tree default -- the per-user cache root.
     installed_default = cache_root() / "build"
     installed_default.mkdir( parents = True, exist_ok = True )
     return installed_default
 
 
-def additional_include_dirs():
-    """Extra `-I` roots needed alongside cpp_include_root() — e.g. the loom support headers."""
-    dev_root = _dev_repo_root()
-    if dev_root is not None:
-        return [ str( dev_root / "loom" / "include" ) ]
-    return []
-
-
-def make_executable( exe_name: str, src_paths: list, device: Device, requires = None ):
-    """Build a standalone executable from *src_paths* using the shared compilation/xmake.lua.
-
-    Counterpart of make_dylib_from_files for the C++/CUDA tests: produces a binary
-    (SDOT_XMAKE_KIND=binary), links Catch2 instead of nanobind, and — for CUDA — routes the
-    sources through nvcc via a generated .cu shim (nvcc is selected by the .cu extension,
-    exactly like the bindings). Returns the path to the built executable.
-    """
-    project_root = Path( __file__ ).absolute().parents[ 4 ]
-    src_paths = [ Path( p ) for p in src_paths ]
-    requires = list( requires or [ "catch2" ] )
-
-    # CUDA: wrap the .cpp sources in a .cu shim so nvcc compiles them (defines __CUDACC__)
-    if device.is_cuda_gpu:
-        raise NotImplementedError
-        # shim = compilation_directories.src_dir( exe_name ) / f"{ exe_name }.cu"
-        # shim.write_text( "".join( f'#include "{ p }"\n' for p in src_paths ) )
-        # sources = [ shim ]
+def cache_root() -> Path:
+    """Le premier répertoire de cache utilisateur inscriptible : `SDOT_CACHE_DIR` s'il est mis,
+    sinon la convention de la plateforme (`~/.cache/sdot`, `~/Library/Caches/sdot`,
+    `%LOCALAPPDATA%/sdot/cache`), puis `/tmp` en dernier recours."""
+    candidates = []
+    override = os.getenv( "SDOT_CACHE_DIR" )
+    if override:
+        candidates.append( Path( override ).expanduser() )
+    if sys.platform == "darwin":
+        candidates.append( Path.home() / "Library" / "Caches" / "sdot" )
+    elif os.name == "nt":
+        base = os.getenv( "LOCALAPPDATA" ) or str( Path.home() / "AppData" / "Local" )
+        candidates.append( Path( base ) / "sdot" / "cache" )
     else:
-        sources = src_paths
+        xdg = os.getenv( "XDG_CACHE_HOME" )
+        candidates.append( ( Path( xdg ) if xdg else Path.home() / ".cache" ) / "sdot" )
+    if os.name != "nt":
+        uid = os.getuid() if hasattr( os, "getuid" ) else "shared"
+        candidates.append( Path( "/tmp" ) / f"sdot-cache-{ uid }" )
+    for p in candidates:
+        if _is_writable_dir( p ):
+            return p
+    raise RuntimeError( "sdot: could not find a writable cache directory. Set SDOT_CACHE_DIR to an explicit writable path." )
 
-    extended_path = os.pathsep.join( p for p in [
-        str( Path( sys.executable ).parent ),
-        str( Path.home() / ".local" / "bin" ),  # default xmake.io install
-        "/opt/homebrew/bin",                    # homebrew Apple Silicon
-        "/usr/local/bin",                       # homebrew Intel
-        os.environ.get( "PATH", "" ),
-    ] if p )
 
-    xmake_bin = shutil.which( "xmake", path = extended_path )
-    if xmake_bin is None:
-        raise RuntimeError( "xmake introuvable (brew install xmake ou https://xmake.io)" )
+def include_dirs() -> list:
+    """Tous les `-I` d'une compilation : les sources C++ (loom, puis les paquets enregistrés), les
+    en-têtes générés (sous le répertoire de build), et les bibliothèques externes déclarées
+    (`externals.py`, téléchargées au besoin)."""
+    from .generated_headers import include_root
+    from .externals import external_include_dirs
+    return [ *include_roots(), include_root(), *external_include_dirs() ]
 
-    output_dir = build_dir() # / "tests"
-    output_dir.mkdir( parents = True, exist_ok = True )
 
-    print( output_dir )
+from .externals import register_external as register_external
 
-    env = {
-        **os.environ,
-        **( { "XMAKE_ROOT": "y" } if hasattr( os, "getuid" ) and os.getuid() == 0 else {} ),
-        "SDOT_XMAKE_KIND"      : "binary",
-        "SDOT_XMAKE_TARGET"    : exe_name,
-        "SDOT_XMAKE_OUTPUT_DIR": str( output_dir ),
-        "SDOT_XMAKE_NEEDS_CUDA": str( int( device.is_cuda_gpu ) ),
-        "SDOT_XMAKE_REQUIRES"  : ",".join( requires ),
-        "SDOT_XMAKE_INCLUDES"  : str.join( ",", map( str, [
-                                      project_root / "sdot" / "include",
-                                      project_root / "loom" / "include",
-                                  ] + additional_include_dirs() ) ),
-        "SDOT_XMAKE_CXXFLAGS"  : "-fno-strict-aliasing",
-        "SDOT_XMAKE_SOURCES"   : ",".join( map( str, sources ) ),
-        "SDOT_XMAKE_DEFINES"   : "",
-        "PATH"                 : extended_path,
-    }
 
-    sdot_dir = Path( __file__ ).parents[ 4 ] / "scripts"  # holds xmake.lua
-    mode = os.environ.get( "SDOT_XMAKE_MODE", "release" )
+def make_library( lib_name, src_paths, device, *, extra_flags = None, sources = () ):
+    """Compile & link `src_paths` into a shared library with the compiler of `device`, through
+    the build graph (see `build.py`).
 
-    def run( cmd ):
-        if subprocess.run( cmd, cwd = output_dir, env = env ).returncode:
-            raise RuntimeError( f"xmake failed: { ' '.join( map( str, cmd ) ) }" )
+    Emits a relocatable shared object meant to be `dlopen`ed at runtime (e.g. to expose an XLA
+    FFI handler symbol to Jax), linked against the runtime library (`libloom_runtime`: the
+    process's thread pool). The output file name is taken verbatim, so callers are expected to
+    make it unique -- typically a content hash of the sources + the compiler's `build_signature`
+    (see `JaxFfi`).
 
-    run( [ xmake_bin, "f", "-P", str( sdot_dir ), "-y", "--require=yes", "-m", mode ] )
-    run( [ xmake_bin, "-P", str( sdot_dir ), "-v" ] )
+    `sources` : des unités de plus, `( chemin, defines )`, compilées une fois par (source,
+    defines, compilateur) et partagées entre tous les noyaux qui les demandent -- le code de
+    domaine qu'on ne veut pas réinstancier dans chaque noyau (une densité, une dimension : des
+    macros choisissent, le `.o` est fait une fois).
 
-    return output_dir / exe_name
+    Rebuilds are ninja's business: a target is remade iff one of ITS inputs (the exact header
+    closure, from the compiler's depfile) changed. `SDOT_FORCE_BUILD=1` remakes it regardless.
+    Returns the path to the built library.
+    """
+    from .build import Build
+    with Build( device ) as b:
+        objects = [ b.object( p, extra_flags = extra_flags or [] ) for p in src_paths ]
+        objects += [ b.object( p, defines ) for p, defines in sources ]
+        lib = b.shared_library( build_dir() / lib_name, objects, [ b.runtime_library() ] )
+        b.run( [ lib ] )
+    return lib
+
+
+def make_executable( exe_name, src_paths, device, *, extra_flags = None, sources = () ):
+    """Compile & link `src_paths` into an executable (the C++ tests). Same graph, same runtime
+    library, as `make_library`."""
+    from .build import Build
+    with Build( device ) as b:
+        objects = [ b.object( p, extra_flags = extra_flags or [] ) for p in src_paths ]
+        objects += [ b.object( p, defines ) for p, defines in sources ]
+        exe = b.executable( build_dir() / exe_name, objects, [ b.runtime_library() ] )
+        b.run( [ exe ] )
+    return exe

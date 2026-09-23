@@ -1,5 +1,6 @@
 #pragma once
 
+#include <loom/support/math.h>
 #include <loom/support/common_macros.h>
 #include <loom/support/containers/Vector.h>
 
@@ -39,7 +40,7 @@ namespace sdot {
 // kernels d'ici, et l'introselect en ferait dependre la compilation device. La cle est lue par
 // indirection (`pos( perm( k ), ax )`), mais `perm` part de l'identite et les deux balayages de
 // Hoare sont lineaires, donc les acces restent quasi sequentiels dans la tranche du noeud.
-void bsp_select( auto &&perm, const auto &pos, SI b, SI e, SI t, int ax ) {
+HD void bsp_select( auto &&perm, const auto &pos, SI b, SI e, SI t, int ax ) {
     using TF = typename DECAYED_TYPE_OF( pos )::TF;
 
     auto key = [&]( SI k ) { return TF( pos( SI( perm( k ) ), ax ) ); };
@@ -80,20 +81,25 @@ void bsp_select( auto &&perm, const auto &pos, SI b, SI e, SI t, int ax ) {
 // `AaBsp.py::_weight_majorant` pour POURQUOI le majorant est affine et comment le candidat est
 // retenu. Meme regle, meme seuil ; seul l'ajustement differe (voir plus bas).
 template<int ct_dim>
-void bsp_weight_majorant( const auto &pos, const auto &w, SI b, SI e, auto &&wa_out, auto &&wb_out ) {
+HD void bsp_weight_majorant( const auto &pos, const auto &w, SI b, SI e, auto &&wa_out, auto &&wb_out ) {
     using TF = typename DECAYED_TYPE_OF( pos )::TF;
 
     const SI m = e - b;
 
     TF wmin = TF( w( b ) ), wmax = wmin, wsum = 0;
     auto psum = Vector<TF,ct_dim>::zeros();
+    auto plo = Vector<TF,ct_dim>::with_func( [&]( PI d ) { return TF( pos( b, d ) ); } ), phi = plo;
     for ( SI k = b; k < e; ++k ) {
         const TF v = TF( w( k ) );
         wmin = v < wmin ? v : wmin;
         wmax = v > wmax ? v : wmax;
         wsum += v;
-        for ( int d = 0; d < ct_dim; ++d )
-            psum[ d ] += TF( pos( k, d ) );
+        for ( int d = 0; d < ct_dim; ++d ) {
+            const TF y = TF( pos( k, d ) );
+            psum[ d ] += y;
+            plo[ d ] = y < plo[ d ] ? y : plo[ d ];
+            phi[ d ] = y > phi[ d ] ? y : phi[ d ];
+        }
     }
     const TF spread = wmax - wmin;
 
@@ -125,9 +131,9 @@ void bsp_weight_majorant( const auto &pos, const auto &w, SI b, SI e, auto &&wa_
         for ( int c = 0; c < ct_dim && ok; ++c ) {
             int p = c;
             for ( int i = c + 1; i < ct_dim; ++i )
-                if ( sycl::fabs( A[ i ][ c ] ) > sycl::fabs( A[ p ][ c ] ) )
+                if ( sdot::fabs( A[ i ][ c ] ) > sdot::fabs( A[ p ][ c ] ) )
                     p = i;
-            if ( ! ( sycl::fabs( A[ p ][ c ] ) > 0 ) ) {     // colonne nulle -> pas d'ajustement
+            if ( ! ( sdot::fabs( A[ p ][ c ] ) > 0 ) ) {     // colonne nulle -> pas d'ajustement
                 ok = false;
                 break;
             }
@@ -164,8 +170,18 @@ void bsp_weight_majorant( const auto &pos, const auto &w, SI b, SI e, auto &&wa_
             // cette correction un noeud de poids purement aleatoires retiendrait l'affine une fois
             // sur trois. Voir `AaBsp.py::_weight_majorant`.
             const TF u = TF( 1 ) - TF( ct_dim ) / TF( m - 1 );
-            const TF by_chance = sycl::sqrt( u > 0 ? u : TF( 0 ) );
-            if ( rmax - rmin < TF( 0.85 ) * by_chance * spread )
+            const TF by_chance = sdot::sqrt( u > 0 ? u : TF( 0 ) );
+            // et une pente qui, sur l'etendue du noeud, depasse de loin l'etalement des poids
+            // est un artefact du conditionnement ( germes alignes a 1e-8 pres ), pas un
+            // ajustement : elle ferait un `b` a 1e9 qui ne majore plus rien d'utile. Voir
+            // `AaBsp.py::_weight_majorant`.
+            bool sage = true;
+            for ( int d = 0; d < ct_dim; ++d ) {
+                const TF reach = sdot::fabs( plo[ d ] ) > sdot::fabs( phi[ d ] ) ? sdot::fabs( plo[ d ] ) : sdot::fabs( phi[ d ] );
+                if ( sdot::fabs( fit[ d ] ) * ( phi[ d ] - plo[ d ] ) > 8 * spread || sdot::fabs( fit[ d ] ) * reach > TF( 100 ) * spread )
+                    sage = false;                        // la marge sur `b`, relative a `|a . y|`, doit rester negligeable
+            }
+            if ( sage && rmax - rmin < TF( 0.85 ) * by_chance * spread )
                 a = fit;
         }
     }
@@ -177,7 +193,7 @@ void bsp_weight_majorant( const auto &pos, const auto &w, SI b, SI e, auto &&wa_
             ay += a[ d ] * TF( pos( k, d ) );
         const TF v = TF( w( k ) ) - ay;
         if ( k == b ) bb = v; else bb = v > bb ? v : bb;
-        amax = sycl::fabs( ay ) > amax ? sycl::fabs( ay ) : amax;
+        amax = sdot::fabs( ay ) > amax ? sdot::fabs( ay ) : amax;
     }
 
     for ( int d = 0; d < ct_dim; ++d )
@@ -186,7 +202,22 @@ void bsp_weight_majorant( const auto &pos, const auto &w, SI b, SI e, auto &&wa_
     // une MARGE d'arrondi sur la constante, et sur elle seule -- voir `_weight_majorant` : `b` est
     // le seul terme que l'hote et le kernel calculeraient differemment, et un `b` arrondi vers le
     // bas cesserait de majorer.
-    wb_out = bb + TF( 1e-6 ) * ( sycl::fabs( bb ) + spread + amax );
+    wb_out = bb + TF( 1e-6 ) * ( sdot::fabs( bb ) + spread + amax );
+}
+
+/// le majorant d'UN noeud, refait sur des poids neufs ( `AaBsp.refresh_weight_majorants` ) : la
+/// tranche `[ b, e )` du nuage `src` -- les germes DANS L'ORDRE DE L'ARBRE. Ne prend que ce dont il
+/// a besoin, et surtout PAS l'arbre entier : ses majorants courants sont ce qu'on remplace.
+HD void bsp_refresh_majorant( const auto &src, const auto &beg, const auto &end, auto &&wa_out, auto &&wb_out ) {
+    constexpr int ct_dim = CT_VALUE( src.nb_dims );
+    const SI b = SI( beg ), e = SI( end );
+    if ( e <= b ) {
+        for ( int d = 0; d < ct_dim; ++d )
+            wa_out( d ) = 0;
+        wb_out = 0;
+        return;
+    }
+    bsp_weight_majorant<ct_dim>( src.positions, src.weights, b, e, wa_out, wb_out );
 }
 
 
@@ -196,7 +227,7 @@ void bsp_weight_majorant( const auto &pos, const auto &w, SI b, SI e, auto &&wa_
 // noeud qui n'a plus rien a couper rend `mid = end`, donc passe tout a gauche -- c'est la
 // PROPAGATION decrite dans `AaBsp.py`, ce qui garde la partition de `[ 0, n )` d'un niveau au
 // suivant, donc l'ecriture disjointe.
-void bsp_build_level( const auto &src, auto &&dst, auto &&perm,
+HD void bsp_build_level( const auto &src, auto &&dst, auto &&perm,
                       const auto &beg_in, const auto &end_in,
                       auto &&box_out, auto &&wa_out, auto &&wb_out, auto &&mid_out,
                       SI leaf_size ) {

@@ -17,6 +17,8 @@ packages = ["src/sdot"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "include" = "sdot/_include"
+# les noyaux precompiles, s'ils ont ete batis (scripts/build_catalogue.py) -- absents d'un checkout
+"catalogue" = "sdot/_catalogue"
 
 [tool.hatch.build.targets.sdist]
 only-include = [

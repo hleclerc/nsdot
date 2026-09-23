@@ -20,6 +20,38 @@
 
 #define SCInt static constexpr int
 
+// `HD` marque ce qui doit exister des deux côtés, hôte et device : vide partout sauf sous nvcc, où
+// c'est `__host__ __device__`. C'est le SEUL endroit où l'attribut est épelé -- le code métier
+// écrit `HD`, jamais `__device__`.
+#ifdef __CUDACC__
+#define HD __host__ __device__
+#else
+#define HD
+#endif
+#define HD_INLINE HD inline
+
+// `LOOM_CONSTANT( déclaration )` : une constante globale utilisable des deux côtés -- une table
+// de quadrature lue avec un indice de boucle, l'étiquette d'un axe sur laquelle on appelle
+// `num_vertex = i`. Un `constexpr` de portée globale n'est pas utilisable dans du code device dès
+// qu'il est ODR-utilisé (indice non constant, `this` d'une méthode) ; nvcc compile la même source
+// deux fois, et la passe device veut un `__device__` -- ce qu'on lui donne, là et seulement là.
+//     LOOM_CONSTANT( double gl8_x[ 4 ] ) = { ... };
+//     LOOM_TAG( _num_vertex, num_vertex );
+#ifdef __CUDA_ARCH__
+#define LOOM_CONSTANT( ... ) static __device__ const __VA_ARGS__
+#else
+#define LOOM_CONSTANT( ... ) inline constexpr __VA_ARGS__
+#endif
+#define LOOM_TAG( Type, name ) LOOM_CONSTANT( Type name ){}
+
+// `LOOM_EXPORT` : un symbole qu'une bibliothèque PUBLIE (tout est caché par défaut,
+// `-fvisibility=hidden`) -- le point d'entrée d'un noyau, la file de threads du runtime.
+#if defined( _WIN32 )
+#define LOOM_EXPORT __declspec( dllexport )
+#else
+#define LOOM_EXPORT __attribute__(( visibility( "default" ) ))
+#endif
+
 #define ASSERTED_EQUAL( A, B ) ( []( auto a, auto b ) { if ( a != b ) throw std::runtime_error( #A " and " #B " are not equal" ); return a; } )( A, B )
 #define DECAYED_TYPE_OF( v )   std::decay_t<decltype( v )>
 #define IS_BASE_OF( A, V )     std::is_base_of_v<A,std::decay_t<V>>
@@ -44,7 +76,7 @@ namespace sdot { namespace detail {
     template<class T,bool=has_size_method<T>::value> struct has_constexpr_size : std::false_type {};
     T_T struct has_constexpr_size<T,true> : has_static_value<DECAYED_TYPE_OF( std::declval<T>().size() )> {};
 
-    template<class R=void> struct AnyFunc { T_VT R operator()( T&&...) const { if constexpr ( ! std::is_void_v<R> ) return *reinterpret_cast<R *>( 0ul ); } };
+    template<class R=void> struct AnyFunc { T_VT HD R operator()( T&&...) const { if constexpr ( ! std::is_void_v<R> ) return *reinterpret_cast<R *>( 0ul ); } };
 
     // generic detection idiom (Library Fundamentals TS): is Op<A...> well-formed?
     // Op is an alias template wrapping the probed expression (e.g. a member call).

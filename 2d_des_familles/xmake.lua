@@ -44,6 +44,31 @@ target( "bench" )
         add_defines( "NDEBUG" )
     end
 
+-- LES REGLAGES D'UN BANC, EN UN SEUL ENDROIT.
+--
+-- Toute cible de VARIANTE doit etre construite EXACTEMENT comme la cible de reference a laquelle on
+-- la compare. Ce n'est pas de la coquetterie : deux binaires du meme code compile differemment
+-- s'ecartent ici de 4 %, et une comparaison entre une cible de la boucle `bancs` ( qui a
+-- `add_deps( "bench" )` et `-fopenmp` ) et une cible ecrite a la main sans eux a deja fait conclure
+-- l'inverse de la verite. Voir « CE QUE LA METHODE A COUTE » dans l'en-tete de `Cellule3D.h`.
+local function reglages_banc()
+    add_deps( "bench" )
+    add_includedirs( "src", "ext/asimd/src" )
+    set_warnings( "all" )
+    if is_mode( "release" ) then
+        add_cxflags( "-O3", "-march=native", "-fno-math-errno", { force = true } )
+        add_defines( "NDEBUG" )
+    end
+    -- AMGCL est en-tetes seuls, mais il veut soit `boost::property_tree` pour ses parametres, soit
+    -- qu'on lui dise de s'en passer. Et son backend « builtin » est parallelise en OpenMP : sans le
+    -- drapeau il compile quand meme, en sequentiel. Aucun des deux ne touche la geometrie -- il n'y
+    -- a pas une pragma OpenMP dans le banc.
+    add_defines( "AMGCL_NO_BOOST" )
+    add_cxflags( "-fopenmp" )
+    add_ldflags( "-fopenmp" )
+    add_syslinks( "pthread" )
+end
+
 -- un `main_Xyz.cpp` par accelerateur, plus les deux bancs transversaux (`check`, `newton`).
 local bancs = {
     bsp    = "src/mains/main_bsp.cpp",
@@ -67,6 +92,9 @@ local bancs = {
     par    = "src/mains/main_par.cpp",
     sc1    = "src/mains/main_sc1.cpp",
     sc2    = "src/mains/main_sc2.cpp",
+    n503d  = "src/mains/main_n503d.cpp",
+    bspf3d = "src/mains/main_bspf3d.cpp",
+    hist   = "src/mains/main_hist.cpp",
 }
 
 -- LE BANC PORTABLE est a part : il demande highway, qui n'est pas toujours la. La cible
@@ -81,21 +109,7 @@ for nom, src in pairs( bancs ) do
     target( "pd_" .. nom )
         set_kind( "binary" )
         add_files( src )
-        add_deps( "bench" )
-        add_includedirs( "src" )
-        set_warnings( "all" )
-        if is_mode( "release" ) then
-            add_cxflags( "-O3", "-march=native", "-fno-math-errno", { force = true } )
-            add_defines( "NDEBUG" )
-        end
-        -- AMGCL est en-tetes seuls, mais il veut soit `boost::property_tree` pour ses parametres,
-        -- soit qu'on lui dise de s'en passer. Et son backend « builtin » est parallelise en
-        -- OpenMP : sans le drapeau il compile quand meme, en sequentiel. Aucun des deux ne touche
-        -- la geometrie -- il n'y a pas une pragma OpenMP dans le banc.
-        add_defines( "AMGCL_NO_BOOST" )
-        add_cxflags( "-fopenmp" )
-        add_ldflags( "-fopenmp" )
-        add_syslinks( "pthread" )
+        reglages_banc()
 end
 
 -- LE BANC DE PORTABILITE, en deux cibles sur une seule source.
@@ -132,6 +146,22 @@ option( "cgal" )
     add_links( "gmp", "mpfr" )
 option_end()
 
+option( "cgal3" )
+    add_cxxincludes( "CGAL/Regular_triangulation_3.h" )
+    add_links( "gmp", "mpfr" )
+option_end()
+
+target( "pd_cgal3" )
+    set_kind( "binary" )
+    set_default( false )
+    add_files( "src/mains/main_cgal3.cpp" )
+    add_options( "cgal3" )
+    set_warnings( "all" )
+    if is_mode( "release" ) then
+        add_cxflags( "-O3", "-march=native", "-fno-math-errno", { force = true } )
+        add_defines( "NDEBUG" )
+    end
+
 target( "pd_cgal" )
     set_kind( "binary" )
     set_default( false )
@@ -142,3 +172,53 @@ target( "pd_cgal" )
         add_cxflags( "-O3", "-march=native", "-fno-math-errno", { force = true } )
         add_defines( "NDEBUG" )
     end
+
+-- LE DIAGNOSTIC DU PARCOURS 3D ( noeuds depiles, sommets lus par l'elagage ), a part.
+target( "pd_bspf3d_cpt" )
+    set_kind( "binary" )
+    set_default( false )
+    add_files( "src/mains/main_bspf3d.cpp" )
+    reglages_banc()
+    add_defines( "BSP3_COMPTE=1", "NOYAU3D_COMPTE=1" )
+
+-- LA LARGEUR DE LA PREMIERE PASSE 3D, un binaire par largeur. Meme lecon qu'en 2D : deux
+-- instanciations dans le meme executable se genent, et la comparaison ne veut plus rien dire.
+for _, w in ipairs( { 1, 4, 8, 16 } ) do
+    target( "pd_n503d_w" .. w )
+        set_kind( "binary" )
+        set_default( false )
+        add_files( "src/mains/main_n503d.cpp" )
+        reglages_banc()
+        add_defines( "LARGEUR_BANC=" .. w )
+end
+
+-- LE MELANGE DES COUPES ( proposees / effectives ), hors chronometre : un binaire a part, parce
+-- qu'un compteur dans la boucle chaude fausserait ce qu'il mesure.
+target( "pd_n503d_cpt" )
+    set_kind( "binary" )
+    set_default( false )
+    add_files( "src/mains/main_n503d.cpp" )
+    reglages_banc()
+    add_defines( "NOYAU3D_COMPTE=1" )
+
+-- L'ORDRE DES TESTS DU NOYAU, UN PAR BINAIRE. Une seule instanciation de `etape<NB>` par
+-- executable : les deux variantes dans le meme binaire se genent dans le cache d'instructions et la
+-- comparaison ne veut plus rien dire ( voir l'en-tete de `main_n50.cpp` ).
+--
+-- ATTENTION : ces cibles ont longtemps ete comparees a `pd_n50` / `pd_bspf`, qui sortent de la
+-- boucle `bancs` et n'avaient PAS la meme recette. Les chiffres d'ordre 2D obtenus ainsi sont a
+-- refaire maintenant que `reglages_banc()` les aligne.
+for _, o in ipairs( { 1, 2, 3 } ) do
+    target( "pd_bspf_ord" .. o )
+        set_kind( "binary" )
+        set_default( false )
+        add_files( "src/mains/main_bspf.cpp" )
+        reglages_banc()
+        add_defines( "ORDRE_NOYAU=" .. o )
+
+    target( "pd_n50_ord" .. o )
+        set_kind( "binary" )
+        add_files( "src/mains/main_n50.cpp" )
+        reglages_banc()
+        add_defines( "ORDRE_BANC=" .. o )
+end

@@ -25,7 +25,7 @@
 
 #include "supercell/Contrat2D.h"
 
-#include <asimd/SimdOpsPlus.h>
+#include <asimd/asimd.h>
 
 namespace noyau2d {
 namespace asimd2d {

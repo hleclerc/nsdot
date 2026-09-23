@@ -9,13 +9,21 @@ Requires the environment to be activated beforehand:
 loom.cli.envs handles wrapping for remote sub-commands (apptainer, etc.).
 """
 
+import os
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 
+# Les TROIS projets de CE checkout passent devant tout ce que l'environnement a installé : un
+# `pip install -e` fait depuis un autre checkout (`~/nsdot` dans `vfs`) ferait sinon tourner les
+# tests de celui-ci sur le code de l'autre -- `otrec.Radiographs` introuvable, alors qu'il est là.
+# Transmis aux processus fils par PYTHONPATH.
+SRC = [str(ROOT / proj / "src") for proj in ("loom", "sdot", "otrec")]
+
 if __name__ == "__main__":
-    sys.path.insert(0, str(ROOT / "loom" / "src"))
+    sys.path[:0] = SRC
+    os.environ["PYTHONPATH"] = os.pathsep.join(SRC + [p for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p])
     try:
         from loom.cli.main import main
     except ModuleNotFoundError as e:

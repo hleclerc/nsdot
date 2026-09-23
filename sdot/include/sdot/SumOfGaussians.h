@@ -29,6 +29,17 @@ struct SumOfGaussians {
     static constexpr int ct_dim = DECAYED_TYPE_OF( nb_dims )::value;
     using TF = DECAYED_TYPE_OF( positions )::TF;
 
+    /// LA CONVOLUTION par une gaussienne de largeur `conv_s` ( `with_convolution` ) : sur une somme de
+    /// gaussiennes elle ne change que les largeurs, `sigma_i' = sqrt( sigma_i^2 + conv_s^2 )`, rien
+    /// d'autre -- ce que la continuation en largeur de `OtPlan` parcourt ( `otplan/Continuation.h` ).
+    /// Un membre A PART des attributs generes : `0` par defaut, donc absent de tout appel ordinaire.
+    TF conv_s = 0;
+
+    HD TF sigma_of( SI i ) const { const TF s = TF( sigmas( i ) ); return conv_s > 0 ? sdot::sqrt( s * s + conv_s * conv_s ) : s; }
+    HD SumOfGaussians with_convolution( TF s ) const { SumOfGaussians r( *this ); r.conv_s = s; return r; }
+    /// la plus petite largeur ( avant convolution ) : l'echelle en dessous de laquelle la continuation s'arrete
+    HD TF smallest_sigma() const { TF r = TF( sigmas( 0 ) ); for ( SI i = 1; i < SI( sigmas.shape( 0 ) ); ++i ) r = sdot::fmin( r, TF( sigmas( i ) ) ); return r; }
+
     /// Un seul morceau, la cellule elle-même, et pas une coupe : rien à découper quand la densité
     /// est définie partout par la même formule. Le scratch de découpe n'est donc pas touché (et
     /// `extra_cuts_per_piece` rend 0, donc il n'est même pas alloué).
@@ -38,7 +49,7 @@ struct SumOfGaussians {
     ///   * en 2D on SAIT le faire (voir `wedge_measure`), donc on se passe soi-même ;
     ///   * au-delà on ne sait pas, donc on se déclare BOÎTE NOIRE en s'emballant dans
     ///     `PointwiseDensity`, qui n'a besoin que de `value_at` / `gradient_at`.
-    void for_each_piece( const auto &cell, auto &&/*ws*/, auto &&func ) const {
+    HD void for_each_piece( const auto &cell, auto &&/*ws*/, auto &&func ) const {
         if constexpr ( ct_dim == 2 )
             func( cell, *this );
         else
@@ -68,17 +79,23 @@ struct SumOfGaussians {
     // sliver rasant).
     static constexpr bool is_constant = false;
 
+    /// les moments ( `diagram::integrate_moments_into` ) : la réduction exacte ne les donne pas, c'est
+    /// la quadrature adaptative de `PointwiseDensity` qui les accumule, en 2D comme ailleurs.
+    HD void integrate_moments_over_simplex( const auto &pts, TF &m, auto &mx, TF &m2 ) const {
+        PointwiseDensity{ *this }.integrate_moments_over_simplex( pts, m, mx, m2 );
+    }
+
     static constexpr TF  tail_cut   = 8;    ///< `exp( -t^2/2 ) < 1e-14` au-delà : la queue est exacte
     static constexpr int nb_panels  = 4;    ///< panneaux de Gauss-Legendre sur le coeur
 
     /// La mesure normale standard SIGNÉE du triangle `( 0, P, Q )` -- le coin.
-    TF wedge_measure( const auto &P, const auto &Q ) const;
+    HD TF wedge_measure( const auto &P, const auto &Q ) const;
 
     /// La mesure normale standard du triangle `ys` (positive, orientation quelconque).
-    TF std_triangle_measure( const auto &ys ) const;
+    HD TF std_triangle_measure( const auto &ys ) const;
 
     /// `Int_T rho`, exact. `pts` : les 3 sommets.
-    TF integrate_over_simplex( const auto &pts ) const;
+    HD TF integrate_over_simplex( const auto &pts ) const;
 
     /// L'adjoint, ÉLÉMENTAIRE -- c'est le point remarquable : la valeur demande une fonction
     /// spéciale, ses dérivées non. Tout se ramène à des intégrales de BORD, qui pour une gaussienne
@@ -89,19 +106,24 @@ struct SumOfGaussians {
     ///   * sigma : `d rho / d sigma = sigma * laplacien( rho )` (identité de la chaleur, `t = sigma^2/2`),
     ///     donc encore un flux au bord, et `y . n` y est CONSTANT le long d'une arête ;
     ///   * le poids : la mesure elle-même, déjà calculée.
-    void integrate_over_simplex_bwd( const auto &pts, TF g, auto &&grad_pts, auto &&grad_dist ) const;
+    HD void integrate_over_simplex_bwd( const auto &pts, TF g, auto &&grad_pts, auto &&grad_dist ) const;
 
     /// Pour une arête `A -> B` du triangle `A, B, C`, en repère standard : la normale SORTANTE, la
     /// distance signée `y . n` (constante le long de l'arête), `Int phi ds`, et `Int phi lambda_A ds`.
     struct EdgeInfo { Vector<TF,2> n; TF p; TF j0; TF j1a; };
-    EdgeInfo edge_info( const auto &A, const auto &B, const auto &C ) const;
+    HD EdgeInfo edge_info( const auto &A, const auto &B, const auto &C ) const;
 
     /// Le noyau NORMALISÉ de la gaussienne `i` en `x` (masse 1), et le carré de la distance --
     /// les deux quantités dont tout le reste se déduit, calculées une fois.
-    auto kernel_at( SI i, const auto &x ) const;
+    HD auto kernel_at( SI i, const auto &x ) const;
 
-    TF   value_at         ( const auto &x ) const;   ///< rho( x )
-    auto gradient_at      ( const auto &x ) const;   ///< grad rho( x ), un `Vector<TF,ct_dim>`
+    /// `Int_{arete} rho ds` sur l'arete `cut` de la cellule 2D `pc` ( `[ v_cut, v_cut+1 ]` ) -- ce que le
+    /// laplacien d'un transport lit ( `otplan/Balayage.h` ) : une gaussienne le long d'un segment est
+    /// un `erf`, la distance au segment etant constante. 2D seulement.
+    HD TF   facet_mass    ( const auto &pc, int cut ) const;
+
+    HD TF   value_at      ( const auto &x ) const;   ///< rho( x )
+    HD auto gradient_at   ( const auto &x ) const;   ///< grad rho( x ), un `Vector<TF,ct_dim>`
 
     /// Accumule `g * d rho( x ) / d paramètre` dans la cotangente de chaque paramètre.
     ///
@@ -110,7 +132,7 @@ struct SumOfGaussians {
     /// ajouts sont ATOMIQUES -- une gaussienne large est vue par les work-items de beaucoup de
     /// cellules à la fois -- et chacun est gardé par la validité de sa cible, un paramètre non
     /// dérivé arrivant en `NoneTensor`.
-    void add_value_grad_at( auto &&grad_dist, const auto &x, TF g ) const;
+    HD void add_value_grad_at( auto &&grad_dist, const auto &x, TF g ) const;
 };
 
 }

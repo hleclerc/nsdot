@@ -3,8 +3,8 @@
 Monorepo — 3 projets indépendants :
 
 ```
-loom/     Interface agnostique Jax/Torch → SYCL (tensor, Aggregate, drivers, compilation)
-sdot/     Transport optimal semi-discret (Cell, OtPlan1d, distributions)
+loom/     Interface agnostique Jax/Torch → noyaux C++ (tensor, Aggregate, drivers, compilation)
+sdot/     Transport optimal semi-discret (Cell, PowerDiagram, OtPlan, OtPlan1d, distributions)
 otrec/    Application de reconstruction CT (Reconstruction, Sinogram)
 ```
 
@@ -45,11 +45,11 @@ d'activer quoi que ce soit pour lancer `./run env`, `./run env create` ou `./run
 
 | Commande | Description |
 |---|---|
-| `./run test [pattern]` | Tests C++ (via acpp) + Python (tous les projets) |
+| `./run test [pattern]` | Tests C++ + Python (tous les projets) |
 | `./run bench [pattern]` | Benchmarks Python (même mécanisme que `test`) |
 | `./run experiment [pattern]` | Expériences Python (même mécanisme que `test`), avec balayage de params |
 | `./run install` | `pip install -e` des 3 projets dans l'ordre |
-| `./run toolchain` | Diagnostic (acpp, LLVM, CUDA) |
+| `./run toolchain` | Diagnostic (compilateur hôte, nvcc) |
 | `./run build-sif` | Build des images Apptainer (.sif depuis .def) |
 | `./run env` | Lister les environnements configurés |
 | `./run env create` | Fabriquer les envs micromamba déclarés (no-op sur ceux qui existent déjà) |
@@ -350,4 +350,37 @@ Les headers C++ sont dans `loom/include/loom/support/` (runtime générique)
 et `sdot/include/sdot/` (transport optimal). Les headers générés (JIT)
 atterrissent dans `build/include/`.
 
-Compilation : AdaptiveCpp (`acpp`), téléchargé automatiquement au premier `driver.call`.
+Compilation : le compilateur C++ hôte pour le CPU (`c++`/`clang++`/`g++`, `SDOT_CXX` pour en
+imposer un ; `-O3 -march=native`), `nvcc` autour de lui pour CUDA (celui du paquet pip
+`nvidia-cuda-nvcc-cu13` s'il est là, sinon `/usr/local/cuda`, sinon PATH ; `SDOT_NVCC`). Chaque
+device dit avec quoi il se compile (`Device.compiler`, voir `loom/src/loom/compilation/Compiler.py`) ;
+le runtime C++ d'un device est sa queue (`loom/include/loom/support/kernels/CpuQueue.h`,
+`CudaQueue.h`), qui porte le lancement des noyaux -- `run_parallel` ne connaît aucun device.
+
+Sous nvcc, tout ce qu'un noyau atteint porte `HD` (`__host__ __device__`, vide ailleurs) : toute
+nouvelle fonction atteignable par un noyau s'écrit avec ; `scripts/annotate_hd.py` (libclang) le
+pose sur un fichier neuf. Les mathématiques passent par `sdot::sqrt` & co (`loom/support/math.h`),
+les atomiques par `atomic_add.h`, les étiquettes globales par `LOOM_TAG` : les seuls `#if` sur la
+cible.
+
+Un wheel embarque un **catalogue** de noyaux précompilés (`sdot/_catalogue`, une bibliothèque par
+variante : `cpu-x86-64-v3`, `cuda`, ...) : l'usage standard n'y compile rien. Le relevé
+(`catalogue_record/`, versionné) vient de `scripts/build_catalogue.py record`, qui exerce
+`python -m sdot.catalogue` ; la compilation par variante est `build_catalogue.py compile`, ce que
+fait `.github/workflows/wheels.yml`. `SDOT_KERNELS=auto|catalogue|atelier`. Voir
+`loom/src/loom/compilation/catalogue.py`.
+
+Le transport semi-discret (`sdot.OtPlan`) est résolu **en un appel**, tout en C++
+(`sdot/include/sdot/otplan/`) : le Newton amorti du banc `solvers_des_familles`, le laplacien
+assemblé sans tri, Cholesky (Eigen) / AMG (AMGCL) / CG en unité de domaine, le pas par les limites
+en 2D, la continuation en largeur pour les densités qui se concentrent ; le domaine est le support
+que la densité déclare (`bounding_half_spaces`). Eigen et AMGCL sont téléchargés par loom lui-même au premier
+noyau compilé (`loom/src/loom/compilation/externals.py` : archive épinglée + SHA-256, dans le cache
+utilisateur, puis sur le chemin d'inclusion ; `SDOT_EXTERNALS=0` pour s'en passer -- le gradient
+conjugué maison reste). Voir `notes/2026-09-22-otplan-cpp.md`.
+
+La compilation passe par un graphe ninja (`loom/src/loom/compilation/build.py`, `build/build.ninja`
+réécrit depuis `build/ninja/manifest.json`) : une unité n'est refaite que si l'un de SES en-têtes a
+changé (depfiles du compilateur). `libloom_runtime` (la file de threads, une par processus) est liée
+par chaque noyau ; `FfiCode( sources = [ ( "x.cpp", { "DEF": "v" } ) ] )` compile une source de
+domaine une fois par configuration et la lie. `SDOT_FORCE_BUILD=1` force la cible demandée.

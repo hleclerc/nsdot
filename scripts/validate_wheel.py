@@ -4,16 +4,14 @@
   python scripts/validate_wheel.py                 # build le wheel puis le teste
   python scripts/validate_wheel.py --wheel a.whl   # teste un wheel existant
   python scripts/validate_wheel.py --keep          # garde le venv/cache pour autopsie
-  python scripts/validate_wheel.py --require-cold   # exige AUSSI un build acpp à froid (CI/machine vierge)
 
 Le but est de prouver que le wheel est self-contained : on l'installe dans un venv NEUF (pas de
 PYTHONPATH vers le repo, pas de `build/` local réutilisé) et on exécute make_hypercube(2D) +
-measure -- tout le cycle génération -> compilation (acpp) -> enregistrement (Jax FFI) -> exécution.
+measure -- tout le cycle génération -> compilation (compilateur hôte) -> enregistrement (Jax FFI) -> exécution.
 
-La preuve clé est que la compilation acpp utilise les en-têtes C++ EMBARQUÉES DANS LE WHEEL
-(`.../site-packages/sdot/_cpp`), pas le `src/cpp` du checkout : on vérifie que la ligne `[acpp] $`
-référence bien `sdot/_cpp`. Le toolchain acpp lui-même est réutilisé depuis le cache utilisateur
-s'il existe (comportement normal) ; `--require-cold` exige en plus un build acpp depuis zéro.
+La preuve clé est que la compilation utilise les en-têtes C++ EMBARQUÉES DANS LES WHEELS
+(`.../site-packages/loom/_include`, `sdot/_include`), pas celles du checkout : `include_roots()`
+ne doit nommer que des chemins du venv, et le noyau doit compiler avec.
 
 Contrairement à `run_tests.py`, ce script n'insère JAMAIS `src/python` dans sys.path : ce serait
 justement l'erreur qui masquerait un wheel cassé en important `sdot` depuis le checkout.
@@ -21,6 +19,7 @@ justement l'erreur qui masquerait un wheel cassé en important `sdot` depuis le 
 from pathlib import Path
 import subprocess
 import argparse
+import re
 import tempfile
 import shutil
 import glob
@@ -43,9 +42,9 @@ print( "SMOKE-OK" )
 """
 
 PRECHECK = """
-import sdot, sdot.compilation as c
+import sdot, loom.compilation as c
 print( sdot.__file__ )
-print( c.cpp_include_root() )
+print( c.include_roots() )
 """
 
 
@@ -59,18 +58,22 @@ def _run( cmd, **kw ):
     return subprocess.run( [ str( c ) for c in cmd ], **kw )
 
 
-def build_wheel() -> Path:
-    _run( [ sys.executable, "-m", "build", "--wheel", "--outdir", ROOT / "dist" ], check = True )
-    wheels = sorted( glob.glob( str( ROOT / "dist" / "sdot-*.whl" ) ), key = os.path.getmtime )
-    if not wheels:
-        raise RuntimeError( "aucun wheel produit sous dist/" )
-    return Path( wheels[ -1 ] )
+def build_wheels() -> list:
+    """Les deux wheels, `loom` puis `sdot` (le second dépend du premier), sous `dist/`."""
+    wheels = []
+    for pkg in ( "loom", "sdot" ):
+        _run( [ sys.executable, "-m", "pip", "wheel", "--quiet", "--no-deps", "-w", ROOT / "dist", ROOT / pkg ], check = True )
+        found = sorted( glob.glob( str( ROOT / "dist" / f"{ pkg }-*.whl" ) ), key = os.path.getmtime )
+        if not found:
+            raise RuntimeError( f"aucun wheel { pkg } produit sous dist/" )
+        wheels.append( Path( found[ -1 ] ) )
+    return wheels
 
 
-def validate( wheel: Path, keep: bool, require_cold: bool ) -> int:
+def validate( wheels: list, keep: bool ) -> int:
     scratch = Path( tempfile.mkdtemp( prefix = "sdot-validate-" ) )
     venv_dir  = scratch / "venv"
-    cache_dir = scratch / "sdot-cache"   # vide -> force un build acpp à froid
+    cache_dir = scratch / "sdot-cache"   # vide -> aucun binaire réutilisé
     work_dir  = scratch / "run"          # cwd du smoke test, jamais la racine du repo
     work_dir.mkdir( parents = True )
     print( f"scratch: { scratch }", flush = True )
@@ -78,18 +81,19 @@ def validate( wheel: Path, keep: bool, require_cold: bool ) -> int:
     try:
         _run( [ sys.executable, "-m", "venv", venv_dir ], check = True )
         py = _venv_python( venv_dir )
-        _run( [ py, "-m", "pip", "install", "--quiet", f"{ wheel }[jax]" ], check = True )
+        # `ninja` et `jax` viennent de PyPI ; loom et sdot des wheels fraîchement bâties
+        _run( [ py, "-m", "pip", "install", "--quiet", *( f"{ w }[jax]" if w.name.startswith( "loom" ) else str( w ) for w in wheels ) ], check = True )
 
-        # Pré-check rapide : échouer vite si l'install est mal packagée, AVANT le long build acpp.
+        # Pré-check rapide : échouer vite si l'install est mal packagée, AVANT de compiler.
         r = _run( [ py, "-c", PRECHECK ], cwd = work_dir, capture_output = True, text = True )
         if r.returncode:
             print( r.stdout + r.stderr, flush = True )
             raise RuntimeError( "pré-check import a échoué" )
         # .resolve() des deux côtés : sur macOS /var est un symlink vers /private/var, et
-        # __file__ n'est pas canonicalisé alors que cpp_include_root() l'est.
+        # __file__ n'est pas canonicalisé alors que include_roots() l'est.
         venv_real = str( venv_dir.resolve() )
-        for line in r.stdout.split():
-            if line.startswith( "/" ) and not str( Path( line ).resolve() ).startswith( venv_real ):
+        for line in re.findall( r"/[^\s'\]\[,]+", r.stdout ):
+            if not str( Path( line ).resolve() ).startswith( venv_real ):
                 raise RuntimeError(
                     f"chemin hors du venv (import depuis le checkout ?) : { line }\n{ r.stdout }"
                 )
@@ -107,22 +111,8 @@ def validate( wheel: Path, keep: bool, require_cold: bool ) -> int:
         if r.returncode or "SMOKE-OK" not in r.stdout:
             raise RuntimeError( "smoke test a échoué" )
 
-        # Preuve que la compilation a bien utilisé les en-têtes embarquées dans le wheel, et non
-        # le src/cpp du checkout : la ligne acpp doit référencer `sdot/_cpp` sous le venv.
-        acpp_lines = [ l for l in out.splitlines() if l.startswith( "[acpp] $" ) ]
-        if not acpp_lines:
-            raise RuntimeError( "aucune compilation acpp observée -- rien n'a été généré/compilé" )
-        if not any( "sdot/_cpp" in l for l in acpp_lines ):
-            raise RuntimeError(
-                "acpp n'a pas utilisé les en-têtes du wheel (sdot/_cpp) :\n" + "\n".join( acpp_lines )
-            )
-
-        # Build acpp à froid, seulement si explicitement demandé (sur une machine de dev le
-        # toolchain est déjà dans ~/Library/Caches/sdot et sera réutilisé -- c'est normal).
-        if require_cold and "[acpp] downloading" not in out:
-            raise RuntimeError(
-                "--require-cold : aucun '[acpp] downloading' -- toolchain acpp réutilisé du cache."
-            )
+        # La preuve que la compilation a utilisé les en-têtes du wheel est le pré-check ci-dessus :
+        # `include_roots()` ne nomme que des chemins du venv, et le noyau a compilé avec.
 
         print( "\nVALIDATION OK", flush = True )
         return 0
@@ -135,14 +125,12 @@ def validate( wheel: Path, keep: bool, require_cold: bool ) -> int:
 
 def main() -> int:
     p = argparse.ArgumentParser( description = "valide le wheel sdot dans un venv propre" )
-    p.add_argument( "--wheel", type = Path, help = "wheel existant à tester (sinon on le build)" )
+    p.add_argument( "--wheel", type = Path, nargs = "*", help = "wheels existants à tester (loom et sdot ; sinon on les bâtit)" )
     p.add_argument( "--keep", action = "store_true", help = "garder le venv/cache scratch" )
-    p.add_argument( "--require-cold", action = "store_true",
-                    help = "exiger en plus un build acpp depuis zéro (CI/machine vierge)" )
     args = p.parse_args()
 
-    wheel = args.wheel if args.wheel else build_wheel()
-    return validate( wheel.resolve(), args.keep, args.require_cold )
+    wheels = [ w.resolve() for w in args.wheel ] if args.wheel else build_wheels()
+    return validate( wheels, args.keep )
 
 
 if __name__ == "__main__":

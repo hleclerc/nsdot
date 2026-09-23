@@ -1,30 +1,21 @@
 # Container images
 
-Reproducible Apptainer/Singularity images lock the build toolchain version chain
-(AdaptiveCpp ↔ LLVM ↔ CUDA ↔ compiler ↔ libstdc++), rather than depending on the host toolkit.
-Each image pre-builds AdaptiveCpp and its pinned Boost into `/opt/sdot-cache`
-(`SDOT_CACHE_DIR`), so runtime compilation never has to rebuild the toolchain.
-
-The nsdot monorepo has three packages installed as **editable** inside each container
-(in dependency order: loom → sdot → otrec). No `PYTHONPATH` is needed; `import loom`,
+Two Apptainer/Singularity images, one per execution context. Neither builds a toolchain any
+more: kernels compile at run time with the image's `g++` (and, for CUDA, the CUDA compiler that
+`jax[cuda13]` ships in `site-packages/nvidia/cu13/bin`), through the `ninja` from pip. The three
+packages of the monorepo are installed **editable** (loom → sdot → otrec); `import loom`,
 `import sdot`, `import otrec` work directly.
 
-JAX and PyTorch intentionally use **separate images**. Their CUDA pip wheels pin independent
-`nvidia-*-cu12` stacks; a shared Python environment can silently replace one framework's tested
-CUDA/cuDNN combination with the other's. This is a packaging conflict, not an incompatibility
-between the JAX and PyTorch Python APIs.
+| image | framework | GPU |
+|---|---|---|
+| `cpu.def` | JAX + PyTorch, CPU wheels | — |
+| `cuda-jax.def` | `jax[cuda13]` (CUDA libraries + compiler from pip) | host driver bound by `--nv` / `--nvccli` |
 
-| image | AdaptiveCpp profile | backends | LLVM | CUDA at build | framework at runtime |
-|---|---|---|---:|---|---|
-| `cpu.def` | minimal | — | — | — | CPU wheels |
-| `cuda-jax.def` | full | cuda | 20 | 12.8 | JAX CUDA 12 pip wheels |
-| `cuda-torch.def` | full | cuda | 20 | 12.8 | official PyTorch CUDA image |
-
-AdaptiveCpp v25.10.0 supports LLVM through 20; LLVM 21+ requires its experimental override.
-LLVM 20 in turn constrains the AdaptiveCpp CUDA build to CUDA 12.8 here. Both final images omit
-the system CUDA toolkit and retain only `libdevice.10.bc` plus a framework-owned `libcudart`
-fallback for AdaptiveCpp's PTX JIT. This prevents host or build-toolkit CUDA libraries from
-shadowing the framework's pinned wheels.
+The CUDA image has no system CUDA toolkit: nothing on the host can shadow the pip-pinned
+libraries, and the image does not depend on the driver version (which must merely support
+CUDA 13). A PyTorch CUDA image would be the same recipe with `torch` instead of `jax[cuda13]`;
+the two frameworks stay in separate images because their pip wheels pin independent
+`nvidia-*` stacks.
 
 ## Building
 
@@ -37,7 +28,6 @@ layer:
 from loom.cli.layers import env, Driver, Apptainer, Remote
 
 env("cuda-jax", [Apptainer(image="containers/cuda-jax.sif")] + [Driver("jax")])
-env("cuda-torch", [Apptainer(image="containers/cuda-torch.sif")] + [Driver("torch")])
 env("cpu", [Apptainer(image="containers/cpu.sif")] + [Driver("jax")])
 ```
 
@@ -64,7 +54,7 @@ LMO = [Remote(host="lmo", remote_dir="/home/leclerc/nsdot",
 env("lmo-cuda-jax", LMO + [Apptainer(image="containers/cuda-jax.sif")] + [Driver("jax")])
 ```
 
-`Remote.apptainer_scratch` points to a filesystem with enough free space (~30 GB);
+`Remote.apptainer_scratch` points to a filesystem with enough free space (a few GB);
 `build-sif` uses it automatically for `APPTAINER_TMPDIR` and `APPTAINER_CACHEDIR`,
 and `--scratch-dir` overrides it per invocation.
 
@@ -75,13 +65,12 @@ Build from the repository root, so `%files` paths resolve:
 ```bash
 apptainer build --fakeroot containers/cpu.sif        containers/cpu.def
 apptainer build --fakeroot containers/cuda-jax.sif   containers/cuda-jax.def
-apptainer build --fakeroot containers/cuda-torch.sif containers/cuda-torch.def
 ```
 
 ### Disk space (important on HPC)
 
-The build needs substantial transient scratch (the CUDA `devel` base plus CUDA pip wheels).
-Point Apptainer's scratch and layer cache at a filesystem with roughly 30 GB free before building:
+The CUDA build needs transient scratch for the CUDA pip wheels (a few GB).
+Point Apptainer's scratch and layer cache at a filesystem with enough free space before building:
 
 ```bash
 export APPTAINER_TMPDIR=/path/scratch/atmp
@@ -99,14 +88,13 @@ For the older `singularity` executable, use `SINGULARITY_TMPDIR` and
 apptainer exec containers/cpu.sif python -m loom.cli test
 
 # CUDA: --nv exposes the NVIDIA driver from the host.
-apptainer exec --nv containers/cuda-jax.sif   env SDOT_DEVICE=cuda python -m loom.cli test
-apptainer exec --nv containers/cuda-torch.sif env SDOT_DEVICE=cuda python -m loom.cli test
+apptainer exec --nv containers/cuda-jax.sif python -m loom.cli test --device cuda
 ```
 
 `--nvccli` is an alternative where the site enables NVIDIA Container Toolkit. Apptainer's
 standard `--nv` binds the host driver libraries and GPU devices; the host therefore needs a
-CUDA-12-compatible NVIDIA driver. Newer drivers are backward compatible, but AdaptiveCpp
-generates PTX at runtime, so an old driver can still reject PTX introduced by a newer toolchain.
+CUDA-13-compatible NVIDIA driver. Kernels are compiled for the architecture of the card that is
+present (`-arch=sm_XX`, read off the driver), so a newer driver is never a problem.
 
 Apptainer auto-mounts `$HOME` and the current directory. Kernel artifacts land in the project's
-host `build/` directory; the in-image `/opt/sdot-cache` is intentionally read-only at runtime.
+host `build/` directory (a checkout) or in `~/.cache/sdot` (an installed wheel).

@@ -17,7 +17,7 @@ struct OtPlan1d {
     // exactly to the single-work-item algorithm these generalize. `sub_group`: the warp cooperating
     // within that work-group, used by the radix histogram (one shared row per sub-group instead of
     // per work-item, see `sort_diracs`'s docstring).
-    void  sort_diracs( auto &&sorted_indices, auto &&radix_tmp, auto &&sorted_pos,
+    HD void  sort_diracs( auto &&sorted_indices, auto &&radix_tmp, auto &&sorted_pos,
                         int local_index, int local_size, auto &&group, auto &&local_scratch, auto &&sub_group ) const;
 
     // Cooperative chunked-scan helper for the SWEEP (see `update_outputs`/`update_outputs_bwd`).
@@ -31,28 +31,28 @@ struct OtPlan1d {
     //
     // This work-item's cumulative SOURCE weight at its OWN chunk start `lo` (sorted order) -- the
     // `Image::udp_at` argument that lets it jump straight to its chunk's starting `Udp` state.
-    TF    chunked_weight_prefix( auto &&sorted_indices, auto &&group_scan, SI lo, SI hi,
+    HD TF chunked_weight_prefix( auto &&sorted_indices, auto &&group_scan, SI lo, SI hi,
                                   int local_index, int local_size, auto &&group ) const;
 
     // Sort-independent halves of the forward/backward -- the sweep only, given a (however obtained)
     // sorted order. Shared by the internally-sorting entry points below and by the `_presorted` ones,
     // which take that order as already provided (e.g. from `jnp.argsort`, see
     // `OtPlan1d.py::update_outputs_presorted`; [[jax-sort-lax-scan]]).
-    void  sweep_outputs( auto &&sorted_indices, auto &&sorted_pos, auto &&group_scan,
+    HD void  sweep_outputs( auto &&sorted_indices, auto &&sorted_pos, auto &&group_scan,
                           int local_index, int local_size, auto &&group );
-    void  sweep_outputs_bwd( auto &&grad_plan, auto &&sorted_indices, auto &&sorted_pos, auto &&group_scan,
+    HD void  sweep_outputs_bwd( auto &&grad_plan, auto &&sorted_indices, auto &&sorted_pos, auto &&group_scan,
                               int local_index, int local_size, auto &&group ) const;
 
-    void  update_outputs( auto &&sorted_indices, auto &&radix_tmp, auto &&sorted_pos,
+    HD void  update_outputs( auto &&sorted_indices, auto &&radix_tmp, auto &&sorted_pos,
                            auto &&group_scan,
                            int local_index, int local_size, auto &&group, auto &&local_scratch, auto &&sub_group );
-    void  update_outputs_bwd( auto &&grad_plan, auto &&sorted_indices, auto &&radix_tmp, auto &&sorted_pos,
+    HD void  update_outputs_bwd( auto &&grad_plan, auto &&sorted_indices, auto &&radix_tmp, auto &&sorted_pos,
                                auto &&group_scan,
                                int local_index, int local_size, auto &&group, auto &&local_scratch, auto &&sub_group ) const;
 
-    void  update_outputs_presorted( auto &&sorted_indices, auto &&sorted_pos, auto &&group_scan,
+    HD void  update_outputs_presorted( auto &&sorted_indices, auto &&sorted_pos, auto &&group_scan,
                                      int local_index, int local_size, auto &&group );
-    void  update_outputs_bwd_presorted( auto &&grad_plan, auto &&sorted_indices, auto &&sorted_pos, auto &&group_scan,
+    HD void  update_outputs_bwd_presorted( auto &&grad_plan, auto &&sorted_indices, auto &&sorted_pos, auto &&group_scan,
                                          int local_index, int local_size, auto &&group ) const;
 };
 

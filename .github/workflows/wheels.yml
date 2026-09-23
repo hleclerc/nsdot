@@ -1,0 +1,90 @@
+# Les wheels `loom` et `sdot`, avec le CATALOGUE des noyaux précompilés (voir
+# `loom/compilation/catalogue.py` et `scripts/build_catalogue.py`).
+#
+# Le relevé des sources (`catalogue_record/`) est fait sur une machine de développement -- il
+# faut EXÉCUTER les appels, donc un GPU pour la partie CUDA -- et versionné avec le dépôt. Ici on
+# ne fait que COMPILER ce relevé, par plateforme et par variante, sans GPU :
+#   - Linux x86-64 : les niveaux v2, v3, v4 dans le même wheel (l'import charge le plus riche que
+#     la machine porte), et le catalogue CUDA (fatbin sm_70..sm_90) avec le compilateur CUDA du
+#     paquet pip ;
+#   - macOS arm64 : armv8-a.
+# Un wheel se suffit : un usage standard n'a rien à compiler ; le reste se compile sur place si
+# un compilateur est là (`SDOT_KERNELS=auto`). Eigen et AMGCL (les solveurs linéaires du transport)
+# sont téléchargés par loom lui-même au premier noyau compilé (`loom/compilation/externals.py`).
+# La validation finale tourne avec `SDOT_KERNELS=catalogue` : un relevé périmé (des sources qui ne correspondent plus à ce que
+# loom génère) y échoue, au lieu de retomber en silence sur la compilation.
+#
+# `loom` reste un wheel pur python (ses sources C++ se compilent sur place) ; `sdot` porte des
+# binaires indépendants de l'ABI python (ctypes) : `py3-none-<plateforme>`.
+#
+# Déclenché sur un tag `v*` (une release) ou à la main.
+
+name: wheels
+
+on:
+  push:
+    tags: [ "v*" ]
+  workflow_dispatch:
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    # l'image manylinux : ce qui est compilé ici tourne sur toute glibc >= 2.28
+    container: quay.io/pypa/manylinux_2_28_x86_64
+    env:
+      PATH: /opt/python/cp312-cp312/bin:/usr/local/bin:/usr/bin:/bin
+    steps:
+      - uses: actions/checkout@v4
+      - name: dépendances
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt ninja wheel "jax[cuda13]" "nvidia-cuda-nvcc<13.4" "nvidia-cuda-crt<13.4" "nvidia-nvvm<13.4"
+      - name: catalogue CPU, une variante par niveau
+        run: |
+          for v in x86-64-v2 x86-64-v3 x86-64-v4; do
+            python scripts/build_catalogue.py compile --record catalogue_record --out sdot/catalogue --variant $v
+          done
+      - name: catalogue CUDA (compilation seule, pas de GPU)
+        run: |
+          python scripts/build_catalogue.py compile --record catalogue_record --out sdot/catalogue --device cuda --arch sm_70,sm_75,sm_80,sm_86,sm_89,sm_90
+      - name: wheels
+        run: |
+          python -m pip wheel --no-deps -w dist loom
+          python -m pip wheel --no-deps -w dist sdot
+          python -m wheel tags --remove --python-tag py3 --abi-tag none --platform-tag manylinux_2_28_x86_64 dist/sdot-*.whl
+      - name: validation dans un venv neuf, le catalogue seul
+        run: |
+          SDOT_KERNELS=catalogue python scripts/validate_wheel.py --wheel dist/loom-*.whl dist/sdot-*.whl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-linux-x86_64
+          path: dist/*.whl
+
+  macos-arm64:
+    runs-on: macos-14
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: dépendances
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt ninja wheel jax
+      - name: catalogue CPU
+        run: |
+          python scripts/build_catalogue.py compile --record catalogue_record --out sdot/catalogue --variant armv8-a
+      - name: wheels
+        run: |
+          python -m pip wheel --no-deps -w dist loom
+          python -m pip wheel --no-deps -w dist sdot
+          python -m wheel tags --remove --python-tag py3 --abi-tag none --platform-tag macosx_11_0_arm64 dist/sdot-*.whl
+      - name: validation dans un venv neuf, le catalogue seul
+        run: |
+          SDOT_KERNELS=catalogue python scripts/validate_wheel.py --wheel dist/loom-*.whl dist/sdot-*.whl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-macos-arm64
+          path: dist/*.whl

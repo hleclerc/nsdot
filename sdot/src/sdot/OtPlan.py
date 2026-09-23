@@ -1,297 +1,357 @@
-from collections import deque
+"""Le plan de transport semi-discret, en dimension quelconque : les poids d'un `PowerDiagram` tels
+que la masse de chaque cellule contre `dst_dist` ( une densité continue ) égale la masse du dirac
+correspondant dans `src_dist` ( une `SumOfDiracs` ).
 
-import numpy as np
+TOUT L'AJUSTEMENT EST EN C++ ( `sdot/otplan/` ), en UN `driver.call` : le point de départ, le
+Newton amorti, ses diagrammes, le laplacien, le solveur linéaire, l'amortissement. Python ne fait
+que poser le problème et lire ce qui en sort. C'est ce que le banc `solvers_des_familles` a
+conclu ( README § 3, § 7, § 9, § 10 ) :
 
+  * le NEWTON AMORTI de Kitagawa-Mérigot-Thibert gagne partout, de 2x à 4x en diagrammes comme en
+    temps, contre L-BFGS et le gradient conjugué sur le dual, quel que soit leur
+    préconditionnement -- la difficulté du transport semi-discret n'est pas la non-linéarité du
+    dual, c'est sa NON-RÉGULARITÉ ( les cellules qui se vident ), et un pas de gradient s'y
+    écrase comme un pas de Newton, en moins bien ( `otplan/Newton.h` ) ;
+  * la hessienne est le laplacien du graphe de Laguerre, assemblé SANS TRI depuis les facettes
+    du diagramme qui a mesuré le résidu -- un balayage livre les deux ( `otplan/Balayage.h`,
+    `otplan/Laplacien.h` ) ; Cholesky creux en 2D, multigrille algébrique au-delà et en grand
+    ( `otplan/Lineaire.h` ) ;
+  * le pas d'essai repart du dernier pas accepté, jamais de 1 ( dix diagrammes par pas gagnés
+    dans la phase linéaire ) ; en 2D, les LIMITES des cellules qui s'écrasent le long de la
+    direction remplacent les essais à l'aveugle ( `otplan/Limites.h`, quand il sera là ).
+
+= Le point de départ
+
+Newton demande un départ ADMISSIBLE ( aucune cellule vide ). Le Voronoï ( `weights0 = None` ) l'est
+dès que les diracs sont dans le domaine ; sinon, ou si les poids donnés vident une cellule, le C++
+choisit lui-même le meilleur des trois -- les poids donnés, le Voronoï, la SIMILITUDE qui ramène le
+nuage dans le domaine -- et le dit ( `stats[ "depart" ]` ). Voir `otplan/Solve.h`.
+
+= Ce que le plan vaut
+
+`transport()` / `cost` / `cost_and_position_grad()` : le coût `W_2^2` aux poids ajustés, les
+barycentres des cellules, et la dérivée du coût par rapport aux POSITIONS des diracs par le
+théorème de l'enveloppe -- ce qu'un problème inverse ( les positions comme inconnues ) consomme.
+Des `Tensor` de loom, sur le device du driver : rien ici ne passe par numpy.
+
+= Un seul diagramme
+
+Les positions sont les CONSTANTES de l'ajustement : le `PowerDiagram` est bâti UNE FOIS ( son arbre
+avec ), et le solveur ne fait que lui POSER les poids essayés -- ce qui, pour un stockage BSP,
+refait le majorant des poids de chaque nœud et rien d'autre. Ce qu'il écrit ( les poids triés, les
+majorants ) sont des SORTIES de l'appel, reprises par le diagramme après coup : les entrées d'un
+appel sont en lecture seule.
+"""
+
+import numpy as np                  # les seuls tableaux hôtes d'ici : les quelques plans du domaine
+
+from loom.compilation.FfiCode import FfiCode
 from loom.drivers.driver import driver
+from loom.tensor import Axis, CtShapeVar, IntTensor, RealTensor, ShapeVar, Tensor
+from loom.util import Aggregate
 
-from .PowerDiagram import PowerDiagram
+from .Cell import Cell
+from .CellScratch import fp_size
+from .PowerDiagram import PowerDiagram, axis_aligned_box
+
+
+# ce que `stats` porte, dans l'ordre de `otplan/Solve.h::Stat`
+_STATS = [ "fin", "reste", "reste0", "nb_iter", "nb_diag", "nb_recul", "t_maj", "t_diag", "t_asm", "t_lin", "t_lim", "eps",
+           "masse_domaine", "nb_deborde", "nb_cell_lim", "nb_tours_essai", "lin_nb_hier", "lin_nb_iter", "lin_pire", "depart", "t_total",
+           "nb_etapes", "min_masse_depart" ]
+# une ligne de `history`, dans l'ordre de `otplan/Solve.h::Hist`
+_HISTORY = [ "step", "t", "residual_l2", "min_measure", "max_abs_residual", "nb_diag", "nb_evals", "s" ]
+_FIN = { 0: "en cours", 1: "converge", 2: "max iterations", 3: "stagnation", 4: "solveur lineaire en echec" }
+_DEPART = { 0: "weights0", 1: "voronoi", 2: "similitude" }
+_LIN = { "auto": 0, "cholesky": 1, "amg": 2, "cg": 3 }
+_PAS = { "trials": 0, "limits": 1 }
+_CONTINUATION = { "never": 0, "auto": 1, "always": 2 }
+
+
+class _Options( Aggregate ):
+    """les réglages du solveur, tels que `otplan/Solve.h` les lit"""
+    mass_tol       : RealTensor
+    mass_rtol      : RealTensor
+    t_min          : RealTensor
+    mult_ok        : RealTensor
+    facteur        : RealTensor
+    beta0          : RealTensor
+    mult_lim       : RealTensor
+    confiance      : RealTensor
+    conv_s0        : RealTensor
+    conv_ratio     : RealTensor
+    conv_min       : RealTensor
+    conv_seuil     : RealTensor
+    max_iter       : IntTensor
+    max_reculs     : IntTensor
+    lin            : IntTensor
+    pas            : IntTensor
+    trace          : IntTensor
+    continuation   : IntTensor
+    cap0           : IntTensor
+    kernel_fp_size : CtShapeVar
+
+
+class _History( Aggregate ):
+    """un pas ACCEPTÉ par ligne ( `step = 0` : le départ ), et les poids de chaque pas si on les a
+    demandés ( `weights`, sinon `Unbound` -- un tableau `[ pas, n ]` qu'on ne veut pas toujours )"""
+    rows      : RealTensor[ "num_step", "num_hist" ]
+    weights   : RealTensor[ "num_step", "num_point" ]
+    num_step  : Axis[ "nb_steps" ]
+    num_hist  : Axis[ "nb_hist" ]
+    num_point : Axis[ "nb_points" ]
+    nb_steps  : ShapeVar
+    nb_hist   : ShapeVar
+    nb_points : ShapeVar
 
 
 class OtPlan:
-    """Plan de transport optimal semi-discret, en dimension quelconque : les poids d'un
-    `PowerDiagram` tels que la mesure de chaque cellule contre `dst_dist` (une densité continue)
-    égale la masse du dirac correspondant dans `src_dist` (une `SumOfDiracs`).
+    """voir la docstring du module"""
 
-    `PowerDiagram.measures` fait déjà tout le travail géométrique et sait se DÉRIVER par rapport
-    à `weights` -- il ne manque donc que la boucle qui les ajuste. Aujourd'hui : la moindre-carrés
-    `0.5 * |mesure( w ) - masse|²` (`residual_loss`) minimisée par un L-BFGS. C'est un DÉTOUR par
-    rapport à la vraie formulation du problème -- la fonctionnelle duale CONCAVE dont `mesure( w )
-    - masse` est le GRADIENT (Kitagawa-Mérigot-Thibert) -- mais elle a le même point fixe : la
-    jacobienne `∂mesure_i / ∂poids_j` est SYMÉTRIQUE (c'est le contenu géométrique du théorème de
-    Brenier), donc le gradient d'ici, `J . résidu`, s'annule exactement là où `résidu` s'annule.
-    Un Newton viendra ensuite EXPLOITER cette même jacobienne directement (elle est aussi la
-    hessienne de la fonctionnelle duale) au lieu de la moindre-carrés -- voir `residual_loss`.
+    def __init__( self, src_dist, dst_dist, accelerator = None, kernel_dtype = None,
+                  weights0 = None, max_iter = 100, mass_tol = 1e-8, mass_rtol = 0.0, step = "auto",
+                  linear_solver = "auto", keep_weights = False, verbose = False, t_min = 1e-10,
+                  max_backtracks = 60, restart_factor = 4.0, memory = None,
+                  continuation = "auto", conv_start = None, conv_ratio = 2 ** 0.5, conv_min = None, conv_threshold = 1e-2 ):
+        """`src_dist` : une `SumOfDiracs` ( ses `weights`, normalisés, sont les masses cibles ).
+        `dst_dist` : la distribution CONTINUE contre laquelle intégrer ( `Image`, `SumOfGaussians`,
+        ... ), normalisée -- puis remise à l'échelle de ce que le DOMAINE en contient ( voir
+        `otplan/Solve.h` : ce qu'on résout est le transport vers la densité restreinte au domaine ).
 
-    = Cellules vides
+        `accelerator` / `memory` : transmis tels quels au `PowerDiagram` ( voir `PowerDiagram.__init__` ).
 
-    Une cellule peut devenir topologiquement VIDE en cours de descente (un poids trop bas devant
-    ses voisins) -- son gradient, moindre-carrés comme barrière, y est alors identiquement nul (ou
-    `NaN`, `1 / 0`, pour la barrière), un PLATEAU dont plus aucune itération ne sort. `_fit`
-    combine donc deux choses, ni l'une ni l'autre suffisante seule : une répulsion DOUCE
-    (`barrier_eps > 0`, un terme `sum_i masse_i / mesure_i` ajouté à l'objectif, qui grandit à
-    l'approche du bord) et un rejet DUR dans la recherche linéaire (tout pas essayé qui laisserait
-    une mesure sous `min_measure_fraction * min( masses )` est refusé sans même regarder
-    l'objectif). Voir `_fit` pour le détail.
+        LE DOMAINE VIENT DE LA DENSITÉ, et d'elle seule : le support que `dst_dist` déclare
+        ( `bounding_half_spaces` -- le pavé d'une image, `centres +- 6 sigma` pour des gaussiennes ),
+        qui doit être BORNÉ. Les diracs n'y sont pour rien : leurs cellules peuvent être loin d'eux.
+        Leur enveloppe ne sert qu'au DÉPART, pour le déplacement qui les ramène dans le domaine
+        quand il le faut ( la similitude de `otplan/Solve.h` ). `stats[ "masse_domaine" ]` dit ce que
+        le domaine contient de la densité.
 
-    Les positions et masses de `src_dist` sont lues UNE FOIS, comme des tableaux hôtes plutôt que
-    des `Tensor` : ce sont les CONSTANTES de l'ajustement (on ne dérive que par rapport à `w`), et
-    ça laisse `power_diagram` reconstruire un `PowerDiagram` frais, tracé sur `w` seul, à chaque
-    pas -- exactement le montage déjà validé par `test_PowerDiagram::measures_derive_wrt_weights_alone`.
-    """
+        `kernel_dtype` : le flottant dans lequel la géométrie se coupe -- `FP64` par défaut ICI, et
+        non `FP32` comme pour un diagramme seul : le banc l'a mesuré ( README § 4 ), l'amortissement
+        demande une décroissance stricte du résidu que le bruit d'une aire en `float` refuse bien
+        avant la tolérance, et des germes proches perdent leurs chiffres dans les facettes.
 
-    def __init__( self, src_dist, dst_dist, boundaries = None, accelerator = None,
-                  max_nb_cuts = None, weights0 = None, max_iter = 200, ftol = 1e-13,
-                  barrier_eps = 1e-4, min_measure_floor = 1e-6, memory = 10,
-                  c1 = 1e-4, rho = 0.5, max_backtracks = 30, callback = None ):
-        """`src_dist` : une `SumOfDiracs` (ses `weights`, normalisés, sont les masses cibles).
-        `dst_dist` : la distribution CONTINUE contre laquelle intégrer (`Image`,
-        `SumOfGaussians`, ...) -- normalisée à la même masse totale que `src_dist`.
+        `weights0` : le point de départ, par défaut le Voronoï ( voir la docstring du module ).
 
-        `boundaries` / `accelerator` / `max_nb_cuts` : transmis tels quels à chaque
-        `PowerDiagram` construit pendant l'ajustement (voir `PowerDiagram.__init__`).
+        `max_iter` : pas de Newton, au plus. `mass_tol` : on s'arrête dès que `max_i | m_i - nu_i |
+        <= mass_tol` ( ABSOLU, l'unité est celle des masses normalisées ) ; `mass_rtol` : ou dès que
+        `max_i | m_i - nu_i | / nu_i <= mass_rtol` ( 0 : inactif ). `t_min` : le pas en dessous
+        duquel on déclare la STAGNATION ; `max_backtracks` : divisions par deux du pas, au plus, par
+        itération ; `restart_factor` : le prochain essai part de ce facteur fois le dernier pas
+        accepté ( plafonné à 1 ).
 
-        `weights0` : le point de départ, par défaut `0` -- le diagramme de Voronoï, chaque
-        cellule prenant sa part purement géométrique.
+        `step` : `"trials"` ( les essais de KMT ), `"limits"` ( 2D : les limites des cellules qui
+        s'écrasent, quand la passe sera là ) ou `"auto"`. `linear_solver` : `"auto"`, `"cholesky"`,
+        `"amg"`, `"cg"` ( voir `otplan/Lineaire.h` ).
 
-        `barrier_eps` : le poids du terme de répulsion (voir la docstring de la classe) -- `0`
-        (ou `None`) le désactive, le rejet dur de `min_measure_floor` restant seul en jeu.
-        `min_measure_floor` : la mesure la plus basse qu'une cellule ait le droit d'atteindre, en
-        VALEUR ABSOLUE (l'unité est celle de `src_dist.weights` normalisés -- `1.0` de masse
-        totale par défaut, voir `Distribution.normalized_version`). `_fit` la plafonne de toute
-        façon à `0.1 *` la plus petite mesure DE DÉPART : sur un nuage déjà très déséquilibré au
-        point de départ ( `weights0` ), un plancher fixe pourrait sinon interdire jusqu'au tout
-        premier pas.
+        `continuation` : la CONTINUATION EN LARGEUR ( `otplan/Continuation.h` ) -- résoudre d'abord
+        pour la densité convolée par une gaussienne large, puis de plus en plus étroite, chaque
+        étape partant des poids de la précédente : ce qu'il faut à une densité qui se concentre
+        ( des bosses étroites, des déserts où des cellules n'ont pas de masse, et où Newton direct
+        stagne ). `"auto"` ( défaut ) la déclenche quand le départ laisse une cellule sous
+        `conv_threshold` fois la plus petite masse cible ; `"always"` / `"never"`. `conv_start` : la
+        première largeur ( défaut : la moitié du diamètre du domaine ) ; `conv_ratio` : le facteur
+        entre deux largeurs ( `sqrt( 2 )`, le meilleur mesuré ) ; `conv_min` : la dernière avant la
+        densité elle-même ( défaut : le quart de la plus petite largeur des gaussiennes, ou du pas
+        de l'image ). Une image se convole sur sa grille, des gaussiennes par leurs largeurs.
 
-        `max_iter` / `ftol` : nombre de pas et écart de perte en dessous duquel on s'arrête.
-        `memory` : nombre de paires `( s, y )` gardées par la récursion à deux boucles (voir
-        `_two_loop_direction`). `c1` / `rho` / `max_backtracks` : la recherche linéaire par
-        retour arrière (Armijo -- `c1` la pente minimale acceptée, `rho` le facteur de
-        rétrécissement du pas, `max_backtracks` avant de basculer sur le secours en descente de
-        gradient, voir `_fit`).
-
-        `callback( entry )`, s'il est donné, est appelé à CHAQUE pas accepté (`entry` un dict
-        `step` / `weights` / `loss` / `min_measure` / `max_abs_residual`, la même chose que ce
-        qui s'accumule dans `self.history`) -- pour qui veut suivre la descente sans relire
-        l'historique après coup (un `print`, une barre de progression).
+        `keep_weights` : garder les poids de CHAQUE pas dans `history` ( pour rejouer la descente --
+        un tableau `[ pas, n ]` ). `verbose` : la trace du C++, une ligne par pas.
         """
+        # le solveur est du code HOTE sur la file CPU ( `otplan/Balayage.h` ) : un driver dont le device
+        # est un GPU ne peut pas l'appeler aujourd'hui -- `SDOT_DEVICE=cpu`, ou un driver CPU
+        if not driver.device.is_cpu:
+            raise NotImplementedError( "OtPlan : le solveur tourne sur le CPU pour l'instant ( les balayages et le solveur "
+                                       "lineaire sont du code hote ) ; choisir le device CPU ( SDOT_DEVICE=cpu )" )
         src_dist = src_dist.normalized_version()
-
-        self.src_dist    = src_dist
-        self.dst_dist    = dst_dist.normalized_version()
-        self.boundaries  = boundaries
-        self.accelerator = accelerator
-        self.max_nb_cuts = max_nb_cuts
+        self.src_dist = src_dist
+        if dst_dist is None:
+            raise ValueError( "OtPlan : il faut une densite cible -- c'est elle qui donne le domaine" )
+        #: la densité cible, normalisée
+        self.dst_dist = dst_dist.normalized_version()
 
         d = int( src_dist.nb_dims.value )
-        self._positions = np.asarray( src_dist.positions, dtype = float ).reshape( -1, d )
-        self._masses    = np.asarray( src_dist.weights, dtype = float ).reshape( -1 )
-        self._barrier_eps = float( barrier_eps ) if barrier_eps else 0.0
+        if kernel_dtype is None:
+            kernel_dtype = "FP64"
 
-        w0 = ( np.zeros_like( self._masses ) if weights0 is None
-             else np.asarray( weights0, dtype = float ).reshape( -1 ) )
+        # le domaine : le support de la densité, qui doit le borner ( `PowerDiagram` l'ajoute lui-même )
+        self._check_bounded_support( d )
 
-        #: `( step, weights, loss, min_measure, max_abs_residual )` par pas ACCEPTÉ -- `step = 0`
-        #: est le point de départ, avant le premier pas. De quoi tracer une courbe de convergence
-        #: ou rejouer la descente (voir `sdot/tests/test_OtPlan.py::"ot 2D lbfgs"`) sans
-        #: reconstruire quoi que ce soit : chaque entrée porte déjà les poids ET les diagnostics
-        #: de son pas. `loss` est la perte AUGMENTÉE (moindre-carrés + barrière) : ce que `_fit`
-        #: minimise effectivement -- `max_abs_residual` reste, lui, la seule chose qu'on cherche
-        #: réellement à annuler.
+        # LE diagramme, bâti une fois sur les positions ( voir la docstring du module ) ; les poids
+        # qu'il porte à un instant donné sont les derniers posés
+        self._pd = PowerDiagram( src_dist.positions, RealTensor[ src_dist.num_dirac ].full( 0.0 ) if weights0 is None else weights0,
+                                 accelerator = accelerator, kernel_dtype = kernel_dtype,
+                                 distribution = self.dst_dist, memory = memory )
+        pd = self._pd
+        n = int( pd.nb_points.value )
+
+        #: les masses cibles, indexées comme les cellules
+        self._masses = RealTensor[ pd.num_point ]( src_dist.weights.raw )
+
+        # le pas par les limites n'existe qu'en 2D ( `otplan/Limites.h` ) ; ailleurs, les essais
+        step = { "auto": "limits" if d == 2 else "trials" }.get( step, step )
+        if step == "limits" and d != 2:
+            raise ValueError( "step = 'limits' : 2D seulement pour l'instant ( voir `otplan/Limites.h` )" )
+        if step not in _PAS:
+            raise ValueError( f"step inconnu : { step !r } ( 'auto', 'trials' ou 'limits' )" )
+        if linear_solver not in _LIN:
+            raise ValueError( f"linear_solver inconnu : { linear_solver !r } ( { ', '.join( _LIN ) } )" )
+        if continuation not in _CONTINUATION:
+            raise ValueError( f"continuation inconnue : { continuation !r } ( 'auto', 'always' ou 'never' )" )
+
+        options = _Options(
+            mass_tol = float( mass_tol ), mass_rtol = float( mass_rtol ), t_min = float( t_min ),
+            mult_ok = float( restart_factor ), facteur = 0.9, beta0 = 0.25, mult_lim = 2.0, confiance = 0.0,
+            conv_s0 = float( conv_start or 0.0 ), conv_ratio = float( conv_ratio ), conv_min = float( conv_min or 0.0 ),
+            conv_seuil = float( conv_threshold ),
+            max_iter = int( max_iter ), max_reculs = int( max_backtracks ), lin = _LIN[ linear_solver ],
+            pas = _PAS[ step ], trace = int( bool( verbose ) ), continuation = _CONTINUATION[ continuation ],
+            cap0 = int( pd._scratch_capacity ),
+            kernel_fp_size = fp_size( pd.kernel_dtype ),
+        )
+
+        weights = RealTensor[ pd.num_point ]()
+        history = _History( nb_hist = len( _HISTORY ), nb_points = n )
+        stats = RealTensor[ Axis( ShapeVar( len( _STATS ) ), name = "num_stat" ) ]()
+        w0 = RealTensor[ pd.num_point ]( pd.weights.raw )
+
+        dom = pd._domain_cell()
+        dist_expr, _, dist_kwargs = pd._dist_for()
+        pd_expr, pd_kwargs, pd_produced = pd._solver_weights_call()
+
+        out = [ "weights", "history", "stats" ] + pd_kwargs[ "output_attributes" ]
+        driver.call(
+            FfiCode( name = "otplan_solve",
+                includes = [ "sdot/otplan/Solve.h" ],
+                sources = [ "sdot/otplan/Lineaire.cpp" ],
+                fwd_code = "\n".join( [
+                    "using TK_otplan = std::conditional_t<CT_VALUE( options.kernel_fp_size ) == 64, double, float>;",
+                    f"auto pd_otplan = { pd_expr };",
+                    "otplan::OptionsSolveur os;",
+                    "otplan::NewtonOptions &no = os.newton;",
+                    "no.tol_abs = double( options.mass_tol ); no.tol_rel = double( options.mass_rtol ); no.t_min = double( options.t_min );",
+                    "no.mult_ok = double( options.mult_ok ); no.facteur = double( options.facteur ); no.beta0 = double( options.beta0 );",
+                    "no.mult_lim = double( options.mult_lim ); no.confiance = double( options.confiance );",
+                    "no.maxit = int( SI( options.max_iter ) ); no.max_reculs = int( SI( options.max_reculs ) );",
+                    "no.pas = int( SI( options.pas ) ); no.trace = SI( options.trace ) != 0;",
+                    "os.lin = otplan::Lin( int( SI( options.lin ) ) ); os.cap0 = SI( options.cap0 );",
+                    "os.continuation = int( SI( options.continuation ) ); os.seuil_continuation = double( options.conv_seuil );",
+                    "os.conv_s0 = double( options.conv_s0 ); os.conv_ratio = double( options.conv_ratio ); os.conv_min = double( options.conv_min );",
+                    f"otplan::resoudre<TK_otplan>( queue, pd_otplan, power_diagram, dom_cell, { dist_expr }, nu, w0, os, weights, history, stats );",
+                ] ) ),
+            output_attributes = out,
+            output_exceptions = [] if keep_weights else [ "history.weights" ],
+            output_capacities = { "history.nb_steps": int( max_iter ) + 1 },
+            has_dynamic_capacity = False,
+            power_diagram = pd,
+            dom_cell = dom,
+            nu = self._masses,
+            w0 = w0,
+            options = options,
+            weights = weights,
+            history = history,
+            stats = stats,
+            **pd_kwargs[ "args" ],
+            **dist_kwargs,
+        )
+        pd._solver_weights_after( pd_produced )
+
+        #: les poids AJUSTÉS, `[ n ]`, indexés comme `positions` ( `weights[ 0 ] == 0` : la jauge )
+        self.weights = weights
+        #: ce que le solveur rapporte ( voir `otplan/Solve.h::Stat` ), plus `fin` et `depart` en clair
+        st = stats.raw
+        self.stats = { name: float( st[ k ] ) for k, name in enumerate( _STATS ) }
+        self.stats[ "fin" ] = _FIN.get( int( self.stats[ "fin" ] ), "?" )
+        self.stats[ "depart" ] = _DEPART.get( int( self.stats[ "depart" ] ), "?" )
+        for name in ( "nb_iter", "nb_diag", "nb_recul", "nb_deborde", "nb_cell_lim", "nb_tours_essai", "lin_nb_hier", "lin_nb_iter", "nb_etapes" ):
+            self.stats[ name ] = int( self.stats[ name ] )
+
+        #: un dict par pas ACCEPTÉ -- `step = 0` est le point de départ : `t`, `residual_l2`,
+        #: `min_measure`, `max_abs_residual`, `nb_diag` ( cumulé ), `nb_evals` ( les diagrammes de
+        #: ce pas ), et `weights` si `keep_weights`
+        nb_steps = int( history.nb_steps.value )
+        rows = history.rows.raw[ :nb_steps ]
         self.history = []
+        for s in range( nb_steps ):
+            entry = { name: float( rows[ s, k ] ) for k, name in enumerate( _HISTORY ) }
+            entry[ "step" ] = int( entry[ "step" ] )
+            if keep_weights:
+                entry[ "weights" ] = RealTensor[ pd.num_point ]( history.weights.raw[ s ] )
+            self.history.append( entry )
 
-        self.weights = self._fit( w0, max_iter, ftol, min_measure_floor, memory,
-                                  c1, rho, max_backtracks, callback )
-
-
-    def power_diagram( self, weights = None ) -> PowerDiagram:
-        """Le `PowerDiagram` pour `weights` (par défaut : les poids AJUSTÉS, `self.weights`)."""
-        w = self.weights if weights is None else weights
-        return PowerDiagram( self._positions, w, boundaries = self.boundaries,
-                             accelerator = self.accelerator, max_nb_cuts = self.max_nb_cuts,
-                             distribution = self.dst_dist )
-
-    def residual( self, weights = None ):
-        """`mesure_i( weights ) - masse_i` -- ZÉRO au point cherché, DÉRIVABLE par rapport à
-        `weights` (voir `PowerDiagram.measures`)."""
-        w = self.weights if weights is None else weights
-        return self.power_diagram( w ).measures - self._masses
-
-    def residual_loss( self, weights = None ):
-        """`0.5 * |résidu|²` -- la moindre-carrés SEULE, sans le terme de barrière (voir
-        `_objective_raw` pour ce que `_fit` minimise réellement)."""
-        r = self.residual( weights )
-        return 0.5 * ( r * r ).sum()
+    def _check_bounded_support( self, d ):
+        """Le support que la densité déclare doit borner le domaine ( voir `__init__` ) -- un pavé,
+        ou un polytope quelconque qu'on construit pour le savoir"""
+        support = self.dst_dist.bounding_half_spaces()
+        if support is not None:
+            dirs = np.asarray( support[ 0 ], dtype = float ).reshape( -1, d )
+            offs = np.asarray( support[ 1 ], dtype = float ).reshape( -1 )
+            if axis_aligned_box( dirs, offs ) is not None:
+                return
+            dom = Cell.make_unbounded( d, kernel_dtype = "FP64" )
+            for k in range( len( offs ) ):
+                dom.cut( dirs[ k ], float( offs[ k ] ) )
+            if dom.is_bounded:
+                return
+        raise ValueError( "OtPlan : le support de la densite ne borne pas le domaine ( `bounding_half_spaces` ) -- "
+                          "c'est a la densite de le declarer ( `SumOfGaussians( support_sigmas = ... )` )" )
 
     @property
-    def cell_masses( self ):
-        """La mesure de chaque cellule, aux poids AJUSTÉS -- proche de `src_dist.weights` si
-        l'ajustement a convergé (voir `residual`)."""
+    def converged( self ):
+        return self.stats[ "fin" ] == "converge"
+
+    def power_diagram( self, weights = None ) -> PowerDiagram:
+        """Le `PowerDiagram` pour `weights` ( par défaut : les poids AJUSTÉS, `self.weights` ) --
+        toujours le MÊME objet, auquel on pose ces poids-là."""
+        self._pd.weights = self.weights if weights is None else weights
+        return self._pd
+
+    @property
+    def target_masses( self ) -> Tensor:
+        """`nu` : la masse cible de chaque cellule ( les masses des diracs, normalisées, puis remises
+        à l'échelle de ce que le domaine contient -- voir `otplan/Solve.h` )"""
+        return self._masses * ( self.stats[ "masse_domaine" ] / float( self._masses.sum() ) )
+
+    def residual( self, weights = None ) -> Tensor:
+        """`mesure_i( weights ) - nu_i` -- ZÉRO au point cherché, DÉRIVABLE par rapport à `weights`
+        ( voir `PowerDiagram.measures` )."""
+        w = self.weights if weights is None else weights
+        return self.power_diagram( w ).measures - self.target_masses
+
+    # -- ce que le plan VAUT, une fois ajusté ------------------------------------------------------
+
+    def transport( self ):
+        """`( cost, barycenters, masses )` aux poids AJUSTÉS : le coût `W_2^2 = sum_i int_{cell_i}
+        |x - p_i|^2 rho` ( un `Tensor` scalaire ), le barycentre de chaque cellule ( `[ n, d ]` ) et
+        sa masse ( `[ n ]` ) -- lus sur les moments des cellules ( `PowerDiagram.moments` ). Une
+        cellule vide garde son germe pour barycentre."""
+        pd = self.power_diagram()
+        mass, first, second = pd.moments
+        p = pd.positions
+        cost = second.sum() - 2 * ( p * first ).sum() + ( mass * ( p * p ).sum( pd.dim ) ).sum()
+        alive = mass > 0
+        safe = alive.where( mass, 1.0 )
+        bary = alive.where( first / safe, p )
+        return cost, bary, mass
+
+    @property
+    def cost( self ):
+        """Le coût de transport `W_2^2` entre les diracs et `dst_dist`, aux poids ajustés ( un
+        `Tensor` scalaire : `float( plan.cost )` pour le nombre )."""
+        return self.transport()[ 0 ]
+
+    def cost_and_position_grad( self ):
+        """`( cost, grad )` : le coût, et sa dérivée par rapport aux POSITIONS des diracs
+        ( `[ n, d ]` ) -- par le théorème de l'enveloppe : aux poids optimaux, la dérivée du coût
+        par rapport à `p_i` ne passe pas par les cellules, et vaut `2 m_i ( p_i - b_i )`, `b_i` le
+        barycentre de la cellule et `m_i` sa masse ( qui est la masse cible du dirac ). C'est la
+        même formule que `OtPlan1d`, et ce qu'une reconstruction consomme ( `otrec` )."""
+        cost, bary, m = self.transport()
+        return cost, 2 * m * ( self._pd.positions - bary )
+
+    @property
+    def cell_masses( self ) -> Tensor:
+        """La mesure de chaque cellule, aux poids AJUSTÉS -- proche de `target_masses` si
+        l'ajustement a convergé ( voir `residual` )."""
         return self.power_diagram().measures
-
-
-    # -- l'objectif (moindre-carrés + barrière) ----------------------------------------------------
-
-    def _evaluate( self, weights ):
-        """`( mesures, perte augmentée )`, en tableaux/nombres HÔTES -- calcul EAGER, SANS
-        dérivée : c'est ce dont la recherche linéaire a besoin à CHAQUE pas essayé (une valeur
-        scalaire et un fait géométrique, `mesures.min()`), le gradient n'étant recalculé, lui,
-        qu'une fois par pas RETENU (voir `_fit`). Les deux formules (ici et `_objective_raw`)
-        DOIVENT rester la même arithmétique -- l'une sur des tableaux nus pour la vitesse, l'autre
-        sur des `Tensor` pour la dérivée -- sans quoi Armijo compare des choses différentes."""
-        m = np.asarray( self.power_diagram( weights ).measures ).reshape( -1 )
-        r = m - self._masses
-        loss = 0.5 * float( np.dot( r, r ) )
-        if self._barrier_eps:
-            loss += self._barrier_eps * float( np.sum( self._masses / np.maximum( m, 1e-300 ) ) )
-        return m, loss
-
-    def _objective_raw( self, weights ):
-        """LA MÊME perte augmentée que `_evaluate`, mais en `Tensor` -- DÉRIVABLE (voir
-        `driver.grad` dans `_fit`). `.tensor` en sortie : `driver.grad`/`driver.jit` veulent un
-        tableau brut du backend, pas l'objet `Tensor` (voir `otrec.Reconstruction.scalar_loss`,
-        même convention).
-
-        Le terme de barrière s'écrit `( 1.0 / m ) * self._masses`, PAS `self._masses / m` : un
-        `numpy.ndarray` À GAUCHE d'un opérateur essaie de convertir l'AUTRE côté en tableau avant
-        de lui laisser sa chance (`Tensor.__array__`), ce qui échoue sous trace (`m` y est un
-        tracer, pas une valeur -- `TracerArrayConversionError`, même symptôme que le bug
-        `PowerDiagram` + boîte + `jit`, mais ici sous `driver.grad` seul et dans CE code-ci,
-        pas dans `PowerDiagram`). Un `Tensor` toujours à GAUCHE de l'opérateur (`1.0 / m`, un
-        flottant Python ne dispute jamais la priorité) passe par SA propre surcharge et l'évite.
-        """
-        m = self.power_diagram( weights ).measures
-        r = m - self._masses
-        loss = 0.5 * ( r * r ).sum()
-        if self._barrier_eps:
-            loss = loss + self._barrier_eps * ( ( 1.0 / m ) * self._masses ).sum()
-        return loss.tensor
-
-
-    # -- L-BFGS maison + recherche linéaire sous contrainte de faisabilité --------------------------
-
-    def _fit( self, w0, max_iter, ftol, min_measure_floor, memory, c1, rho, max_backtracks,
-             callback ):
-        """L-BFGS maison (récursion à deux boucles, Nocedal & Wright algorithme 7.4) + recherche
-        linéaire par retour arrière -- PAS `scipy.optimize.minimize` : sa recherche linéaire ne
-        connaît que la valeur SCALAIRE de l'objectif, alors que ce qu'il faut rejeter ici est un
-        fait GÉOMÉTRIQUE (une cellule vidée), pas seulement une valeur qui remonte -- voir la
-        docstring de la classe. `floor` (au plus `min_measure_floor`, voir `__init__`, PLAFONNÉ à
-        `0.1 *` la plus petite mesure de départ) : tout pas essayé qui laisserait UNE SEULE
-        cellule en dessous est refusé SANS MÊME regarder l'objectif, retour arrière (`x *= rho`)
-        et nouvel essai.
-
-        Le pas EFFECTIVEMENT pris (LBFGS, ou le secours en descente de gradient si le retour
-        arrière s'épuise -- garanti descendant pour un pas assez petit) alimente ensuite la
-        mémoire de courbure, jamais le pas candidat rejeté -- même principe que
-        `otrec.optimizers.SubspaceNewtonLBFGS`.
-
-        Le gradient est JITÉ une fois (`grad_fn`, ci-dessous) et réutilisé à chaque pas : `x`
-        garde la même forme du début à la fin, donc une seule trace/compilation sert toute la
-        descente au lieu d'en refaire une par pas. Deux bugs l'interdisaient jusqu'ici -- un
-        domaine en BOÎTE illisible sous `jit` (`box_min` / `box_max`, voir `JaxDriver.array`) et
-        le terme de barrière de `_objective_raw` ci-dessus -- tous deux corrigés désormais.
-        """
-        s_hist, y_hist = deque( maxlen = memory ), deque( maxlen = memory )
-
-        def record( step, w, m, loss ):
-            entry = { "step": step, "weights": np.asarray( w ).copy(), "loss": loss,
-                      "min_measure": float( m.min() ),
-                      "max_abs_residual": float( np.max( np.abs( m - self._masses ) ) ) }
-            self.history.append( entry )
-            if callback is not None:
-                callback( entry )
-            return entry
-
-        x = np.asarray( w0, dtype = float ).copy()
-        m, f = self._evaluate( x )
-        record( 0, x, m, f )
-        if m.min() <= 0:
-            # PAS un cas que le retour arrière puisse réparer : une cellule déjà VIDE aux poids de
-            # départ a un gradient identiquement nul (voir la docstring de la classe), donc AUCUN
-            # pas, si petit soit-il, ne la fait bouger -- un plancher positif serait alors
-            # insatisfiable pour toujours (`floor = 0.1 * 0 = 0`, et `mesure > 0` resterait faux
-            # indéfiniment). Seul un autre point de départ (`weights0`, par défaut `0` -- le
-            # Voronoï, toujours non vide pour un germe intérieur) peut en sortir.
-            raise ValueError( "OtPlan: a cell is already empty at the starting weights "
-                              "(min measure = 0) -- try a milder weights0" )
-
-        # PLAFONNÉ à `0.1 *` la plus petite mesure DE DÉPART : un nuage déjà déséquilibré au point
-        # de départ ( `weights0` ) ne doit pas rendre le tout premier pas impraticable -- le
-        # plancher protège contre la CHUTE à zéro, pas contre un déséquilibre déjà là.
-        floor = min( float( min_measure_floor ), 0.1 * float( m.min() ) )
-
-        # jité UNE FOIS : `x` garde la même forme tout du long, donc la trace/compilation d'ici
-        # sert tous les pas au lieu d'en refaire une par pas (voir la docstring de la méthode).
-        grad_fn = driver.jit( driver.grad( self._objective_raw ) )
-        g = np.asarray( grad_fn( x ) )
-
-        for it in range( 1, max_iter + 1 ):
-            direction = _two_loop_direction( g, s_hist, y_hist )
-            directional_deriv = float( np.dot( g, direction ) )
-            if directional_deriv >= 0:                     # mémoire dégénérée (rare) : repli sur
-                direction = -g                              # la descente de gradient pure.
-                directional_deriv = float( np.dot( g, direction ) )
-
-            x_new, m_new, f_new = self._backtrack( x, direction, f, directional_deriv,
-                                                   floor, c1, rho, max_backtracks )
-            if x_new is None:
-                # le secours -- petit pas le long de `-g`, garanti descendant pour `t` assez petit,
-                # et lui aussi retenu tant qu'il viderait une cellule.
-                x_new, m_new, f_new = self._backtrack( x, -g, f, -float( np.dot( g, g ) ),
-                                                       floor, c1, rho, max_backtracks )
-            if x_new is None:
-                break                                       # plus aucun pas praticable
-
-            g_new = np.asarray( grad_fn( x_new ) )
-            s, y = x_new - x, g_new - g
-            sy = float( np.dot( s, y ) )
-            if sy > 1e-12 * float( np.dot( s, s ) ):         # condition de courbure -- sans elle
-                s_hist.append( s ); y_hist.append( y )       # l'approximation cesserait d'être PSD
-
-            record( it, x_new, m_new, f_new )
-            converged = abs( f - f_new ) < ftol
-            x, m, f, g = x_new, m_new, f_new, g_new
-            if converged:
-                break
-
-        return x
-
-    def _backtrack( self, x, direction, f, directional_deriv, floor, c1, rho, max_backtracks ):
-        """Le premier `x + t * direction`, `t = 1, rho, rho², ...`, qui (a) laisse TOUTES les
-        mesures au-dessus de `floor` et (b) satisfait Armijo. `( None, None, None )` si aucun des
-        `max_backtracks` essais n'y arrive."""
-        t = 1.0
-        for _ in range( max_backtracks ):
-            x_try = x + t * direction
-            m_try, f_try = self._evaluate( x_try )
-            if ( m_try.min() > floor and np.isfinite( f_try )
-               and f_try <= f + c1 * t * directional_deriv ):
-                return x_try, m_try, f_try
-            t *= rho
-        return None, None, None
-
-
-def _two_loop_direction( g, s_hist, y_hist ):
-    """La direction de descente L-BFGS, `-H_k g` -- `H_k` l'approximation de l'inverse de la
-    hessienne construite par récursion à deux boucles sur les paires `( s, y )` gardées (les plus
-    anciennes en tête, comme les rend un `deque`). `H_0 = gamma * I`, la mise à l'échelle usuelle
-    (Nocedal & Wright, autour de leur algorithme 7.4) : sans elle le tout premier pas (mémoire
-    vide, `gamma = 1`) serait `-g`, à l'échelle du GRADIENT plutôt que de l'objectif."""
-    q = g.copy()
-    alphas, rhos = [], []
-    for s, y in zip( reversed( s_hist ), reversed( y_hist ) ):
-        r = 1.0 / np.dot( y, s )
-        a = r * np.dot( s, q )
-        q -= a * y
-        alphas.append( a )
-        rhos.append( r )
-    if s_hist:
-        s_last, y_last = s_hist[ -1 ], y_hist[ -1 ]
-        gamma = np.dot( s_last, y_last ) / np.dot( y_last, y_last )
-    else:
-        gamma = 1.0
-    r = gamma * q
-    for s, y, a, rho in zip( s_hist, y_hist, reversed( alphas ), reversed( rhos ) ):
-        beta = rho * np.dot( y, r )
-        r += s * ( a - beta )
-    return -r

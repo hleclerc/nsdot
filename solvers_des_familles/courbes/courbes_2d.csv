@@ -1,0 +1,516 @@
+newton;uniforme n=100000;2D;0;1;0.086;4.267610e+00;1.676696e-03
+newton;uniforme n=100000;2D;1;3;0.491;2.313310e+00;8.147035e-04
+newton;uniforme n=100000;2D;2;4;0.963;9.147694e-01;7.052614e-05
+newton;uniforme n=100000;2D;3;5;1.384;3.246152e-01;4.425254e-06
+newton;uniforme n=100000;2D;4;6;1.751;1.408570e-02;1.661209e-07
+newton;uniforme n=100000;2D;5;7;2.198;3.754745e-05;4.455832e-10
+newton;uniforme n=100000;2D;6;8;2.529;2.576029e-10;9.045609e-15
+newton essai-limites;uniforme n=100000;2D;0;1;0.054;4.267610e+00;1.676696e-03
+newton essai-limites;uniforme n=100000;2D;1;2;0.426;3.245584e+00;1.247387e-03
+newton essai-limites;uniforme n=100000;2D;2;3;0.799;1.753714e+00;6.196376e-04
+newton essai-limites;uniforme n=100000;2D;3;4;1.198;2.413234e-01;4.265307e-05
+newton essai-limites;uniforme n=100000;2D;4;5;1.620;1.092063e-02;5.601513e-07
+newton essai-limites;uniforme n=100000;2D;5;6;2.038;2.422678e-05;5.145462e-10
+newton essai-limites;uniforme n=100000;2D;6;7;2.444;2.929675e-10;9.048850e-15
+lbfgs L0 taux 0.5;uniforme n=100000;2D;0;1;0.059;4.267610e+00;1.676696e-03
+lbfgs L0 taux 0.5;uniforme n=100000;2D;1;3;0.486;2.313310e+00;8.147035e-04
+lbfgs L0 taux 0.5;uniforme n=100000;2D;2;8;0.739;1.625968e+00;5.104692e-04
+lbfgs L0 taux 0.5;uniforme n=100000;2D;3;9;1.179;2.284084e+00;1.408906e-04
+lbfgs L0 taux 0.5;uniforme n=100000;2D;4;17;1.687;9.759911e-01;1.070836e-04
+lbfgs L0 taux 0.5;uniforme n=100000;2D;5;21;2.278;2.150949e+00;4.965710e-05
+lbfgs L0 taux 0.5;uniforme n=100000;2D;6;26;2.485;9.013656e-01;3.401748e-05
+lbfgs L0 taux 0.5;uniforme n=100000;2D;7;27;2.922;7.055635e-02;1.624711e-05
+lbfgs L0 taux 0.5;uniforme n=100000;2D;8;28;2.996;9.553697e-01;1.110026e-05
+lbfgs L0 taux 0.5;uniforme n=100000;2D;9;31;3.539;2.198887e-01;2.549472e-06
+lbfgs L0 taux 0.5;uniforme n=100000;2D;10;33;3.659;8.979882e-03;1.216970e-07
+lbfgs L0 taux 0.5;uniforme n=100000;2D;11;34;3.731;3.585082e-04;4.188322e-09
+lbfgs L0 taux 0.5;uniforme n=100000;2D;12;35;3.801;9.451168e-06;1.106386e-10
+lbfgs L0 taux 0.5;uniforme n=100000;2D;13;36;3.874;2.131284e-07;2.482614e-12
+lbfgs L0;uniforme n=100000;2D;0;1;0.087;4.267610e+00;1.676696e-03
+lbfgs L0;uniforme n=100000;2D;1;3;0.521;2.313310e+00;8.147035e-04
+lbfgs L0;uniforme n=100000;2D;2;8;0.816;1.625968e+00;5.104692e-04
+lbfgs L0;uniforme n=100000;2D;3;12;0.990;1.184520e+00;3.326675e-04
+lbfgs L0;uniforme n=100000;2D;4;16;1.152;8.870323e-01;2.242470e-04
+lbfgs L0;uniforme n=100000;2D;5;20;1.313;8.191974e-01;1.557358e-04
+lbfgs L0;uniforme n=100000;2D;6;24;1.578;8.234560e-01;1.107598e-04
+lbfgs L0;uniforme n=100000;2D;7;28;1.748;8.289226e-01;8.070639e-05
+lbfgs L0;uniforme n=100000;2D;8;32;1.902;8.280189e-01;6.019485e-05
+lbfgs L0;uniforme n=100000;2D;9;36;2.082;8.267767e-01;4.624345e-05
+lbfgs L0;uniforme n=100000;2D;10;40;2.334;8.232964e-01;3.672087e-05
+lbfgs L0;uniforme n=100000;2D;11;44;2.495;8.187946e-01;3.037997e-05
+lbfgs L0;uniforme n=100000;2D;12;48;2.658;8.144256e-01;2.620483e-05
+lbfgs L0;uniforme n=100000;2D;13;50;2.759;8.088074e-01;2.354497e-05
+lbfgs L0;uniforme n=100000;2D;14;52;2.912;8.043985e-01;2.186576e-05
+lbfgs L0;uniforme n=100000;2D;15;54;3.051;7.987268e-01;2.082142e-05
+lbfgs L0;uniforme n=100000;2D;16;56;3.160;7.946220e-01;2.017060e-05
+lbfgs L0;uniforme n=100000;2D;17;58;3.300;7.893294e-01;1.975550e-05
+lbfgs L0;uniforme n=100000;2D;18;61;3.427;3.162638e-01;7.801711e-06
+lbfgs L0;uniforme n=100000;2D;19;63;3.984;2.005689e-02;3.466124e-07
+lbfgs L0;uniforme n=100000;2D;20;64;4.079;2.584963e-03;4.044808e-08
+lbfgs L0;uniforme n=100000;2D;21;65;4.180;3.586722e-05;6.963384e-10
+lbfgs L0;uniforme n=100000;2D;22;66;4.276;3.449810e-06;5.520862e-11
+lbfgs L0;uniforme n=100000;2D;23;67;4.352;5.541477e-08;1.104528e-12
+lbfgs L0 taux 0.5 +newton;uniforme n=100000;2D;0;1;0.055;4.267610e+00;1.676696e-03
+lbfgs L0 taux 0.5 +newton;uniforme n=100000;2D;1;3;0.602;2.313310e+00;8.147035e-04
+lbfgs L0 taux 0.5 +newton;uniforme n=100000;2D;2;8;0.941;1.625968e+00;5.104692e-04
+lbfgs L0 taux 0.5 +newton;uniforme n=100000;2D;3;9;1.366;2.284084e+00;1.408906e-04
+lbfgs L0 taux 0.5 +newton;uniforme n=100000;2D;4;17;1.875;9.759911e-01;1.070836e-04
+lbfgs L0 taux 0.5 +newton;uniforme n=100000;2D;5;21;2.470;2.150949e+00;4.965710e-05
+lbfgs L0 taux 0.5 +newton;uniforme n=100000;2D;6;26;2.733;9.013656e-01;3.401748e-05
+lbfgs L0 taux 0.5 +newton;uniforme n=100000;2D;7;27;3.178;7.055635e-02;1.624711e-05
+lbfgs L0 taux 0.5 +newton;uniforme n=100000;2D;0;27;3.178;7.055635e-02;1.624711e-05
+lbfgs L0 taux 0.5 +newton;uniforme n=100000;2D;1;28;3.562;1.014498e-03;6.758702e-08
+lbfgs L0 taux 0.5 +newton;uniforme n=100000;2D;2;29;3.993;2.196844e-07;5.441331e-12
+cg L0 taux 0.5;uniforme n=100000;2D;0;1;0.075;4.267610e+00;1.676696e-03
+cg L0 taux 0.5;uniforme n=100000;2D;1;5;0.640;2.313310e+00;8.147035e-04
+cg L0 taux 0.5;uniforme n=100000;2D;2;10;0.958;1.625968e+00;5.104692e-04
+cg L0 taux 0.5;uniforme n=100000;2D;3;14;1.712;2.284084e+00;1.408906e-04
+cg L0 taux 0.5;uniforme n=100000;2D;4;20;1.997;9.543793e-01;9.792989e-05
+cg L0 taux 0.5;uniforme n=100000;2D;5;26;2.748;2.313204e+00;3.048777e-05
+cg L0 taux 0.5;uniforme n=100000;2D;6;39;3.401;9.888591e-01;1.473408e-05
+cg L0 taux 0.5;uniforme n=100000;2D;7;43;3.548;1.733262e+00;2.022840e-05
+cg L0 taux 0.5;uniforme n=100000;2D;8;44;4.225;3.727773e-02;6.158261e-07
+cg L0 taux 0.5;uniforme n=100000;2D;9;46;4.337;6.401973e-03;9.475720e-08
+cg L0 taux 0.5;uniforme n=100000;2D;10;48;4.477;2.057353e-03;2.669907e-08
+cg L0 taux 0.5;uniforme n=100000;2D;11;50;4.586;1.628775e-04;2.427164e-09
+cg L0 taux 0.5;uniforme n=100000;2D;12;52;4.668;6.391219e-06;8.848331e-11
+cg L0 taux 0.5;uniforme n=100000;2D;13;54;4.753;1.284725e-06;1.477479e-11
+cg L0 taux 0.5;uniforme n=100000;2D;14;56;4.835;8.977140e-08;1.417218e-12
+lbfgs L0 refacto 1 taux 0.5;uniforme n=100000;2D;0;1;0.078;4.267610e+00;1.676696e-03
+lbfgs L0 refacto 1 taux 0.5;uniforme n=100000;2D;1;3;0.606;2.313310e+00;8.147035e-04
+lbfgs L0 refacto 1 taux 0.5;uniforme n=100000;2D;2;4;1.029;9.147694e-01;7.052614e-05
+lbfgs L0 refacto 1 taux 0.5;uniforme n=100000;2D;3;5;1.452;3.246152e-01;4.425254e-06
+lbfgs L0 refacto 1 taux 0.5;uniforme n=100000;2D;4;6;1.863;1.408570e-02;1.661209e-07
+lbfgs L0 refacto 1 taux 0.5;uniforme n=100000;2D;5;7;2.421;3.754745e-05;4.455833e-10
+lbfgs L0 refacto 1 taux 0.5;uniforme n=100000;2D;6;8;2.760;3.156843e-10;9.524173e-15
+lbfgs jacobi;uniforme n=100000;2D;0;1;0.079;4.267610e+00;1.676696e-03
+lbfgs jacobi;uniforme n=100000;2D;1;9;0.362;3.908823e+00;1.568429e-03
+lbfgs jacobi;uniforme n=100000;2D;2;18;0.737;3.883318e+00;1.561105e-03
+lbfgs jacobi;uniforme n=100000;2D;3;27;1.006;3.882527e+00;1.560878e-03
+lbfgs jacobi;uniforme n=100000;2D;4;37;1.445;3.882508e+00;1.560873e-03
+lbfgs jacobi;uniforme n=100000;2D;5;46;1.799;3.882506e+00;1.560872e-03
+lbfgs jacobi;uniforme n=100000;2D;6;57;2.312;3.882506e+00;1.560872e-03
+lbfgs jacobi;uniforme n=100000;2D;7;67;2.699;3.882506e+00;1.560872e-03
+lbfgs L0 sans plancher;uniforme n=100000;2D;0;1;0.089;4.267610e+00;1.676696e-03
+lbfgs L0 sans plancher;uniforme n=100000;2D;1;2;0.601;4.290620e+00;6.090573e-04
+lbfgs L0 sans plancher;uniforme n=100000;2D;2;4;0.760;1.607337e+00;2.840813e-04
+lbfgs L0 sans plancher;uniforme n=100000;2D;3;5;0.862;1.524693e+00;1.702760e-04
+lbfgs L0 sans plancher;uniforme n=100000;2D;4;6;0.954;2.898919e+00;1.460718e-04
+lbfgs L0 sans plancher;uniforme n=100000;2D;5;8;1.116;1.540187e+00;7.060026e-05
+lbfgs L0 sans plancher;uniforme n=100000;2D;6;10;1.251;1.333859e+00;4.087336e-05
+lbfgs L0 sans plancher;uniforme n=100000;2D;7;12;1.357;8.949903e-01;2.138668e-05
+lbfgs L0 sans plancher;uniforme n=100000;2D;8;14;1.461;6.520276e-01;1.270995e-05
+lbfgs L0 sans plancher;uniforme n=100000;2D;9;16;1.563;3.279612e-01;7.027561e-06
+lbfgs L0 sans plancher;uniforme n=100000;2D;10;18;1.704;1.030610e-01;3.209029e-06
+lbfgs L0 sans plancher;uniforme n=100000;2D;11;20;1.842;7.974763e-02;1.794615e-06
+lbfgs L0 sans plancher;uniforme n=100000;2D;12;22;1.989;5.787063e-02;1.206234e-06
+lbfgs L0 sans plancher;uniforme n=100000;2D;13;24;2.148;2.195534e-02;6.121440e-07
+lbfgs L0 sans plancher;uniforme n=100000;2D;14;26;2.301;1.132214e-02;3.191289e-07
+lbfgs L0 sans plancher;uniforme n=100000;2D;15;28;2.453;6.209791e-03;2.007283e-07
+lbfgs L0 sans plancher;uniforme n=100000;2D;16;30;2.611;4.638337e-03;1.247341e-07
+lbfgs L0 sans plancher;uniforme n=100000;2D;17;32;2.780;1.533099e-03;5.110734e-08
+lbfgs L0 sans plancher;uniforme n=100000;2D;18;34;2.925;1.117193e-03;2.948097e-08
+lbfgs L0 sans plancher;uniforme n=100000;2D;19;36;3.064;7.405297e-04;1.873163e-08
+lbfgs L0 sans plancher;uniforme n=100000;2D;20;38;3.173;4.140722e-04;1.175646e-08
+lbfgs L0 sans plancher;uniforme n=100000;2D;21;40;3.274;1.486344e-04;4.876912e-09
+lbfgs L0 sans plancher;uniforme n=100000;2D;22;42;3.372;9.828096e-05;2.769515e-09
+lbfgs L0 sans plancher;uniforme n=100000;2D;23;44;3.514;5.522594e-05;1.665272e-09
+lbfgs L0 sans plancher;uniforme n=100000;2D;24;46;3.677;2.524889e-05;9.225931e-10
+lbfgs L0 sans plancher;uniforme n=100000;2D;25;48;3.837;1.880966e-05;5.787626e-10
+lbfgs L0 sans plancher;uniforme n=100000;2D;26;50;3.986;1.675892e-05;3.681860e-10
+lbfgs L0 sans plancher;uniforme n=100000;2D;27;52;4.138;8.782417e-06;1.968466e-10
+lbfgs L0 sans plancher;uniforme n=100000;2D;28;54;4.291;3.579435e-06;1.014965e-10
+lbfgs L0 sans plancher;uniforme n=100000;2D;29;56;4.443;2.015033e-06;5.506283e-11
+lbfgs L0 sans plancher;uniforme n=100000;2D;30;58;4.584;1.054638e-06;3.038498e-11
+lbfgs L0 sans plancher;uniforme n=100000;2D;31;60;4.736;1.197506e-06;2.303675e-11
+lbfgs L0 sans plancher;uniforme n=100000;2D;32;62;4.845;7.518384e-07;1.333965e-11
+newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;0;1;0.062;1.665676e+03;6.291678e-02
+newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;1;10;1.183;1.659173e+03;6.267114e-02
+newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;2;18;1.958;1.646226e+03;6.218204e-02
+newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;3;24;2.892;1.595007e+03;6.024703e-02
+newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;4;28;3.618;1.398146e+03;5.284087e-02
+newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;5;32;4.468;1.224545e+03;4.634160e-02
+newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;6;37;5.469;1.148487e+03;4.346843e-02
+newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;7;42;6.412;1.077228e+03;4.077364e-02
+newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;8;46;7.241;9.448412e+02;3.575873e-02
+newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;9;50;8.084;8.292049e+02;3.135953e-02
+newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;10;53;8.898;6.319749e+02;2.376184e-02
+newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;11;56;9.511;4.829424e+02;1.799974e-02
+newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;12;59;10.343;3.693524e+02;1.362994e-02
+newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;13;61;10.752;2.067800e+02;7.216788e-03
+newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;14;63;11.426;1.155013e+02;3.844518e-03
+newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;15;65;11.880;6.435462e+01;2.072315e-03
+newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;16;67;12.559;3.579015e+01;1.130882e-03
+newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;17;68;12.939;7.937627e+00;2.303634e-04
+newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;18;73;13.997;7.447568e+00;2.161933e-04
+newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;19;75;14.710;4.081721e+00;1.180618e-04
+newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;20;76;15.215;6.688575e-01;1.704025e-05
+newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;21;77;15.728;6.533526e-02;1.116412e-06
+newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;22;78;16.186;9.450848e-04;1.174935e-08
+newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;23;79;16.517;2.351240e-06;3.336511e-11
+newton essai-limites;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;0;1;0.055;1.665676e+03;6.291678e-02
+newton essai-limites;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;1;3;0.492;1.659332e+03;6.267714e-02
+newton essai-limites;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;2;5;0.821;1.637058e+03;6.183566e-02
+newton essai-limites;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;3;7;1.227;1.540321e+03;5.818146e-02
+newton essai-limites;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;4;9;1.544;1.342056e+03;5.075097e-02
+newton essai-limites;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;5;11;1.911;1.150900e+03;4.358283e-02
+newton essai-limites;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;6;13;2.327;1.017503e+03;3.853971e-02
+newton essai-limites;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;7;15;2.739;8.419211e+02;3.186208e-02
+newton essai-limites;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;8;16;3.142;6.415925e+02;2.414381e-02
+newton essai-limites;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;9;18;3.751;4.055257e+02;1.484827e-02
+newton essai-limites;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;10;19;4.216;2.271207e+02;7.866805e-03
+newton essai-limites;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;11;21;4.774;1.023691e+02;3.213481e-03
+newton essai-limites;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;12;23;5.446;4.492496e+01;1.338205e-03
+newton essai-limites;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;13;25;6.182;1.263896e+01;3.549162e-04
+newton essai-limites;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;14;26;6.541;2.621335e+00;6.925040e-05
+newton essai-limites;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;15;27;7.046;3.728108e-01;8.440074e-06
+newton essai-limites;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;16;28;7.585;2.430650e-02;3.823974e-07
+newton essai-limites;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;17;29;7.956;1.369426e-04;1.644132e-09
+newton essai-limites;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;18;30;8.366;2.351240e-06;3.330243e-11
+lbfgs L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;0;1;0.059;1.665676e+03;6.291678e-02
+lbfgs L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;1;12;1.186;1.659173e+03;6.267114e-02
+lbfgs L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;2;20;1.922;1.635324e+03;6.177016e-02
+lbfgs L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;3;26;2.445;1.536037e+03;5.801984e-02
+lbfgs L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;4;33;3.362;1.349583e+03;5.102944e-02
+lbfgs L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;5;38;4.038;1.145260e+03;4.337330e-02
+lbfgs L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;6;42;4.607;9.731329e+02;3.686710e-02
+lbfgs L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;7;47;5.344;7.927203e+02;2.998609e-02
+lbfgs L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;8;53;6.145;5.292211e+02;1.971061e-02
+lbfgs L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;9;57;6.842;3.555106e+02;1.294213e-02
+lbfgs L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;10;60;7.487;1.889426e+02;6.428731e-03
+lbfgs L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;11;64;8.021;1.249745e+02;3.814403e-03
+lbfgs L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;12;68;8.834;5.790431e+01;1.682779e-03
+lbfgs L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;13;73;9.467;4.330167e+01;1.225663e-03
+lbfgs L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;14;76;10.083;2.199458e+01;6.136850e-04
+lbfgs L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;15;77;10.565;4.745436e+00;1.232377e-04
+lbfgs L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;16;78;10.708;2.151941e+00;5.289086e-05
+lbfgs L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;17;79;10.859;6.870359e-01;1.751727e-05
+lbfgs L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;18;80;11.055;6.246297e-01;1.059115e-05
+lbfgs L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;19;81;11.512;1.507408e-01;1.746655e-06
+lbfgs L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;20;82;11.660;3.508850e-02;4.170060e-07
+lbfgs L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;21;83;11.860;3.574175e-04;6.775328e-09
+lbfgs L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;22;84;12.002;3.230588e-05;5.512975e-10
+lbfgs L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;23;85;12.154;4.502005e-06;7.187152e-11
+lbfgs L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;24;86;12.349;3.047181e-06;4.345809e-11
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;0;1;0.056;1.665676e+03;6.291678e-02
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;1;12;0.806;1.659173e+03;6.267114e-02
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;2;20;1.320;1.635324e+03;6.177016e-02
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;3;26;1.842;1.536037e+03;5.801984e-02
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;4;33;2.912;1.349583e+03;5.102944e-02
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;5;38;3.453;1.145260e+03;4.337330e-02
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;6;42;4.083;9.731329e+02;3.686710e-02
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;7;47;4.835;7.927203e+02;2.998609e-02
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;8;53;5.685;5.292211e+02;1.971061e-02
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;9;64;6.904;5.198263e+02;1.933525e-02
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;10;70;7.875;3.231218e+02;1.161651e-02
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;11;80;8.984;3.214289e+02;1.154826e-02
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;12;87;9.913;3.172199e+02;1.139679e-02
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;13;91;10.627;1.463649e+02;4.731597e-03
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;14;96;11.215;1.104309e+02;3.337273e-03
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;15;105;12.540;1.045522e+02;3.123036e-03
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;16;111;13.564;9.226090e+01;2.753457e-03
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;17;117;14.561;8.273636e+01;2.467691e-03
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;18;126;15.893;5.274272e+01;1.555704e-03
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;19;131;16.507;4.443113e+01;1.299627e-03
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;20;134;17.090;1.790164e+01;5.067105e-04
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;21;135;17.231;7.417752e+00;1.995988e-04
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;22;136;17.431;3.578543e+00;9.384975e-05
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;23;137;17.570;1.305949e+00;3.473696e-05
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;24;138;17.729;1.192860e+00;2.091968e-05
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;25;139;17.878;8.502567e-01;1.299224e-05
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;26;140;18.020;2.978208e-01;6.469301e-06
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;27;141;18.224;2.192012e-01;3.900966e-06
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;28;142;18.406;8.821958e-02;1.992426e-06
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;29;143;18.549;3.288330e-02;9.362786e-07
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;30;144;18.710;2.631717e-02;6.137239e-07
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;31;145;18.862;1.539469e-02;2.949915e-07
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;32;146;19.052;1.009499e-02;1.964469e-07
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;33;147;19.241;6.554958e-03;1.289668e-07
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;34;148;19.421;4.012121e-03;7.500739e-08
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;35;149;19.587;2.345132e-03;4.432088e-08
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;36;150;19.713;1.298118e-03;2.415655e-08
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;37;151;19.865;6.137329e-04;1.164401e-08
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;38;152;20.018;2.610912e-04;6.093434e-09
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;39;153;20.211;1.062881e-04;3.469270e-09
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;40;154;20.393;5.590093e-05;1.753453e-09
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;41;155;20.574;3.586714e-05;9.957377e-10
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;42;156;20.740;2.905744e-05;6.902598e-10
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;43;157;20.884;1.530945e-05;4.101105e-10
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;44;158;21.032;5.435334e-06;2.103512e-10
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;45;159;21.184;8.561972e-06;1.582290e-10
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;46;160;21.335;4.719408e-06;9.009474e-11
+lbfgs L0;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;47;161;21.534;2.354976e-06;5.107333e-11
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;0;1;0.075;1.665676e+03;6.291678e-02
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;1;12;1.098;1.659173e+03;6.267114e-02
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;2;20;1.779;1.635324e+03;6.177016e-02
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;3;26;2.458;1.536037e+03;5.801984e-02
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;4;33;3.307;1.349583e+03;5.102944e-02
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;5;38;3.823;1.145260e+03;4.337330e-02
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;6;42;4.467;9.731329e+02;3.686710e-02
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;7;47;5.079;7.927203e+02;2.998609e-02
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;8;53;5.944;5.292211e+02;1.971061e-02
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;9;57;6.705;3.555106e+02;1.294213e-02
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;10;60;7.347;1.889426e+02;6.428731e-03
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;11;64;7.800;1.249745e+02;3.814403e-03
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;12;68;8.591;5.790431e+01;1.682779e-03
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;13;73;9.174;4.330167e+01;1.225663e-03
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;14;76;9.723;2.199458e+01;6.136850e-04
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;15;77;10.124;4.745436e+00;1.232377e-04
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;16;78;10.251;2.151941e+00;5.289086e-05
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;17;79;10.395;6.870359e-01;1.751727e-05
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;18;80;10.559;6.246297e-01;1.059115e-05
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;19;81;10.950;1.507408e-01;1.746655e-06
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;0;81;10.950;1.507408e-01;1.746655e-06
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;1;82;11.345;9.808617e-04;1.274926e-08
+lbfgs L0 taux 0.5 +newton;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;2;83;11.658;2.351238e-06;3.332150e-11
+cg L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;0;1;0.081;1.665676e+03;6.291678e-02
+cg L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;1;12;0.967;1.659173e+03;6.267114e-02
+cg L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;2;20;1.727;1.635324e+03;6.177016e-02
+cg L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;3;26;2.283;1.536037e+03;5.801984e-02
+cg L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;4;33;3.046;1.349583e+03;5.102944e-02
+cg L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;5;38;3.746;1.145260e+03;4.337330e-02
+cg L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;6;42;4.335;9.731329e+02;3.686710e-02
+cg L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;7;47;4.982;7.927203e+02;2.998609e-02
+cg L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;8;53;5.729;5.292211e+02;1.971061e-02
+cg L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;9;57;6.366;3.555106e+02;1.294213e-02
+cg L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;10;62;7.064;1.660012e+02;5.444658e-03
+cg L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;11;68;7.705;1.188887e+02;3.570144e-03
+cg L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;12;72;8.388;5.241516e+01;1.496086e-03
+cg L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;13;78;9.268;4.574031e+01;1.292550e-03
+cg L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;14;84;10.225;1.071647e+01;2.847254e-04
+cg L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;15;90;10.860;5.861360e+00;1.532748e-04
+cg L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;16;97;11.848;4.630856e+00;1.216180e-04
+cg L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;17;99;12.313;2.655774e+00;3.360439e-05
+cg L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;18;103;12.866;9.543937e-01;1.596807e-05
+cg L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;19;106;13.155;7.583412e-01;9.422095e-06
+cg L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;20;110;13.822;8.050285e-02;1.422276e-06
+cg L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;21;112;14.068;3.218883e-02;3.785688e-07
+cg L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;22;114;14.259;1.229565e-03;2.118760e-08
+cg L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;23;116;14.553;5.239225e-04;6.226143e-09
+cg L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;24;118;14.763;3.666803e-05;5.205283e-10
+cg L0 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;25;120;14.966;2.349370e-06;3.685283e-11
+lbfgs L0 refacto 1 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;0;1;0.059;1.665676e+03;6.291678e-02
+lbfgs L0 refacto 1 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;1;12;0.865;1.659173e+03;6.267114e-02
+lbfgs L0 refacto 1 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;2;20;1.461;1.635324e+03;6.177016e-02
+lbfgs L0 refacto 1 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;3;26;2.164;1.536037e+03;5.801984e-02
+lbfgs L0 refacto 1 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;4;33;2.897;1.349583e+03;5.102944e-02
+lbfgs L0 refacto 1 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;5;38;3.488;1.145260e+03;4.337330e-02
+lbfgs L0 refacto 1 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;6;42;4.043;9.731329e+02;3.686710e-02
+lbfgs L0 refacto 1 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;7;47;4.668;7.927203e+02;2.998609e-02
+lbfgs L0 refacto 1 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;8;53;5.455;5.292211e+02;1.971061e-02
+lbfgs L0 refacto 1 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;9;57;6.265;3.555106e+02;1.294213e-02
+lbfgs L0 refacto 1 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;10;60;6.783;1.889426e+02;6.428731e-03
+lbfgs L0 refacto 1 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;11;64;7.459;8.800562e+01;2.759695e-03
+lbfgs L0 refacto 1 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;12;68;8.140;4.079095e+01;1.229309e-03
+lbfgs L0 refacto 1 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;13;69;8.470;9.092526e+00;2.541388e-04
+lbfgs L0 refacto 1 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;14;77;9.609;8.119799e+00;2.269690e-04
+lbfgs L0 refacto 1 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;15;81;10.285;7.250711e+00;2.031587e-04
+lbfgs L0 refacto 1 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;16;83;10.809;2.237267e+00;4.135969e-05
+lbfgs L0 refacto 1 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;17;84;11.234;4.252326e-01;6.072520e-06
+lbfgs L0 refacto 1 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;18;85;11.651;1.166488e-02;2.174762e-07
+lbfgs L0 refacto 1 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;19;86;12.002;2.122848e-05;3.244448e-10
+lbfgs L0 refacto 1 taux 0.5;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;20;87;12.367;2.351240e-06;3.327566e-11
+lbfgs jacobi;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;0;1;0.056;1.665676e+03;6.291678e-02
+lbfgs jacobi;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;1;19;0.743;1.665627e+03;6.291499e-02
+lbfgs jacobi;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;2;31;1.097;1.665627e+03;6.291498e-02
+lbfgs jacobi;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;3;41;1.508;1.665627e+03;6.291498e-02
+lbfgs jacobi;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;4;50;1.869;1.665627e+03;6.291498e-02
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;0;1;0.081;1.665676e+03;6.291678e-02
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;1;2;0.435;2.824149e+02;1.191098e-02
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;2;4;0.615;3.031651e+02;1.043344e-02
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;3;6;0.758;1.930227e+02;1.100437e-02
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;4;8;0.878;3.858075e+02;1.257601e-02
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;5;10;1.077;7.592040e+02;1.414947e-02
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;6;13;1.251;2.566189e+02;1.085841e-02
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;7;15;1.364;4.595491e+02;1.264503e-02
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;8;18;1.531;4.038422e+02;1.111753e-02
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;9;21;1.759;3.463278e+02;1.067405e-02
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;10;24;1.987;3.684393e+02;1.096850e-02
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;11;27;2.176;6.055725e+02;1.082715e-02
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;12;30;2.368;4.442010e+02;9.270672e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;13;33;2.664;4.713603e+02;9.525540e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;14;36;2.882;3.170880e+02;8.885889e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;15;39;3.099;2.898655e+02;8.001252e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;16;42;3.418;1.937333e+02;7.618586e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;17;45;3.712;2.636611e+02;7.289349e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;18;48;3.935;2.086113e+02;6.732792e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;19;51;4.245;2.631309e+02;7.003054e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;20;54;4.502;2.488936e+02;7.088774e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;21;57;4.875;2.459769e+02;6.358958e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;22;60;5.204;1.997688e+02;6.010421e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;23;63;5.468;3.003554e+02;6.332584e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;24;66;5.763;1.830273e+02;5.617915e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;25;69;6.022;2.000032e+02;5.511143e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;26;72;6.374;1.833726e+02;5.465041e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;27;75;6.629;2.900277e+02;5.755949e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;28;78;6.944;1.348890e+02;5.495867e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;29;81;7.209;2.785494e+02;5.899668e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;30;85;7.704;1.930120e+02;5.150000e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;31;88;7.958;2.099669e+02;5.358063e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;32;91;8.297;2.686305e+02;5.453000e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;33;95;8.759;1.766090e+02;4.888431e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;34;98;9.021;1.673104e+02;4.944038e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;35;101;9.489;2.211735e+02;4.966177e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;36;105;9.885;1.741826e+02;4.409387e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;37;108;10.334;1.282808e+02;4.320156e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;38;111;10.616;2.137971e+02;4.550286e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;39;114;11.001;1.480930e+02;4.467455e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;40;117;11.294;9.137233e+01;3.955648e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;41;120;11.686;1.363185e+02;4.225151e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;42;123;11.982;1.988987e+02;4.274076e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;43;126;12.487;1.886799e+02;4.543424e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;44;130;12.935;1.704068e+02;4.209972e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;45;134;13.588;1.411556e+02;4.118421e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;46;138;13.984;1.246243e+02;3.688084e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;47;141;14.518;1.147331e+02;3.739111e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;48;144;14.900;1.405159e+02;3.823240e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;49;147;15.240;1.094946e+02;3.892621e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;50;151;15.863;8.724979e+01;3.485564e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;51;154;16.157;1.009041e+02;3.442599e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;52;157;16.702;1.217874e+02;3.603406e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;53;161;17.136;9.367180e+01;3.262687e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;54;164;17.641;1.233373e+02;3.309044e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;55;168;18.109;8.747388e+01;3.211021e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;56;172;18.659;9.020732e+01;3.167053e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;57;176;19.106;1.124840e+02;3.210721e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;58;180;19.584;8.688057e+01;2.995297e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;59;184;20.137;1.013756e+02;2.986602e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;60;188;20.754;1.253475e+02;3.114778e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;61;192;21.252;6.807877e+01;2.666202e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;62;196;21.911;9.138959e+01;2.814793e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;63;200;22.414;6.209679e+01;2.513746e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;64;204;23.039;8.590882e+01;2.655330e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;65;208;23.649;8.807302e+01;2.636568e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;66;212;24.195;8.025682e+01;2.447105e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;67;216;24.842;6.331081e+01;2.505293e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;68;220;25.322;7.175194e+01;2.485922e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;69;224;26.031;5.388303e+01;2.306678e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;70;228;26.553;6.353338e+01;2.303714e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;71;232;27.136;5.244673e+01;2.242974e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;72;236;27.795;6.687231e+01;2.352089e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;73;240;28.235;5.598798e+01;2.268809e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;74;244;28.910;5.411563e+01;2.289056e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;75;248;29.471;6.384492e+01;2.254066e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;76;252;30.024;5.231413e+01;2.179879e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;77;256;30.732;6.444789e+01;2.213059e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;78;260;31.246;5.808462e+01;2.251818e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;79;264;31.832;6.223912e+01;2.129859e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;80;268;32.496;5.307116e+01;2.207819e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;81;272;32.937;5.683393e+01;2.067815e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;82;276;33.607;4.670393e+01;2.041180e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;83;280;34.181;4.759555e+01;2.042317e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;84;284;34.711;4.613276e+01;1.983669e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;85;288;35.177;4.753732e+01;1.953234e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;86;292;35.740;7.260986e+01;1.893172e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;87;296;36.346;4.191128e+01;1.861868e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;88;300;36.885;4.162065e+01;1.878429e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;89;303;37.405;4.514759e+01;1.989461e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;90;307;38.092;4.470792e+01;1.880925e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;91;311;38.572;5.291933e+01;1.973397e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;92;315;39.324;3.895057e+01;1.879529e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;93;319;39.856;5.205781e+01;1.885033e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;94;323;40.462;4.302940e+01;1.862430e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;95;327;41.109;5.234057e+01;1.808508e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;96;331;41.580;4.936636e+01;1.739621e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;97;335;42.264;3.827782e+01;1.734734e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;98;339;42.795;4.202083e+01;1.706837e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;99;343;43.347;3.900103e+01;1.758600e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;100;347;44.068;4.607939e+01;1.733162e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;101;351;44.619;4.389025e+01;1.725421e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;102;355;45.146;3.052850e+01;1.625037e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;103;359;45.830;3.483838e+01;1.630114e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;104;363;46.358;4.364382e+01;1.635219e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;105;367;46.918;3.728288e+01;1.561931e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;106;371;47.591;3.712888e+01;1.548445e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;107;375;48.042;4.486974e+01;1.572518e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;108;379;48.678;3.252709e+01;1.507520e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;109;383;49.231;3.405825e+01;1.489065e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;110;387;49.758;4.191966e+01;1.482517e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;111;391;50.196;3.075497e+01;1.444808e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;112;395;50.724;3.349467e+01;1.447838e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;113;399;51.276;2.620308e+01;1.378141e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;114;403;51.960;3.322806e+01;1.378877e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;115;407;52.663;3.414509e+01;1.418317e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;116;411;53.216;2.772318e+01;1.400244e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;117;415;53.940;3.332644e+01;1.352699e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;118;419;54.562;2.375532e+01;1.300883e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;119;423;55.160;3.195047e+01;1.352324e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;120;427;55.880;2.997291e+01;1.345808e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;121;431;56.503;3.271494e+01;1.383882e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;122;435;57.087;2.843806e+01;1.373593e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;123;439;57.799;2.461973e+01;1.305727e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;124;443;58.419;3.185266e+01;1.380844e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;125;447;59.014;2.787829e+01;1.337412e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;126;451;59.741;3.554309e+01;1.325926e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;127;455;60.396;3.168407e+01;1.296018e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;128;459;60.944;2.787061e+01;1.311964e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;129;463;61.529;3.693848e+01;1.332738e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;130;467;62.292;3.159505e+01;1.323920e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;131;471;62.906;3.829111e+01;1.326335e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;132;475;63.496;3.515131e+01;1.342995e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;133;479;64.063;3.005934e+01;1.289840e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;134;483;64.677;2.066525e+01;1.239347e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;135;487;65.296;2.838984e+01;1.272227e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;136;491;66.028;2.786498e+01;1.310973e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;137;495;66.654;3.498115e+01;1.312336e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;138;499;67.249;2.938009e+01;1.292969e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;139;503;67.992;2.556726e+01;1.299101e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;140;507;68.574;3.568038e+01;1.279470e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;141;511;69.202;3.269086e+01;1.325242e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;142;515;69.922;2.834516e+01;1.313591e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;143;519;70.492;2.439989e+01;1.277209e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;144;523;71.140;3.136039e+01;1.319146e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;145;527;71.853;3.055678e+01;1.339395e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;146;531;72.387;3.054829e+01;1.295626e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;147;535;73.070;2.721373e+01;1.334034e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;148;539;73.668;2.638406e+01;1.307493e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;149;543;74.283;2.316476e+01;1.252601e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;150;547;74.853;3.002037e+01;1.260483e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;151;551;75.374;2.796549e+01;1.278798e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;152;555;75.964;3.318509e+01;1.237603e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;153;559;76.651;3.015968e+01;1.258516e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;154;563;77.358;2.734549e+01;1.188896e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;155;567;77.869;2.353850e+01;1.162896e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;156;571;78.583;2.055636e+01;1.165742e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;157;575;79.216;2.039613e+01;1.183602e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;158;579;79.797;2.953904e+01;1.179570e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;159;583;80.533;2.153583e+01;1.162192e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;160;587;81.102;1.851496e+01;1.108413e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;161;591;81.769;2.315549e+01;1.142904e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;162;595;82.375;2.374600e+01;1.066908e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;163;599;83.005;3.058427e+01;1.116188e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;164;603;83.579;1.938653e+01;1.051841e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;165;607;84.187;2.549430e+01;1.064484e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;166;611;84.819;1.864210e+01;1.010519e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;167;615;85.579;1.780691e+01;1.003722e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;168;619;86.146;2.092511e+01;1.017704e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;169;623;86.835;2.092486e+01;9.798929e-04
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;170;627;87.452;1.666713e+01;9.548019e-04
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;171;631;88.075;2.484918e+01;9.505611e-04
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;172;635;88.640;1.795652e+01;9.481384e-04
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;173;639;89.261;1.594699e+01;9.211555e-04
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;174;643;89.925;1.692717e+01;8.915945e-04
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;175;647;90.549;1.730529e+01;9.269948e-04
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;176;651;91.193;2.038008e+01;9.004281e-04
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;177;655;91.817;1.815626e+01;8.815172e-04
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;178;659;92.427;1.484383e+01;8.628960e-04
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;179;663;93.002;1.441001e+01;8.692730e-04
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;180;667;93.622;1.804007e+01;8.725905e-04
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;181;671;94.300;1.743664e+01;8.819465e-04
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;182;675;95.050;1.622923e+01;8.943234e-04
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;183;679;95.629;1.689122e+01;9.155340e-04
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;184;683;96.178;2.394530e+01;9.721267e-04
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;185;687;96.842;1.998550e+01;9.725591e-04
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;186;691;97.472;1.672831e+01;9.664360e-04
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;187;695;98.123;2.463401e+01;1.008099e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;188;699;98.785;2.630248e+01;1.009185e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;189;703;99.248;2.042520e+01;1.025544e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;190;706;99.773;3.104005e+01;1.176529e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;191;709;100.347;2.449204e+01;1.204185e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;192;712;100.768;3.006544e+01;1.308219e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;193;716;101.328;2.897037e+01;1.227983e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;194;719;101.849;2.585213e+01;1.293312e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;195;722;102.180;3.153374e+01;1.319198e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;196;725;102.708;4.780089e+01;1.431765e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;197;729;103.381;2.943358e+01;1.278851e-03
+lbfgs L0 sans plancher;../2d_des_familles/cases/lines5_n100000_s0.005_voronoi.txt;2D;198;733;104.089;2.382549e+01;1.222478e-03

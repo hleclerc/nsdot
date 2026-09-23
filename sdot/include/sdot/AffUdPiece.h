@@ -1,10 +1,12 @@
 #pragma once
 
+#include <loom/support/common_macros.h> // HD
+
 namespace sdot {
 
 template<class TF>
 struct CstUdPiece {
-    auto w2_dist( auto &&dirac_pos ) const {
+    HD auto w2_dist( auto &&dirac_pos ) const {
         // TODO: optimize
         const TF y0 = y;
         const TF y1 = y;

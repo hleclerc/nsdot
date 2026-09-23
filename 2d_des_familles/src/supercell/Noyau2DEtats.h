@@ -76,7 +76,29 @@ enum : int {
 ///
 /// Le corps est celui de `noyau<NB>`, a une chose pres : la ou l'original saute vers `noyau<nn>`,
 /// celui-ci REND `nn` et laisse le moteur redispatcher. Rien d'autre n'a bouge.
-template<int NB, class Fourn, class Atl>
+///
+/// `ORD` CHOISIT L'ORDRE DES TESTS, et rien d'autre -- les deux variantes calculent la meme chose.
+///
+/// `ORD` est un masque de DEUX changements independants, pour pouvoir les mesurer separement.
+///
+/// BIT 0 -- L'ORDRE PAR PROBABILITE, tel que `pd_hist` le mesure sur les quatre nuages 2D :
+///        `m == 0`            la grande majorite des tentatives
+///        `nb_out == 1`       41 % des coupes effectives -- un seul bit, donc `i1 == j2`, donc un
+///                            seul `ctz` et ni `prev` ni `next` a fabriquer
+///        `nb_out == NB`      la cellule videe, quelques pour mille : repousse a la fin
+///        le cas general
+///
+/// BIT 1 -- LE MASQUE DOUBLE, qui supprime le repliage cyclique au lieu de le contourner.
+///
+/// `prev` et `next` sont les ROTATIONS de `m` d'un cran, et une rotation sur `NB` bits s'ecrit
+/// naturellement sur `2 NB` : en posant `mm = m | ( m << NB )`, la rotation a gauche est
+/// `mm >> ( NB - 1 )` et celle a droite `mm >> 1`. Les bits qui depassent ne genent pas, puisque le
+/// resultat est aussitot intersecte avec `m`. Douze operations deviennent huit, et SANS BRANCHE --
+/// ce qui en fait le concurrent direct du bit 0, dont le test a 41 / 59 ne se predit pas.
+///
+///   0  l'ordre d'origine       2  le masque double seul
+///   1  l'ordre par probabilite 3  les deux
+template<int NB, int ORD, class Fourn, class Atl>
 [[gnu::always_inline]] inline int etape( __m256 &vx, __m256 &vy, __m256i &cid, Fourn *f, Atl *a,
                                          Local<Fourn> &loc, bool &change ) {
     constexpr unsigned valid = ( 1u << NB ) - 1;
@@ -103,16 +125,46 @@ template<int NB, class Fourn, class Atl>
 
         if ( ! m )
             continue;
-        if ( m == valid )
-            return VIDE;
 
-        const unsigned prev = ( ( m << 1 ) | ( m >> ( NB - 1 ) ) ) & valid;
-        const unsigned next = ( ( m >> 1 ) | ( m << ( NB - 1 ) ) ) & valid;
-        const int i1 = __builtin_ctz( m & ~prev );
-        const int j2 = __builtin_ctz( m & ~next );
+        // les deux bouts de la plage exterieure, dans les deux ecritures
+        const auto bouts = [ & ]( int &i1, int &j2 ) {
+            if constexpr ( ORD & 2 ) {
+                const unsigned mm = m | ( m << NB );
+                i1 = __builtin_ctz( m & ~( mm >> ( NB - 1 ) ) );
+                j2 = __builtin_ctz( m & ~( mm >> 1 ) );
+            } else {
+                const unsigned prev = ( ( m << 1 ) | ( m >> ( NB - 1 ) ) ) & valid;
+                const unsigned next = ( ( m >> 1 ) | ( m << ( NB - 1 ) ) ) & valid;
+                i1 = __builtin_ctz( m & ~prev );
+                j2 = __builtin_ctz( m & ~next );
+            }
+        };
+
+        int i1, j2, nb_out;
+        if constexpr ( ! ( ORD & 1 ) ) {
+            if ( m == valid ) {
+                if constexpr ( veut_comptage<Fourn>() ) f->compte( NB, NB );
+                return VIDE;
+            }
+            bouts( i1, j2 );
+            nb_out = __builtin_popcount( m );
+        } else {
+            // UN SEUL SOMMET DEHORS : il est a lui seul les deux bouts de la plage, donc `i1 == j2`
+            // et le repliage cyclique n'a pas lieu d'etre.
+            nb_out = __builtin_popcount( m );
+            if ( nb_out == 1 ) {
+                i1 = j2 = __builtin_ctz( m );
+            } else {
+                if ( nb_out == NB ) {                    // la cellule videe : quelques pour mille
+                    if constexpr ( veut_comptage<Fourn>() ) f->compte( NB, NB );
+                    return VIDE;
+                }
+                bouts( i1, j2 );
+            }
+        }
         const int j0 = i1 ? i1 - 1 : NB - 1;
         const int j3 = j2 + 1 < NB ? j2 + 1 : 0;
-        const int nb_in = NB - __builtin_popcount( m );
+        const int nb_in = NB - nb_out;
         const int nn = nb_in + 2;
 
         // les deux ancres dans des voies DISTINCTES -- A en voie 0, B en voie 1 -- donc pas de
@@ -152,6 +204,10 @@ template<int NB, class Fourn, class Atl>
             _mm256_store_si256( (__m256i *) a->cid, cid );
             return DEBORDE;
         }
+        // APRES le debordement et pas avant : une coupe qui deborde est rejouee par l'excursion,
+        // qui la comptera. La compter ici la ferait apparaitre deux fois.
+        if constexpr ( veut_comptage<Fourn>() ) f->compte( NB - nb_in, NB );
+
         vx = nvx; vy = nvy; cid = nid;
         if constexpr ( veut_changement<Fourn>() ) change = true;
         if ( nn != NB )
@@ -172,7 +228,12 @@ inline int excursion( __m256 &vx, __m256 &vy, __m256i &cid, Fourn *f, Atl *a, Lo
         int  nb = a->nb;
         Plan p  = a->attente;
         for ( ;; ) {
-            nb = coupe_large<MaxNb>( a->vx, a->vy, a->cid, nb, p, s );
+            const int av = nb;                           // la taille AVANT, pour le comptage
+            int nout = 0;
+            nb = coupe_large<MaxNb>( a->vx, a->vy, a->cid, nb, p, s,
+                                     veut_comptage<Fourn>() ? &nout : nullptr );
+            if constexpr ( veut_comptage<Fourn>() )
+                if ( nout ) f->compte( nout, av );
             if ( nb <= 0 ) { a->nb = nb; return VIDE; }
             if ( nb <= 8 ) {
                 vx  = _mm256_load_ps( a->vx );
@@ -197,7 +258,7 @@ inline int excursion( __m256 &vx, __m256 &vy, __m256i &cid, Fourn *f, Atl *a, Lo
 /// ce chemin.
 ///
 /// L'atelier doit porter la cellule de depart : `a->nb` sommets dans `a->vx / vy / cid`.
-template<class Fourn, class Atl>
+template<int ORD = 0, class Fourn, class Atl>
 void moteur_depuis( Fourn *f, Atl *a ) {
     int nb = a->nb;
     if ( nb <= 0 )
@@ -217,12 +278,12 @@ void moteur_depuis( Fourn *f, Atl *a ) {
     for ( ;; ) {
         int r;
         switch ( nb ) {
-            case 3:  r = etape<3>( vx, vy, cid, f, a, loc, change ); break;
-            case 4:  r = etape<4>( vx, vy, cid, f, a, loc, change ); break;
-            case 5:  r = etape<5>( vx, vy, cid, f, a, loc, change ); break;
-            case 6:  r = etape<6>( vx, vy, cid, f, a, loc, change ); break;
-            case 7:  r = etape<7>( vx, vy, cid, f, a, loc, change ); break;
-            case 8:  r = etape<8>( vx, vy, cid, f, a, loc, change ); break;
+            case 3:  r = etape<3,ORD>( vx, vy, cid, f, a, loc, change ); break;
+            case 4:  r = etape<4,ORD>( vx, vy, cid, f, a, loc, change ); break;
+            case 5:  r = etape<5,ORD>( vx, vy, cid, f, a, loc, change ); break;
+            case 6:  r = etape<6,ORD>( vx, vy, cid, f, a, loc, change ); break;
+            case 7:  r = etape<7,ORD>( vx, vy, cid, f, a, loc, change ); break;
+            case 8:  r = etape<8,ORD>( vx, vy, cid, f, a, loc, change ); break;
             default: r = excursion( vx, vy, cid, f, a, loc ); break;
         }
         if ( r == FINI ) {
@@ -239,7 +300,7 @@ void moteur_depuis( Fourn *f, Atl *a ) {
 }
 
 /// LE MOTEUR. Une boucle, un `switch`, et la cellule en locales.
-template<class Fourn, class Atl>
+template<int ORD = 0, class Fourn, class Atl>
 void moteur( Fourn *f, Atl *a ) {
     __m256  vx  = _mm256_setr_ps( 0, 1, 1, 0, 0, 0, 0, 0 );
     __m256  vy  = _mm256_setr_ps( 0, 0, 1, 1, 0, 0, 0, 0 );
@@ -253,12 +314,12 @@ void moteur( Fourn *f, Atl *a ) {
     for ( ;; ) {
         int r;
         switch ( nb ) {
-            case 3:  r = etape<3>( vx, vy, cid, f, a, loc, change ); break;
-            case 4:  r = etape<4>( vx, vy, cid, f, a, loc, change ); break;
-            case 5:  r = etape<5>( vx, vy, cid, f, a, loc, change ); break;
-            case 6:  r = etape<6>( vx, vy, cid, f, a, loc, change ); break;
-            case 7:  r = etape<7>( vx, vy, cid, f, a, loc, change ); break;
-            case 8:  r = etape<8>( vx, vy, cid, f, a, loc, change ); break;
+            case 3:  r = etape<3,ORD>( vx, vy, cid, f, a, loc, change ); break;
+            case 4:  r = etape<4,ORD>( vx, vy, cid, f, a, loc, change ); break;
+            case 5:  r = etape<5,ORD>( vx, vy, cid, f, a, loc, change ); break;
+            case 6:  r = etape<6,ORD>( vx, vy, cid, f, a, loc, change ); break;
+            case 7:  r = etape<7,ORD>( vx, vy, cid, f, a, loc, change ); break;
+            case 8:  r = etape<8,ORD>( vx, vy, cid, f, a, loc, change ); break;
             default: r = excursion( vx, vy, cid, f, a, loc ); break;
         }
 

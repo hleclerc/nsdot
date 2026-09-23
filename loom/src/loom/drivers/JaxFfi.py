@@ -1,12 +1,12 @@
 """Compile C++ kernels into XLA-FFI handlers and expose them to Jax.
 
 Pipeline (see `JaxDriver.call`): a C++ *body* is wrapped into a self-registering XLA FFI
-handler, compiled to a shared library with AdaptiveCpp (`make_library`), `dlopen`ed, and
+handler, compiled to a shared library with the device's compiler (`make_library`), `dlopen`ed, and
 registered with `jax.ffi.register_ffi_target`. The returned target name feeds
 `jax.ffi.ffi_call`, which inserts the call into the XLA program (works eager and under
 `jax.jit`, on CPU and — later — CUDA).
 
-Two caches, both keyed by a content hash of (source + compilation target):
+Two caches, both keyed by a content hash of (source + the compiler's build signature):
 * disk : the compiled `.so`/`.dylib` (handled by `make_library`; a changed source yields a
          new hash, hence a new file and a rebuild).
 * RAM  : `_loaded` keeps the `ctypes` handle mapped and marks the target as already
@@ -22,14 +22,14 @@ from __future__ import annotations
 import os
 
 import ctypes
+from pathlib import Path
 import sys
 
 import jax
 import jax.numpy as jnp
 import numpy
 
-from ..compilation.adaptive_cpp import make_library, resolve_targets, ACPP_VERSION
-from ..compilation import build_dir
+from ..compilation import build_dir, make_library
 from ..util.encode_base_62 import encode_base_62
 from .CallArg_Errors import ERRORS_VAR_NAME
 
@@ -67,10 +67,13 @@ def _lib_suffix() -> str:
 
 
 def _ffi_include_flags() -> list:
-    # jaxlib ships the header-only XLA FFI C++ API (xla/ffi/api/ffi.h) under this dir; the shared
-    # generated headers (`sdot/generated/...`) live under the build tree, on their own `-I` root.
-    from ..compilation.generated_headers import include_root
-    return [ "-I", jax.ffi.include_dir(), "-I", str( include_root() ) ]
+    # jaxlib ships the header-only XLA FFI C++ API (xla/ffi/api/ffi.h) under this dir. `-isystem`,
+    # not `-I`: its headers do not compile warning-free, and those warnings are not ours to read.
+    return [ "-isystem", ffi_include_dir() ]
+
+
+def ffi_include_dir() -> str:
+    return jax.ffi.include_dir()
 
 
 def render_source( body: str ) -> str:
@@ -78,8 +81,9 @@ def render_source( body: str ) -> str:
     return _SOURCE_TEMPLATE.format( body = body )
 
 
-def compile_and_register( source: str, device, prefix: str = "" ) -> str:
-    """Compile *source*, load and register it, and return its Jax FFI target name.
+def compile_and_register( source: str, device, prefix: str = "", sources = () ) -> str:
+    """Compile *source* (plus the `sources` units it links, see `make_library`), load and
+    register it, and return its Jax FFI target name.
 
     Idempotent and cached: repeated calls with the same source + device reuse the compiled
     library and the existing registration.
@@ -92,34 +96,41 @@ def compile_and_register( source: str, device, prefix: str = "" ) -> str:
     # Dropping the device OBJECT from the key is safe because the source always carries the
     # device anyway (`_CALL_TEMPLATE` substitutes `device.cpp_queue_type`), so a CPU and a CUDA
     # handler can never hash to the same name -- which matters, since this name is also the Jax
-    # target and registration is per platform. What we gain: `str( CudaGpu:1 )` used to compile
-    # the very same library twice on a two-GPU node, while conversely it never mentioned the
-    # compute capability -- so under the ahead-of-time targets a cache shared between machines
-    # (a cluster home, a baked container image) could hand an sm_75 binary to an sm_90 card.
-    # Naming the target fixes both, and under `generic` the architecture stops being part of
-    # the question at all.
-    targets, _, _ = resolve_targets( device )
-    name = prefix + encode_base_62( f"{ source }|{ targets }|{ ACPP_VERSION }" )
+    # target and registration is per platform. (`str( CudaGpu:1 )` used to compile the very same
+    # library twice on a two-GPU node.) How it is compiled = the compiler's `build_signature`:
+    # the flags, and the machine when `-march=native` is among them -- a compilation setting
+    # changes the binary as much as the source does, and a GPU architecture belongs there too.
+    name = prefix + encode_base_62( f"{ source }|{ sources }|{ device.compiler.build_signature }" )
     if name in _loaded:
         return name
 
-    src_path = build_dir() / f"{ name }.cpp"
-    src_path.parent.mkdir( parents = True, exist_ok = True )
-    src_path.write_text( source )
+    # a precompiled kernel first (a wheel's catalogue, see `compilation/catalogue.py`): the same
+    # source, compiled for a CPU level this machine can run -- nothing to compile, nothing to
+    # check. Recording (a catalogue being built) sees every source that goes by.
+    from ..compilation import catalogue
+    catalogue.record( source, sources, device )
+    found = catalogue.lookup( source, sources, device )
+    if found is not None:
+        lib, handler = found
+    else:
+        if catalogue.policy() == "catalogue":
+            raise RuntimeError( f"sdot: kernel `{ name }` is not in the catalogue and SDOT_KERNELS=catalogue forbids compiling it" )
 
-    lib_path = make_library(
-        name + _lib_suffix(), [ src_path ], device,
-        extra_flags = _ffi_include_flags(),
-    )
+        # write-if-changed: the build graph decides on dates, and a rewrite of identical bytes
+        # would look like a change to it (one recompilation per process, for nothing).
+        src_path = build_dir() / f"{ name }{ device.compiler.source_suffix() }"
+        src_path.parent.mkdir( parents = True, exist_ok = True )
+        if not ( src_path.exists() and src_path.read_text() == source ):
+            src_path.write_text( source )
 
-    # RTLD_GLOBAL, deliberately: under the `generic` target the kernel is JIT-compiled at run
-    # time into a SEPARATE shared library, which the AdaptiveCpp runtime dlopens. Any host
-    # symbol that library needs (libstdc++, libm, ...) has to be resolvable in the process's
-    # global namespace, and python itself brings none of them. Loading our handler globally
-    # publishes them (the flag propagates to its dependencies). With RTLD_LOCAL the JIT'd
-    # library fails to load with an `undefined symbol` — at run time, long after compiling fine.
-    lib = ctypes.CDLL( str( lib_path ), mode = ctypes.RTLD_GLOBAL )
-    handler = getattr( lib, _HANDLER_SYMBOL )
+        lib_path = make_library(
+            name + _lib_suffix(), [ src_path ], device,
+            extra_flags = _ffi_include_flags(),
+            sources = [ ( _resolve_source( p ), dict( d ) ) for p, d in sources ],
+        )
+        lib = ctypes.CDLL( str( lib_path ) )
+        handler = getattr( lib, _HANDLER_SYMBOL )
+
     jax.ffi.register_ffi_target(
         name, jax.ffi.pycapsule( handler ), platform = device.ffi_platform,
     )
@@ -143,8 +154,11 @@ def call_body( body: str, device ):
 # body can read and write `cell.<field>`.
 _CALL_TEMPLATE = """\
 #include "xla/ffi/api/ffi.h"
+#include <{queue_include}>
+// the device is in the TYPE of everything below: the queue decides the memory space the kernel
+// dereferences. `SDOT_QUEUE` is also what a hand-written header may read (`sdot/Queue.h`).
 #define SDOT_QUEUE {queue_type}
-#include <sdot/Queue.h>
+namespace sdot {{ using Queue = SDOT_QUEUE; }}
 #include <loom/support/algorithms/CartesianIndices.h>
 #include <loom/support/kernels/run_parallel.h>
 #include <loom/support/common_types.h>
@@ -170,14 +184,14 @@ using namespace sdot;
 // pulls in its own generated macros), then whatever the body listed for itself.
 {extra_includes}
 
-{stream_decls}
+// what the body runs per item: a NAMED functor at namespace scope (never a lambda -- a device
+// compiler is happier with a plain struct), rendered by the code object from the call's arguments.
+{preamble}
+
 static ffi::Error sdot_ffi_impl( {params} ) {{
-{stream_sync}
-    // the one execution context of this call. A `sycl::queue` is expensive to create, and this
-    // handler always runs on the same device (the device is in the TYPE of everything below), so
-    // there is exactly one, made on first use -- and never destroyed: the SYCL runtime is torn
-    // down before the statics of a dlopen'ed handler are, and a queue outliving it deadlocks.
-    static Queue &queue = *new Queue();
+    // the execution context of this call (the device is in the TYPE of everything below; how the
+    // queue is obtained is the device's business, see `Device.cpp_queue_decl`).
+    {queue_decl}
 
     // what the body iterates over: the multi-indices of the batch axes. Unmapped, that is a single
     // item -- the EMPTY multi-index -- and a `vmap` is what gives it axes. Named ones: the body
@@ -192,7 +206,15 @@ static ffi::Error sdot_ffi_impl( {params} ) {{
     return ffi::Error::Success();
 }}
 
-XLA_FFI_DEFINE_HANDLER_SYMBOL( sdot_ffi_entry, sdot_ffi_impl,
+// the ONE exported symbol (everything else is hidden, see `HostCxx`): the declaration carries the
+// visibility, the macro below defines it. Its NAME is a define, not part of the source (the source
+// is hashed into the kernel's name): `sdot_ffi_entry` in a library of its own, a unique name when a
+// catalogue links many kernels into one library (see `compilation/catalogue.py`).
+#ifndef SDOT_FFI_ENTRY
+#define SDOT_FFI_ENTRY sdot_ffi_entry
+#endif
+extern "C" LOOM_EXPORT XLA_FFI_Error *SDOT_FFI_ENTRY( XLA_FFI_CallFrame * );
+XLA_FFI_DEFINE_HANDLER_SYMBOL( SDOT_FFI_ENTRY, sdot_ffi_impl,
     ffi::Ffi::Bind(){binds} );
 """
 
@@ -256,41 +278,28 @@ def _render_call( code, ca, device ):
         if inc not in includes:
             includes.append( inc )
 
-    # XLA FFI binds in this order, and the handler's parameters must follow it: args, results,
-    # then attributes.
-    # `LOOM_XLA_STREAM_SYNC=1` : recevoir le FLUX de XLA et l'attendre avant de commencer.
-    #
-    # Ce handler lance son travail sur SA PROPRE queue SYCL, que XLA ne connaît pas. Il attend bien
-    # la sienne avant de rendre la main (`QueueEvent` est RAII), mais rien ne l'ordonne par rapport
-    # à celle de XLA : quand on démarre, XLA peut ENCORE ÊTRE EN TRAIN de produire nos entrées, et
-    # dès qu'on rend la main il peut recycler la mémoire de nos sorties. Un `cudaStreamSynchronize`
-    # à l'entrée referme la première moitié de la fenêtre.
-    #
-    # Les types CUDA sont déclarés à la main plutôt qu'inclus : l'image non-AOT retire le toolkit,
-    # donc `cuda_runtime.h` n'y existe pas. `cudaStream_t` EST `struct CUstream_st *`.
-    #
-    # Ce n'est qu'une EXPÉRIENCE : la vraie correction serait de bâtir la queue SYCL SUR le flux de
-    # XLA, pas de synchroniser en gros.
-    want_stream = ( getattr( device, "is_cuda_gpu", False )
-                    and os.environ.get( "LOOM_XLA_STREAM_SYNC", "" ).strip().lower() in ( "1", "true", "yes", "on" ) )
-    # L'en-tête s'il existe, une déclaration à la main sinon. Les deux cas se produisent : l'image
-    # AOT garde le toolkit CUDA (clang inclut alors `cuda_runtime.h` tout seul, et une déclaration
-    # concurrente en `int` entre en CONFLIT avec le vrai `cudaError_t`), l'image JIT ne le garde pas.
-    stream_decls = ( "#if __has_include( <cuda_runtime.h> )\n"
-                     "#  include <cuda_runtime.h>\n"
-                     "#else\n"
-                     "   typedef struct CUstream_st *cudaStream_t;\n"
-                     "   extern \"C\" int cudaStreamSynchronize( cudaStream_t );\n"
-                     "#endif\n" ) if want_stream else ""
-    stream_sync = ( "    // voir `LOOM_XLA_STREAM_SYNC` : nos entrées peuvent encore être en cours d'écriture\n"
-                    "    cudaStreamSynchronize( xla_stream );\n" ) if want_stream else ""
+    # the units to LINK, collected the same blind way: `( path, defines )`, resolved against the
+    # C++ source roots. Compiled once per (source, defines, compiler) by the build graph.
+    # kept AS GIVEN (`sdot/x.cpp`, relative to the C++ roots): the path is part of the kernel's
+    # key, and a catalogue key must be the same on every machine. Resolved at compile time.
+    sources = []
+    for src in [ s for arg_ca in ca.args.values() for s in getattr( arg_ca, "cpp_sources", lambda: () )() ] + list( code.sources ):
+        path, defines = ( src if isinstance( src, tuple ) else ( src, {} ) )
+        item = ( str( path ), tuple( sorted( dict( defines ).items() ) ) )
+        if item not in sources:
+            sources.append( item )
 
-    params = [ "cudaStream_t xla_stream" ] if want_stream else []
+    # XLA FFI binds in this order, and the handler's parameters must follow it: the platform
+    # stream if the device runs on one (CUDA: the queue is BUILT on XLA's stream, so the call is
+    # ordered with the rest of the program by the stream itself, see `CudaQueue.h`), then args,
+    # results, and attributes.
+    stream_param = device.cpp_stream_param()
+    params = [ stream_param ] if stream_param else []
     params += [ f"{ b.jax_ffi_type() } { b.ffi_name }" for b in inputs ]
     params += [ f"ffi::Result<{ b.jax_ffi_type() }> { b.ffi_name }" for b in outputs ]
     params += [ f"{ cpp_type } { name }" for name, cpp_type, _ in attrs ]
 
-    binds = "\n        .Ctx<ffi::PlatformStream<cudaStream_t>>()" if want_stream else ""
+    binds = ( "\n        " + device.cpp_stream_bind() ) if stream_param else ""
     binds += "".join( f"\n        .Arg<{ b.jax_ffi_type() }>()" for b in inputs )
     binds += "".join( f"\n        .Ret<{ b.jax_ffi_type() }>()" for b in outputs )
     binds += "".join( f'\n        .Attr<{ cpp_type }>( "{ name }" )' for name, cpp_type, _ in attrs )
@@ -304,9 +313,10 @@ def _render_call( code, ca, device ):
 
     from ..tensor.AbstractAxis import AbstractAxis
     source = _CALL_TEMPLATE.format(
-        stream_decls  = stream_decls,
-        stream_sync   = stream_sync,
+        queue_decl    = device.cpp_queue_decl(),
+        queue_include = device.cpp_queue_include,
         queue_type    = device.cpp_queue_type,
+        preamble      = code.preamble_for( "fwd", ca ),
         extra_includes = "".join( f'#include "{ inc }"\n' for inc in includes ),
         axis_includes = "".join( f'#include "{ AbstractAxis.cpp_shared_header( n ) }"\n'
                                  for n in ca.axis_names ),
@@ -317,7 +327,19 @@ def _render_call( code, ca, device ):
         body          = code.code_for( "fwd", ca ),
         binds         = binds,
     )
-    return source, inputs, outputs, attrs
+    return source, inputs, outputs, attrs, tuple( sources )
+
+
+def _resolve_source( path ):
+    """A kernel source, as given (`sdot/density/gaussians.cpp`, like an include) or absolute."""
+    from ..compilation import include_roots
+    p = Path( path )
+    if p.is_absolute():
+        return p
+    for root in include_roots():
+        if ( Path( root ) / p ).is_file():
+            return Path( root ) / p
+    raise FileNotFoundError( f"kernel source `{ path }` not found under the C++ source roots" )
 
 
 def _make_op( code, ca, device, prefix ):
@@ -332,8 +354,8 @@ def _make_op( code, ca, device, prefix ):
     """
     @jax.custom_batching.custom_vmap
     def op( *arrays ):
-        source, _, outputs, attrs = _render_call( code, ca, device )
-        target = compile_and_register( source, device, prefix )
+        source, _, outputs, attrs, sources = _render_call( code, ca, device )
+        target = compile_and_register( source, device, prefix, sources )
         results = jax.ffi.ffi_call( target, [ b.jax_out_spec() for b in outputs ] )(
             *arrays, **{ name: numpy.int64( value ) for name, _, value in attrs }
         )
