@@ -1,31 +1,39 @@
 {
-  "include": [
-    "src/python",
-  ],
+  // Les trois paquets du monorepo (loom -> sdot -> otrec) plus les scripts. `extraPaths` fait
+  // resoudre `import loom` / `sdot` / `otrec` sans env (les installs editables du `nsdot`
+  // donnent la meme chose) ; numpy / jax / scipy viennent de l'interpreteur que l'editeur declare
+  // (Zed : `.zed/settings.json` -> lsp.basedpyright.settings.python.pythonPath).
   "exclude": [
     "**/__pycache__",
     "**/.pytest_cache",
     "**/node_modules",
-    ".venv"
+    "**/build",
+    "**/.xmake",
+    ".venv",
+    "build",
+    "dist",
+    "tmp",
+    "containers",
+    "old_pd",
+    "old_sdot",
+    "very_old_sdot",
+    "2d_des_familles/ext",
+    "docs/.vitepress"
   ],
   "extraPaths": [
-    "src/python",
+    "loom/src",
+    "sdot/src",
+    "otrec/src"
   ],
   "pythonVersion": "3.13",
-  // "pythonPath": "/Users/hugo.leclerc/.mamba/envs/vfs/bin/python",
-  // "pythonPlatform": "Darwin",
-  // "typeCheckingMode": "basic",
-  // "reportMissingImports": true,
-  // "reportMissingTypeStubs": false,
-  // "reportUnusedImport": "warning",
-  // "reportUnusedClass": "warning",
-  // "reportUnusedFunction": "warning",
-  // "reportUnusedVariable": "warning",
-  // "reportDuplicateImport": "warning",
-  // "reportOptionalMemberAccess": "none",
-  // "reportGeneralTypeIssues": "none",
-  // "reportPrivateUsage": "none",
-  // "reportInvalidTypeForm": false,
-  "stubPath": "scripts/stubs",
-  // "extraBuiltins": ["ic", "info"]
+  "pythonPlatform": "Linux",
+  // Le code n'est pas annote (`x: list = ()`, `dict = None`) : le mode "recommended" de
+  // basedpyright ( reportUnknown*, reportAny, reportMissingTypeArgument ... ) noie tout.
+  "typeCheckingMode": "standard",
+  "reportMissingImports": true,
+  "reportMissingModuleSource": false,
+  "reportAttributeAccessIssue": "warning",
+  "reportArgumentType": "warning",
+  // `info` / `infox` sont injectes dans `builtins` par loom.util.info
+  "stubPath": "scripts/stubs"
 }
