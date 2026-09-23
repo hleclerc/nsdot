@@ -66,6 +66,12 @@ struct DiagrammeGpu {
     /// remplir. Rend le temps GPU en ms. Demande un `tour_newton` ou un `facettes` avant.
     double assemble( Hessienne &H );
 
+    /// LE GRADIENT CONJUGUE PRECONDITIONNE ( Jacobi ), sur le systeme reduit ( jauge `x[ 0 ] = 0` ).
+    /// `b` et `x` sont DEVICE, `x` est rendu. Rend le nombre d'iterations, `-1` si pas convergé ;
+    /// `ms` le temps GPU, `res` le residu relatif final.
+    int resout( const Hessienne &H, const double *b, double *x, double tol, int maxit,
+                double *ms = nullptr, double *res = nullptr );
+
     /// `y = L x` sur la carte ( pointeurs device ), pour verifier et pour le gradient conjugue
     void applique( const Hessienne &H, const double *x, double *y ) const;
     ~DiagrammeGpu();

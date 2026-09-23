@@ -159,6 +159,43 @@ Sur l'uniforme, les 101 ms se répartissent en **96 de mesure**, 5 d'assemblage,
 ni l'arbre (construit une fois), ni les majorants (3.3 ms quand il y a des poids), ni le trafic.
 Le tour est donc **borné par le FP64 à 1/32 de Turing**, et c'est tout ce qui reste à gagner ici.
 
+### Le gradient conjugué préconditionné
+
+**La jauge.** Le laplacien a les constantes pour noyau — ajouter la même chose à tous les poids ne
+change aucune cellule — donc il est singulier. Le CPU raie la ligne et la colonne zéro
+(`crs_reduit`) ; ici on fait la même chose **sans rien recopier** : le produit saute la colonne
+zéro et rend zéro sur la ligne zéro. L'opérateur est alors défini positif sur `{ x : x₀ = 0 }`, et
+comme `b₀ = 0` et `x = 0` au départ, **tous** les vecteurs du CG y restent.
+
+**Le préconditionneur est Jacobi** : la diagonale est déjà assemblée. **Les réductions** tiennent
+en un noyau — réduction dans le warp par `__shfl_down`, une case partagée par warp, puis un seul
+atomique par bloc — et **les scalaires restent sur la carte** (`alpha`, `beta` sont calculés par un
+thread) : seul le test d'arrêt redescend un nombre par itération.
+
+Vérifié contre un CG Jacobi écrit dans le banc, **même algorithme**, jauge comprise :
+
+| `double`, résidu relatif 1e-10 | itérations | GPU | CPU 8 fils | | écart des solutions |
+|---|---|---|---|---|---|
+| uniforme 10⁶ | 8167 | **11.76 s** | 314 s (8131 it.) | **×26.7** | 1.2e-11 relatif |
+| uniforme 2·10⁵ | 3656 | 0.51 s | 19.3 s (3656 it.) | ×37.6 | 4.7e-13 |
+| lignes / Voronoï 10⁵ | 3631 | **0.30 s** | 6.15 s | ×20.5 | 5.8e-12 |
+| lignes / aires égales 10⁵ | 7981 | **0.67 s** | 13.5 s | ×20.2 | 1.9e-11 |
+
+Les deux côtés font **le même nombre d'itérations à quelques unités près** et trouvent la même
+solution à 1e-11 : le portage est juste.
+
+**Mais l'algorithme est le mauvais, et c'est le résultat qui compte.** 8167 itérations à 10⁶ contre
+3656 à 2·10⁵ : c'est la loi en √n d'un CG à préconditionneur diagonal sur un laplacien, dont le
+conditionnement croît comme `n`. Résultat : **le CG pèse 11.8 s là où le tour de Newton complet en
+pèse 0.10** — il est devenu, à lui seul, 99 % de l'itération. Le CPU ne fait pas cette erreur : sa
+chaîne de production utilise un **multigrille algébrique** (AMGCL, ×4.9 sur Cholesky à 10⁶,
+`solver/Lineaire.h`), dont le nombre d'itérations ne dépend pas de `n`.
+
+Le ×27 sur le CG du CPU est donc réel mais trompeur : il compare deux fois le mauvais solveur. Le
+chantier suivant n'est pas d'accélérer ce CG, c'est de lui donner un **préconditionneur
+multi-niveaux** — la hiérarchie se construit une fois par motif (les positions ne bougent pas dans
+un Newton) et se réutilise à chaque tour, ce qui est exactement le régime qu'on mesure ici.
+
 **Ce qui reste, dans l'ordre.** 1) Les quelques dizaines de cellules à plus de `NF` arêtes sur les
 nuages de lignes (compteur en place, `Chrono::deborde`). 2) L'assemblage CSR sur GPU (comptage +
 somme préfixe, deux passes). 3) Le gradient conjugué préconditionné. 4) La boucle de Newton et sa

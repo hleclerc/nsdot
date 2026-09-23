@@ -211,6 +211,67 @@ int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu, bool arbre_gp
         std::printf( "                | L x |_max %.3e, ecart au CPU %.1e ( soit %.1e relatif ), | L . 1 | %.1e%s\n",
                      ech, ecart, ech > 0 ? ecart / ech : 0.0, noyau, hok ? "" : "   <-- FAUX" );
         ok = ok && hok;
+
+        // ---- LE SYSTEME DE NEWTON : `L d = mesures - cible`, resolu par le CG precondionne.
+        //      Compare a un CG Jacobi ecrit ici, meme algorithme, pour la solution et le temps.
+        std::vector<double> bb( nu.n );
+        const double cible = 1.0 / double( nu.n );
+        for ( SI i = 0; i < nu.n; ++i ) bb[ i ] = res[ i ] - cible;
+        bb[ 0 ] = 0;
+        double *db, *dd;
+        cudaMalloc( &db, nu.n * sizeof( double ) ); cudaMalloc( &dd, nu.n * sizeof( double ) );
+        cudaMemcpy( db, bb.data(), nu.n * sizeof( double ), cudaMemcpyHostToDevice );
+        double ms_cg = 0, r_cg = 0;
+        const int its = g.resout( H, db, dd, 1e-10, 20000, &ms_cg, &r_cg );
+        std::vector<double> dg( nu.n );
+        cudaMemcpy( dg.data(), dd, nu.n * sizeof( double ), cudaMemcpyDeviceToHost );
+        cudaFree( db ); cudaFree( dd );
+
+        // le meme CG, sur le CPU : jauge `d_0 = 0`, preconditionneur Jacobi
+        std::vector<double> dc( nu.n, 0.0 ), rr( bb ), zz( nu.n ), pp( nu.n ), qq( nu.n );
+        auto applique_cpu = [ & ]( const std::vector<double> &v, std::vector<double> &y ) {
+            y[ 0 ] = 0;
+            for ( SI i = 1; i < nu.n; ++i ) {
+                double sm = lap.dia[ i ] * v[ i ];
+                for ( SI e = lap.row[ i ]; e < lap.row[ i + 1 ]; ++e )
+                    if ( lap.col[ e ] ) sm -= lap.c[ e ] * v[ lap.col[ e ] ];
+                y[ i ] = sm;
+            }
+        };
+        const double tc0 = now();
+        double nb2 = 0;
+        for ( SI i = 0; i < nu.n; ++i ) nb2 += rr[ i ] * rr[ i ];
+        for ( SI i = 0; i < nu.n; ++i ) zz[ i ] = i ? rr[ i ] / lap.dia[ i ] : 0.0;
+        pp = zz;
+        double rz = 0;
+        for ( SI i = 0; i < nu.n; ++i ) rz += rr[ i ] * zz[ i ];
+        int itc = 0;
+        for ( double r2 = nb2; itc < 20000 && r2 > 1e-20 * nb2; ++itc ) {
+            applique_cpu( pp, qq );
+            double pq = 0;
+            for ( SI i = 0; i < nu.n; ++i ) pq += pp[ i ] * qq[ i ];
+            const double al = pq != 0 ? rz / pq : 0;
+            r2 = 0;
+            for ( SI i = 0; i < nu.n; ++i ) { dc[ i ] += al * pp[ i ]; rr[ i ] -= al * qq[ i ]; r2 += rr[ i ] * rr[ i ]; }
+            if ( r2 <= 1e-20 * nb2 ) { ++itc; break; }
+            for ( SI i = 0; i < nu.n; ++i ) zz[ i ] = i ? rr[ i ] / lap.dia[ i ] : 0.0;
+            double rz2 = 0;
+            for ( SI i = 0; i < nu.n; ++i ) rz2 += rr[ i ] * zz[ i ];
+            const double be = rz != 0 ? rz2 / rz : 0;
+            rz = rz2;
+            for ( SI i = 0; i < nu.n; ++i ) pp[ i ] = zz[ i ] + be * pp[ i ];
+        }
+        const double t_cgc = now() - tc0;
+
+        double ech_d = 0, ec_d = 0;
+        for ( SI i = 0; i < nu.n; ++i ) ech_d = std::max( ech_d, std::fabs( dc[ i ] ) );
+        for ( SI i = 0; i < nu.n; ++i ) ec_d = std::max( ec_d, std::fabs( dg[ i ] - dc[ i ] ) );
+        const bool cok = its > 0 && r_cg < 1e-9 && ec_d < 1e-6 * ech_d;
+        std::printf( "      CG        %4d iterations, residu relatif %.1e, %7.1f ms sur GPU contre %7.0f ms au CPU ( %d it. )   x%.1f\n",
+                     its, r_cg, ms_cg, t_cgc * 1e3, itc, t_cgc * 1e3 / ms_cg );
+        std::printf( "                | d |_max %.3e, ecart au CG du CPU %.1e ( soit %.1e relatif )%s\n",
+                     ech_d, ec_d, ech_d > 0 ? ec_d / ech_d : 0.0, cok ? "" : "   <-- FAUX" );
+        ok = ok && cok;
     }
 
     // ---- LE REGIME AMORTI : `iterations` tours de Newton ( poids neufs, majorants, mesures et

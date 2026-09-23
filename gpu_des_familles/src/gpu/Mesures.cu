@@ -11,6 +11,7 @@
 #include "gpu/Mesures.h"
 #include "gpu/Bsp2D.cuh"
 #include "gpu/Hess2D.cuh"
+#include "gpu/Cg2D.cuh"
 #include "gpu/Fil2D.cuh"
 #include "gpu/Voies2D.cuh"
 #include "gpu/Paquet2D.cuh"
@@ -62,6 +63,7 @@ struct DiagrammeGpu<D,TK>::Impl {
     void        *hscan = nullptr;                    ///< le tampon du scan CUB
     size_t       hscan_o = 0;
     int          hcap = 0;                           ///< places allouees pour `col` / `val`
+    double      *cgv = nullptr;                      ///< `r, z, p, q` bout a bout, plus six scalaires
     int          n = 0, nn = 0;
     bool         poids = false;
 
@@ -167,6 +169,7 @@ DiagrammeGpu<D,TK>::~DiagrammeGpu() {
     for ( int d = 0; d < D; ++d ) { cudaFree( m.c[ d ] ); cudaFree( m.u[ d ] ); cudaFree( m.u64[ d ] ); }
     cudaFree( m.w ); cudaFree( m.ids ); cudaFree( m.res ); cudaFree( m.deb ); cudaFree( m.deb2 ); cudaFree( m.liste ); cudaFree( m.stats ); cudaFree( m.cptr );
     cudaFree( m.fac_j ); cudaFree( m.fac_l );
+    cudaFree( m.cgv );
     cudaFree( m.hrow ); cudaFree( m.hcol ); cudaFree( m.hval ); cudaFree( m.hdia ); cudaFree( m.hscan );
     for ( int d = 0; d < 2; ++d ) cudaFree( m.pid[ d ] );
     if ( m.sortie ) { libere_atelier<TK>( *( SortieBsp<TK> * ) m.sortie ); delete ( SortieBsp<TK> * ) m.sortie; }
@@ -605,6 +608,62 @@ double DiagrammeGpu<D,TK>::assemble( Hessienne &H ) {
         cudaEventDestroy( e0 ); cudaEventDestroy( e1 );
         H.row = m.hrow; H.col = m.hcol; H.val = m.hval; H.dia = m.hdia; H.n = m.n; H.nnz = nnz;
         return t;
+    }
+}
+
+/// LE GRADIENT CONJUGUE PRECONDITIONNE. Les scalaires restent sur la carte ; seul le test d'arret
+/// redescend un nombre par iteration.
+template<int D, class TK>
+int DiagrammeGpu<D,TK>::resout( const Hessienne &H, const double *b, double *x, double tol, int maxit,
+                                double *ms, double *res ) {
+    if constexpr ( D != 2 ) { ( void ) H; ( void ) b; ( void ) x; return -1; }
+    else {
+        Impl &m = *impl;
+        const int n = H.n, BL = 256, gr = ( n + BL - 1 ) / BL;
+        if ( ! m.cgv ) CUDA_OK( cudaMalloc( &m.cgv, ( size_t( 4 ) * n + 8 ) * sizeof( double ) ) );
+        double *r = m.cgv, *z = r + n, *p = z + n, *q = p + n;
+        double *srz = q + n, *spq = srz + 1, *srz2 = spq + 1, *sal = srz2 + 1, *sbe = sal + 1, *sbb = sbe + 1;
+        auto zero = [ & ]( double *a ) { k_cg_zero<<<1,1>>>( a ); };
+        auto dot  = [ & ]( const double *u, const double *v, double *a ) { zero( a ); k_cg_dot<<<gr, BL>>>( u, v, a, n ); };
+
+        cudaEvent_t e0, e1;
+        CUDA_OK( cudaEventCreate( &e0 ) ); CUDA_OK( cudaEventCreate( &e1 ) );
+        CUDA_OK( cudaEventRecord( e0 ) );
+        CUDA_OK( cudaMemsetAsync( x, 0, size_t( n ) * sizeof( double ) ) );
+        CUDA_OK( cudaMemcpyAsync( r, b, size_t( n ) * sizeof( double ), cudaMemcpyDeviceToDevice ) );
+        CUDA_OK( cudaMemsetAsync( r, 0, sizeof( double ) ) );          // la jauge : `b[ 0 ] = 0`
+        dot( r, r, sbb );
+        k_cg_prec<<<gr, BL>>>( r, H.dia, z, n );
+        CUDA_OK( cudaMemcpyAsync( p, z, size_t( n ) * sizeof( double ), cudaMemcpyDeviceToDevice ) );
+        dot( r, z, srz );
+        double bb = 0;
+        CUDA_OK( cudaMemcpy( &bb, sbb, sizeof( double ), cudaMemcpyDeviceToHost ) );
+        const double cible = tol * tol * bb;
+        int it = 0;
+        double rr = bb;
+        for ( ; it < maxit && rr > cible; ++it ) {
+            k_cg_mul<<<gr, BL>>>( H.row, H.col, H.val, H.dia, p, q, n );
+            dot( p, q, spq );
+            k_cg_alpha<<<1,1>>>( srz, spq, sal );
+            k_cg_avance<<<gr, BL>>>( x, r, p, q, sal, n );
+            dot( r, r, sbb );
+            CUDA_OK( cudaMemcpy( &rr, sbb, sizeof( double ), cudaMemcpyDeviceToHost ) );
+            if ( rr <= cible ) { ++it; break; }
+            k_cg_prec<<<gr, BL>>>( r, H.dia, z, n );
+            dot( r, z, srz2 );
+            k_cg_beta<<<1,1>>>( srz2, srz, sbe );
+            k_cg_dir<<<gr, BL>>>( p, z, sbe, n );
+            k_cg_copie<<<1,1>>>( srz, srz2 );
+        }
+        CUDA_OK( cudaEventRecord( e1 ) );
+        CUDA_OK( cudaEventSynchronize( e1 ) );
+        float t = 0;
+        CUDA_OK( cudaEventElapsedTime( &t, e0, e1 ) );
+        CUDA_OK( cudaGetLastError() );
+        cudaEventDestroy( e0 ); cudaEventDestroy( e1 );
+        if ( ms ) *ms = t;
+        if ( res ) *res = bb > 0 ? std::sqrt( rr / bb ) : 0.0;
+        return rr <= cible ? it : -1;
     }
 }
 
