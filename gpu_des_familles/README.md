@@ -706,6 +706,81 @@ la seconde passe.
 
 ---
 
+# 3 bis. LE PASSAGE À L'ÉCHELLE ( jusqu'à 3·10⁷, et ce que 10⁹ demanderait )
+
+Question de H. L. : à 10⁹ diracs, est-ce que quelque chose change de nature ? Mesuré sur
+l'uniforme, `--reps 1 --reps-gpu 5`, machine seule.
+
+| ns/germe | 10⁵ | 10⁶ | 10⁷ | 3·10⁷ |
+|---|---|---|---|---|
+| `filnrm8` *float* | 14.7 | **7.7** | 8.0 | 7.9 |
+| `filmsk8` *float* | 11.3 | 8.2 | 8.6 | 8.4 |
+| `filph8c` *float* | 20.7 | 22.6 | 22.3 | 24.0 |
+| `filnrm8` *double* | 107.2 | 100.7 | 107.0 | 107.5 |
+| `filmsk8` *double* | 106.6 | 100.8 | 107.9 | 109.3 |
+| `filph8c` *double* | **87.0** | **86.2** | **92.1** | 103.9 |
+| écart max par cellule, *float* | 1.0e-4 | 3.9e-4 | 1.7e-3 | 2.7e-3 |
+| écart max par cellule, *double* | 1.8e-11 | 2.1e-10 | 2.5e-9 | 8.3e-9 |
+| construction de l'arbre (CPU, 8 fils) | 19 ms | 295 ms | 5.6 s | **22 s** |
+
+**Le noyau passe à l'échelle.** De 10⁶ à 3·10⁷ (×30), `filnrm8` fait +3 % par germe en `float`,
++7 % en `double`. La raison de fond : dans un diagramme de puissance **le travail par cellule ne
+croît pas avec `n`** — une cellule a ~6 voisins quelle que soit la taille du nuage. Seule la
+descente de l'arbre grandit, en log `n` (16 niveaux à 10⁶, 22 à 3·10⁷), et l'élagage par le
+majorant affine en absorbe l'essentiel. Le 14.7 à 10⁵ n'est pas de la mauvaise échelle mais son
+contraire : le noyau ne dure que 1.5 ms, les frais fixes de lancement dominent.
+
+L'oracle de coût (`filnrm8tri` avec `MESURES_DEBUG=1`) dit exactement ce qui grandit et ce qui ne
+grandit pas :
+
+| par cellule | 10⁵ | 10⁶ | 10⁷ |
+|---|---|---|---|
+| feuilles visitées (moyenne / médiane / p99 / max) | 4.13 / 4 / 8 / 13 | 3.80 / 4 / 8 / 13 | 3.43 / 3 / 7 / 14 |
+| coût total (plans + boîtes testés) | 65.3 | 73.4 | **81.4** |
+
+Les **feuilles visitées ne croissent pas** — elles décroissent même un peu : c'est le voisinage de
+la cellule, et il ne dépend pas de `n`. Ce qui croît, c'est la descente : +8 unités de coût par
+décade, soit **+12 % par décade**, pour ~3.3 niveaux d'arbre de plus. Extrapolé à 10⁹ : ~97 contre
+81 à 10⁷, **+19 %** — et comme ces unités-là sont des tests de boîte (trois `fma` et un compare,
+bien élagués) et non des coupes, le temps mesuré bouge encore moins. C'est la traduction chiffrée
+du « travail par cellule constant ».
+
+**Le schéma par phases, lui, PERD à l'échelle.** Son avance en `double` s'érode : −19 % à 10⁵,
+−14 % à 10⁶ et 10⁷, **−3 % seulement à 3·10⁷**. La fenêtre de cellules en vol est FIXE
+(`grid × CAP` = 104 448 slots) ; à mesure que `n` grandit elle couvre une fraction décroissante du
+problème, et surtout l'arbre cesse de tenir en cache, si bien que les allers-retours de l'état en
+RAM entrent en concurrence avec le trafic de l'arbre au lieu d'être masqués par lui. C'est
+cohérent avec le diagnostic du § 4 (le frein est la latence mémoire, pas l'occupation). À 10⁹ il
+faudrait donc faire grandir `CAP` avec `n`, ou renoncer.
+
+**Ce qui ne passe pas à l'échelle : la mémoire.** Empreinte GPU calculée sur le code (`c[2]`,
+`ids`, `res`, `liste`, plus ~2 nœuds de 48 ou 80 octets par feuille de 10 germes) :
+
+| 2D | octets/germe | 10⁹ | tient sur 11 Gio jusqu'à |
+|---|---|---|---|
+| `float` Voronoï | 33.6 | **31 Gio** | 352 M |
+| `float` Laguerre | 37.6 | 35 Gio | 314 M |
+| `double` Voronoï | 48.0 | 45 Gio | 246 M |
+| `double` Laguerre | 56.0 | 52 Gio | 211 M |
+
+10⁹ diracs ne tient pas sur une carte : il faut plusieurs GPU, ou un découpage spatial avec halo
+— que l'arbre rend naturel, puisque les germes y sont déjà triés par boîte. À noter en revanche
+que **l'état en vol du noyau par phases est indépendant de `n`** (22 Mio en `float`, 28 en
+`double`) : c'est le seul tampon qui aurait pu exploser, et il n'explose pas.
+
+**Ce qui ne passe pas à l'échelle non plus : la construction de l'arbre.** 22 s à 3·10⁷ sur 8
+fils, soit ~15 min extrapolées à 10⁹, contre ~8 s pour la mesure GPU en `float`. À cette échelle
+**ce n'est plus le diagramme qu'il faut optimiser, c'est le `build`** — et il est encore sur CPU.
+
+**Et la précision en `float` devient rédhibitoire.** L'écart max relatif par cellule croît comme
+√n : les sommets sont à ~6e-8 près en absolu, le côté d'une cellule vaut 1/√n. Extrapolé à 10⁹ :
+**~1.5e-2, soit 1.5 % par cellule**. La somme, elle, reste bonne (1e-8), mais ce n'est pas elle
+qui pilote un Newton sur les mesures. Donc **à 10⁹ il faut le `double`** — et sur cette carte le
+`double` coûte 13× le `float` parce que Turing fait le FP64 à 1/32. Sur une carte à FP64 rapide
+(A100, H100 : 1/2) ce facteur tomberait vers 2, et c'est aussi là que le schéma par phases, qui
+gagne déjà en `double` ici, aurait le plus à rapporter.
+
+
 # 4. CE QUE LE PROFIL DIT (`ncu`)
 
 **`fil` ne remplit rien.** En 3D, **2,3 threads actifs par warp sur 32** : le warp exécute
@@ -816,6 +891,12 @@ réelle.
   Dans le noyau des phases il manque **trois registres** (131) pour franchir le palier des quatre
   blocs par SM : sortir les `cid` des registres, ou coder `O` autrement, le ferait basculer —
   c'est le chantier le plus court à essayer.
+* **À l'échelle (§ 3 bis), le noyau tient (+3 % par germe de 10⁶ à 3·10⁷) mais trois choses
+  cassent** : la mémoire (33.6 o/germe en `float`, donc 31 Gio à 10⁹ — plusieurs GPU ou un
+  découpage spatial), la construction de l'arbre sur CPU (22 s à 3·10⁷, ~15 min à 10⁹, contre 8 s
+  de mesure GPU : c'est le `build` qu'il faut porter), et la précision en `float` (erreur par
+  cellule en √n, ~1.5 % à 10⁹ — le `double` devient obligatoire). Le schéma par phases perd son
+  avance à l'échelle (−14 % à 10⁶, −3 % à 3·10⁷) : sa fenêtre en vol est fixe.
 * **Les phases (`filph8`, `filph8g`, `filph8b`, `filph8a`, `filph8c`, `filph8m`) sont écrites et
   mesurées** (§ 4), groupement par feuille compris — par tri, par binning, par écriture directe en
   arène et par arène compactée (la meilleure : −15 % en `double`). Ce qui les bride n'est ni le
