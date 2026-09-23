@@ -18,7 +18,7 @@ xmake run mesures --threads 8 --variante voies --load uniforme -n 1000000
 ```
 
 Les options communes (`-n`, `--load`, `--kernel`, `--maxnv`, `--leaf`, `--cases`, …) sont celles
-de `solvers_des_familles` (`src/bench/Args.h`), plus `--variante fil | filreg | filregc | filmix{4,6,8,12,16} | filbrk{6,8,10,12,16} | filbrk8nu | filrot{6,8} | filnrm8 | filord8 | filsuc8 | filmsk8 | filmsk8c{6,8} | filnrm8c{6,8} | filuni8 | filuni8np | filshm8 | filnrm8tri | filnrm8tril | filph8 | filph8g | filph8b | filph8a | filph8c | filph8o | voies | voies16 |
+de `solvers_des_familles` (`src/bench/Args.h`), plus `--variante fil | filreg | filregc | filmix{4,6,8,12,16} | filbrk{6,8,10,12,16} | filbrk8nu | filrot{6,8} | filnrm8 | filord8 | filsuc8 | filmsk8 | filmsk8c{6,8} | filnrm8c{6,8} | filuni8 | filuni8np | filshm8 | filnrm8tri | filnrm8tril | filph8 | filph8g | filph8b | filph8a | filph8c | filph8o | filph8m | filph8m4 | voies | voies16 |
 voies32 | paquet{8,32}x{1,2,4}[S] | toutes` et `--reps-gpu`. Sur la machine, `--threads 8` est à donner (`hardware_concurrency` rend 1
 dans le bac à sable) et **tout chronométrage passe par `job -b`**.
 
@@ -432,15 +432,28 @@ de base y est trop rapide pour payer le trafic, quelle que soit l'homogénéité
 Laguerre (33 feuilles par cellule, des cellules très inégales) il perd dans les deux précisions :
 trop de phases, et un bloc dont quelques cellules traînent bloque ses slots.
 
-**Où ça bloque, maintenant.** Le profil de `filph8c` en `double` dit : calcul à 84 %, DRAM à
-14 % — le trafic est bien masqué, ce n'est plus lui. Le frein est **l'occupation** : 166 registres
-par thread, donc deux blocs par SM et **25 % d'occupation**, avec 94 % des cycles sans un seul
-warp éligible et 72 % des stalls en attente de données (25 sur 35 cycles). Plafonner à trois blocs
-par SM (`__launch_bounds__( 128, 3 )`) monte l'occupation à 37 % et gagne encore 1 à 2 % ; au-delà
-les débordements de registres reprennent ce qu'ils donnent. Les 166 registres viennent de la coupe
-elle-même (huit tableaux temporaires de huit cases pour la normalisation en barillet, doublés en
-`double`) : c'est là qu'il faudrait tailler pour que le schéma respire, et c'est le seul poste
-qui reste.
+**Où ça bloque — et ce n'est PAS l'occupation.** C'était l'hypothèse qui tenait jusqu'ici (168
+registres, trois blocs par SM, 38 % d'occupation, 94 % des cycles sans un warp éligible). Elle est
+maintenant **réfutée par l'expérience**. `filph8m` porte la coupe de `filmsk` dans le noyau des
+phases (§ plus haut : trois tableaux temporaires au lieu de huit) et tombe à **137 registres en
+`double`, 86 en `float`** ; `filph8m4` le force à quatre blocs par SM, ce qui donne **exactement
+128 registres, zéro octet de débordement, et 50 % d'occupation mesurée** — le palier que le
+paragraphe précédent croyait manquer « de trois registres ».
+
+| `double`, ns/germe | registres | blocs/SM | locale | uniforme | lignes V | lignes L |
+|---|---|---|---|---|---|---|
+| `filph8c` (coupe `filnrm`) | 168 | 3 | 0 | **84.6** | **131.2** | **788** |
+| `filph8m` (coupe `filmsk`) | 137 | 3 | 0 | 94.3 | 132.0 | 903 |
+| `filph8m4` (idem, 4 blocs forcés) | **128** | **4** | **0** | 94.0 | 136.0 | 948 |
+
+Franchir le palier **ne change rien** (94.0 contre 94.3), et la coupe la plus petite est la plus
+lente : l'occupation n'était pas le frein. Le profil dit où il est vraiment — par instruction
+émise, les cycles d'attente se répartissent en **34 à 39 sur le `long scoreboard`** (la mémoire
+globale), 8 à 13 sur les **barrières** (`__syncthreads()` entre phases), 1.7 sur les latences
+fixes, et **0.1 seulement en « pas sélectionné »**. Ce dernier chiffre est le verdict : il n'y a
+quasiment jamais un warp prêt à émettre qui attende son tour, donc **ajouter des warps n'ajoute
+rien** — ils attendraient la même mémoire. Ce qui borne le noyau des phases, c'est la **latence
+des allers-retours de l'état en RAM**, plus la synchronisation entre phases ; pas les registres.
 
 Ce que ça vaut pour la suite : **le schéma est bon quand le calcul domine le trafic**, ce qui est
 exactement le régime de la 3D (800 instructions par coupe contre 60) — et c'est là qu'il faudrait
@@ -534,6 +547,16 @@ r3 = ~m & prev   ( dedans, le précédent dehors -> v_j3 )      r1 = m & ~prev  
 Un `__ffs` donne l'indice, et « la plage boucle » se lit `r1 > r2` — les deux masques étant
 one-hot, les comparer c'est comparer `i1` et `j2`. `filrot` faisait le même travail en deux `__ffs`
 suivis de quatre corrections cycliques (`i1 ? i1 - 1 : nb - 1`…).
+
+*Les lectures indexées sont mutualisées et bornées.* Neuf `selR` — `x` et `y` pour les quatre
+sommets, plus le `cid` de `v_j2` — balayaient chacun les `R` cases **sans s'arrêter à `nb`**,
+contrairement à la première passe. Ils tiennent maintenant dans **une seule boucle**, avec la même
+sortie à `nb` : quatre compares par case, partagés par neuf `select`. L'aire fait de même
+(`aire_triee`, le sommet précédent gardé dans un registre au lieu de deux `selR` par sommet), et
+`filnrm8` en profite aussi. Mesuré : **neutre** (1685 M d'instructions contre 1667, 1413 M pour
+`filnrm8` contre 1414) — la branche qui borne coûte ce que les cases épargnées rapportent, comme
+pour le « borner par le slot vivant le plus haut » de `filord`. Le code est juste et lisible, ce
+n'est pas une optimisation.
 
 *Le remontage tient en un seul barillet.* La sortie est
 `new[ o ] = o < a ? old[ o ] : o == a ? A : o == a + 1 ? B : old[ o + d ]`, et `d` peut valoir −1
@@ -793,10 +816,14 @@ réelle.
   Dans le noyau des phases il manque **trois registres** (131) pour franchir le palier des quatre
   blocs par SM : sortir les `cid` des registres, ou coder `O` autrement, le ferait basculer —
   c'est le chantier le plus court à essayer.
-* **Les phases (`filph8`, `filph8g`, `filph8b`, `filph8a`, `filph8c`) sont écrites et mesurées**
-  (§ 4), groupement par feuille compris — par tri, par binning, par écriture directe en arène et
-  par arène compactée (la meilleure : −15 % en `double`). Ce qui les bride maintenant est
-  l'**occupation** (166 registres, 25 → 37 %), pas le trafic : 6,8 → 14,9 lanes actifs, −12 % en `double` sur l'uniforme, mais bornées par la DRAM
+* **Les phases (`filph8`, `filph8g`, `filph8b`, `filph8a`, `filph8c`, `filph8m`) sont écrites et
+  mesurées** (§ 4), groupement par feuille compris — par tri, par binning, par écriture directe en
+  arène et par arène compactée (la meilleure : −15 % en `double`). Ce qui les bride n'est ni le
+  trafic ni l'**occupation** : `filph8m4` atteint 128 registres, quatre blocs par SM et 50 %
+  d'occupation sans un octet de débordement, et ne gagne rien. C'est la **latence** des
+  allers-retours de l'état en RAM (34–39 cycles de `long scoreboard` par instruction émise) plus
+  les barrières entre phases (8–13), avec 0.1 seulement de « pas sélectionné » — il n'y a
+  quasiment jamais un warp prêt qui attende son tour : 6,8 → 14,9 lanes actifs, −12 % en `double` sur l'uniforme, mais bornées par la DRAM
   en `float`. **À reprendre en 3D**, où une coupe coûte 800 instructions au lieu de 60 : c'est le
   régime où le trafic est masqué et où le schéma gagne.
 * **Revérifier sur une autre carte** : Turing a la plus petite mémoire partagée par SM des

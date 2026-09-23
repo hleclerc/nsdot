@@ -228,16 +228,18 @@ Chrono lance2( const Impl &m, Variante v, int reps, std::vector<double> &res ) {
             default:                 return mix( std::integral_constant<int,16>{} );
         }
     }
-    if ( v == Variante::FILPH8 || v == Variante::FILPH8G || v == Variante::FILPH8B || v == Variante::FILPH8A || v == Variante::FILPH8C || v == Variante::FILPH8O ) {
+    if ( v >= Variante::FILPH8 && v <= Variante::FILPH8M4 ) {
         // LE NOYAU PERSISTANT PAR SM : autant de blocs que la carte en loge, `CAP` cellules en vol
         // par bloc, l'etat en RAM
         constexpr int CAP = 512, BLPH = 128;
-        auto noy = v == Variante::FILPH8G ? noyau2_filph<POIDS,8,CAP,BLPH,1,64,false,TK>
-                 : v == Variante::FILPH8B ? noyau2_filph<POIDS,8,CAP,BLPH,2,1,false,TK>
-                 : v == Variante::FILPH8A ? noyau2_filph<POIDS,8,CAP,BLPH,3,1,false,TK>
-                 : v == Variante::FILPH8C ? noyau2_filph<POIDS,8,CAP,BLPH,4,1,false,TK>
-                 : v == Variante::FILPH8O ? noyau2_filph<POIDS,8,CAP,BLPH,4,1,true,TK>
-                 : noyau2_filph<POIDS,8,CAP,BLPH,0,1,false,TK>;
+        auto noy = v == Variante::FILPH8G  ? noyau2_filph<POIDS,8,CAP,BLPH,1,64,0,3,TK>
+                 : v == Variante::FILPH8B  ? noyau2_filph<POIDS,8,CAP,BLPH,2,1,0,3,TK>
+                 : v == Variante::FILPH8A  ? noyau2_filph<POIDS,8,CAP,BLPH,3,1,0,3,TK>
+                 : v == Variante::FILPH8C  ? noyau2_filph<POIDS,8,CAP,BLPH,4,1,0,3,TK>
+                 : v == Variante::FILPH8O  ? noyau2_filph<POIDS,8,CAP,BLPH,4,1,1,3,TK>
+                 : v == Variante::FILPH8M  ? noyau2_filph<POIDS,8,CAP,BLPH,4,1,2,3,TK>   // l'arene compactee + la coupe de `filmsk`
+                 : v == Variante::FILPH8M4 ? noyau2_filph<POIDS,8,CAP,BLPH,4,1,2,4,TK>   // idem, force a quatre blocs par SM
+                 : noyau2_filph<POIDS,8,CAP,BLPH,0,1,0,3,TK>;
         int par_sm = 0, dev = 0;
         CUDA_OK( cudaGetDevice( &dev ) );
         CUDA_OK( cudaOccupancyMaxActiveBlocksPerMultiprocessor( &par_sm, noy, BLPH, 0 ) );
@@ -251,7 +253,7 @@ Chrono lance2( const Impl &m, Variante v, int reps, std::vector<double> &res ) {
         CUDA_OK( cudaMalloc( &st.c, size_t( st.S ) * 8 * sizeof( int ) ) );
         CUDA_OK( cudaMalloc( &st.pile, size_t( st.S ) * PILE_PH * sizeof( int ) ) );
         CUDA_OK( cudaMalloc( &st.meta, size_t( st.S ) * META_PH * sizeof( int ) ) );
-        const Chrono ch = chrono<2,TK>( m, reps, res, [ & ]() {
+        Chrono ch = chrono<2,TK>( m, reps, res, [ & ]() {
             CUDA_OK( cudaMemset( m.cptr, 0, sizeof( int ) ) );
             noy<<<grid_p, BLPH>>>( ar, m.res, m.deb, m.liste, m.cptr, st, m.stats );
             int nd = 0;
@@ -261,6 +263,7 @@ Chrono lance2( const Impl &m, Variante v, int reps, std::vector<double> &res ) {
             return m.deb2;
         } );
         cudaFree( st.x ); cudaFree( st.y ); cudaFree( st.c ); cudaFree( st.pile ); cudaFree( st.meta );
+        infos( ch, noy, BLPH );
         return ch;
     }
     if ( v == Variante::FILNRM8TRI || v == Variante::FILNRM8TRIL ) {

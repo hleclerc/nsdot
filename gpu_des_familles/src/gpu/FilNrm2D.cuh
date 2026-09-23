@@ -36,6 +36,25 @@ __device__ __forceinline__ void barillet_d( T ( &a )[ R ], int e ) {
     }
 }
 
+/// L'AIRE d'une cellule dont les sommets sont TRIES en `0 .. nb - 1` : la formule du lacet, le
+/// sommet precedent garde dans un registre. La version naive lisait le suivant par `selR`, qui
+/// BALAIE LES `R` CASES sans s'arreter a `nb` -- deux lectures indexees par sommet, soit ~130
+/// instructions par cellule pour une boucle qui ne tourne que `nb` fois.
+template<int R, class TK>
+__device__ __forceinline__ double aire_triee( const TK ( &x )[ R ], const TK ( &y )[ R ], int nb ) {
+    constexpr int SUR = 3;                               // une cellule non vide a trois sommets au moins
+    double a = 0;
+    TK xp = x[ 0 ], yp = y[ 0 ];
+#pragma unroll
+    for ( int i = 1; i < R; ++i ) {
+        if ( i >= SUR && i >= nb ) break;
+        a += double( xp ) * double( y[ i ] ) - double( x[ i ] ) * double( yp );
+        xp = x[ i ]; yp = y[ i ];
+    }
+    a += double( xp ) * double( y[ 0 ] ) - double( x[ 0 ] ) * double( yp );
+    return 0.5 * fabs( a );
+}
+
 /// `liste` : les rangs a faire, dans cet ordre ( `nullptr` : tous, dans l'ordre de l'arbre ) ;
 /// `cout` : si donne, le cout de chaque cellule ( plans + boites testes ) y est ecrit, par rang.
 template<bool POIDS, int R, int BSM = 1, class TK>
@@ -156,17 +175,7 @@ __global__ void __launch_bounds__( 128, BSM ) noyau2_filnrm( Arbre<TK,2> ar, dou
     }
 
 fin:
-    double area = 0;
-    if ( nb > 0 ) {
-        double a = 0;
-#pragma unroll
-        for ( int i = 0; i < R; ++i ) {
-            if ( i >= SUR && i >= nb ) break;
-            const int j = i + 1 < nb ? i + 1 : 0;
-            a += double( x[ i ] ) * double( selR( y, j ) ) - double( selR( x, j ) ) * double( y[ i ] );
-        }
-        area = 0.5 * fabs( a );
-    }
+    const double area = nb > 0 ? aire_triee( x, y, nb ) : 0.0;
     if ( nb < 0 ) liste_deb[ atomicAdd( deborde, 1 ) ] = k;
     if ( cout ) cout[ k ] = ( n_feuilles << 20 ) | ( n_cout & 0xfffff );   // feuilles en haut, cout en bas
     res[ i0 ] = area;

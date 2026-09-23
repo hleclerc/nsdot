@@ -31,6 +31,12 @@
 //      compilation ) : on travaille sur `u[ k ] = old[ k - 1 ]`, neuf cases, et le barillet part
 //      de `e = d + 1 >= 0`. Mesure : -8 % d'instructions et -8 % de temps contre `filrot8`.
 //
+//   3. LES LECTURES INDEXEES SONT MUTUALISEES ET BORNEES. Neuf `selR` ( `x`, `y` pour les quatre
+//      sommets, plus le `cid` de `v_j2` ) balayaient chacun les `R` cases SANS s'arreter a `nb`.
+//      Ils tiennent maintenant dans UNE SEULE boucle, avec la meme sortie a `nb` que la premiere
+//      passe : quatre compares partages par neuf `select`, et rien au-dela de `nb`. L'aire fait de
+//      meme ( `aire_triee`, le sommet precedent garde dans un registre ).
+//
 // Trois tableaux temporaires de neuf cases, contre les huit de huit de `filnrm` : 96 registres en
 // `double` et 58 en `float`, contre 128 et 74 -- LE PLUS PETIT NOYAU DE LA FAMILLE, a +5 % de
 // temps. `BSM` force l'occupation ( `__launch_bounds__( 128, BSM )` : ptxas rabote les registres
@@ -40,6 +46,88 @@
 #include "gpu/FilNrm2D.cuh"
 
 namespace sf::gpu {
+
+/// UNE COUPE, sur des sommets TRIES en `0 .. nb - 1`. Rend le nouveau nombre de sommets : `nb`
+/// inchange si le plan ne coupe pas, `0` si la cellule devient vide, `-1` si elle deborde `R`.
+/// Partagee telle quelle par `noyau2_filmsk` et par le noyau des phases.
+template<int R, class TK>
+__device__ __forceinline__ int coupe_msk( const Plan2<TK> &p, int nb, TK ( &x )[ R ], TK ( &y )[ R ], int ( &c )[ R ] ) {
+    constexpr int SUR = 3;
+
+    // ---- LA PREMIERE PASSE : `m`, le masque des sommets dehors
+    unsigned m = 0;
+#pragma unroll
+    for ( int i = 0; i < R; ++i ) {
+        if ( i >= SUR && i >= nb ) break;
+        m |= unsigned( p.dx * x[ i ] + p.dy * y[ i ] - p.off > TK( 0 ) ) << i;
+    }
+    if ( PROBABLE( ! m ) )
+        return nb;
+    const unsigned valid = ( 1u << nb ) - 1;
+    if ( IMPROBABLE( m == valid ) )
+        return 0;
+
+    // ---- LES QUATRE MASQUES DE ROLE, un seul bit chacun
+    const unsigned prev = ( ( m << 1 ) | ( m >> ( nb - 1 ) ) ) & valid;
+    const unsigned next = ( ( m >> 1 ) | ( m << ( nb - 1 ) ) ) & valid;
+    const unsigned r0 = ~m & next & valid;               // `v_j0` : dedans, le suivant dehors
+    const unsigned r1 =  m & ~prev;                      // `v_i1` : dehors, le precedent dedans
+    const unsigned r2 =  m & ~next;                      // `v_j2` : dehors, le suivant dedans
+    const unsigned r3 = ~m & prev & valid;               // `v_j3` : dedans, le precedent dehors
+    const int j0 = __ffs( int( r0 ) ) - 1, i1 = __ffs( int( r1 ) ) - 1;
+    const int j2 = __ffs( int( r2 ) ) - 1, j3 = __ffs( int( r3 ) ) - 1;
+    const int nb_out = __popc( m );
+    const int nn = nb - nb_out + 2;
+    if ( IMPROBABLE( nn > R ) )
+        return -1;                                       // pour la seconde passe
+
+    // ---- LES QUATRE SOMMETS, EN UNE SEULE BOUCLE BORNEE PAR `nb` : quatre compares par case,
+    //      partages par neuf `select` ( `selR` en faisait neuf balayages complets des `R` cases )
+    TK x0v = x[ 0 ], y0v = y[ 0 ], x1v = x[ 0 ], y1v = y[ 0 ];
+    TK x2v = x[ 0 ], y2v = y[ 0 ], x3v = x[ 0 ], y3v = y[ 0 ];
+    int bid = c[ 0 ];
+#pragma unroll
+    for ( int i = 1; i < R; ++i ) {
+        if ( i >= SUR && i >= nb ) break;
+        x0v = i == j0 ? x[ i ] : x0v; y0v = i == j0 ? y[ i ] : y0v;
+        x1v = i == i1 ? x[ i ] : x1v; y1v = i == i1 ? y[ i ] : y1v;
+        x2v = i == j2 ? x[ i ] : x2v; y2v = i == j2 ? y[ i ] : y2v; bid = i == j2 ? c[ i ] : bid;
+        x3v = i == j3 ? x[ i ] : x3v; y3v = i == j3 ? y[ i ] : y3v;
+    }
+
+    // ---- LES DEUX POINTS CREES ; `s` recalcule pour les quatre ( un `fma` chacun )
+    const TK s0 = p.dx * x0v + p.dy * y0v - p.off, s1 = p.dx * x1v + p.dy * y1v - p.off;
+    const TK s2 = p.dx * x2v + p.dy * y2v - p.off, s3 = p.dx * x3v + p.dy * y3v - p.off;
+    const TK ta = s0 / ( s0 - s1 ), tb = s3 / ( s3 - s2 );
+    const TK pax = x0v + ( x1v - x0v ) * ta, pay = y0v + ( y1v - y0v ) * ta;
+    const TK pbx = x3v + ( x2v - x3v ) * tb, pby = y3v + ( y2v - y3v ) * tb;
+
+    // ---- LE REMONTAGE : `u[ k ] = old[ k - 1 ]` ( gratuit ), puis UN barillet de `e`
+    const bool boucle = r1 > r2;                         // `i1 > j2` : la plage dehors boucle
+    const int  a = boucle ? 0 : i1;
+    const int  e = boucle ? j3 - 1 : nb_out - 1;         // `= d + 1 >= 0`
+    TK  ux[ R + 1 ], uy[ R + 1 ];
+    int uc[ R + 1 ];
+    ux[ 0 ] = x[ 0 ]; uy[ 0 ] = y[ 0 ]; uc[ 0 ] = c[ 0 ];   // jamais lu : `o + e >= 1`
+#pragma unroll
+    for ( int o = 1; o < R + 1; ++o ) { ux[ o ] = x[ o - 1 ]; uy[ o ] = y[ o - 1 ]; uc[ o ] = c[ o - 1 ]; }
+    // trois etages, la meme condition pour les trois tableaux ; les cases au-dela de `o + e = R`
+    // ne servent jamais ( `o < nn` et `nn - 1 + e <= R` ), d'ou les bornes
+#pragma unroll
+    for ( int b = 1; b < R + 1; b *= 2 ) {
+        const bool on = e & b;
+#pragma unroll
+        for ( int o = 0; o + b < R + 1; ++o ) { ux[ o ] = on ? ux[ o + b ] : ux[ o ]; uy[ o ] = on ? uy[ o + b ] : uy[ o ]; uc[ o ] = on ? uc[ o + b ] : uc[ o ]; }
+    }
+#pragma unroll
+    for ( int o = 0; o < R; ++o ) {
+        if ( o >= SUR && o >= nn ) break;
+        x[ o ] = o < a ? x[ o ] : ( o == a ? pax  : ( o == a + 1 ? pbx : ux[ o ] ) );
+        y[ o ] = o < a ? y[ o ] : ( o == a ? pay  : ( o == a + 1 ? pby : uy[ o ] ) );
+        c[ o ] = o < a ? c[ o ] : ( o == a ? p.id : ( o == a + 1 ? bid : uc[ o ] ) );
+    }
+    return nn;
+}
 
 template<bool POIDS, int BSM, class TK>
 __global__ void __launch_bounds__( 128, BSM ) noyau2_filmsk( Arbre<TK,2> ar, double *res, int *deborde, int *liste_deb ) {
@@ -83,82 +171,13 @@ __global__ void __launch_bounds__( 128, BSM ) noyau2_filmsk( Arbre<TK,2> ar, dou
 
         for ( int q = nd.beg; q < nd.end; ++q ) {
             const Plan2<TK> p = bissect2<POIDS>( ar, q, p0[ 0 ], p0[ 1 ], w0 );
-
-            // ---- LA PREMIERE PASSE : `m`, le masque des sommets dehors
-            unsigned m = 0;
-#pragma unroll
-            for ( int i = 0; i < R; ++i ) {
-                if ( i >= SUR && i >= nb ) break;
-                m |= unsigned( p.dx * x[ i ] + p.dy * y[ i ] - p.off > TK( 0 ) ) << i;
-            }
-            if ( PROBABLE( ! m ) )
-                continue;
-            const unsigned valid = ( 1u << nb ) - 1;
-            if ( IMPROBABLE( m == valid ) ) { nb = 0; goto fin; }
-
-            // ---- LES QUATRE MASQUES DE ROLE, un seul bit chacun
-            const unsigned prev = ( ( m << 1 ) | ( m >> ( nb - 1 ) ) ) & valid;
-            const unsigned next = ( ( m >> 1 ) | ( m << ( nb - 1 ) ) ) & valid;
-            const unsigned r0 = ~m & next & valid;      // `v_j0` : dedans, le suivant dehors
-            const unsigned r1 =  m & ~prev;             // `v_i1` : dehors, le precedent dedans
-            const unsigned r2 =  m & ~next;             // `v_j2` : dehors, le suivant dedans
-            const unsigned r3 = ~m & prev & valid;      // `v_j3` : dedans, le precedent dehors
-            const int j0 = __ffs( int( r0 ) ) - 1, i1 = __ffs( int( r1 ) ) - 1;
-            const int j2 = __ffs( int( r2 ) ) - 1, j3 = __ffs( int( r3 ) ) - 1;
-            const int nb_out = __popc( m );
-            const int nn = nb - nb_out + 2;
-            if ( IMPROBABLE( nn > R ) ) { nb = -1; goto fin; }   // pour la seconde passe
-
-            // ---- LES DEUX POINTS CREES ; `s` recalcule pour les quatre ( un `fma` chacun )
-            const TK x0v = selR( x, j0 ), y0v = selR( y, j0 ), x1v = selR( x, i1 ), y1v = selR( y, i1 );
-            const TK x2v = selR( x, j2 ), y2v = selR( y, j2 ), x3v = selR( x, j3 ), y3v = selR( y, j3 );
-            const int bid = selR( c, j2 );
-            const TK s0 = p.dx * x0v + p.dy * y0v - p.off, s1 = p.dx * x1v + p.dy * y1v - p.off;
-            const TK s2 = p.dx * x2v + p.dy * y2v - p.off, s3 = p.dx * x3v + p.dy * y3v - p.off;
-            const TK ta = s0 / ( s0 - s1 ), tb = s3 / ( s3 - s2 );
-            const TK pax = x0v + ( x1v - x0v ) * ta, pay = y0v + ( y1v - y0v ) * ta;
-            const TK pbx = x3v + ( x2v - x3v ) * tb, pby = y3v + ( y2v - y3v ) * tb;
-
-            // ---- LE REMONTAGE : `u[ k ] = old[ k - 1 ]` ( gratuit ), puis UN barillet de `e`
-            const bool boucle = r1 > r2;                        // `i1 > j2` : la plage dehors boucle
-            const int  a = boucle ? 0 : i1;
-            const int  e = boucle ? j3 - 1 : nb_out - 1;        // `= d + 1 >= 0`
-            TK  ux[ R + 1 ], uy[ R + 1 ];
-            int uc[ R + 1 ];
-            ux[ 0 ] = x[ 0 ]; uy[ 0 ] = y[ 0 ]; uc[ 0 ] = c[ 0 ];   // jamais lu : `o + e >= 1`
-#pragma unroll
-            for ( int o = 1; o < R + 1; ++o ) { ux[ o ] = x[ o - 1 ]; uy[ o ] = y[ o - 1 ]; uc[ o ] = c[ o - 1 ]; }
-            // trois etages, la meme condition pour les trois tableaux ; les cases au-dela de
-            // `o + e = R` ne servent jamais ( `o < nn` et `nn - 1 + e <= R` ), d'ou les bornes
-#pragma unroll
-            for ( int b = 1; b < R + 1; b *= 2 ) {
-                const bool on = e & b;
-#pragma unroll
-                for ( int o = 0; o + b < R + 1; ++o ) { ux[ o ] = on ? ux[ o + b ] : ux[ o ]; uy[ o ] = on ? uy[ o + b ] : uy[ o ]; uc[ o ] = on ? uc[ o + b ] : uc[ o ]; }
-            }
-#pragma unroll
-            for ( int o = 0; o < R; ++o ) {
-                if ( o >= SUR && o >= nn ) break;
-                x[ o ] = o < a ? x[ o ] : ( o == a ? pax  : ( o == a + 1 ? pbx : ux[ o ] ) );
-                y[ o ] = o < a ? y[ o ] : ( o == a ? pay  : ( o == a + 1 ? pby : uy[ o ] ) );
-                c[ o ] = o < a ? c[ o ] : ( o == a ? p.id : ( o == a + 1 ? bid : uc[ o ] ) );
-            }
-            nb = nn;
+            nb = coupe_msk( p, nb, x, y, c );
+            if ( IMPROBABLE( nb <= 0 ) ) goto fin;
         }
     }
 
 fin:
-    double area = 0;
-    if ( nb > 0 ) {
-        double a = 0;
-#pragma unroll
-        for ( int i = 0; i < R; ++i ) {
-            if ( i >= SUR && i >= nb ) break;
-            const int j = i + 1 < nb ? i + 1 : 0;
-            a += double( x[ i ] ) * double( selR( y, j ) ) - double( selR( x, j ) ) * double( y[ i ] );
-        }
-        area = 0.5 * fabs( a );
-    }
+    const double area = nb > 0 ? aire_triee( x, y, nb ) : 0.0;
     if ( nb < 0 ) liste_deb[ atomicAdd( deborde, 1 ) ] = k;
     res[ i0 ] = area;
 }

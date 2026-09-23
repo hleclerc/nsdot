@@ -28,10 +28,14 @@
 // ( `nb`, `haut`, le rang `k`, le noeud courant ). Le germe et son poids ne sont pas stockes :
 // ils se relisent dans l'arbre depuis `k`. ~200 octets par cellule en vol.
 //
-// LA COUPE est celle de `filnrm` ( normalisation en barillet, positions fixes ), en registres :
-// une cellule descend en RAM entre deux phases, pas pendant.
+// LA COUPE ( `COUPE` ) : 0 = `filnrm` ( normalisation en barillet, positions fixes ), 1 = `filord`
+// ( l'ordre cyclique dans un registre, les sommets ne bougent pas ), 2 = `filmsk` ( masques de
+// role, un seul barillet, lectures indexees mutualisees ) -- en registres dans tous les cas : une
+// cellule descend en RAM entre deux phases, pas pendant. C'est `COUPE` qui decide des registres
+// par thread, donc de l'occupation, et c'est le seul frein qui reste ici.
 // =====================================================================================
 
+#include "gpu/FilMsk2D.cuh"
 #include "gpu/FilOrd2D.cuh"
 
 namespace sf::gpu {
@@ -66,10 +70,12 @@ constexpr int META_PH = 7;    ///< nb, haut, rang, noeud, O bas, O haut, vivant
 ///     une RECHERCHE BINAIRE ( sept etapes ). Plus un trou parcouru, et l'ecriture reste directe.
 ///
 /// `CAP` cellules en vol par bloc, `BL` threads par bloc.
-template<bool POIDS, int R, int CAP, int BL, int GROUPE, int TRI, bool ORD, class TK>
-__global__ void __launch_bounds__( BL, 3 ) noyau2_filph( Arbre<TK,2> ar, double *res, int *deborde, int *liste_deb,
+/// `BSM` : les blocs par SM que ptxas doit garantir ( il rabote les registres pour y arriver ).
+template<bool POIDS, int R, int CAP, int BL, int GROUPE, int TRI, int COUPE, int BSM, class TK>
+__global__ void __launch_bounds__( BL, BSM ) noyau2_filph( Arbre<TK,2> ar, double *res, int *deborde, int *liste_deb,
                                                        int *compteur, EtatPh<TK> st, unsigned long long *stats = nullptr ) {
     constexpr int SUR = 3;
+    constexpr bool ORD = COUPE == 1;
     const int tid = threadIdx.x;
     const int base = blockIdx.x * CAP;
     const int S = st.S;
@@ -156,12 +162,7 @@ __global__ void __launch_bounds__( BL, 3 ) noyau2_filph( Arbre<TK,2> ar, double 
                     }
                     a += double( xp ) * double( y00 ) - double( x00 ) * double( yp );
                 } else
-#pragma unroll
-                for ( int i = 0; i < R; ++i ) {
-                    if ( i >= SUR && i >= nb ) break;
-                    const int j = i + 1 < nb ? i + 1 : 0;
-                    a += double( x[ i ] ) * double( selR( y, j ) ) - double( selR( x, j ) ) * double( y[ i ] );
-                }
+                    a = 2 * aire_triee( x, y, nb );      // `fabs` et le demi sont repris plus bas
             } else if ( nb < 0 )
                 liste_deb[ atomicAdd( deborde, 1 ) ] = k;
             res[ i0 ] = 0.5 * fabs( a );
@@ -337,6 +338,10 @@ __global__ void __launch_bounds__( BL, 3 ) noyau2_filph( Arbre<TK,2> ar, double 
 
             for ( int q = nd.beg; q < nd.end && nb > 0; ++q ) {
                 const Plan2<TK> p = bissect2<POIDS>( ar, q, p0[ 0 ], p0[ 1 ], w0 );
+                if constexpr ( COUPE == 2 ) {
+                    nb = coupe_msk( p, nb, x, y, c );    // la coupe de `filmsk`, partagee
+                    continue;
+                }
                 unsigned m;
                 if constexpr ( ORD ) {
                     // ---- L'ORDRE EN REGISTRE : rien ne bouge, `O` dit ou sont les sommets
