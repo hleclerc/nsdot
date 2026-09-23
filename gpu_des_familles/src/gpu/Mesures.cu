@@ -222,7 +222,9 @@ Chrono lance2( const Impl &m, Variante v, int reps, std::vector<double> &res ) {
             constexpr int V = decltype( vv )::value;
             const int cellules_par_bloc = BLOC2 / V;
             const int grid = ( m.n + cellules_par_bloc - 1 ) / cellules_par_bloc;
-            return chrono<2,TK>( m, reps, res, [ & ]() { noyau2_voies<POIDS,MaxNb,V><<<grid, BLOC2>>>( ar, m.res, m.deb, m.stats ); return m.deb; } );
+            Chrono ch = chrono<2,TK>( m, reps, res, [ & ]() { noyau2_voies<POIDS,MaxNb,V><<<grid, BLOC2>>>( ar, m.res, m.deb, m.stats ); return m.deb; } );
+            infos( ch, noyau2_voies<POIDS,MaxNb,V,TK>, BLOC2 );
+            return ch;
         };
         if ( v == Variante::VOIES16 ) return voies( std::integral_constant<int,16>{} );
         if ( v == Variante::VOIES32 ) return voies( std::integral_constant<int,32>{} );

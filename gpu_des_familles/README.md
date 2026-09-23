@@ -1038,6 +1038,53 @@ réelle.
 
 ---
 
+## Le bilan d'occupation, et pourquoi « une cellule sur V voies » perd VRAIMENT
+
+Question de H. L. : pourquoi ce noyau serait-il plus divergent qu'un noyau à une cellule par voie ?
+Réponse mesurée : **il ne l'est pas**. Uniforme, 10⁶, `float`, machine seule :
+
+| | ns/germe | registres | blocs/SM | occup. théorique | occup. **atteinte** | instructions | voies actives / 32 | travail réel (inst × voies) |
+|---|---|---|---|---|---|---|---|---|
+| `filnrm8` (1 cellule / voie) | **7.6** | 74 | 6 | 75 % | 66 % | **1413 M** | 7.20 | **10 174** |
+| `filmsk8f` (idem) | 8.2 | **63** | **8** | **100 %** | **88 %** | 1705 M | 6.45 | 10 997 |
+| `voies` (V = 8) | 28.7 | 80 | 6 | 75 % | 61 % | 6171 M | **10.34** | 63 808 |
+| `voies16` | 33.3 | 95 | 5 | 62 % | 51 % | 6892 M | 16.22 | 111 787 |
+| `voies32` | 33.7 | 137 | 3 | 38 % | 30 % | 6455 M | 23.75 | 153 306 |
+
+Trois choses en sortent, et la première corrige ce que disait ce README.
+
+* **La divergence n'est pas le problème — c'est l'inverse.** `voies` à huit voies a **10.34 voies
+  actives par warp contre 7.20** pour `filnrm8` : il est *moins* divergent, de 44 %. L'explication
+  « divergence » était fausse.
+* **Ce qui le tue, c'est le travail RÉDUNDANT** : 6171 M d'instructions contre 1413, soit ×4.4 — et
+  ×6.3 en travail de voie réel (63 808 contre 10 174 par cellule). La raison est structurelle :
+  dans l'architecture « la cellule dirige le fournisseur », **la moitié du travail est un parcours
+  d'arbre SCALAIRE** (dépiler, tester la boîte, calculer le plan), et ce parcours est **répliqué
+  sur les V voies du groupe**. Le compteur de voies actives compte cette redondance comme du
+  travail actif — d'où le piège : **« voies actives » n'est pas « voies utiles »**.
+* **La prémisse « moins de registres, donc l'attente serait amortie » ne tient pas non plus** :
+  `voies` prend **plus** de registres, pas moins (80 contre 63), justement parce que chaque voie
+  porte l'état scalaire répliqué (`nb`, `haut`, le nœud, `p0`, `w0`) *en plus* de son sommet — et
+  il déborde en mémoire locale (1024 octets, les tableaux d'excursion au-delà de huit sommets).
+  Pendant ce temps `filmsk8f` est déjà à **88 % d'occupation atteinte** : en 2D il ne reste presque
+  rien à gagner de ce côté.
+
+**Ce que ça dit de l'idée « 32 voies pour les intersections 2×2 ».** Calculer, pour chaque plan
+proposé, ses intersections avec tous les plans déjà posés puis tester chaque candidat contre les
+autres, c'est joli et sans branche — mais ça tombe dans le même piège : si le warp entier travaille
+sur une cellule, le parcours scalaire (la moitié du travail) est répliqué **32 fois**, et le calcul
+lui-même passe de O(k) à O(k²) par coupe. Le modèle de coût mesuré ci-dessus dit que ça perd, et de
+beaucoup. Le seul régime où ça pourrait basculer est celui où la coupe écrase le parcours — la 3D,
+où une coupe coûte 800 instructions contre 60 en 2D, et où `voies3` (la cellule sur le warp) gagne
+déjà ×8 sur le CPU.
+
+**La conclusion générale**, qui vaut pour toutes les tentatives de ce genre : tant que le parcours
+scalaire pèse la moitié du travail, **répartir UNE cellule sur plusieurs voies réplique cette
+moitié**. Ce n'est pas la divergence qu'il faut attaquer, c'est la part scalaire — soit en la
+rendant vectorielle (tester plusieurs boîtes à la fois : essayé, perdu, § 4), soit en la sortant du
+noyau de coupe (les phases : écrites, § 4).
+
+
 # 5. CE QUI RESTE
 
 * **`filnrm8` est la référence 2D** (7.7 ns/germe en uniforme, ×19 ; 19 et 47 sur les lignes,
