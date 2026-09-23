@@ -31,7 +31,8 @@ struct Arbre {
     const Noeud<TK,D> *nodes;
     const TK          *c[ D ];  ///< positions, ordre de l'arbre
     const TK          *w;       ///< poids, idem ( `nullptr` en Voronoi )
-    const int         *u[ D ];  ///< positions en VIRGULE FIXE ( echelle `ECH_FIXE` ), meme ordre
+    const int         *u[ D ];  ///< positions en VIRGULE FIXE 32 bits ( echelle `ECH_FIXE` )
+    const long long   *u64[ D ];///< les memes en VIRGULE FIXE 64 bits ( echelle `ECH_F64` )
     const int         *ids;     ///< rang -> identifiant
     int                n;
 };
@@ -65,12 +66,32 @@ __device__ __forceinline__ Plan2<TK> bissect2( const Arbre<TK,2> &ar, int q, TK 
 constexpr int    ECH_FIXE = 1 << 30;
 constexpr double INV_FIXE = 1.0 / double( ECH_FIXE );
 
+// EN 64 BITS, le pas tombe a `2^-52 = 2.2e-16` : `dx` n'est plus quantifie du tout a l'echelle du
+// `float`, et la conversion `long long -> float` arrondit a 24 bits RELATIFS A `dx`, pas a 1.
+// L'echelle `2^52` se convertit exactement depuis un `double` d'entree ( `v x 2^52 < 2^53` ), donc
+// la position stockee est l'arrondi exact de l'entree -- on ne peut pas faire mieux sans entree
+// plus precise que le `double`. Prix : huit octets par coordonnee au lieu de quatre.
+constexpr long long ECH_F64 = 1ll << 52;
+constexpr double    INV_F64 = 1.0 / double( ECH_F64 );
+
 /// le plan bissecteur DANS LE REPERE DU GERME, les positions lues en virgule fixe
 template<bool POIDS, class TK>
 __device__ __forceinline__ Plan2<TK> bissect2f( const Arbre<TK,2> &ar, int q, int ux0, int uy0, TK w0 ) {
     Plan2<TK> p;
     p.dx  = TK( ar.u[ 0 ][ q ] - ux0 ) * TK( INV_FIXE );   // soustraction EXACTE, puis conversion
     p.dy  = TK( ar.u[ 1 ][ q ] - uy0 ) * TK( INV_FIXE );
+    p.off = TK( 0.5 ) * ( p.dx * p.dx + p.dy * p.dy );
+    if constexpr ( POIDS ) p.off += TK( 0.5 ) * ( w0 - ar.w[ q ] );
+    p.id  = ar.ids[ q ];
+    return p;
+}
+
+/// le plan bissecteur dans le repere du germe, positions en virgule fixe 64 bits
+template<bool POIDS, class TK>
+__device__ __forceinline__ Plan2<TK> bissect2g( const Arbre<TK,2> &ar, int q, long long ux0, long long uy0, TK w0 ) {
+    Plan2<TK> p;
+    p.dx  = TK( ar.u64[ 0 ][ q ] - ux0 ) * TK( INV_F64 );  // soustraction 64 bits EXACTE
+    p.dy  = TK( ar.u64[ 1 ][ q ] - uy0 ) * TK( INV_F64 );
     p.off = TK( 0.5 ) * ( p.dx * p.dx + p.dy * p.dy );
     if constexpr ( POIDS ) p.off += TK( 0.5 ) * ( w0 - ar.w[ q ] );
     p.id  = ar.ids[ q ];

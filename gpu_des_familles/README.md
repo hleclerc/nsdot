@@ -917,6 +917,33 @@ par décade contre ×3.16 attendu. **Extrapolée à 10⁹ : 2e-4 de médiane** �
 ordinaire, ce qui est utilisable. La queue, elle, garde son exposant : p99.99 ~8e-3 et max ~0.5 à
 10⁹, donc une cellule sur 10⁴ à 1 % près et quelques-unes fausses.
 
+**La virgule fixe 64 bits (`filmsk8h`) ne rapporte RIEN de plus.** Essayée : échelle 2⁵², pas de
+2.2e-16 (soit l'arrondi exact du `double` d'entrée — on ne peut pas faire mieux), `dx` par
+soustraction 64 bits exacte. Résultat, à trois chiffres près **identique** au 32 bits :
+
+| uniforme, 10⁶ | moyenne | médiane | p99 | max | ns/germe |
+|---|---|---|---|---|---|
+| `filmsk8f` (fixe 32) | 1.3e-5 | 6.8e-6 | 8.8e-5 | 1.4e-3 | **8.1** |
+| `filmsk8h` (fixe 64) | 1.3e-5 | 6.9e-6 | 8.9e-5 | 1.4e-3 | 8.3 |
+
+À 10⁷ : médiane 2.0e-5 des deux côtés, max 9.9e-3 des deux côtés. Sur les lignes / Voronoï :
+8.2e-7 contre 8.4e-7. Pour +2 % de temps et **huit octets par coordonnée au lieu de quatre**.
+
+Le 32 bits **sature déjà le bénéfice** : à 2⁻³⁰ la quantification des positions (9.3e-10, soit
+2.9e-6 rapporté au côté d'une cellule à 10⁷) est passée **sous le plancher de la géométrie en
+`float`**, qui vaut 2.0e-5. Descendre l'entrée à 2.2e-16 ne sert donc à rien — c'est l'arithmétique
+d'après qui parle.
+
+**D'où vient ce plancher ?** La cellule démarre comme le **carré unité**, dont les coins sont à
+distance ~1 du germe, alors que la cellule finale fait ~1/√n. Un sommet final est calculé par
+interpolation (`x0v + ( x1 - x0v ) ta`) entre des points qui étaient d'ordre 1 : l'erreur absolue
+reste ~6e-8 pendant que le résultat descend à 1/√n, d'où une erreur **relative en √n** — c'est
+exactement la loi observée pour le plancher lui-même (6.8e-6 à 10⁶, 2.0e-5 à 10⁷). Deux façons de
+l'attaquer, non essayées : **partir d'une boîte serrée autour du germe** (celle de la feuille de
+l'arbre, quitte à la vérifier) au lieu du carré unité ; ou **calculer chaque sommet depuis les deux
+plans qui le définissent** (un système 2×2 dont tous les coefficients sont à l'échelle de la
+cellule) au lieu de l'interpoler.
+
 Deux réserves qui comptent.
 
 * **La virgule fixe 31 bits est réservée au `float`.** En `double` elle *détruit* la précision
