@@ -781,6 +781,56 @@ qui pilote un Newton sur les mesures. Donc **à 10⁹ il faut le `double`** — 
 gagne déjà en `double` ici, aurait le plus à rapporter.
 
 
+## Quelle carte pour 10⁹ ? ( A100 / H100 contre RTX PRO 6000 )
+
+Le noyau se coupe en deux parts que la mesure sépare : sur le 2080 Ti, `filnrm8` fait 7.70 ns/germe
+en `float` et 100.51 en `double`, et comme le FP64 y tourne à 1/32, on résout
+`I + F = 7.70`, `I + 32 F = 100.51` → **`I` = 4.71 ns de travail entier / contrôle** (masques,
+`select`, barillet, pile) et **`F` = 2.99 ns de travail flottant**. La première part suit le débit
+d'émission (≈ SM × horloge, le noyau étant borné par les instructions — § 4), la seconde suit le
+débit FP64. D'où la projection, *extrapolée et non mesurée* :
+
+| | émission | FP64 | `float` | `double` | 10⁹ en `double` | mémoire |
+|---|---|---|---|---|---|---|
+| RTX 2080 Ti (ici) | 1.00× | 1.0× | 7.70 | 100.5 | 100 s | 11 Go — ne tient pas |
+| A100 80 Go SXM | 1.45× | 23× | 5.3 | 7.4 | **7.4 s** | 80 Go |
+| H100 SXM5 | 2.21× | 81× | 3.5 | **3.3** | **3.3 s** | 80 Go |
+| RTX PRO 6000 Blackwell | **4.65×** | 4.6× | **1.65** | 21.7 | 21.6 s | **96 Go** |
+
+*(specs de mémoire, à revérifier avant tout achat : A100 108 SM à 1.41 GHz / FP64 9.7 T ; H100 SXM
+132 SM à 1.755 GHz / FP64 34 T ; RTX PRO 6000 Blackwell 188 SM à ~2.6 GHz, FP32 ~125 T mais **FP64
+à 1/64**, soit ~1.95 T.)*
+
+**Le verdict bascule entièrement sur `float` contre `double`.** En `float` la RTX PRO 6000 est
+devant tout le monde d'un facteur 2 sur la H100 — c'est une carte à débit d'instructions, et notre
+noyau n'est que ça. En `double` elle est **6× derrière la H100 et 3× derrière une A100**, parce que
+son FP64 est bridé à 1/64. Et le § précédent dit que le `double` est obligatoire à 10⁹ (erreur en
+√n). Donc, en l'état du code : **H100 ou A100**.
+
+Deux choses ne se voient pas dans le tableau.
+
+* **Personne n'est borné par la bande passante**, donc la projection tient. Mesuré (`filnrm8`,
+  n = 10⁷) : **235 octets de DRAM par cellule en `float`**, 179 en `double`, soit **7.7 %** de la
+  bande passante du 2080 Ti en `float` et 0.26 % en `double`. Reporté sur les autres cartes : 3.4 %
+  (A100), 3.1 % (H100), 12.3 % (RTX PRO 6000). Large marge partout.
+* **Le L2 de la RTX PRO 6000 (~100 Mo, contre 5.5 ici) tiendrait l'arbre entier** jusqu'à ~10⁷
+  germes (92 Mio en `float`) — l'arbre fait 50 % des requêtes mémoire (§ 4), et c'est précisément
+  ce qui fait perdre son avance au schéma par phases à grande échelle (§ 3 bis). Un avantage réel
+  qu'aucune ligne de TFLOPS ne montre. À 10⁹ l'arbre fait 9.2 Gio et plus rien ne tient, sur
+  aucune carte.
+
+**Le levier qui changerait le verdict.** L'erreur en √n du `float` n'est pas fatale : elle vient de
+ce que `bissect2` travaille en coordonnées **absolues** —
+`off = ½ ( dx·( xj + x0 ) + dy·( yj + y0 ) )`, où `dx` est petit (~1/√n) mais `xj + x0` est
+d'ordre 1, si bien que `off` perd `log₂ √n` bits par rapport à la taille de la cellule. Dans un
+repère **centré sur le germe** (`x0 = y0 = 0`), la même expression devient `off = ½ ( dx² + dy² )`
+et tout est à l'échelle de la cellule : la précision relative redeviendrait indépendante de `n`.
+Le changement est petit — décaler la boîte initiale de `p0`, décaler les boîtes des nœuds dans
+`bilan_sommet` / `proximite`, l'aire par le lacet étant déjà invariante par translation. **Si ça
+marche, le `float` redevient utilisable à 10⁹, et alors c'est la RTX PRO 6000 qui gagne, largement
+et pour bien moins cher.** C'est le test à faire avant de choisir une carte.
+
+
 # 4. CE QUE LE PROFIL DIT (`ncu`)
 
 **`fil` ne remplit rien.** En 3D, **2,3 threads actifs par warp sur 32** : le warp exécute
