@@ -344,26 +344,29 @@ Chrono lance2( const Impl &m, Variante v, int reps, std::vector<double> &res ) {
             return m.deb2;
         } );
     }
-    if ( v == Variante::FILMSK8 || v == Variante::FILMSK8C6 || v == Variante::FILMSK8C8 ) {
+    if ( v == Variante::FILMSK8 || v == Variante::FILMSK8G || v == Variante::FILMSK8C6 || v == Variante::FILMSK8C8 ) {
         // `BSM` : le nombre de blocs par SM que ptxas doit garantir -- il rabote les registres
         // pour y arriver. A 128 threads par bloc sur Turing ( 64 Ko de registres, 32 warps ) :
         // 4 blocs <=> 128 registres, 5 <=> 102, 6 <=> 85, 8 <=> 64 et l'occupation pleine
-        auto msk = [ & ]( auto mm ) {
+        auto msk = [ & ]( auto mm, auto gg ) {
             constexpr int BSM = decltype( mm )::value;
+            constexpr bool CENTRE = decltype( gg )::value;
             Chrono ch = chrono<2,TK>( m, reps, res, [ & ]() {
-                noyau2_filmsk<POIDS,BSM><<<grid, bloc>>>( ar, m.res, m.deb, m.liste );
+                noyau2_filmsk<POIDS,BSM,CENTRE><<<grid, bloc>>>( ar, m.res, m.deb, m.liste );
                 int nd = 0;
                 CUDA_OK( cudaMemcpy( &nd, m.deb, sizeof( int ), cudaMemcpyDeviceToHost ) );
                 if ( nd == 0 ) return m.deb;
                 noyau2_filmix<POIDS,64,8,true><<<( nd + bloc - 1 ) / bloc, bloc>>>( ar, m.res, m.deb2, m.liste, nd );
                 return m.deb2;
             } );
-            infos( ch, noyau2_filmsk<POIDS,BSM,TK>, bloc );
+            infos( ch, noyau2_filmsk<POIDS,BSM,CENTRE,TK>, bloc );
             return ch;
         };
-        return v == Variante::FILMSK8   ? msk( std::integral_constant<int,1>{} )
-             : v == Variante::FILMSK8C6 ? msk( std::integral_constant<int,6>{} )
-             :                            msk( std::integral_constant<int,8>{} );
+        using I1 = std::integral_constant<int,1>;
+        return v == Variante::FILMSK8   ? msk( I1{}, std::false_type{} )
+             : v == Variante::FILMSK8G  ? msk( I1{}, std::true_type{} )    // le repere centre sur le germe
+             : v == Variante::FILMSK8C6 ? msk( std::integral_constant<int,6>{}, std::false_type{} )
+             :                            msk( std::integral_constant<int,8>{}, std::false_type{} );
     }
     if ( v == Variante::FILNRM8C6 || v == Variante::FILNRM8C8 ) {
         auto nrm = [ & ]( auto mm ) {

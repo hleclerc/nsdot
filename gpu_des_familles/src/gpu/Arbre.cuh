@@ -54,6 +54,24 @@ __device__ __forceinline__ Plan2<TK> bissect2( const Arbre<TK,2> &ar, int q, TK 
     return p;
 }
 
+/// LE MEME PLAN, DANS LE REPERE CENTRE SUR LE GERME ( `v` compte a partir de `p0` ). En absolu
+/// `off = 1/2 ( dx ( xj + x0 ) + dy ( yj + y0 ) )` melange du petit ( `dx ~ 1/sqrt( n )` ) et du
+/// grand ( `xj + x0 ~ 1` ) : le produit vaut `~1/sqrt( n )` alors que `dx . v` en vaut autant, si
+/// bien que `s = dx vx + dy vy - off` est une DIFFERENCE DE DEUX GRANDS QUI DONNE UN PETIT -- la
+/// cellule fait `1/sqrt( n )` de cote, donc `s ~ 1/n`, et on perd `log2( sqrt( n ) )` bits.
+/// Centre, la meme expression devient `off = 1/2 ( dx^2 + dy^2 )` : tout est a l'echelle de la
+/// cellule, `dx vx` et `off` valent `~1/n` tous les deux, et il n'y a plus de cancellation.
+template<bool POIDS, class TK>
+__device__ __forceinline__ Plan2<TK> bissect2c( const Arbre<TK,2> &ar, int q, TK x0, TK y0, TK w0 ) {
+    Plan2<TK> p;
+    p.dx  = ar.c[ 0 ][ q ] - x0;
+    p.dy  = ar.c[ 1 ][ q ] - y0;
+    p.off = TK( 0.5 ) * ( p.dx * p.dx + p.dy * p.dy );
+    if constexpr ( POIDS ) p.off += TK( 0.5 ) * ( w0 - ar.w[ q ] );
+    p.id  = ar.ids[ q ];
+    return p;
+}
+
 template<bool POIDS, class TK>
 __device__ __forceinline__ Plan3<TK> bissect3( const Arbre<TK,3> &ar, int q, TK x0, TK y0, TK z0, TK w0 ) {
     Plan3<TK> p;
@@ -86,6 +104,23 @@ __device__ __forceinline__ TK bilan_sommet( const Noeud<TK,D> &B, const TK *v, c
         const TK u = y - v[ d ], f = v[ d ] - p0[ d ];
         s += u * u - f * f;
         if constexpr ( POIDS ) s -= B.a[ d ] * y;
+    }
+    return s;
+}
+
+/// LE MEME ELAGAGE, dans le repere centre : `V = v - p0`, et la boite du noeud decalee de `p0`.
+/// ( `v[ d ] - p0[ d ]` disparait, `y` revient en absolu pour le seul terme des poids. )
+template<bool POIDS, class TK, int D>
+__device__ __forceinline__ TK bilan_sommet_c( const Noeud<TK,D> &B, const TK *V, const TK *p0, TK w0 ) {
+    TK s = POIDS ? w0 - B.b : TK( 0 );
+#pragma unroll
+    for ( int d = 0; d < D; ++d ) {
+        const TK lo = B.lo[ d ] - p0[ d ], hi = B.hi[ d ] - p0[ d ];
+        TK y = V[ d ] + ( POIDS ? TK( 0.5 ) * B.a[ d ] : TK( 0 ) );
+        y = mn( mx( y, lo ), hi );
+        const TK u = y - V[ d ];
+        s += u * u - V[ d ] * V[ d ];
+        if constexpr ( POIDS ) s -= B.a[ d ] * ( y + p0[ d ] );
     }
     return s;
 }

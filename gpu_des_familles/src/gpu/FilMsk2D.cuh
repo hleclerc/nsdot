@@ -39,7 +39,13 @@
 //
 // Trois tableaux temporaires de neuf cases, contre les huit de huit de `filnrm` : 96 registres en
 // `double` et 58 en `float`, contre 128 et 74 -- LE PLUS PETIT NOYAU DE LA FAMILLE, a +5 % de
-// temps. `BSM` force l'occupation ( `__launch_bounds__( 128, BSM )` : ptxas rabote les registres
+// `CENTRE` : la cellule vit dans le REPERE DU GERME ( les sommets comptent a partir de `p0` ).
+// Rien ne change dans la coupe -- l'aire par le lacet est invariante par translation, et
+// `coupe_msk` ne voit que des differences -- seuls changent le carre de depart ( decale de `p0` ),
+// le plan ( `bissect2c` : `off = 1/2 ( dx^2 + dy^2 )` ) et l'elagage ( `bilan_sommet_c` ). Le but
+// est la PRECISION en `float` : voir `Arbre.cuh` et le README § 3 bis.
+//
+// `BSM` force l'occupation ( `__launch_bounds__( 128, BSM )` : ptxas rabote les registres
 // pour loger `BSM` blocs par SM ) ; `BSM = 1` ne contraint rien.
 // =====================================================================================
 
@@ -129,7 +135,7 @@ __device__ __forceinline__ int coupe_msk( const Plan2<TK> &p, int nb, TK ( &x )[
     return nn;
 }
 
-template<bool POIDS, int BSM, class TK>
+template<bool POIDS, int BSM, bool CENTRE, class TK>
 __global__ void __launch_bounds__( 128, BSM ) noyau2_filmsk( Arbre<TK,2> ar, double *res, int *deborde, int *liste_deb ) {
     constexpr int R = 8, SUR = 3;
     const int k = blockIdx.x * blockDim.x + threadIdx.x;
@@ -141,7 +147,11 @@ __global__ void __launch_bounds__( 128, BSM ) noyau2_filmsk( Arbre<TK,2> ar, dou
     TK  x[ R ], y[ R ];
     int c[ R ];
 #pragma unroll
-    for ( int i = 0; i < R; ++i ) { x[ i ] = TK( i == 1 || i == 2 ); y[ i ] = TK( i == 2 || i == 3 ); c[ i ] = i < 4 ? -1 - i : 0; }
+    for ( int i = 0; i < R; ++i ) {
+        x[ i ] = TK( i == 1 || i == 2 ) - ( CENTRE ? p0[ 0 ] : TK( 0 ) );
+        y[ i ] = TK( i == 2 || i == 3 ) - ( CENTRE ? p0[ 1 ] : TK( 0 ) );
+        c[ i ] = i < 4 ? -1 - i : 0;
+    }
     int nb = 4;
 
     int pile[ PILE ];
@@ -156,7 +166,7 @@ __global__ void __launch_bounds__( 128, BSM ) noyau2_filmsk( Arbre<TK,2> ar, dou
         for ( int i = 0; i < R; ++i ) {
             if ( i >= SUR && i >= nb ) break;
             const TK v[ 2 ] = { x[ i ], y[ i ] };
-            peut |= bilan_sommet<POIDS>( nd, v, p0, w0 ) <= TK( 0 );
+            peut |= ( CENTRE ? bilan_sommet_c<POIDS>( nd, v, p0, w0 ) : bilan_sommet<POIDS>( nd, v, p0, w0 ) ) <= TK( 0 );
         }
         if ( ! peut )
             continue;
@@ -170,7 +180,8 @@ __global__ void __launch_bounds__( 128, BSM ) noyau2_filmsk( Arbre<TK,2> ar, dou
         }
 
         for ( int q = nd.beg; q < nd.end; ++q ) {
-            const Plan2<TK> p = bissect2<POIDS>( ar, q, p0[ 0 ], p0[ 1 ], w0 );
+            const Plan2<TK> p = CENTRE ? bissect2c<POIDS>( ar, q, p0[ 0 ], p0[ 1 ], w0 )
+                                       : bissect2<POIDS>( ar, q, p0[ 0 ], p0[ 1 ], w0 );
             nb = coupe_msk( p, nb, x, y, c );
             if ( IMPROBABLE( nb <= 0 ) ) goto fin;
         }

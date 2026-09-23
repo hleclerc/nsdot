@@ -13,6 +13,7 @@
 // =====================================================================================
 
 #include "bench/Dispatch.h"
+#include "diagram/PowerDiagram.h"
 #include "gpu/Mesures.h"
 #include <cmath>
 #include <cstdlib>
@@ -38,6 +39,7 @@ bool choisie( const std::string &liste, const char *nom ) {
 struct Opt {
     std::string variante = "toutes";
     int         reps_gpu = 10;
+    bool        temoin_double = false;   ///< le temoin en `double`, meme quand le noyau est en `float`
 };
 
 template<class PD>
@@ -59,6 +61,18 @@ int mesure( const Args &a, const Opt &o, const Nuage<PD::dim> &nu ) {
         deb_cpu = pd.measures( cpu, a.par );
         t_cpu = std::min( t_cpu, now() - t0 );
     }
+    // LE TEMOIN DE PRECISION. Par defaut c'est le CPU dans le MEME flottant que le noyau : on
+    // mesure alors un ECART entre deux calculs egalement imprecis, ce qui ne dit rien de la
+    // justesse. `--temoin-double` rejoue le meme nuage avec le moteur `double` et compare a lui :
+    // c'est la seule facon de voir si un changement de formulation gagne des chiffres.
+    std::vector<TF> ref;
+    if ( o.temoin_double && ! std::is_same_v<TK,double> ) {
+        PowerDiagram<D,double,64> pdd;
+        pdd.build( nu.P, nu.W, nu.n, a.leaf );
+        pdd.measures( ref, a.par );
+    }
+    const std::vector<TF> &temoin = ref.empty() ? cpu : ref;
+
     double somme_cpu = 0;
     for ( TF v : cpu ) somme_cpu += v;
     std::printf( "  %-24s n=%-7d %-8s  arbre %5.0f ms\n", nu.nom.c_str(), int( nu.n ), nu.W ? "Laguerre" : "Voronoi", t_arbre * 1e3 );
@@ -86,14 +100,14 @@ int mesure( const Args &a, const Opt &o, const Nuage<PD::dim> &nu ) {
         for ( SI i = 0; i < nu.n; ++i ) {
             if ( std::isnan( res[ i ] ) ) { if ( non_ecrites++ < 5 ) std::printf( "        cellule %d ( rang %d ) non ecrite\n", int( i ), int( rang_de[ i ] ) ); continue; }
             somme += res[ i ];
-            ecart = std::max( ecart, std::fabs( res[ i ] - cpu[ i ] ) / std::max( double( cpu[ i ] ), moyenne ) );
+            ecart = std::max( ecart, std::fabs( res[ i ] - temoin[ i ] ) / std::max( double( temoin[ i ] ), moyenne ) );
         }
         if ( non_ecrites ) std::printf( "        %d cellules NON ECRITES\n", non_ecrites );
         if ( std::getenv( "MESURES_DEBUG" ) ) {
             int nz = 0, faux = 0;
             for ( SI i = 0; i < nu.n; ++i ) {
                 if ( std::isnan( res[ i ] ) || res[ i ] == 0 ) { ++nz; continue; }
-                if ( std::fabs( res[ i ] - cpu[ i ] ) > 1e-6 * std::max( double( cpu[ i ] ), moyenne ) ) { if ( faux++ < 5 ) std::printf( "        cellule %d rang %d : gpu %.6e cpu %.6e\n", int( i ), int( rang_de[ i ] ), res[ i ], double( cpu[ i ] ) ); }
+                if ( std::fabs( res[ i ] - temoin[ i ] ) > 1e-6 * std::max( double( temoin[ i ] ), moyenne ) ) { if ( faux++ < 5 ) std::printf( "        cellule %d rang %d : gpu %.6e temoin %.6e\n", int( i ), int( rang_de[ i ] ), res[ i ], double( temoin[ i ] ) ); }
             }
             std::printf( "        debug : %d nulles ou NaN, %d fausses parmi les autres\n", nz, faux );
         }
@@ -139,10 +153,12 @@ int main( int argc, char **argv ) {
         if ( a.parse( s, i, argc, argv ) ) continue;
         if ( s == "--variante" && i + 1 < argc ) { o.variante = argv[ ++i ]; continue; }
         if ( s == "--reps-gpu" && i + 1 < argc ) { o.reps_gpu = std::atoi( argv[ ++i ] ); continue; }
+        if ( s == "--temoin-double" ) { o.temoin_double = true; continue; }
         std::printf( "usage: mesures [options]\n" );
         Args::usage();
-        std::printf( "  --variante V    fil | filreg | filregc | filmix{4,6,8,12,16} | filbrk{6,8,10,12,16} | filbrk8nu | filrot{6,8} | filnrm8 | filord8 | filsuc8 | filmsk8 | filmsk8c{6,8} | filnrm8c{6,8} | filuni8 | filuni8np | filshm8 | filnrm8tri | filnrm8tril | filph8 | filph8g | filph8b | filph8a | filph8c | filph8o | filph8m | filph8m4 | voies | voies16 | voies32 | paquet{8,32}x{1,2,4}[S] | toutes ( plusieurs : separees par des virgules )\n"
-                     "  --reps-gpu R    repetitions du noyau GPU, minimum       (10)\n" );
+        std::printf( "  --variante V    fil | filreg | filregc | filmix{4,6,8,12,16} | filbrk{6,8,10,12,16} | filbrk8nu | filrot{6,8} | filnrm8 | filord8 | filsuc8 | filmsk8 | filmsk8g | filmsk8c{6,8} | filnrm8c{6,8} | filuni8 | filuni8np | filshm8 | filnrm8tri | filnrm8tril | filph8 | filph8g | filph8b | filph8a | filph8c | filph8o | filph8m | filph8m4 | voies | voies16 | voies32 | paquet{8,32}x{1,2,4}[S] | toutes ( plusieurs : separees par des virgules )\n"
+                     "  --reps-gpu R    repetitions du noyau GPU, minimum       (10)\n"
+                     "  --temoin-double le temoin de precision en double, meme si --kernel float\n" );
         return s == "--help" || s == "-h" ? 0 : 1;
     }
     a.finalise();
