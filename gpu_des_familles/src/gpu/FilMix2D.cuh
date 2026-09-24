@@ -17,6 +17,7 @@
 // =====================================================================================
 
 #include "gpu/Fil2D.cuh"
+#include "gpu/Image2D.cuh"
 
 namespace sf::gpu {
 
@@ -33,9 +34,13 @@ __device__ __forceinline__ T selR( const T ( &a )[ R ], int i ) {
 /// c'est CE noyau qui finit les cellules que la premiere passe a fait deborder ( 13 % en uniforme )
 /// et que sans elles leur ligne de la hessienne serait vide. `fac_deb` compte celles dont le
 /// polygone final a plus de `NF` aretes.
+/// `im` : la densite image, si elle est active. Ce noyau finit les cellules que la premiere passe
+/// a fait deborder -- une poignee -- donc la densite s'y traite TOUJOURS sur place, et le choix
+/// n'est qu'un test a l'execution : y mettre un parametre de template ne paierait rien.
 template<bool POIDS, int MaxNb, int R, bool CIDREG, class TK>
 __global__ void __launch_bounds__( 128 ) noyau2_filmix( Arbre<TK,2> ar, double *res, int *deborde, const int *liste = nullptr, int nl = 0,
-                                                        int *fac_j = nullptr, TK *fac_l = nullptr, int NF = 0, int *fac_deb = nullptr ) {
+                                                        int *fac_j = nullptr, TK *fac_l = nullptr, int NF = 0, int *fac_deb = nullptr,
+                                                        Image2 im = Image2{} ) {
     static_assert( MaxNb <= 64 && R <= MaxNb && R >= 4, "les masques sont sur 64 bits, le carre tient dans les registres" );
     const int ti = blockIdx.x * blockDim.x + threadIdx.x;
     const int k = liste ? ( ti < nl ? liste[ ti ] : ar.n ) : ti;
@@ -155,6 +160,25 @@ __global__ void __launch_bounds__( 128 ) noyau2_filmix( Arbre<TK,2> ar, double *
     }
 
 fin:
+    // ---- LA DENSITE IMAGE : une marche par arete, qui rend la masse ET `integrale rho ds`
+    if ( im.active() ) {
+        double mas = 0;
+        const double sref = nb > 0 ? im.ref( double( get_x( 0 ) ), double( get_y( 0 ) ) ) : 0.0;
+        for ( int e = 0; e < nb; ++e ) {              // les aretes : la masse ne depend pas de `NF`
+            const int ee = e + 1 < nb ? e + 1 : 0;
+            double mm, ll;
+            arete_image( im, double( get_x( e ) ), double( get_y( e ) ), double( get_x( ee ) ), double( get_y( ee ) ), sref, mm, ll );
+            mas += mm;
+            if ( fac_j && e < NF ) { fac_j[ size_t( e ) * ar.n + i0 ] = get_c( e ); fac_l[ size_t( e ) * ar.n + i0 ] = TK( ll ); }
+        }
+        if ( fac_j )
+            for ( int e = nb > 0 ? nb : 0; e < NF; ++e ) { fac_j[ size_t( e ) * ar.n + i0 ] = -1000000; fac_l[ size_t( e ) * ar.n + i0 ] = 0; }
+        if ( nb > NF && fac_deb ) atomicAdd( fac_deb, 1 );
+        if ( nb < 0 ) atomicAdd( deborde, 1 );
+        res[ i0 ] = nb > 0 ? fabs( mas ) : 0.0;
+        return;
+    }
+
     // ---- LES FACETTES du polygone final ( `get_x` / `get_y` / `get_c` lisent registres ou queue )
     if ( fac_j ) {
         if ( nb > NF && fac_deb ) atomicAdd( fac_deb, 1 );

@@ -39,9 +39,21 @@ src/gpu/Paquet2D.cuh    PLUSIEURS CELLULES PAR VOIE, un parcours par warp, les p
 src/gpu/Fil3D.cuh       une cellule par thread, 3D : `Cellule3` mot pour mot, tout en mémoire locale
 src/gpu/Voies3D.cuh     LA CELLULE SUR LE WARP, 3D : la voie `l` porte les sommets `l, l+32, …`
                         dans `S` cases de registres, coupes et voisins en octets ; deux passes
+src/gpu/Image2D.cuh     LA DENSITÉ IMAGE : l'intégrale de bord `∮ G dy` avec `G` la somme
+                        préfixe de la ligne de pixels, le parcours d'arête en Amanatides-Woo, et
+                        les deux noyaux de traitement PAR LOT ( une voie par cellule, une voie par
+                        arête ) ([§ densités](08-densites.md))
+src/gpu/Bsp2D.cuh       L'ARBRE CONSTRUIT SUR LE GPU : boîtes par atomiques sur entiers ordonnés,
+                        un tri radix par niveau, préordre, et le majorant affine en quatre passes
+src/gpu/Hess2D.cuh      L'ASSEMBLAGE de la hessienne depuis les facettes : compter, scanner, remplir
+src/gpu/Cg2D.cuh        LE GRADIENT CONJUGUÉ, scalaires gardés sur la carte
+src/gpu/Amg2D.cuh       LE MULTIGRILLE MAISON : agrégation, Galerkin par triplets, K-cycle
+src/gpu/Lisse2D.cuh     la prolongation LISSÉE par `cusparseSpGEMM` — écrite, mesurée, perdante
 src/gpu/Mesures.h/.cu   `DiagrammeGpu<D,TK>` : téléversement, le choix du noyau ( variante,
                         Voronoï / Laguerre, sommets max ), le chrono par événements CUDA
 src/mains/main_mesures.cpp   le banc
+src/mains/main_chaine.cpp    LA CHAÎNE COMPLÈTE : arbre, mesures, facettes, hessienne, CG / AMG,
+                        Newton, densité image — et le témoin CPU de chaque poste
 src/mains/main_bande.cu      le débit en streaming SoA : ce que coûte une phase si l'état va en RAM
 ```
 

@@ -35,6 +35,7 @@ dans le bac à sable) et **tout chronométrage passe par `job -b`**.
 | [5. Ce que le profil dit](doc/05-profils.md) | `ncu` : où va le temps, le bilan d'occupation, les idées mesurées et perdues |
 | [6. Ce qui reste](doc/06-ce-qui-reste.md) | l'état des lieux et les chantiers ouverts |
 | [7. Comment les chiffres sont pris](doc/07-methode.md) | `job -b`, la chauffe, le témoin, le plancher de bruit |
+| [8. Les densités, et l'image](doc/08-densites.md) | intégrer `ρ` **sur le bord**, ce que ça coûte, les phases mesurées, le Newton sous une image |
 
 **Les trois résultats à retenir.** En 2D `float`, `filnrm8` fait **7.6 ns/germe** (×19 sur le CPU à
 8 fils) et `filmsk8f` **8.2** avec 25 % de registres en moins, une occupation atteinte de 88 % et

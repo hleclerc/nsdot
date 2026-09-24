@@ -27,6 +27,8 @@
 --   src/gpu/Voies2D.cuh     LA CELLULE SUR HUIT VOIES, 2D : voie = sommet, quatre cellules par warp
 --   src/gpu/Fil3D.cuh       une cellule par thread, 3D : le polytope simple porte par ses sommets
 --   src/gpu/Voies3D.cuh     LA CELLULE SUR LE WARP, 3D : la voie l porte les sommets l, l+32, ... ; deux passes
+--   src/gpu/Image2D.cuh     LA DENSITE IMAGE : l'integrale de bord ( somme prefixe par ligne de pixels ),
+--                           le parcours d'arete, et le traitement PAR LOT ( depot du polygone )
 --   src/gpu/Mesures.h/.cu   `DiagrammeGpu<D,TK>` : televersement, lancement, chrono par evenements
 --   src/mains/main_mesures.cpp   le banc
 --   src/mains/main_bande.cu      le debit en streaming SoA : le cout d'une phase si l'etat va en RAM
@@ -79,4 +81,5 @@ target( "mesures" )
     -- deplace un sommet, et l'elagage est exact seulement si la geometrie l'est.
     add_cugencodes( "sm_75" )
     add_cuflags( "-O3", "-lineinfo", { force = true } )
-    add_syslinks( "pthread" )
+    -- `Lisse2D.cuh` ( la prolongation lissee ) appelle cuSPARSE depuis `Mesures.cu`
+    add_syslinks( "cusparse", "pthread" )

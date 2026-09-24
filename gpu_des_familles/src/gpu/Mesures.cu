@@ -24,6 +24,7 @@
 #include "gpu/FilOrd2D.cuh"
 #include "gpu/FilSuc2D.cuh"
 #include "gpu/FilMsk2D.cuh"
+#include "gpu/Image2D.cuh"
 #include "gpu/FilUni2D.cuh"
 #include "gpu/FilShm2D.cuh"
 #include "gpu/FilPh2D.cuh"
@@ -76,8 +77,26 @@ struct DiagrammeGpu<D,TK>::Impl {
     cusparseHandle_t cus = nullptr;
     int         *rang_de = nullptr;                  ///< identifiant -> rang ( l'agregation du niveau fin )
     double      *acc = nullptr;                      ///< un scalaire de travail
+    double2     *img = nullptr;                      ///< LA DENSITE IMAGE : ( somme prefixe, valeur )
+    int          iw = 0, ih = 0;
+    Densite      dens = Densite::DIRECTE;            ///< le mode, quand une image est chargee
+    int          chunk = 1 << 20;                    ///< cellules par lot dans les modes a depot
+    TK          *dep_x = nullptr, *dep_y = nullptr;  ///< le depot des polygones, en SoA
+    int         *dep_nb = nullptr, *dep_id = nullptr;
+    int          dep_cap = 0;
     int          n = 0, nn = 0;
     bool         poids = false;
+
+    /// la grille telle que les noyaux la lisent ( inactive si aucune image n'est chargee )
+    Image2 image() const {
+        Image2 im;
+        if ( ! img ) return im;
+        im.p = img; im.W = iw; im.H = ih;
+        im.hx = 1.0 / iw; im.hy = 1.0 / ih;
+        im.ihx = double( iw ); im.ihy = double( ih );
+        return im;
+    }
+    Densite mode() const { return img ? dens : Densite::AUCUNE; }
 
     Arbre<TK,D> arbre() const {
         Arbre<TK,D> a;
@@ -181,6 +200,8 @@ DiagrammeGpu<D,TK>::~DiagrammeGpu() {
     for ( int d = 0; d < D; ++d ) { cudaFree( m.c[ d ] ); cudaFree( m.u[ d ] ); cudaFree( m.u64[ d ] ); }
     cudaFree( m.w ); cudaFree( m.ids ); cudaFree( m.res ); cudaFree( m.deb ); cudaFree( m.deb2 ); cudaFree( m.liste ); cudaFree( m.stats ); cudaFree( m.cptr );
     cudaFree( m.fac_j ); cudaFree( m.fac_l );
+    cudaFree( m.img );
+    cudaFree( m.dep_x ); cudaFree( m.dep_y ); cudaFree( m.dep_nb ); cudaFree( m.dep_id );
     cudaFree( m.cgv );
     cudaFree( m.hrow ); cudaFree( m.hcol ); cudaFree( m.hval ); cudaFree( m.hdia ); cudaFree( m.hscan );
     for ( int d = 0; d < 2; ++d ) cudaFree( m.pid[ d ] );
@@ -439,7 +460,7 @@ Chrono lance2( const Impl &m, Variante v, int reps, std::vector<double> &res ) {
                 noyau2_filmix<POIDS,64,8,true><<<( nd + bloc - 1 ) / bloc, bloc>>>( ar, m.res, m.deb2, m.liste, nd );
                 return m.deb2;
             } );
-            infos( ch, noyau2_filmsk<POIDS,BSM,CENTRE,FIXE,TK>, bloc );
+            infos( ch, noyau2_filmsk<POIDS,BSM,CENTRE,FIXE,DENS_AUCUNE,TK>, bloc );
             return ch;
         };
         using I1 = std::integral_constant<int,1>;
@@ -964,6 +985,92 @@ void DiagrammeGpu<D,TK>::applique( const Hessienne &H, const double *x, double *
     }
 }
 
+// =====================================================================================
+// LE TOUR DE CELLULES ( 2D ) : `filmsk`, puis `filmix` pour ce qui a deborde -- avec la densite
+// image la ou le mode le demande. C'est le SEUL endroit qui connait les quatre modes, et les
+// trois chemins ( mesures, facettes, Newton ) passent tous par lui.
+// =====================================================================================
+template<class TK, bool POIDS, int FIX>
+static int *cellules_2d( typename DiagrammeGpu<2,TK>::Impl &m, const Arbre<TK,2> &ar, int *dj, TK *dl, int NF ) {
+    const int bloc = 128;
+    const Image2 im = m.image();
+    const Densite d = m.mode();
+    CUDA_OK( cudaMemsetAsync( m.deb, 0, sizeof( int ) ) );
+    CUDA_OK( cudaMemsetAsync( m.deb2, 0, sizeof( int ) ) );
+
+    if ( ( d == Densite::DEPOT || d == Densite::DEPOT_ARETE ) && m.dep_cap > 0 ) {
+        // PAR LOTS : a 10^9 germes on n'a pas la place de garder tous les polygones a la fois
+        for ( int k0 = 0; k0 < m.n; k0 += m.dep_cap ) {
+            const int nk = std::min( m.dep_cap, m.n - k0 );
+            noyau2_filmsk<POIDS,1,true,FIX,DENS_DEPOT><<<( nk + bloc - 1 ) / bloc, bloc>>>(
+                ar, m.res, m.deb, m.liste, dj, dl, NF, im, m.dep_x, m.dep_y, m.dep_nb, m.dep_id, m.dep_cap, k0, nk );
+            if ( d == Densite::DEPOT )
+                k_dens_cel<TK><<<( nk + bloc - 1 ) / bloc, bloc>>>( im, m.dep_x, m.dep_y, m.dep_nb, m.dep_id, m.dep_cap, nk, m.n, m.res, dl );
+            else
+                k_dens_arete<TK,8><<<( nk * 8 + bloc - 1 ) / bloc, bloc>>>( im, m.dep_x, m.dep_y, m.dep_nb, m.dep_id, m.dep_cap, nk, m.n, m.res, dl );
+        }
+    } else if ( d == Densite::AUCUNE ) {
+        noyau2_filmsk<POIDS,1,true,FIX,DENS_AUCUNE><<<( m.n + bloc - 1 ) / bloc, bloc>>>( ar, m.res, m.deb, m.liste, dj, dl, NF );
+    } else {
+        noyau2_filmsk<POIDS,1,true,FIX,DENS_DIRECTE><<<( m.n + bloc - 1 ) / bloc, bloc>>>( ar, m.res, m.deb, m.liste, dj, dl, NF, im );
+    }
+
+    int nd = 0;
+    CUDA_OK( cudaMemcpy( &nd, m.deb, sizeof( int ), cudaMemcpyDeviceToHost ) );
+    if ( nd == 0 ) return m.deb;
+    // la seconde passe finit les cellules trop grosses pour les registres, densite comprise
+    noyau2_filmix<POIDS,64,8,true><<<( nd + bloc - 1 ) / bloc, bloc>>>( ar, m.res, m.deb2, m.liste, nd, dj, dl, NF, m.cptr, im );
+    return m.deb2;
+}
+
+// =====================================================================================
+// LA DENSITE IMAGE : la montee de la grille, et le choix du mode.
+// =====================================================================================
+template<int D, class TK>
+double DiagrammeGpu<D,TK>::charge_image( const double *v, int W, int H ) {
+    Impl &m = *impl;
+    cudaFree( m.img );
+    m.img = nullptr; m.iw = 0; m.ih = 0;
+    if ( ! v || W <= 0 || H <= 0 ) return 0;
+    const double hx = 1.0 / W, hy = 1.0 / H;
+    // la SOMME PREFIXE de chaque ligne, calculee une fois pour toutes : c'est elle qui rend
+    // l'integrale de bord exacte sans jamais couper la cellule ( voir `Image2D.cuh` )
+    std::vector<double2> t( size_t( W ) * H );
+    double tot = 0;
+    for ( int j = 0; j < H; ++j ) {
+        double s = 0;
+        for ( int i = 0; i < W; ++i ) {
+            const double r = v[ size_t( j ) * W + i ];
+            t[ size_t( j ) * W + i ] = make_double2( s, r );
+            s += r * hx;
+        }
+        tot += s * hy;
+    }
+    CUDA_OK( cudaMalloc( &m.img, t.size() * sizeof( double2 ) ) );
+    CUDA_OK( cudaMemcpy( m.img, t.data(), t.size() * sizeof( double2 ), cudaMemcpyHostToDevice ) );
+    m.iw = W; m.ih = H;
+    return tot;
+}
+
+template<int D, class TK>
+void DiagrammeGpu<D,TK>::regle_densite( Densite d, int chunk ) {
+    Impl &m = *impl;
+    m.dens = d;
+    m.chunk = chunk > 0 ? chunk : 1;
+    if ( d != Densite::DEPOT && d != Densite::DEPOT_ARETE ) return;
+    const int cap = std::min( m.chunk, m.n );
+    if ( cap == m.dep_cap ) return;
+    cudaFree( m.dep_x ); cudaFree( m.dep_y ); cudaFree( m.dep_nb ); cudaFree( m.dep_id );
+    CUDA_OK( cudaMalloc( &m.dep_x, size_t( 8 ) * cap * sizeof( TK ) ) );
+    CUDA_OK( cudaMalloc( &m.dep_y, size_t( 8 ) * cap * sizeof( TK ) ) );
+    CUDA_OK( cudaMalloc( &m.dep_nb, size_t( cap ) * sizeof( int ) ) );
+    CUDA_OK( cudaMalloc( &m.dep_id, size_t( cap ) * sizeof( int ) ) );
+    m.dep_cap = cap;
+}
+
+template<int D, class TK>
+Densite DiagrammeGpu<D,TK>::densite() const { return impl->mode(); }
+
 /// UN TOUR DE NEWTON, de bout en bout sur la carte : poids, majorants, mesures, facettes.
 template<int D, class TK>
 double DiagrammeGpu<D,TK>::tour_newton( const double *W ) {
@@ -975,7 +1082,6 @@ double DiagrammeGpu<D,TK>::tour_newton( const double *W ) {
             CUDA_OK( cudaMalloc( &m.fac_l, size_t( NF ) * m.n * sizeof( TK ) ) );
         }
         const Arbre<TK,2> ar = m.arbre();
-        const int bloc = 128, grid = ( m.n + bloc - 1 ) / bloc;
         constexpr int FIX = sizeof( TK ) == 4 ? 32 : 0;
         cudaEvent_t e0, e1;
         CUDA_OK( cudaEventCreate( &e0 ) ); CUDA_OK( cudaEventCreate( &e1 ) );
@@ -989,11 +1095,7 @@ double DiagrammeGpu<D,TK>::tour_newton( const double *W ) {
         CUDA_OK( cudaMemsetAsync( m.deb2, 0, sizeof( int ) ) );
         auto tour = [ & ]( auto pp ) {
             constexpr bool POIDS = decltype( pp )::value;
-            noyau2_filmsk<POIDS,1,true,FIX><<<grid, bloc>>>( ar, m.res, m.deb, m.liste, m.fac_j, m.fac_l, NF );
-            int nd = 0;
-            CUDA_OK( cudaMemcpy( &nd, m.deb, sizeof( int ), cudaMemcpyDeviceToHost ) );
-            if ( nd )
-                noyau2_filmix<POIDS,64,8,true><<<( nd + bloc - 1 ) / bloc, bloc>>>( ar, m.res, m.deb2, m.liste, nd, m.fac_j, m.fac_l, NF, m.cptr );
+            cellules_2d<TK,POIDS,FIX>( m, ar, m.fac_j, m.fac_l, NF );
         };
         if ( m.poids ) tour( std::true_type{} ); else tour( std::false_type{} );
         CUDA_OK( cudaEventRecord( e1 ) );
@@ -1014,7 +1116,7 @@ Chrono DiagrammeGpu<D,TK>::facettes( int reps, std::vector<double> &res, std::ve
     } else {
     const Impl &m = *impl;
     const Arbre<TK,2> ar = m.arbre();
-    const int bloc = 128, grid = ( m.n + bloc - 1 ) / bloc;
+    const int bloc = 128;
     // les MEMES tampons que `tour_newton` et `assemble` : alloues une fois pour toutes
     Impl &mm = *impl;
     if ( ! mm.fac_j ) {
@@ -1028,16 +1130,13 @@ Chrono DiagrammeGpu<D,TK>::facettes( int reps, std::vector<double> &res, std::ve
     constexpr int FIX = sizeof( TK ) == 4 ? 32 : 0;
     auto tour = [ & ]( auto pp ) {
         constexpr bool POIDS = decltype( pp )::value;
-        Chrono ch = chrono<2,TK>( m, reps, res, [ & ]() {
-            noyau2_filmsk<POIDS,1,true,FIX><<<grid, bloc>>>( ar, m.res, m.deb, m.liste, dj, dl, NF );
-            int nd = 0;
-            CUDA_OK( cudaMemcpy( &nd, m.deb, sizeof( int ), cudaMemcpyDeviceToHost ) );
-            if ( nd == 0 ) return m.deb;
-            // la seconde passe rend AUSSI ses facettes : elle finit 13 % des cellules en uniforme
-            noyau2_filmix<POIDS,64,8,true><<<( nd + bloc - 1 ) / bloc, bloc>>>( ar, m.res, m.deb2, m.liste, nd, dj, dl, NF, m.cptr );
-            return m.deb2;
-        } );
-        infos( ch, noyau2_filmsk<POIDS,1,true,FIX,TK>, bloc );
+        // la seconde passe rend AUSSI ses facettes : elle finit 13 % des cellules en uniforme
+        Chrono ch = chrono<2,TK>( m, reps, res, [ & ]() { return cellules_2d<TK,POIDS,FIX>( mm, ar, dj, dl, NF ); } );
+        // les registres et l'occupation sont ceux du noyau REELLEMENT lance
+        const Densite md = mm.mode();
+        infos( ch, md == Densite::DIRECTE ? ( const void * ) noyau2_filmsk<POIDS,1,true,FIX,DENS_DIRECTE,TK>
+                 : md == Densite::AUCUNE  ? ( const void * ) noyau2_filmsk<POIDS,1,true,FIX,DENS_AUCUNE,TK>
+                                          : ( const void * ) noyau2_filmsk<POIDS,1,true,FIX,DENS_DEPOT,TK>, bloc );
         return ch;
     };
     CUDA_OK( cudaMemset( m.cptr, 0, sizeof( int ) ) );   // les polygones finaux de plus de `NF` aretes

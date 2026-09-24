@@ -63,6 +63,7 @@
 // =====================================================================================
 
 #include "gpu/FilNrm2D.cuh"
+#include "gpu/Image2D.cuh"
 
 namespace sf::gpu {
 
@@ -148,12 +149,22 @@ __device__ __forceinline__ int coupe_msk( const Plan2<TK> &p, int nb, TK ( &x )[
     return nn;
 }
 
-template<bool POIDS, int BSM, bool CENTRE, int FIXE, class TK>
+/// `DENS` : le traitement de la densite image. `DENS_AUCUNE` rend l'aire ( le noyau d'origine,
+/// octet pour octet ) ; `DENS_DIRECTE` integre l'image DANS ce noyau, a la suite du parcours ;
+/// `DENS_DEPOT` se contente d'ECRIRE le polygone fini, pour un second noyau ( `Image2D.cuh` ).
+/// Le depot travaille par LOTS : `k0` le premier rang du lot, `nk` sa taille, `cap` le pas du SoA.
+enum { DENS_AUCUNE = 0, DENS_DIRECTE = 1, DENS_DEPOT = 2 };
+
+template<bool POIDS, int BSM, bool CENTRE, int FIXE, int DENS = DENS_AUCUNE, class TK = float>
 __global__ void __launch_bounds__( 128, BSM ) noyau2_filmsk( Arbre<TK,2> ar, double *res, int *deborde, int *liste_deb,
-                                                            int *fac_j = nullptr, TK *fac_l = nullptr, int NF = 0 ) {
+                                                            int *fac_j = nullptr, TK *fac_l = nullptr, int NF = 0,
+                                                            Image2 im = Image2{}, TK *dep_x = nullptr, TK *dep_y = nullptr,
+                                                            int *dep_nb = nullptr, int *dep_id = nullptr,
+                                                            int cap = 0, int k0 = 0, int nk = 0 ) {
     constexpr int R = 8, SUR = 3;
-    const int k = blockIdx.x * blockDim.x + threadIdx.x;
+    const int k = ( DENS == DENS_DEPOT ? k0 : 0 ) + blockIdx.x * blockDim.x + threadIdx.x;
     if ( k >= ar.n ) return;
+    if constexpr ( DENS == DENS_DEPOT ) if ( k >= k0 + nk ) return;
     const int u0[ 2 ] = { FIXE == 32 ? ar.u[ 0 ][ k ] : 0, FIXE == 32 ? ar.u[ 1 ][ k ] : 0 };
     const long long g0[ 2 ] = { FIXE == 64 ? ar.u64[ 0 ][ k ] : 0, FIXE == 64 ? ar.u64[ 1 ][ k ] : 0 };
     const TK p0[ 2 ] = { FIXE == 32 ? TK( u0[ 0 ] ) * TK( INV_FIXE ) : FIXE == 64 ? TK( double( g0[ 0 ] ) * INV_F64 ) : ar.c[ 0 ][ k ],
@@ -213,29 +224,73 @@ __global__ void __launch_bounds__( 128, BSM ) noyau2_filmsk( Arbre<TK,2> ar, dou
     }
 
 fin:
-    // ---- LES FACETTES : une par arete dont le `cid` est un voisin
-    if ( fac_j ) {
+    // l'origine du repere des sommets : le germe si `CENTRE`, sinon rien. La densite, elle, vit
+    // dans le carre unite -- c'est le seul endroit ou le repere centre doit etre defait.
+    const double ox = CENTRE || FIXE ? double( p0[ 0 ] ) : 0.0;
+    const double oy = CENTRE || FIXE ? double( p0[ 1 ] ) : 0.0;
+    double mes = 0;
+
+    if constexpr ( DENS == DENS_DIRECTE ) {
+        // UNE SEULE MARCHE PAR ARETE, deux sorties : la masse et le coefficient de hessienne.
+        // ( Avec une densite, `c_ij` n'est plus `| facette |` mais `integrale_facette rho ds`. )
+        const double sref = nb > 0 ? im.ref( double( x[ 0 ] ) + ox, double( y[ 0 ] ) + oy ) : 0.0;
 #pragma unroll
-        for ( int k = 0; k < R; ++k ) {
-            int j = -1000000;                        // case vide ( au-dela de `nb` )
+        for ( int e = 0; e < R; ++e ) {
+            int j = -1000000;
             TK  l = 0;
-            if ( k < nb ) {
-                const int kk = k + 1 < nb ? k + 1 : 0;
-                const TK dx = selR( x, kk ) - x[ k ], dy = selR( y, kk ) - y[ k ];
-                j = c[ k ];
-                l = sqrt( dx * dx + dy * dy );
+            if ( e < nb ) {
+                const int ee = e + 1 < nb ? e + 1 : 0;
+                double mm, ll;
+                arete_image( im, double( x[ e ] ) + ox, double( y[ e ] ) + oy,
+                                 double( selR( x, ee ) ) + ox, double( selR( y, ee ) ) + oy, sref, mm, ll );
+                mes += mm;
+                j = c[ e ];
+                l = TK( ll );
             }
-            fac_j[ size_t( k ) * ar.n + i0 ] = j;
-            fac_l[ size_t( k ) * ar.n + i0 ] = l;
+            if ( fac_j ) { fac_j[ size_t( e ) * ar.n + i0 ] = j; fac_l[ size_t( e ) * ar.n + i0 ] = l; }
         }
-        for ( int k = R; k < NF; ++k ) {                 // `nb <= R` ici : le reste est vide
-            fac_j[ size_t( k ) * ar.n + i0 ] = -1000000;
-            fac_l[ size_t( k ) * ar.n + i0 ] = 0;
+        mes = fabs( mes );                               // `rho >= 0` : le signe est celui du lacet
+    } else {
+        // ---- LES FACETTES : une par arete dont le `cid` est un voisin. Au DEPOT, seul le `cid`
+        //      est ecrit ici -- la longueur vient du second noyau, qui la veut ponderee par rho.
+        if ( fac_j ) {
+#pragma unroll
+            for ( int e = 0; e < R; ++e ) {
+                int j = -1000000;                        // case vide ( au-dela de `nb` )
+                TK  l = 0;
+                if ( e < nb ) {
+                    j = c[ e ];
+                    if constexpr ( DENS != DENS_DEPOT ) {
+                        const int ee = e + 1 < nb ? e + 1 : 0;
+                        const TK dx = selR( x, ee ) - x[ e ], dy = selR( y, ee ) - y[ e ];
+                        l = sqrt( dx * dx + dy * dy );
+                    }
+                }
+                fac_j[ size_t( e ) * ar.n + i0 ] = j;
+                fac_l[ size_t( e ) * ar.n + i0 ] = l;
+            }
         }
+        if constexpr ( DENS != DENS_DEPOT ) mes = nb > 0 ? aire_triee( x, y, nb ) : 0.0;
     }
-    const double area = nb > 0 ? aire_triee( x, y, nb ) : 0.0;
+    if ( fac_j )
+        for ( int e = R; e < NF; ++e ) {                 // `nb <= R` ici : le reste est vide
+            fac_j[ size_t( e ) * ar.n + i0 ] = -1000000;
+            fac_l[ size_t( e ) * ar.n + i0 ] = 0;
+        }
+
+    if constexpr ( DENS == DENS_DEPOT ) {
+        // LE DEPOT : le polygone fini, en coordonnees ABSOLUES et en SoA -- les voies voisines
+        // ecrivent des adresses voisines. `nb < 0` ( debordement ) descend tel quel : le second
+        // noyau le saute, et `filmix` refera la cellule.
+        const int s = k - k0;
+#pragma unroll
+        for ( int e = 0; e < R; ++e ) { dep_x[ size_t( e ) * cap + s ] = TK( double( x[ e ] ) + ox ); dep_y[ size_t( e ) * cap + s ] = TK( double( y[ e ] ) + oy ); }
+        dep_nb[ s ] = nb;
+        dep_id[ s ] = i0;
+    }
+
     if ( nb < 0 ) liste_deb[ atomicAdd( deborde, 1 ) ] = k;
-    res[ i0 ] = area;
+    res[ i0 ] = mes;
 }
 
 } // namespace sf::gpu

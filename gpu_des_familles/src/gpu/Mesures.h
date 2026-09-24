@@ -22,6 +22,19 @@ inline const char *nom( Variante v ) {
 /// `paquet V x K` : `V` voies par cellule, `K` cellules par voie, un parcours par warp ( 2D )
 inline bool paquet( Variante v ) { return v >= Variante::PAQ8x1 && v < Variante::NB; }
 
+/// COMMENT LA DENSITE IMAGE EST TRAITEE. Le calcul est le meme ( l'integrale de bord de
+/// `Image2D.cuh` ) ; ce qui change est OU il a lieu :
+///   `DIRECTE`     dans le noyau des cellules, a la suite du parcours de l'arbre ;
+///   `DEPOT`       le noyau des cellules ECRIT le polygone fini, un second noyau l'integre,
+///                 une voie par cellule -- le depot se fait par lots ( `chunk` cellules ) ;
+///   `DEPOT_ARETE` le meme, mais UNE VOIE PAR ARETE : le cout du warp devient le max sur les
+///                 aretes au lieu de la somme sur les aretes de la cellule la plus lente.
+enum class Densite { AUCUNE, DIRECTE, DEPOT, DEPOT_ARETE };
+inline const char *nom( Densite d ) {
+    static const char *noms[] = { "aucune", "directe", "depot", "depot-arete" };
+    return noms[ int( d ) ];
+}
+
 /// LA HESSIENNE assemblee sur la carte : le CSR des hors-diagonaux et la diagonale. Les pointeurs
 /// sont DEVICE et appartiennent au diagramme ; `nnz = row[ n ]`.
 struct Hessienne {
@@ -84,6 +97,18 @@ struct DiagrammeGpu {
 
     /// `y = L x` sur la carte ( pointeurs device ), pour verifier et pour le gradient conjugue
     void applique( const Hessienne &H, const double *x, double *y ) const;
+
+    /// LA DENSITE IMAGE : `v` les `W * H` valeurs de la grille ( ligne par ligne, elle couvre
+    /// `[ 0, 1 ]^2` ), montees UNE FOIS avec la somme prefixe de chaque ligne. Rien n'est
+    /// normalise ici : l'appelant decide de la masse totale, qui est rendue. `v = nullptr`
+    /// libere l'image et le diagramme revient a Lebesgue.
+    /// Des lors, `res` est la MASSE de la cellule et `fac_l` est `integrale_facette rho ds` --
+    /// c'est ce que la hessienne du transport demande quand la source n'est pas uniforme.
+    double charge_image( const double *v, int W, int H );
+
+    /// le mode de traitement, et la taille des lots du depot ( en cellules )
+    void regle_densite( Densite d, int chunk = 1 << 20 );
+    Densite densite() const;
     ~DiagrammeGpu();
     DiagrammeGpu( const DiagrammeGpu & ) = delete;
     DiagrammeGpu &operator=( const DiagrammeGpu & ) = delete;

@@ -1,5 +1,27 @@
 # CE QUI RESTE
 
+## LA DENSITÉ IMAGE ( faite -- [§ densités](08-densites.md) )
+
+Le dernier maillon nommé du programme. La cellule n'est **pas** découpée par les bords de pixels :
+on intègre `ρ` **sur le bord**, avec la somme préfixe de chaque ligne de l'image comme primitive en
+`x`. La même marche rend la masse ET `∫ ρ ds` par arête -- le coefficient de hessienne, qui n'est
+plus la longueur de la facette dès que la source n'est pas uniforme.
+
+À `10⁶` germes, une image `512²` coûte **+7 %** sur le noyau (`96.6` → `103.9` ns/germe) et une
+image `16384²` **+25 %**. À machine égale, sur le CPU, l'intégrale de bord va de **×1.9 à ×93** plus
+vite que le découpage en pixels, selon combien de pixels la cellule couvre.
+
+**Les « phases » demandées ont été écrites et mesurées : elles ne paient pas.** Déposer le polygone
+fini pour un second noyau (une voie par cellule, ou une voie par arête) coûte de 0 à 12 % et ne
+gagne jamais -- parce que la marche dans la grille ne coûte **aucun registre** (114 contre 116 sans
+elle, même occupation) et parce que la divergence qu'elle ajoute est petite devant celle du
+parcours de l'arbre. Le mécanisme reste dans le code, par lots, pour le jour où le travail après
+la construction sera vraiment lourd.
+
+Ce qui reste ouvert de ce côté : **relever la cellule pincée toute seule** dans la recherche
+linéaire. Sous une image contrastée, ce n'est pas la décroissance du résidu qui borne le pas, c'est
+la mort d'**une** cellule -- on perd un facteur trente sur le pas pour une cellule sur 10⁵.
+
 ## LA CHAÎNE 2D SUR GPU ( cible : `chaine` )
 
 Le squelette existe : `src/mains/main_chaine.cpp` fait l'arbre (CPU), le téléversement, puis
