@@ -190,7 +190,68 @@ Trois corrections, mesurées :
    `s` montant de `1/K` à `1`, chaque étape partant des poids de la précédente. À `s = 0` c'est
    Lebesgue, où tout va bien.
 
-Ce que la continuation vaut, `n` = 2·10⁵, image 512² :
+### Comment repérer les cellules à relever -- et pourquoi il n'y en a pas
+
+Relever la cellule pincée toute seule suppose qu'on sache **laquelle**. L'instrument est gratuit :
+le noyau du résidu balaie déjà les `n` mesures pour faire `‖ m − ν ‖` et le minimum ; on lui ajoute
+un compteur atomique et une liste plafonnée des cellules sous le seuil, et on sait à chaque essai
+non plus *qu'il y a* une cellule morte, mais **combien** et **lesquelles**. Un essai ne rend plus un
+booléen, il rend une population.
+
+`--echelle K` trace alors la **courbe `N( t )`** sur une échelle logarithmique du pas, aux `K`
+premières itérations de chaque étape. C'est elle qui décide si l'obstruction est locale.
+
+Départ froid (`w = 0`, image nue, `n` = 2·10⁵) :
+
+| `t` | 1 | 1/2 | 1/4 | 1/8 | 1/16 | 1/32 | 1/64 | … | 1e−3 | 5e−4 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| condamnées | 175 583 | 134 166 | 78 848 | 39 156 | 18 419 | 8 181 | 3 606 | | 3 | **0** |
+| % | 87.8 | 67.1 | 39.4 | 19.6 | 9.2 | 4.1 | 1.8 | | 0.002 | 0 |
+
+Départ **chaud** (continuation à huit étapes, première itération de chaque étape) :
+
+| étape | `s` | `t` = 1 | 1/4 | 1/16 | 1/64 | premier `t` sans condamnée |
+|---|---|---|---|---|---|---|
+| 1 | 0.125 | 5 355 (2.7 %) | 386 | 0 | — | **1/16** |
+| 4 | 0.500 | 22 760 (11.4 %) | 4 705 | 431 | 16 | 1/64 |
+| 8 | 1.000 | 54 206 (27.1 %) | 12 528 | — | — | — |
+
+**La courbe n'a pas de palier.** `N( t )` se divise par 2.2 à 2.5 quand `t` est divisé par deux --
+elle suit `t` à peu près linéairement, du plein jusqu'à zéro, sans jamais s'arrêter sur un petit
+groupe fixe. Et 95 % des condamnées sont **strictement vides**, pas seulement amaigries.
+
+Il n'y a donc **pas de cellules isolées à relever**. Ce ne sont pas trois cellules qui bloquent un
+pas de un ; c'est une fraction de la population, proportionnelle au pas, qui s'éteint. Au pas que
+le résidu réclame, il en reste des dizaines à des milliers. Le relèvement n'a pas d'objet ici.
+
+Ce que la courbe laisse quand même sur la table est modeste et chiffré : à l'étape 1, relever
+**10** cellules ferait passer le pas de 1/16 à 1/8, et **386** de 1/16 à 1/4 -- un facteur deux à
+quatre sur le pas contre quelques centaines de relèvements. C'est le seul gain envisageable, et le
+banc CPU a mesuré exactement cette idée (`--garde cellule`) comme **perdante** : 113 diagrammes au
+lieu de 107 dans un cas, 351 au lieu de 332 et 728 au lieu de 606 dans les autres -- les
+relèvements se concurrencent (la liste descend 619 → 249 → … → 105 en passes successives, chaque
+cellule relevée volant à ses voisines) et le point réparé est un plus mauvais départ.
+
+( Ce qui avait gagné sur le banc CPU est `limites_masse`, qui est **autre chose** : non pas
+relever, mais calculer le pas admissible exact au lieu de le chercher par halvings successifs. Son
+gain était de tuer les 40 à 440 reculs par itération -- et cette part-là est déjà prise ici par la
+recherche linéaire qui repart du pas précédent : elle en fait 1 à 3. )
+
+Ce que la courbe dit du vrai coupable, en revanche, est net. Colonne « résidu » de l'échelle, étape
+5 : le résidu part de 0.1405, et le **meilleur** pas de toute l'échelle le descend à 0.1380. Même
+en ignorant complètement les morts de cellules, la direction de Newton ne gagnerait que 1.7 % sur
+cette itération. Le pas n'est pas bridé : **c'est la direction qui est plate**, parce qu'on vient
+de changer `ρ` et que le point est froid pour la nouvelle densité. Les étapes coûtent 22, 34, 48,
+61, 77, 96, 127 puis 197 itérations, chacune finissant par un pas plein et une descente
+quadratique : le temps est dans la phase amortie de chaque étape, pas dans une cellule.
+
+Ce que la courbe suggère donc pour la suite : une **échelle de continuation plus fine là où elle
+mord** (les étapes tardives coûtent trois fois les premières), plutôt qu'une réparation par
+cellule.
+
+### Ce que la continuation vaut
+
+`n` = 2·10⁵, image 512² :
 
 | source | `K = 1` | `K = 8` |
 |---|---|---|
@@ -210,9 +271,17 @@ Mesurer sous une image coûte +7 % ; **résoudre** sous une image coûte ×160.
 
 ## 7. CE QUI RESTE
 
-* **Relever la cellule pincée toute seule** au lieu de raboter le pas global. C'est le remède que
-  le banc CPU a mesuré comme le bon (`limites_masse` : 44 diagrammes au lieu de 155), et il n'est
-  pas porté. C'est de loin le chantier qui rapporterait le plus ici.
+* **Une échelle de continuation adaptée.** Les huit étapes coûtent 22, 34, 48, 61, 77, 96, 127 et
+  197 itérations : la difficulté est toute entière dans le haut de la rampe. Un pas en `s` choisi
+  sur le résidu atteint, plutôt qu'uniforme, est le chantier le mieux indiqué par les mesures.
+* **Le pas admissible exact** au lieu des halvings (`limites_masse` du banc CPU) : une bissection
+  par cellule sur `α`, toutes les cellules en parallèle, au lieu d'un diagramme complet par
+  barreau. Son gain principal -- tuer les dizaines de reculs par itération -- est déjà pris par la
+  recherche linéaire qui repart du pas précédent ; il resterait le facteur `√2` que coûte
+  l'arrondi du pas à une puissance de deux.
+* **Relever la cellule pincée toute seule** : mesuré comme sans objet ici ( voir la courbe
+  `N( t )` ci-dessus ), et mesuré comme perdant sur le banc CPU. À ne reprendre que si un cas
+  montre une obstruction vraiment locale -- l'instrument pour le voir est maintenant là.
 * La **3D** : le même raisonnement donne `∮_(∂P) G dS` avec `G` la primitive en `x` du voxel, et le
   parcours devient une marche sur les faces du polyèdre — plus de travail par facette, mais la
   même absence de découpage.

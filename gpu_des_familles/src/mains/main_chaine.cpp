@@ -259,7 +259,7 @@ double normalise( Img &im ) {
 
 template<class PD>
 int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu, bool arbre_gpu, int iterations,
-            int newton, int raff, double marge, double tol, const Img &img, int dmode, int chunk, int etapes, double tolcg ) {
+            int newton, int raff, double marge, double tol, const Img &img, int dmode, int chunk, int etapes, double tolcg, int echelle ) {
     constexpr int D = PD::dim;
     using TK = typename PD::TKernel;
     static_assert( D == 2, "la chaine est 2D" );
@@ -716,6 +716,7 @@ int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu, bool arbre_gp
         const int netapes = img.W ? std::max( 1, etapes ) : 1;
 
         double mini = 0, err = 0, t_prec = 1;
+        const bool trace = std::getenv( "CHAINE_DEBUG" ) != nullptr;
         int it = 0;
         for ( int et = 1; et <= netapes; ++et ) {
         if ( img.W && netapes > 1 ) {
@@ -728,7 +729,7 @@ int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu, bool arbre_gp
             std::printf( "      NEWTON    depart : residu %.3e, plus petite cellule %.2e de la cible\n",
                          err / norme, mini / cible );
 
-        for ( ; it < newton && err > tol * norme; ++it ) {
+        for ( int it_etape = 0; it < newton && err > tol * norme; ++it, ++it_etape ) {
             gpu::Hessienne H;
             const double tl0 = now();
             g.assemble( H );
@@ -744,25 +745,44 @@ int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu, bool arbre_gp
             nb_cg += its > 0 ? its : 0;
             cudaMemcpy( dh.data(), dd, nu.n * sizeof( double ), cudaMemcpyDeviceToHost );
 
-            // l'essai d'un pas : le diagramme aux poids `w - t d`, puis les deux criteres
+            // l'essai d'un pas : le diagramme aux poids `w - t d`, puis les deux criteres.
+            // On en tire AUSSI le nombre de cellules condamnees -- le diagramme est deja calcule,
+            // le compte ne coute rien, et c'est lui qui dit si l'obstruction est locale.
             double e2 = 0, m2 = 0;
+            int nc = 0, nv = 0;
             auto essai = [ & ]( double t ) {
                 for ( SI i = 0; i < nu.n; ++i ) w2[ i ] = w[ i ] - t * dh[ i ];
                 const double td0 = now();
                 g.tour_newton( w2.data() );
                 t_diag += now() - td0;
                 ++nb_diag;
-                e2 = g.residu( cible, &m2, nullptr );
+                e2 = g.residu( cible, &m2, nullptr, marge * mini, &nc, &nv );
                 // `marge` : la plus petite cellule ne doit pas perdre plus qu'une fraction de ce
                 // qu'elle vaut DEJA. Le critere KMT nu ( `marge = 0` ) autorise un pas qui la laisse
                 // au bord du vide -- admissible, et desastreux pour l'iteration suivante ; une marge
                 // ABSOLUE, elle, serait increvable au depart, ou les cellules sont deja minuscules.
                 const bool vivant = m2 > 0 && m2 >= marge * mini, baisse = e2 <= ( 1 - t / 2 ) * err;
-                if ( std::getenv( "CHAINE_DEBUG" ) )
-                    std::printf( "          essai t=%.3e : plus petite %.2e ( seuil %.2e ) %s, residu %.6e contre %.6e %s\n",
-                                 t, m2 / cible, marge * mini / cible, vivant ? "ok" : "REFUS", e2 / norme, ( 1 - t / 2 ) * err / norme, baisse ? "ok" : "REFUS" );
+                if ( trace )
+                    std::printf( "          essai t=%.3e : condamnees %7d dont %7d vides / %d, plus petite %.2e ( seuil %.2e ) %s, residu %.6e contre %.6e %s\n",
+                                 t, nc, nv, int( nu.n ), m2 / cible, marge * mini / cible, vivant ? "ok" : "REFUS",
+                                 e2 / norme, ( 1 - t / 2 ) * err / norme, baisse ? "ok" : "REFUS" );
                 return vivant && baisse;
             };
+
+            // L'ECHELLE LOGARITHMIQUE, une fois, pour voir la COURBE des condamnees : elle dit si
+            // un pas est refuse pour trois cellules ou pour dix mille. ( `--echelle K` : les K
+            // premieres iterations. Chaque barreau coute un diagramme, donc c'est un diagnostic. )
+            if ( it_etape < echelle ) {
+                std::printf( "      ECHELLE   etape %d, iteration %d : seuil %.2f x la plus petite ( %.2e de la cible ), residu %.4e\n",
+                             et, it_etape + 1, marge, marge * mini / cible, err / norme );
+                for ( double t = 1; t > 1e-7; t *= 0.5 ) {
+                    essai( t );
+                    std::printf( "        t = %10.3e   condamnees %7d ( %7.3f %% ) dont %7d vides   plus petite %.2e   residu %.6e%s\n",
+                                 t, nc, 100.0 * nc / double( nu.n ), nv, m2 / cible, e2 / norme,
+                                 e2 <= ( 1 - t / 2 ) * err ? "   <- le residu, lui, baisse assez" : "" );
+                    if ( nc == 0 ) break;
+                }
+            }
 
             // LE DEPART DE LA RECHERCHE : le pas precedent DOUBLE, pas `1`. Sous une image
             // contrastee le pas admissible est de l'ordre de `1e-3` et ne remonte que lentement ;
@@ -856,6 +876,7 @@ int main( int argc, char **argv ) {
     double fmel = 1.0;
     int etapes = 1;
     double tolcg = 1e-2;
+    int echelle = 0;
     for ( int i = 1; i < argc; ++i ) {
         const std::string s = argv[ i ];
         if ( a.parse( s, i, argc, argv ) ) continue;
@@ -872,6 +893,7 @@ int main( int argc, char **argv ) {
         if ( s == "--image-melange" && i + 1 < argc ) { fmel = std::atof( argv[ ++i ] ); continue; }
         if ( s == "--image-etapes" && i + 1 < argc ) { etapes = std::atoi( argv[ ++i ] ); continue; }
         if ( s == "--tol-cg" && i + 1 < argc ) { tolcg = std::atof( argv[ ++i ] ); continue; }
+        if ( s == "--echelle" && i + 1 < argc ) { echelle = std::atoi( argv[ ++i ] ); continue; }
         if ( s == "--densite" && i + 1 < argc ) {
             const std::string m = argv[ ++i ];
             dmode = m == "directe" ? 0 : m == "depot" ? 1 : m == "depot-arete" ? 2 : 3;
@@ -892,7 +914,9 @@ int main( int argc, char **argv ) {
                      "  --chunk C       cellules par lot dans les modes a depot (1048576)\n"
                      "  --image-melange F  rho <- ( 1 - F ) + F rho : le CONTRASTE, F = 0 rend Lebesgue (1)\n"
                      "  --image-etapes K   LA CONTINUATION : K etapes de s = 1/K a 1, chacune partant de la precedente (1)\n"
-                     "  --tol-cg T      plafond de la suite de forcage du CG (1e-2)\n" );
+                     "  --tol-cg T      plafond de la suite de forcage du CG (1e-2)\n"
+                     "  --echelle K     le balayage LOGARITHMIQUE du pas aux K premieres iterations : la courbe\n"
+                     "                  des cellules condamnees, pour voir si l obstruction est locale\n" );
         return s == "--help" || s == "-h" ? 0 : 1;
     }
     a.dims = 2;
@@ -907,7 +931,7 @@ int main( int argc, char **argv ) {
     int bad = 0;
     for ( const Nuage<2> &nu : a.nuages<2>() ) {
         if ( nu.absent ) { std::printf( "  %-28s : ABSENT ( --cases DIR )\n", nu.nom.c_str() ); continue; }
-        bad += dispatch<2>( a, [ & ]( auto tag ) { return chaine<typename decltype( tag )::type>( a, nu, reps_gpu, arbre_gpu, iterations, newton, raff, marge, tol, img, dmode, chunk, etapes, tolcg ); } );
+        bad += dispatch<2>( a, [ & ]( auto tag ) { return chaine<typename decltype( tag )::type>( a, nu, reps_gpu, arbre_gpu, iterations, newton, raff, marge, tol, img, dmode, chunk, etapes, tolcg, echelle ); } );
     }
     return bad ? 1 : 0;
 }

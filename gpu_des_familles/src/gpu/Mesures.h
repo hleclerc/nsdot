@@ -88,7 +88,14 @@ struct DiagrammeGpu {
     /// `|| m - cible ||` ( norme deux ) et, par `mini`, LA PLUS PETITE MESURE -- c'est elle qui
     /// dit si une cellule est sur le point de disparaitre, donc si le pas est trop grand.
     /// `b` ( device, `n` doubles ) recoit `m - cible` CENTRE, le second membre du pas de Newton.
-    double residu( double cible, double *mini, double *b = nullptr ) const;
+    ///
+    /// `nb_cond`, s'il est donne, recoit LE NOMBRE DE CELLULES SOUS `seuil` -- et leur liste reste
+    /// sur la carte. C'est ce compte qui dit si un pas refuse l'est pour TROIS cellules ou pour
+    /// dix mille : dans le premier cas il n'y a pas a raboter le pas, il y a a relever ces trois.
+    /// `nb_vides` compte a part celles dont la mesure est NULLE : une cellule sous le seuil se
+    /// releve, une cellule nulle a deja disparu.
+    double residu( double cible, double *mini, double *b = nullptr,
+                   double seuil = 0, int *nb_cond = nullptr, int *nb_vides = nullptr ) const;
 
     /// la hierarchie du multigrille, montee depuis `H` ( le motif ne change pas dans un Newton,
     /// seuls les coefficients -- a remonter quand ils bougent )

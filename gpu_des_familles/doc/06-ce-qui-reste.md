@@ -18,9 +18,16 @@ elle, même occupation) et parce que la divergence qu'elle ajoute est petite dev
 parcours de l'arbre. Le mécanisme reste dans le code, par lots, pour le jour où le travail après
 la construction sera vraiment lourd.
 
-Ce qui reste ouvert de ce côté : **relever la cellule pincée toute seule** dans la recherche
-linéaire. Sous une image contrastée, ce n'est pas la décroissance du résidu qui borne le pas, c'est
-la mort d'**une** cellule -- on perd un facteur trente sur le pas pour une cellule sur 10⁵.
+Sous une image contrastée, ce n'est pas la décroissance du résidu qui borne le pas, c'est la mort
+de cellules. **Mais elles ne sont pas isolées** : le noyau du résidu compte désormais les
+condamnées et en dresse la liste (gratuitement -- il balaie déjà tout), et `--echelle K` trace la
+courbe `N( t )`. Elle n'a pas de palier : `N` suit `t` à peu près linéairement, de 88 % des
+cellules à `t = 1` jusqu'à zéro, et 95 % des condamnées sont strictement vides. Le relèvement par
+cellule n'a donc pas d'objet ici -- ce que le banc CPU avait d'ailleurs mesuré comme perdant.
+
+Ce qui reste ouvert : une **échelle de continuation adaptée** (les huit étapes coûtent 22, 34, 48,
+61, 77, 96, 127 puis 197 itérations : tout est dans le haut de la rampe), et le **pas admissible
+exact** au lieu des halvings.
 
 ## LA CHAÎNE 2D SUR GPU ( cible : `chaine` )
 

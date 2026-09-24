@@ -77,6 +77,8 @@ struct DiagrammeGpu<D,TK>::Impl {
     cusparseHandle_t cus = nullptr;
     int         *rang_de = nullptr;                  ///< identifiant -> rang ( l'agregation du niveau fin )
     double      *acc = nullptr;                      ///< un scalaire de travail
+    int         *cond = nullptr, *ncond = nullptr;   ///< LES CELLULES CONDAMNEES : leur liste, leur compte
+    int          cond_cap = 0;
     double2     *img = nullptr;                      ///< LA DENSITE IMAGE : ( somme prefixe, valeur )
     int          iw = 0, ih = 0;
     Densite      dens = Densite::DIRECTE;            ///< le mode, quand une image est chargee
@@ -200,7 +202,7 @@ DiagrammeGpu<D,TK>::~DiagrammeGpu() {
     for ( int d = 0; d < D; ++d ) { cudaFree( m.c[ d ] ); cudaFree( m.u[ d ] ); cudaFree( m.u64[ d ] ); }
     cudaFree( m.w ); cudaFree( m.ids ); cudaFree( m.res ); cudaFree( m.deb ); cudaFree( m.deb2 ); cudaFree( m.liste ); cudaFree( m.stats ); cudaFree( m.cptr );
     cudaFree( m.fac_j ); cudaFree( m.fac_l );
-    cudaFree( m.img );
+    cudaFree( m.img ); cudaFree( m.cond ); cudaFree( m.ncond );
     cudaFree( m.dep_x ); cudaFree( m.dep_y ); cudaFree( m.dep_nb ); cudaFree( m.dep_id );
     cudaFree( m.cgv );
     cudaFree( m.hrow ); cudaFree( m.hcol ); cudaFree( m.hval ); cudaFree( m.hdia ); cudaFree( m.hscan );
@@ -644,14 +646,32 @@ double DiagrammeGpu<D,TK>::assemble( Hessienne &H ) {
     }
 }
 
-/// `|| m - cible ||` et la plus petite mesure, en un noyau ( warp, bloc, un atomique ).
-__global__ void k_residu( const double *res, double cible, double *b, double *acc, int n ) {
+/// `|| m - cible ||`, la plus petite mesure, ET LE COMPTE DES CELLULES CONDAMNEES ( celles qui
+/// tombent sous `seuil` ), avec leur liste -- le tout en un noyau, puisqu'il balaie deja tout.
+///
+/// C'est l'instrument qui manquait a la recherche lineaire. Jusqu'ici un diagramme d'essai ne
+/// rendait qu'un scalaire : « la plus petite cellule vaut zero, donc je refuse ». Le compte dit
+/// EN PLUS si l'obstruction est LOCALE ( trois cellules sur 10^5 : on les releve ) ou GLOBALE
+/// ( le pas est vraiment trop grand ). Et la liste dit lesquelles, sans une passe de plus.
+///
+/// `ncond` peut depasser `cap` : on sait alors seulement qu'il y en a trop -- ce qui suffit.
+__global__ void k_residu( const double *res, double cible, double *b, double *acc, int n,
+                          double seuil, int *cond, int *ncond, int cap ) {
     __shared__ double ps[ 32 ], pm[ 32 ];
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     const double m = i < n ? res[ i ] : 0.0;
     double s = i < n ? ( m - cible ) * ( m - cible ) : 0.0;
     double mn = i < n ? m : 1e300;
     if ( b && i < n ) b[ i ] = m - cible;
+    if ( ncond && i < n && m <= seuil ) {
+        const int p = atomicAdd( ncond, 1 );
+        if ( cond && p < cap ) cond[ p ] = i;
+    }
+    // les VIDES a part : une cellule sous le seuil se releve, une cellule nulle a deja disparu
+    double vd = ncond && i < n && m <= 0 ? 1.0 : 0.0;
+#pragma unroll
+    for ( int d = 16; d; d >>= 1 ) vd += __shfl_down_sync( 0xffffffffu, vd, d );
+    if ( ncond && ( threadIdx.x & 31 ) == 0 && vd ) atomicAdd( acc + 2, vd );
 #pragma unroll
     for ( int d = 16; d; d >>= 1 ) { s += __shfl_down_sync( 0xffffffffu, s, d ); mn = fmin( mn, __shfl_down_sync( 0xffffffffu, mn, d ) ); }
     const int voie = threadIdx.x & 31, warp = threadIdx.x >> 5;
@@ -668,19 +688,28 @@ __global__ void k_residu( const double *res, double cible, double *b, double *ac
 }
 
 template<int D, class TK>
-double DiagrammeGpu<D,TK>::residu( double cible, double *mini, double *b ) const {
+double DiagrammeGpu<D,TK>::residu( double cible, double *mini, double *b, double seuil, int *nb_cond, int *nb_vides ) const {
     Impl &m = *impl;
     const int BL = 256, gr = ( m.n + BL - 1 ) / BL;
     if ( ! m.acc ) CUDA_OK( cudaMalloc( &m.acc, 4 * sizeof( double ) ) );
-    const double init[ 2 ] = { 0.0, 0.0 };
+    if ( nb_cond && ! m.cond ) {
+        m.cond_cap = std::min( m.n, 1 << 16 );
+        CUDA_OK( cudaMalloc( &m.cond, size_t( m.cond_cap ) * sizeof( int ) ) );
+        CUDA_OK( cudaMalloc( &m.ncond, sizeof( int ) ) );
+    }
+    const double init[ 1 ] = { 0.0 };
     CUDA_OK( cudaMemcpy( m.acc, init, sizeof( init ), cudaMemcpyHostToDevice ) );
+    CUDA_OK( cudaMemcpy( m.acc + 2, init, sizeof( init ), cudaMemcpyHostToDevice ) );
     const unsigned long long haut = 0xffffffffffffffffull;   // `ordd` du plus grand : le min part de la
     CUDA_OK( cudaMemcpy( m.acc + 1, &haut, 8, cudaMemcpyHostToDevice ) );
-    k_residu<<<gr, BL>>>( m.res, cible, b, m.acc, m.n );
+    if ( nb_cond ) CUDA_OK( cudaMemset( m.ncond, 0, sizeof( int ) ) );
+    k_residu<<<gr, BL>>>( m.res, cible, b, m.acc, m.n, seuil, m.cond, nb_cond ? m.ncond : nullptr, m.cond_cap );
     double s = 0;
     unsigned long long om = 0;
     CUDA_OK( cudaMemcpy( &s, m.acc, 8, cudaMemcpyDeviceToHost ) );
     CUDA_OK( cudaMemcpy( &om, m.acc + 1, 8, cudaMemcpyDeviceToHost ) );
+    if ( nb_cond ) CUDA_OK( cudaMemcpy( nb_cond, m.ncond, sizeof( int ), cudaMemcpyDeviceToHost ) );
+    if ( nb_vides ) { double v = 0; CUDA_OK( cudaMemcpy( &v, m.acc + 2, 8, cudaMemcpyDeviceToHost ) ); *nb_vides = int( v ); }
     // le meme codage entier ordonne que les boites ( `Bsp2D.cuh` ), decode ici
     const long long bits = ( long long ) ( ( om >> 63 ) ? ( om & 0x7fffffffffffffffull ) : ~om );
     double mn;
@@ -1029,8 +1058,8 @@ static int *cellules_2d( typename DiagrammeGpu<2,TK>::Impl &m, const Arbre<TK,2>
 template<int D, class TK>
 double DiagrammeGpu<D,TK>::charge_image( const double *v, int W, int H ) {
     Impl &m = *impl;
-    cudaFree( m.img );
-    m.img = nullptr; m.iw = 0; m.ih = 0;
+    cudaFree( m.img );                                   // et RIEN d'autre : la liste des
+    m.img = nullptr; m.iw = 0; m.ih = 0;                 // condamnees survit au changement d'image
     if ( ! v || W <= 0 || H <= 0 ) return 0;
     const double hx = 1.0 / W, hy = 1.0 / H;
     // la SOMME PREFIXE de chaque ligne, calculee une fois pour toutes : c'est elle qui rend
