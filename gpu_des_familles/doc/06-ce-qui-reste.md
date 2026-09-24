@@ -19,15 +19,21 @@ parcours de l'arbre. Le mécanisme reste dans le code, par lots, pour le jour o�
 la construction sera vraiment lourd.
 
 Sous une image contrastée, ce n'est pas la décroissance du résidu qui borne le pas, c'est la mort
-de cellules. **Mais elles ne sont pas isolées** : le noyau du résidu compte désormais les
-condamnées et en dresse la liste (gratuitement -- il balaie déjà tout), et `--echelle K` trace la
-courbe `N( t )`. Elle n'a pas de palier : `N` suit `t` à peu près linéairement, de 88 % des
-cellules à `t = 1` jusqu'à zéro, et 95 % des condamnées sont strictement vides. Le relèvement par
-cellule n'a donc pas d'objet ici -- ce que le banc CPU avait d'ailleurs mesuré comme perdant.
+de cellules. Le noyau du résidu les compte désormais et en dresse la liste (gratuitement -- il
+balaie déjà tout), avec **trois histogrammes cumulés** : `m / cible`, `m / max`, et `m / m avant`
+-- seule la troisième distingue « elle était déjà minuscule » de « ce pas la tue ». `--echelle K`
+trace le tout sur une échelle logarithmique du pas.
 
-Ce qui reste ouvert : une **échelle de continuation adaptée** (les huit étapes coûtent 22, 34, 48,
-61, 77, 96, 127 puis 197 itérations : tout est dans le haut de la rampe), et le **pas admissible
-exact** au lieu des halvings.
+Croisé avec le résidu, le compte dit ceci. **Phase froide** : le pas que le résidu réclame
+(`t = 1/2`, résidu 0.575 → 0.318 contre 0.539 pour le pas réellement pris) n'est refusé que par
+**0.84 % des cellules** ; les relever coûterait 17 % d'un diagramme. **Une fois chaud** : une
+seule cellule bloque, mais le meilleur pas de toute l'échelle ne gagne que 5 % -- la direction est
+plate, aucune réparation de cellule ne répare ça. Là où relever rapporterait, il y a un millier de
+cellules à relever ; là où il n'y en a qu'une, relever ne rapporte rien.
+
+Ce qui reste ouvert : **le relèvement, mesuré dans la phase froide** ; une **échelle de
+continuation adaptée** (les huit étapes coûtent 22, 34, 48, 61, 77, 96, 127 puis 197 itérations :
+tout est dans le haut de la rampe) ; et le **pas admissible exact** au lieu des halvings.
 
 ## LA CHAÎNE 2D SUR GPU ( cible : `chaine` )
 

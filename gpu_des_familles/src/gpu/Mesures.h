@@ -45,6 +45,23 @@ struct Hessienne {
     int n = 0, nnz = 0;
 };
 
+/// LE BILAN D'UN ETAT, en une passe sur les mesures : non plus « une cellule est morte », mais
+/// LA DISTRIBUTION -- et rapportee a trois echelles, parce qu'elles ne disent pas la meme chose :
+///   `par_cible` : `m / cible`      -- la sante absolue de la cellule ;
+///   `par_max`   : `m / max( m )`   -- sa taille relative a la plus grosse du diagramme ;
+///   `par_ref`   : `m / m_ref`      -- CE QUE LE PAS LUI A PRIS, par rapport a l'etat de depart.
+/// La troisieme est la seule qui distingue « cette cellule etait deja minuscule » de « ce pas est
+/// en train de la tuer ». Les deux premieres sont en decades, la troisieme en octaves ; la case 0
+/// compte les mesures NULLES, la derniere celles qui valent l'unite ou plus.
+struct BilanCel {
+    double err = 0;                 ///< `|| m - cible ||`
+    double mini = 0, maxi = 0;
+    long long vides = 0;
+    long long par_cible[ 9 ] = {};  ///< 0 ; < 1e-7 ; 1e-6 ; 1e-5 ; 1e-4 ; 1e-3 ; 1e-2 ; 1e-1 ; >= 1
+    long long par_max[ 9 ] = {};    ///< les memes decades, rapportees au maximum
+    long long par_ref[ 9 ] = {};    ///< 0 ; < 1/128 ; 1/64 ; 1/32 ; 1/16 ; 1/8 ; 1/4 ; 1/2 ; >= 1
+};
+
 /// les chiffres d'un `mesures`
 struct Chrono {
     double noyau  = 0;      ///< le noyau seul, en secondes, MINIMUM des repetitions ( evenements CUDA )
@@ -112,6 +129,13 @@ struct DiagrammeGpu {
     /// Des lors, `res` est la MASSE de la cellule et `fac_l` est `integrale_facette rho ds` --
     /// c'est ce que la hessienne du transport demande quand la source n'est pas uniforme.
     double charge_image( const double *v, int W, int H );
+
+    /// GARDE les mesures courantes comme etat de reference du prochain `bilan` ( une copie sur la
+    /// carte ). A appeler AVANT d'essayer un pas, pour que `par_ref` ait un sens.
+    void garde_mesures();
+
+    /// le bilan complet de l'etat courant. Trois passes triviales sur `n` doubles.
+    BilanCel bilan( double cible ) const;
 
     /// le mode de traitement, et la taille des lots du depot ( en cellules )
     void regle_densite( Densite d, int chunk = 1 << 20 );

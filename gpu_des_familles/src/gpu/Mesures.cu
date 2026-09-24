@@ -77,6 +77,8 @@ struct DiagrammeGpu<D,TK>::Impl {
     cusparseHandle_t cus = nullptr;
     int         *rang_de = nullptr;                  ///< identifiant -> rang ( l'agregation du niveau fin )
     double      *acc = nullptr;                      ///< un scalaire de travail
+    double      *res0 = nullptr;                     ///< les mesures GARDEES, etat de reference du bilan
+    long long   *hist = nullptr;                     ///< trois histogrammes de neuf cases
     int         *cond = nullptr, *ncond = nullptr;   ///< LES CELLULES CONDAMNEES : leur liste, leur compte
     int          cond_cap = 0;
     double2     *img = nullptr;                      ///< LA DENSITE IMAGE : ( somme prefixe, valeur )
@@ -202,7 +204,7 @@ DiagrammeGpu<D,TK>::~DiagrammeGpu() {
     for ( int d = 0; d < D; ++d ) { cudaFree( m.c[ d ] ); cudaFree( m.u[ d ] ); cudaFree( m.u64[ d ] ); }
     cudaFree( m.w ); cudaFree( m.ids ); cudaFree( m.res ); cudaFree( m.deb ); cudaFree( m.deb2 ); cudaFree( m.liste ); cudaFree( m.stats ); cudaFree( m.cptr );
     cudaFree( m.fac_j ); cudaFree( m.fac_l );
-    cudaFree( m.img ); cudaFree( m.cond ); cudaFree( m.ncond );
+    cudaFree( m.img ); cudaFree( m.cond ); cudaFree( m.ncond ); cudaFree( m.res0 ); cudaFree( m.hist );
     cudaFree( m.dep_x ); cudaFree( m.dep_y ); cudaFree( m.dep_nb ); cudaFree( m.dep_id );
     cudaFree( m.cgv );
     cudaFree( m.hrow ); cudaFree( m.hcol ); cudaFree( m.hval ); cudaFree( m.hdia ); cudaFree( m.hscan );
@@ -719,6 +721,88 @@ double DiagrammeGpu<D,TK>::residu( double cible, double *mini, double *b, double
 }
 
 /// LA HIERARCHIE : Galerkin niveau par niveau, l'agregation etant `>> 2` sur les rangs.
+// =====================================================================================
+// LE BILAN : la DISTRIBUTION des mesures, pas seulement leur minimum.
+//
+// Un essai de pas ne rendait qu'un scalaire, puis un compte sous UN seuil. Le seuil etait une
+// fraction de la plus petite cellule -- donc minuscule, donc il ne voyait que des cellules deja
+// mortes. Ici on compte pour TOUTES les fractions a la fois, et surtout sur trois echelles :
+// rapportee a la cible, au maximum du diagramme, et A CE QUE LA CELLULE VALAIT AVANT LE PAS.
+// Seule la troisieme distingue « elle etait deja minuscule » de « ce pas la tue ».
+// =====================================================================================
+
+/// le maximum des mesures, par le codage entier ordonne ( `ordd` ) -- exact, contrairement a un
+/// `atomicMax` flottant qui n'existe pas
+__global__ void k_maxi( const double *res, double *mx, int n ) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    double v = i < n ? res[ i ] : -1e300;
+#pragma unroll
+    for ( int d = 16; d; d >>= 1 ) v = fmax( v, __shfl_down_sync( 0xffffffffu, v, d ) );
+    if ( ( threadIdx.x & 31 ) == 0 ) atomicMax( ( unsigned long long * ) mx, ordd( v ) );
+}
+
+/// un histogramme par bloc en memoire partagee, puis neuf atomiques par bloc
+__global__ void k_hist( const double *res, const double *ech, double fixe, int n, long long *h, bool octaves ) {
+    __shared__ unsigned int sh[ 9 ];
+    if ( threadIdx.x < 9 ) sh[ threadIdx.x ] = 0;
+    __syncthreads();
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if ( i < n ) {
+        const double d = ech ? ech[ i ] : fixe;
+        const double m = res[ i ];
+        int b;
+        if ( ! ( m > 0 ) ) b = 0;                        // la case zero : les mesures NULLES
+        else if ( ! ( d > 0 ) ) b = 8;                   // sans reference utile : compte comme entiere
+        else {
+            const double q = m / d;
+            const double l = octaves ? log2( q ) : log10( q );
+            const int k = 8 + int( floor( l ) );
+            b = k < 1 ? 1 : ( k > 8 ? 8 : k );
+        }
+        atomicAdd( &sh[ b ], 1u );
+    }
+    __syncthreads();
+    if ( threadIdx.x < 9 && sh[ threadIdx.x ] ) atomicAdd( ( unsigned long long * ) ( h + threadIdx.x ), ( unsigned long long ) sh[ threadIdx.x ] );
+}
+
+template<int D, class TK>
+void DiagrammeGpu<D,TK>::garde_mesures() {
+    Impl &m = *impl;
+    if ( ! m.res0 ) CUDA_OK( cudaMalloc( &m.res0, size_t( m.n ) * sizeof( double ) ) );
+    CUDA_OK( cudaMemcpy( m.res0, m.res, size_t( m.n ) * sizeof( double ), cudaMemcpyDeviceToDevice ) );
+}
+
+template<int D, class TK>
+BilanCel DiagrammeGpu<D,TK>::bilan( double cible ) const {
+    Impl &m = *impl;
+    BilanCel r;
+    int nv = 0;
+    r.err = residu( cible, &r.mini, nullptr, 0, nullptr, &nv );
+    r.vides = nv;
+    // le maximum : le meme codage entier ordonne, `atomicMax` sur les mesures niees
+    if ( ! m.hist ) CUDA_OK( cudaMalloc( &m.hist, 27 * sizeof( long long ) ) );
+    CUDA_OK( cudaMemset( m.hist, 0, 27 * sizeof( long long ) ) );
+    const int BL = 256, gr = ( m.n + BL - 1 ) / BL;
+    k_hist<<<gr, BL>>>( m.res, nullptr, cible, m.n, m.hist, false );
+    // `maxi` : on le tire de l'histogramme par cible ? non -- il le faut exact
+    {
+        double *mx = m.acc + 3;
+        const unsigned long long bas = 0;                // `ordd` du plus petit : le max part de la
+        CUDA_OK( cudaMemcpy( mx, &bas, 8, cudaMemcpyHostToDevice ) );
+        k_maxi<<<gr, BL>>>( m.res, mx, m.n );
+        unsigned long long om = 0;
+        CUDA_OK( cudaMemcpy( &om, mx, 8, cudaMemcpyDeviceToHost ) );
+        const long long bits = ( long long ) ( ( om >> 63 ) ? ( om & 0x7fffffffffffffffull ) : ~om );
+        std::memcpy( &r.maxi, &bits, 8 );
+    }
+    k_hist<<<gr, BL>>>( m.res, nullptr, r.maxi, m.n, m.hist + 9, false );
+    if ( m.res0 ) k_hist<<<gr, BL>>>( m.res, m.res0, 0, m.n, m.hist + 18, true );
+    long long h[ 27 ] = {};
+    CUDA_OK( cudaMemcpy( h, m.hist, sizeof( h ), cudaMemcpyDeviceToHost ) );
+    for ( int k = 0; k < 9; ++k ) { r.par_cible[ k ] = h[ k ]; r.par_max[ k ] = h[ 9 + k ]; r.par_ref[ k ] = h[ 18 + k ]; }
+    return r;
+}
+
 template<int D, class TK>
 void DiagrammeGpu<D,TK>::monte_amg( const Hessienne &H ) {
     Impl &m = *impl;

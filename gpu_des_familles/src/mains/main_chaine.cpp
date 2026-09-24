@@ -773,15 +773,35 @@ int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu, bool arbre_gp
             // un pas est refuse pour trois cellules ou pour dix mille. ( `--echelle K` : les K
             // premieres iterations. Chaque barreau coute un diagramme, donc c'est un diagnostic. )
             if ( it_etape < echelle ) {
-                std::printf( "      ECHELLE   etape %d, iteration %d : seuil %.2f x la plus petite ( %.2e de la cible ), residu %.4e\n",
-                             et, it_etape + 1, marge, marge * mini / cible, err / norme );
+                // LES TROIS ECHELLES ( voir `BilanCel` ). Les comptes sont CUMULES : la colonne
+                // « < f » donne le nombre de cellules SOUS la fraction `f`, ce qui se lit
+                // directement comme « combien de cellules tomberaient sous f si je prenais ce pas ».
+                g.garde_mesures();                       // l'etat de reference : avant le pas
+                const gpu::BilanCel b0 = g.bilan( cible );
+                std::printf( "      ECHELLE   etape %d, iteration %d : residu %.4e, mesures de %.2e a %.2e fois la cible\n",
+                             et, it_etape + 1, err / norme, b0.mini / cible, b0.maxi / cible );
+                std::printf( "                                                 = 0    < 1e-6    < 1e-5    < 1e-4    < 1e-3    < 1e-2    < 1e-1      < 1\n" );
+                auto cumul = [ & ]( const char *nom, const long long *h ) {
+                    std::printf( "                              %-12s", nom );
+                    long long c = 0;
+                    for ( int k = 0; k < 8; ++k ) { c += h[ k ]; std::printf( " %9lld", c ); }
+                    std::printf( "\n" );
+                };
+                std::printf( "        t =          0   ( l'etat de depart )\n" );
+                cumul( "m / cible", b0.par_cible );
+                cumul( "m / max", b0.par_max );
                 for ( double t = 1; t > 1e-7; t *= 0.5 ) {
                     essai( t );
-                    std::printf( "        t = %10.3e   condamnees %7d ( %7.3f %% ) dont %7d vides   plus petite %.2e   residu %.6e%s\n",
-                                 t, nc, 100.0 * nc / double( nu.n ), nv, m2 / cible, e2 / norme,
+                    const gpu::BilanCel b = g.bilan( cible );
+                    std::printf( "        t = %10.3e   residu %.6e   plus petite %.2e%s\n",
+                                 t, e2 / norme, m2 / cible,
                                  e2 <= ( 1 - t / 2 ) * err ? "   <- le residu, lui, baisse assez" : "" );
+                    cumul( "m / cible", b.par_cible );
+                    cumul( "m / max", b.par_max );
+                    cumul( "m / m avant", b.par_ref );   // octaves : 1/64, 1/32, ... 1/2, 1
                     if ( nc == 0 ) break;
                 }
+                std::printf( "                ( les deux premieres lignes sont en DECADES, la troisieme en OCTAVES : 1/64, 1/32, 1/16, 1/8, 1/4, 1/2, 1 )\n" );
             }
 
             // LE DEPART DE LA RECHERCHE : le pas precedent DOUBLE, pas `1`. Sous une image
