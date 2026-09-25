@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 
 from errand import Apptainer, Micromamba, Outcome, Param, Provider, Ssh, configure, env, provider
+from errand.local import value
 
 configure(
     out = "runs",
@@ -54,19 +55,46 @@ NSDOT = Micromamba( "nsdot", python = "3.13", packages = [
 VFS   = Micromamba( "vfs", python = "3.13", pip = [ "jax[cuda13]", *EDITABLE ] )
 TORCH = Micromamba( "torch", pip = [ "torch", *EDITABLE ] )
 
-LMO = Ssh( host = "lmo", root = "/home/leclerc/nsdot", python = "python3" )
+# Ce qui change d'une machine à l'autre se lit dans `errand.local.py`, qui n'est pas suivi par
+# git -- avec ici la valeur qui marche sur celle-ci. La déclaration reste commitée, le nom
+# d'hôte et le répertoire de scratch restent locaux.
+LMO = Ssh( host   = value( "lmo_host", "lmo" ),
+           root   = value( "lmo_root", "/home/leclerc/nsdot" ),
+           python = "python3" )
 
+# `scratch` : apptainer déballe des couches entières, et le `/tmp` d'une machine partagée est
+# l'endroit où un build meurt à moitié, faute de place. `recipe` dit avec quoi l'image se
+# rebâtit -- sans lui, c'est une image que quelqu'un d'autre fabrique et errand n'en dit rien.
+SCRATCH = value( "apptainer_scratch", "/data/singularity_tmp" )
+
+CUDA_JAX = Apptainer(
+    image    = "containers/cuda-jax.sif",
+    recipe   = "containers/cuda-jax.def",
+    flags    = [ "--nvccli" ],
+    mounts   = { "loom": "/opt/sdot/loom", "sdot": "/opt/sdot/sdot", "otrec": "/opt/sdot/otrec" },
+    fakeroot = True,
+    scratch  = SCRATCH,
+)
+
+# L'image qui GARDE le toolkit CUDA : loom compile ses noyaux pendant l'exécution, donc l'AOT a
+# besoin de `ptxas`/`fatbinary` à ce moment-là. C'est celle à utiliser pour compute-sanitizer,
+# aveugle aux noyaux JIT de la cible `generic`. Pas de recette ici : l'image est fabriquée
+# ailleurs.
 CUDA_JAX_AOT = Apptainer(
-    image  = "containers/cuda-jax-aot.sif",
-    flags  = [ "--nvccli" ],
-    mounts = { "loom": "/opt/sdot/loom", "sdot": "/opt/sdot/sdot", "otrec": "/opt/sdot/otrec" },
+    image   = "containers/cuda-jax-aot.sif",
+    flags   = [ "--nvccli" ],
+    mounts  = { "loom": "/opt/sdot/loom", "sdot": "/opt/sdot/sdot", "otrec": "/opt/sdot/otrec" },
+    scratch = SCRATCH,
 )
 
 env( "nsdot", [ NSDOT ], driver = "jax", cuda = True )
 env( "vfs",   [ VFS   ], driver = "jax" )
 env( "torch", [ TORCH ], driver = "torch" )
 
+env( "cuda-jax",         [ CUDA_JAX ],         driver = "jax",   cuda = True )
+
 env( "lmo-cuda-jax",     [ LMO, VFS ],          driver = "jax",   cuda = True )
+env( "lmo-cuda-jax-sif", [ LMO, CUDA_JAX ],     driver = "jax",   cuda = True )
 env( "lmo-cuda-jax-aot", [ LMO, CUDA_JAX_AOT ], driver = "jax",   cuda = True )
 env( "lmo-cuda-torch",   [ LMO, TORCH ],        driver = "torch", cuda = True )
 

@@ -15,15 +15,14 @@ par transport optimal 1D, voir [Prototype `unidim`](#prototype-unidim) plus bas.
 
 ## Quick start
 
-Le travail -- tests, benchs, expériences -- est lancé par **[`errand`](errand/README.md)**, un
-paquet à part qui ne sait rien de loom : ce dépôt lui dit ce qu'il a à savoir dans
-`errandfile.py`, à la racine. `./run` ne garde que ce qui FABRIQUE la machine : installer,
-diagnostiquer, bâtir les images, créer les envs micromamba.
+Tout passe par **[`errand`](errand/README.md)**, un paquet à part qui ne sait rien de loom : ce
+dépôt lui dit ce qu'il a à savoir dans `errandfile.py`, à la racine. Il n'y a plus de `./run` --
+lancer le travail, fabriquer les environnements, bâtir les images et entrer dans une machine sont
+la même commande.
 
 ```bash
-# Première fois : l'env micromamba déclaré dans errandfile.py, puis les paquets en editable
-./run env create
-./run install                          # errand, loom, sdot, otrec
+# Première fois : l'environnement déclaré dans errandfile.py, avec ses paquets et les editables
+errand --setup --env nsdot
 
 # Lancer le travail
 errand                              # tout ce qui doit passer (C++ + Python)
@@ -40,11 +39,15 @@ errand --batch                      # détaché : rend la main, se suit après c
 
 # L'écran : chercher un cas parmi trois cents, le lancer, suivre ce qu'il écrit
 errand --tui
+
+# Entrer dans un environnement pour autre chose que du travail déclaré
+errand --env nsdot -- loom-toolchain          # ce que la compilation trouve
+errand --env lmo-cuda-jax -- nvidia-smi       # ce que la carte de là-bas répond
 ```
 
-`errand --help` liste les cas sélectionnés avec leurs paramètres ; `errand --envs` les
-environnements. La sélection par motif, les matrices de paramètres, l'arborescence de sortie,
-la file d'attente, le détachement et l'écran sont documentés une fois pour toutes dans
+`errand --help` liste les cas sélectionnés avec leurs paramètres, `errand --envs` les
+environnements et leur état. La sélection par motif, les matrices de paramètres, l'arborescence de
+sortie, la file d'attente, le détachement et l'écran sont documentés une fois pour toutes dans
 [`errand/README.md`](errand/README.md).
 
 ## Commandes
@@ -53,10 +56,10 @@ la file d'attente, le détachement et l'écran sont documentés une fois pour to
 |---|---|
 | `errand [motif]` | Le travail : tests C++ + Python, benchs, expériences |
 | `errand --tui` | L'écran : chercher, lancer, suivre |
-| `./run install` | `pip install -e` d'errand + des 3 projets, dans l'ordre |
-| `./run toolchain` | Diagnostic (compilateur hôte, nvcc) |
-| `./run build-sif` | Build des images Apptainer (.sif depuis .def) |
-| `./run env` / `./run env create` | Lister / fabriquer les envs micromamba |
+| `errand --envs` | Les environnements, et lequel est à jour |
+| `errand --setup --env X` | Fabriquer ou mettre à jour un env (micromamba, image, pip) |
+| `errand --setup force --env X` | Le refaire, quoi qu'il en dise |
+| `errand --env X -- <cmd>` | Cette commande-là, dans cet environnement-là |
 
 ## Ce que ce dépôt déclare à errand
 
@@ -176,14 +179,18 @@ CUDA — avant la boucle réellement chronométrée (`p.results["ms_per_grad_by_
 
 ## Conteneurs Apptainer
 
-Les images `.sif` sont construites depuis les `.def` dans `containers/`. Voir
-`containers/README.md` pour les détails.
+Les images `.sif` sont déclarées comme des couches dans `errandfile.py`, avec de quoi les bâtir
+(`recipe`, `fakeroot`, `scratch`) et de quoi y entrer (`flags`, `mounts`). Voir
+`containers/README.md`.
 
 ```bash
-./run build-sif --env cuda-jax               # Une image, en local
-./run build-sif                               # Toutes les images (chaque env avec un layer Apptainer)
-./run build-sif --env lmo-cuda-jax --fakeroot # Build distant (env dont le seq a un Remote)
+errand --setup --env cuda-jax                 # une image, en local
+errand --setup force --env lmo-cuda-jax-sif   # la refaire, là-bas (rsync -> ssh -> build)
+errand --setup --dry-run --env cuda-jax       # ce que ça lancerait, sans le lancer
 ```
+
+Elles se bâtissent aussi toutes seules : `errand --env cuda-jax <...>` vérifie l'image contre ce
+que la déclaration dit avant de lancer quoi que ce soit. `--no-setup` dit de ne pas le faire.
 
 ## C++
 

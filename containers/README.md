@@ -19,44 +19,55 @@ the two frameworks stay in separate images because their pip wheels pin independ
 
 ## Building
 
-### Via `./run` (recommended)
+### Via `errand` (recommended)
 
-Declare environments in `.envs.py` (copy from `.envs.py.example`) with an `Apptainer`
-layer:
+Declare the environment in `errandfile.py`, at the repository root, with an `Apptainer` layer.
+Everything the build needs is part of the declaration -- the recipe it is built from, whether it
+is built with `--fakeroot`, and the scratch directory it unpacks into:
 
 ```python
-from loom.cli.layers import env, Driver, Apptainer, Remote
+CUDA_JAX = Apptainer(
+    image    = "containers/cuda-jax.sif",
+    recipe   = "containers/cuda-jax.def",
+    flags    = [ "--nvccli" ],          # how the image is ENTERED
+    fakeroot = True,                    # how it is BUILT
+    scratch  = "/data/singularity_tmp",
+)
 
-env("cuda-jax", [Apptainer(image="containers/cuda-jax.sif")] + [Driver("jax")])
-env("cpu", [Apptainer(image="containers/cpu.sif")] + [Driver("jax")])
+env( "cuda-jax", [ CUDA_JAX ], driver = "jax", cuda = True )
 ```
 
-Then build:
+Then:
 
 ```bash
-./run build-sif --env cuda-jax               # build a specific image, locally
-./run build-sif                               # build every env with an Apptainer layer
-./run build-sif --fakeroot --force            # force rebuild with fakeroot
-./run build-sif --env lmo-cuda-jax            # build remotely (env whose seq starts with Remote)
-./run build-sif --scratch-dir /data/tmp       # set scratch dir for large builds
+errand --envs                          # `not built` / `ok` / `stale`, per environment
+errand --setup --env cuda-jax          # build it if it is missing or out of date
+errand --setup force --env cuda-jax    # build it again, whatever it says
+errand --setup --dry-run --env cuda-jax   # say what it would run, and run nothing
 ```
 
-The `.def` file is derived automatically from the `image` path (`containers/cuda-jax.sif` →
-`containers/cuda-jax.def`). To build on a remote machine, add a `Remote` layer in front —
-that's what makes `build-sif` rsync the repo there first, then run `apptainer build` on
-the host:
+**It is built by itself, when it needs to be.** `errand --env cuda-jax <...>` checks the image
+against what the declaration says before running anything, and brings it up to date; `--no-setup`
+is how you say not to. An image that is already there and that errand has never seen is *adopted*,
+not rebuilt -- what somebody else made is not errand's to overwrite.
+
+To build on another machine, put an `Ssh` layer in front. The repository is rsynced there first
+(the recipe is a file *here*, the build happens *there*), then `apptainer build` runs on the host:
 
 ```python
-LMO = [Remote(host="lmo", remote_dir="/home/leclerc/nsdot",
-              python="/data/venvs/sdot/bin/python",
-              apptainer_scratch="/data/singularity_tmp")]
-
-env("lmo-cuda-jax", LMO + [Apptainer(image="containers/cuda-jax.sif")] + [Driver("jax")])
+env( "lmo-cuda-jax", [ Ssh( host = "lmo", root = "/home/leclerc/nsdot" ), CUDA_JAX ],
+     driver = "jax", cuda = True )
 ```
 
-`Remote.apptainer_scratch` points to a filesystem with enough free space (a few GB);
-`build-sif` uses it automatically for `APPTAINER_TMPDIR` and `APPTAINER_CACHEDIR`,
-and `--scratch-dir` overrides it per invocation.
+`scratch` points at a filesystem with a few GB free; it is used for both `APPTAINER_TMPDIR` and
+`APPTAINER_CACHEDIR`, which is where a build dies halfway when `/tmp` is small. What differs from
+machine to machine -- the host name, that scratch directory -- is read from `errand.local.py`
+(untracked) with a default that works here:
+
+```python
+from errand.local import value
+SCRATCH = value( "apptainer_scratch", "/data/singularity_tmp" )
+```
 
 ### From the command line
 
@@ -85,10 +96,10 @@ For the older `singularity` executable, use `SINGULARITY_TMPDIR` and
 
 ```bash
 # CPU
-apptainer exec containers/cpu.sif python -m loom.cli test
+errand --env cpu                    # or: apptainer exec containers/cpu.sif errand
 
 # CUDA: --nv exposes the NVIDIA driver from the host.
-apptainer exec --nv containers/cuda-jax.sif python -m loom.cli test --device cuda
+errand --env cuda-jax               # --nv / --nvccli come from the layer's `flags`
 ```
 
 `--nvccli` is an alternative where the site enables NVIDIA Container Toolkit. Apptainer's
