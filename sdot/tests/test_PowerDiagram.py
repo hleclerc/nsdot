@@ -1,7 +1,8 @@
 import numpy
 
 from loom import driver
-from loom.testing import bench, check_grad, test, experiment, Param
+from errand import Param, bench, experiment, test
+from loom.testing import check_grad
 
 from sdot import AaBsp, Image, PowerDiagram, SumOfGaussians, Visualizer, Voronoi, box_half_spaces, set_kernel_dtype
 

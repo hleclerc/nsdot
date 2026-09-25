@@ -13,6 +13,9 @@ lib/
 *.out
 *.sif
 tmp/
+# la sortie d'errand : un répertoire par cas, une liste plate de runs dessous
+runs/
+.errand/
 .codewhale
 .envs.py
 .qwen/
@@ -65,3 +68,6 @@ attic
 .aider*
 sdot/catalogue/*
 !sdot/catalogue/README.md
+
+# errand : depot a part (git init dans errand/)
+errand/

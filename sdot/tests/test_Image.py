@@ -1,5 +1,6 @@
 from sdot import Image # OtPlan1D, SumOfDiracs,
-from loom.testing import test, check_grad
+from errand import test
+from loom.testing import check_grad
 
 if test( "basic" ):
     # ds = SumOfDiracs( [ 1, 2, 3, 4 ] )

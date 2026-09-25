@@ -15,270 +15,115 @@ par transport optimal 1D, voir [Prototype `unidim`](#prototype-unidim) plus bas.
 
 ## Quick start
 
-`./run` lui-même ne dépend que d'un Python (stdlib seule, aucun paquet tiers) : pas besoin
-d'activer quoi que ce soit pour lancer `./run env`, `./run env create` ou `./run install`.
+Le travail -- tests, benchs, expériences -- est lancé par **[`errand`](errand/README.md)**, un
+paquet à part qui ne sait rien de loom : ce dépôt lui dit ce qu'il a à savoir dans
+`errandfile.py`, à la racine. `./run` ne garde que ce qui FABRIQUE la machine : installer,
+diagnostiquer, bâtir les images, créer les envs micromamba.
 
 ```bash
-# Première fois : fabrique l'env micromamba déclaré dans .envs.py (no-op s'il existe déjà)
+# Première fois : l'env micromamba déclaré dans errandfile.py, puis les paquets en editable
 ./run env create
+./run install                          # errand, loom, sdot, otrec
 
-# Installer (une fois sur l'env par défaut)
-./run install
+# Lancer le travail
+errand                              # tout ce qui doit passer (C++ + Python)
+errand test_Cell                    # tout test_Cell.py
+errand test_Cell::batch             # le cas "batch" de test_Cell.py
+errand "test_Cell::grad_*"          # glob sur le nom
+errand -k bench "test_OtPlan1d::*" --nb-diracs 5000
+errand -k experiment exp_lung --nb-diracs 5000,10000   # une sortie par valeur
 
-# Lancer les tests
-./run test                          # Tous les tests (C++ + Python)
-./run test test_Cell                # Tout test_Cell.py
-./run test test_Cell::batch         # Juste le test "batch" de test_Cell.py
-./run test "test_Cell::grad_*"      # Glob sur le nom
-./run test --fp=FP32                # Précision FP32
+# Ailleurs, et à plusieurs
+errand --env lmo-cuda-jax           # rsync -> ssh -> run -> rsync retour
+errand -j 8                         # huit à la fois
+errand --batch                      # détaché : rend la main, se suit après coup
 
-# Benchmark -- même mécanisme que test(), dans les mêmes fichiers
-./run bench "test_OtPlan1d::*" --nb-diracs=5000
-
-# Expérience -- même mécanisme encore, pour ce qui se REGARDE (html, ParaView, png)
-./run experiment exp_lung                   # tout exp_lung.py
-./run experiment "test_Cell::viz 3D"        # une entrée précise
-./run experiment exp_lung --nb-diracs=5000  # override, `a,b` pour balayer
+# L'écran : chercher un cas parmi trois cents, le lancer, suivre ce qu'il écrit
+errand --tui
 ```
+
+`errand --help` liste les cas sélectionnés avec leurs paramètres ; `errand --envs` les
+environnements. La sélection par motif, les matrices de paramètres, l'arborescence de sortie,
+la file d'attente, le détachement et l'écran sont documentés une fois pour toutes dans
+[`errand/README.md`](errand/README.md).
 
 ## Commandes
 
 | Commande | Description |
 |---|---|
-| `./run test [pattern]` | Tests C++ + Python (tous les projets) |
-| `./run bench [pattern]` | Benchmarks Python (même mécanisme que `test`) |
-| `./run experiment [pattern]` | Expériences Python (même mécanisme que `test`), avec balayage de params |
-| `./run install` | `pip install -e` des 3 projets dans l'ordre |
+| `errand [motif]` | Le travail : tests C++ + Python, benchs, expériences |
+| `errand --tui` | L'écran : chercher, lancer, suivre |
+| `./run install` | `pip install -e` d'errand + des 3 projets, dans l'ordre |
 | `./run toolchain` | Diagnostic (compilateur hôte, nvcc) |
 | `./run build-sif` | Build des images Apptainer (.sif depuis .def) |
-| `./run env` | Lister les environnements configurés |
-| `./run env create` | Fabriquer les envs micromamba déclarés (no-op sur ceux qui existent déjà) |
+| `./run env` / `./run env create` | Lister / fabriquer les envs micromamba |
 
-### `test` / `bench` / `experiment` : sélection par pattern
+## Ce que ce dépôt déclare à errand
 
-`test()`/`bench()`/`experiment()` (`loom.testing`) sont trois variantes d'un
-même mécanisme — une garde comme `if __name__ == "__main__":`, en plus élaboré :
-plusieurs par fichier, identifiées par site d'appel (pas par nom, donc les
-homonymes sont permis), et mixables dans un même fichier sous `{projet}/tests/`.
+`errandfile.py`, à la racine, en Python ordinaire :
 
-Ce qui les sépare n'est pas la mécanique mais l'ATTENTE, donc la commande qui
-les lance : un `test` doit passer, un `bench` doit être rapide (et laisse des
-chiffres datés dans `p.results`), une `experiment` doit être REGARDÉE — sa
-sortie est un fichier qu'on ouvre.
+* **où est le code** -- `src = [ "loom/src", "sdot/src", "otrec/src" ]` : les trois projets DE
+  CE CHECKOUT passent devant ce qu'un `pip install -e` fait depuis un autre checkout aurait
+  installé. C'est l'ancien `PYTHONPATH` de `./run`, dit une fois.
+* **où ça tourne** -- un `env( nom, [ couches ], **tags )` par environnement. Une machine
+  distante est un env de plus, dont la première couche est `Ssh`.
+* **les tests C++ de loom** -- un *provider* : une entrée par `loom/tests/cpp/test_*.cpp`, un
+  paramètre `--device cpu,cuda`, compilée par `loom.compilation.make_executable`. Tout ce qui
+  entoure le run -- répertoire de sortie, `result.yaml`, résumés, matrices, file d'attente,
+  rapatriement -- est le même que pour une entrée Python.
 
-Le `pattern` positionnel est une liste de specs séparées par `,`, chacune de
-la forme `fichier[::nom]` :
-
-```
-./run test                          tout (tous les tests, tous les projets)
-./run test test_Cell                 tout test_Cell.py (nom de fichier complet, préfixe inclus)
-./run test test_Cell::batch          le test "batch" de test_Cell.py
-./run test "test_Cell::grad_*"       glob sur le nom (fnmatch ; sans `*` = match exact)
-./run test "test_Cell::a,test_OtPlan1d::b"   plusieurs specs
-```
-
-La recherche du fichier se fait sur tout le dépôt (récursif, aucune
-distinction de projet ni de répertoire), filtrée aux fichiers qui référencent
-`loom.testing` — sans ça, un fichier source qui porte le nom de son test
-(`Cell.py` vs `test_Cell.py`, le cas courant) créerait une fausse ambiguïté.
-La partie fichier matche le stem COMPLET (préfixe `test_`/`bench_` inclus —
-`Cell` ne matche plus rien, il faut `test_Cell`). Sans `*` dans la partie
-fichier, le nom doit désigner un fichier unique — sinon erreur (utiliser un
-glob pour en sélectionner plusieurs). Pour ne prendre qu'un projet, c'est le
-motif qui le dit -- `./run test "test_Cell::*,test_PowerDiagram::*"` -- il n'y
-a pas d'option pour restreindre à un répertoire.
-
-N'importe laquelle des trois peut déclarer des `Param` typés, listés via
-`--help` et résumés avant chaque exécution :
+**Le driver n'est plus une couche, c'est un tag.** Il ne change pas la façon d'atteindre la
+machine, il dit ce qu'on y trouve : il sélectionne (`--driver torch`, `-t 'driver=jax'`), il
+apparaît dans `result.yaml` et dans le nom du répertoire de sortie, et un fichier qui a besoin
+de savoir demande `has_tag( "driver=torch" )` plutôt que de lire une variable d'environnement.
 
 ```python
-from loom.testing import bench, Param
+env( "nsdot", [ Micromamba( "nsdot", python = "3.13" ) ], driver = "jax", cuda = True )
+env( "lmo-cuda-jax", [ Ssh( host = "lmo", root = "/home/leclerc/nsdot" ),
+                       Micromamba( "vfs" ) ], driver = "jax", cuda = True )
+```
+
+```bash
+$ errand --envs
+
+Environments
+  nsdot             cuda  driver=jax     micromamba:nsdot  <- default
+  lmo-cuda-jax      cuda  driver=jax     ssh:lmo -> micromamba:vfs
+  lmo-cuda-torch    cuda  driver=torch   ssh:lmo -> micromamba:torch
+
+  choose one with --env <name>, or by tag: --cuda --driver
+```
+
+## Déclarer un cas
+
+```python
+from errand import test, bench, experiment, Param
+from loom.testing import check_grad          # ce qui reste propre à loom
+
+if test( "a position is not something one solves for" ):
+    assert ...
 
 if p := bench( "cost", nb_diracs = Param( 1000, help = "nb diracs" ) ):
-    run_bench( p.nb_diracs )
+    p.results[ "cost" ] = run_bench( p.nb_diracs )      # -> result.yaml
+
+if p := experiment( "viz 3D" ):
+    v.write_html( p.out_dir / "cell_3d.html" )          # une sortie à REGARDER
 ```
 
-```bash
-./run bench cost --help          # liste les params déclarés
-./run bench cost --nb-diracs=5000
-```
+Les trois partagent tout -- enregistrement, paramètres, `p.out_dir`, `result.yaml` -- et ne
+diffèrent que par ce qu'on en ATTEND : un test doit passer, un bench doit être rapide (ses
+chiffres sont gardés, il prend la machine pour lui seul), une expérience doit être regardée
+(`latest/` est un chemin stable, l'onglet resté ouvert dessus se recharge).
 
-`./run experiment` ajoute le BALAYAGE : `--nb-diracs=1000,2000` lance chaque
-combinaison, chacune dans son propre répertoire (le hash des params diffère),
-ce qui est exactement ce qu'on veut pour comparer des images. `test`/`bench`
-ne le font pas — on n'asserte pas un produit cartésien.
-
-### Répertoires de sortie
-
-Chaque (entrée, jeu de params, env, date) a son propre répertoire feuille,
-effacé et recréé à chaque lancement :
-
-```
-tmp/{test|bench}/{fichier}__{nom}/[hash-des-params/]{env}/{date}/
-tmp/experiment/{fichier}__{nom}/[hash-des-params/]{env}/          <- sans la date
-```
-
-Une expérience s'arrête à `{env}` : ce qu'une date achète est un HISTORIQUE à
-comparer, et une expérience n'a rien de comparable à produire — sa sortie est
-un fichier qu'on ouvre. Ce qu'une date coûte, là, est la seule chose qui
-compte : un chemin qui bouge sous l'onglet resté ouvert dessus. Chemin stable,
-rechargement, fin.
-
-(le hash n'apparaît que s'il y a des params). La feuille contient toujours
-`result.yaml` (status, durée, RAM pic, params résolus, `p.results`), et
-`output.txt` si le corps a produit du texte :
-
-```python
-if p := bench( "cost", nb_diracs = Param( 1000 ) ):
-    p.results[ "cost" ] = run_bench( p.nb_diracs )   # -> result.yaml
-    ( p.out_dir / "plot.png" ).write_bytes( fig )     # fichier ad hoc dans le même répertoire
-```
-
-Deux niveaux de résumé, recalculés à chaque run (relecture des `result.yaml`
-voisins, pas un historique en mémoire) :
-- `[hash]/{env}/summary.yaml` — une ligne par date, pour cet env (ok/pas ok,
-  min/max des valeurs numériques de `p.results`, ou de la durée à défaut).
-- `[hash]/summary.yaml` — une ligne par `{env}/{date}`, tous envs confondus.
-
-Pour une expérience il n'y en a qu'un — `[hash]/summary.yaml`, une ligne par
-env : sans niveau de date, il n'y a pas d'historique par env à résumer.
-
-En exécution distante, seuls les `[hash]/` des cas effectivement sélectionnés
-par le pattern sont rapatriés (par `rsync`, un par entrée) — pas tout
-`tmp/test`/`tmp/bench` : `tmp/` n'est pas remis à zéro par le push du repo, un
-hôte distant peut donc porter des runs plus anciens sans rapport avec
-l'invocation en cours. Le contrôleur local prédit le chemin exact (mêmes
-règles de hash/date) avant même que le run distant n'ait eu lieu — pas de
-mécanisme de marqueurs (`OUTPUT:`) déclarés à l'exécution.
-
-C'est vrai des trois : une expérience écrit dans son `p.out_dir` comme un
-test, donc son `[hash]/` se prédit et se rapatrie pareil.
-
-Options communes à toutes les commandes :
-
-| Flag | Effet |
-|---|---|
-| `--env <nom>` | Sélectionne un environnement de `.envs.py` |
-| `--driver jax\|torch` | Sélection auto du 1er env avec ce driver |
-| `--device cpu\|cuda` | Définit `SDOT_DEVICE` + `JAX_PLATFORMS` |
-| `--fp FP32\|FP64` | Définit `SDOT_FTYPE` |
-
-## Environnements
-
-Le runner lit `.envs.py` (copier depuis `.envs.py.example`). Ce fichier déclare, en
-Python, **où** et **comment** les commandes s'exécutent — pas de fichier de config
-séparé pour les machines distantes : une machine distante est juste un env de plus.
-
-### Résolution d'environnement
-
-```
-./run test --env cuda-jax     → l'env "cuda-jax"                 (explicite)
-./run test --driver torch     → 1er env avec un layer Driver("torch")  (par driver)
-./run test                    → env nommé "default"              (fallback)
-```
-
-Si aucun `--env` ni `--driver` n'est donné, l'environnement nommé `default` est utilisé.
-S'il n'existe pas, le premier env de la liste est pris.
-
-### Layers
-
-Un env est une séquence de *layers* (`loom/src/loom/cli/layers.py`), composés
-outside-in, qui décrivent comment atteindre le sous-processus final :
-
-```python
-from loom.cli.layers import env, Driver, Micromamba, Apptainer, Remote
-
-JAX = [Driver("jax")]
-MM = [Micromamba("mon_env_mm")]
-
-env("default", MM + JAX)
-```
-
-`Driver(name, pip=...)` : `pip`, si présent, est la spec exacte que `./run install`
-installe pour ce driver (ex. `Driver("jax", pip="jax[cuda13]")`) au lieu de compter sur
-le `jax`/`torch` tiré en transitif par un projet (ex. `otrec` → `optax` → `jax`, en CPU
-par défaut) — l'extra CUDA/ROCm dépend de l'env/du hardware, donc pas exprimable dans
-un seul `pyproject.toml` partagé. Installé en premier, avant les `-e` des 3 projets.
-
-`Micromamba` wrappe avec `micromamba -n vfs run ...` (no-op si l'env est déjà activé
-localement). `python`/`channels`/`packages` ne servent qu'à `./run env create` (fabrique
-l'env s'il n'existe pas encore ; sans effet sur un env déjà là) :
-
-```python
-MM = [Micromamba("vfs", python="3.13")]
-```
-
-`Apptainer` wrappe avec `apptainer exec --bind ... image.sif ...`, et
-utilise toujours le `python` du conteneur (les packages nsdot y sont déjà en editable
-install — aucun `PYTHONPATH` ni mount n'est nécessaire pour exécuter les tests).
-`Remote` (ssh) doit être le premier layer de la séquence quand il est présent :
-
-```python
-LMO = [Remote(host="lmo", remote_dir="/home/leclerc/nsdot",
-              python="/data/venvs/sdot/bin/python",
-              apptainer_scratch="/data/singularity_tmp")]
-CUDA_JAX_SIF = [Apptainer(image="containers/cuda-jax.sif", flags=["--nvccli"])] + JAX
-
-env("lmo-cuda-jax", LMO + CUDA_JAX_SIF)
-```
-
-Le flux distant (géré par `Remote`) : `rsync` du repo → `ssh` → exécution →
-`rsync` ciblé de retour des chemins passés à `pull=[...]` par l'appelant
-(déterministe : les `tmp/{kind}/…/[hash]/` des entrées sélectionnées). Ce flux
-s'annonce en gris avant de s'exécuter :
-
-```
-  → machine=lmo (/home/leclerc/nsdot)  driver=jax
-  rsync push → lmo:/home/leclerc/nsdot
-  ...
-  rsync pull ← lmo:/home/leclerc/nsdot [tmp/bench/...]
-```
-
-(en local, seule la ligne `machine=... driver=...` s'affiche — pas de rsync).
-
-Mutualise les briques communes avec du Python normal (variables, fonctions, `+` de
-listes) plutôt qu'avec un mécanisme dédié — voir `.envs.py.example`.
-
-### Lister les environnements
-
-```bash
-$ ./run env
-
-Environnements (.envs.py):
-  default             driver=jax     micromamba=vfs ← default
-  cuda-jax            driver=jax     apptainer=containers/cuda-jax.sif
-  lmo-cuda-jax        driver=jax     remote=lmo apptainer=containers/cuda-jax.sif
-                      scratch: /data/singularity_tmp
-
-  Select with: --env <name>  (or --driver <jax, torch>)
-```
-
-### Exemples complets
-
-```bash
-# Local, env par défaut
-./run test
-
-# Local, env micromamba torch
-./run test --env torch
-
-# Local, conteneur apptainer JAX
-./run test --env cuda-jax --device cuda
-
-# Distant (rsync → ssh → run), sur lmo dans le conteneur cuda-jax
-./run test --env lmo-cuda-jax --device cuda
-```
 
 ## Expériences
 
-Même déclaration, même découverte et même sélection par pattern que
-`test`/`bench` (voir ci-dessus) : une expérience est une entrée parmi les
-autres, plusieurs par fichier, mixables avec des tests dans le même fichier —
-`sdot/tests/test_Cell.py` en a cinq, une par régime d'affichage, à côté de ses
+Une expérience est une entrée parmi les autres : plusieurs par fichier, mêlées aux tests du
+même fichier -- `sdot/tests/test_Cell.py` en a cinq, une par régime d'affichage, à côté de ses
 tests de géométrie.
 
 ```python
-from loom.testing import experiment, Param
+from errand import Param, experiment
 
 if p := experiment( "viz 3D" ):
     c = Cell.make_hypercube( 3, [ 0, 0, 0 ], numpy.eye( 3 ).tolist() )
@@ -289,26 +134,22 @@ if p := experiment( "viz 3D" ):
 ```
 
 ```bash
-./run experiment test_Cell                 # les cinq
-./run experiment "test_Cell::viz 3D"       # une seule
-./run experiment "test_Cell::viz cut*" --nb-cuts=4,8   # balayage : une sortie par valeur
-./run experiment --help                    # toutes celles du dépôt, avec leurs params
+errand -k experiment test_Cell                # les cinq
+errand -k experiment "test_Cell::viz 3D"      # une seule
+errand -k experiment "test_Cell::viz cut*" --nb-cuts 4,8   # une sortie par valeur
+errand -k experiment --help                   # toutes celles du dépôt, avec leurs params
 ```
 
-Chaque entrée affiche, en fin de run, son répertoire et ce qu'elle y a écrit —
-il n'y a donc pas de schéma de nommage à reconstituer pour retrouver le
-fichier à ouvrir.
+Chaque entrée affiche, en fin de run, son répertoire et ce qu'elle y a écrit, et `latest/`
+pointe sur le dernier -- l'onglet resté ouvert sur `runs/test_Cell/viz_3d/latest/cell_3d.html`
+se recharge.
 
-Les fichiers écrits contre l'ancien harnais (`from loom.cli import experiment`,
-un fichier = une expérience) marchent tels quels : `loom.cli` ré-exporte
-`experiment`/`Param`, et `./run experiment exp_lung` reste le stem du fichier
-comme pattern.
 
 ## Prototype `unidim`
 
 Prototype de reconstruction CT (pas un des 3 projets pip-installables ci-dessus —
-vit à la racine, sans `pyproject.toml`, mais utilise le même mécanisme `bench` de
-`loom.testing`) : distance de Wasserstein 1D en forme fermée (pas de plan de
+vit à la racine, sans `pyproject.toml`, mais déclare ses `bench` comme tout le
+monde) : distance de Wasserstein 1D en forme fermée (pas de plan de
 transport explicite) entre un nuage de points 2D projeté et un sinogramme, optimisée
 par L-BFGS.
 
@@ -324,9 +165,9 @@ RÉELLEMENT libre (`gpu_mem.py`), pour ne jamais matérialiser un tenseur
 `[nb_angles, n]` complet (`nb_diracs` visé jusqu'à ~1e11) :
 
 ```bash
-./run bench reconstruction_jax --nb-diracs 5000
-./run bench --env lmo-cuda-jax reconstruction_jax
-./run bench --env lmo-cuda-torch reconstruction_cuda
+errand -k bench reconstruction_jax --nb-diracs 5000
+errand -k bench --env lmo-cuda-jax reconstruction_jax
+errand -k bench --env lmo-cuda-torch reconstruction_cuda
 ```
 
 Au premier appel (par taille de problème), chaque backend affiche un message

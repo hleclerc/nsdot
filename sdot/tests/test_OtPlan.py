@@ -1,6 +1,6 @@
 import numpy
 
-from loom.testing import test, experiment, Param
+from errand import Param, experiment, test
 
 from sdot import Image, OtPlan, PowerDiagram, SumOfDiracs, SumOfGaussians, Visualizer, box_half_spaces, write_convergence_html
 

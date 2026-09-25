@@ -43,14 +43,14 @@ import time
 # tombe, pas seulement ce fichier.
 import sys
 
-from loom.testing import driver_is
+from errand import has_tag
 
-if not driver_is( "torch" ):
+if not has_tag( "driver=torch" ):
     sys.exit( 0 )
 
 import torch
 import torch.utils.cpp_extension
-from loom.testing import Param, bench
+from errand import Param, bench
 
 from .gpu_mem import torch_cuda_mem_budget_bytes
 from .tracker import GradTimer

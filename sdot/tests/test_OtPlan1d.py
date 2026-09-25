@@ -3,7 +3,9 @@ import numpy
 from loom import driver
 from sdot import Image, OtPlan1d, SumOfDiracs1d
 from loom.devices import Cpu
-from loom.testing import test, check_grad
+from errand import test
+from loom.util import info
+from loom.testing import check_grad
 
 # driver.ftype = "FP64"
 

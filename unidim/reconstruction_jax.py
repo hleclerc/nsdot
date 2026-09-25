@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 import optax
-from loom.testing import Param, bench
+from errand import Param, bench
 
 from .gpu_mem import jax_mem_budget_bytes
 from .tracker import GradTimer

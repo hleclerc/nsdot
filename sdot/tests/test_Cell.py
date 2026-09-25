@@ -1,6 +1,7 @@
 import numpy
 
-from loom.testing import check_grad, test, experiment, Param
+from errand import Param, experiment, test
+from loom.testing import check_grad
 
 from loom import driver, new_batch_axis
 from sdot import Cell, Visualizer, box_half_spaces, set_kernel_dtype
