@@ -198,9 +198,9 @@ Les headers C++ sont dans `loom/include/loom/support/` (runtime générique)
 et `sdot/include/sdot/` (transport optimal). Les headers générés (JIT)
 atterrissent dans `build/include/`.
 
-Compilation : le compilateur C++ hôte pour le CPU (`c++`/`clang++`/`g++`, `SDOT_CXX` pour en
+Compilation : le compilateur C++ hôte pour le CPU (`c++`/`clang++`/`g++`, `LOOM_CXX` pour en
 imposer un ; `-O3 -march=native`), `nvcc` autour de lui pour CUDA (celui du paquet pip
-`nvidia-cuda-nvcc-cu13` s'il est là, sinon `/usr/local/cuda`, sinon PATH ; `SDOT_NVCC`). Chaque
+`nvidia-cuda-nvcc-cu13` s'il est là, sinon `/usr/local/cuda`, sinon PATH ; `LOOM_NVCC`). Chaque
 device dit avec quoi il se compile (`Device.compiler`, voir `loom/src/loom/compilation/Compiler.py`) ;
 le runtime C++ d'un device est sa queue (`loom/include/loom/support/kernels/CpuQueue.h`,
 `CudaQueue.h`), qui porte le lancement des noyaux -- `run_parallel` ne connaît aucun device.
@@ -223,7 +223,7 @@ loom-kernels compile --record catalogue_record --out sdot/catalogue --import sdo
 
 `record` ne sait rien de ce qu'on lance (la commande vient après `--`) et `compile` n'exécute rien
 du projet, `--import` nommant seulement les modules qui enregistrent leur racine C++. C'est ce que
-fait `.github/workflows/wheels.yml`. `SDOT_KERNELS=auto|catalogue|atelier`. Voir
+fait `.github/workflows/wheels.yml`. `LOOM_KERNELS=auto|catalogue|atelier`. Voir
 `loom/src/loom/compilation/{catalogue,cli}.py`.
 
 Le transport semi-discret (`sdot.OtPlan`) est résolu **en un appel**, tout en C++
@@ -232,11 +232,35 @@ assemblé sans tri, Cholesky (Eigen) / AMG (AMGCL) / CG en unité de domaine, le
 en 2D, la continuation en largeur pour les densités qui se concentrent ; le domaine est le support
 que la densité déclare (`bounding_half_spaces`). Eigen et AMGCL sont téléchargés par loom lui-même au premier
 noyau compilé (`loom/src/loom/compilation/externals.py` : archive épinglée + SHA-256, dans le cache
-utilisateur, puis sur le chemin d'inclusion ; `SDOT_EXTERNALS=0` pour s'en passer -- le gradient
+utilisateur, puis sur le chemin d'inclusion ; `LOOM_EXTERNALS=0` pour s'en passer -- le gradient
 conjugué maison reste). Voir `notes/2026-09-22-otplan-cpp.md`.
 
-La compilation passe par un graphe ninja (`loom/src/loom/compilation/build.py`, `build/build.ninja`
-réécrit depuis `build/ninja/manifest.json`) : une unité n'est refaite que si l'un de SES en-têtes a
-changé (depfiles du compilateur). `libloom_runtime` (la file de threads, une par processus) est liée
-par chaque noyau ; `FfiCode( sources = [ ( "x.cpp", { "DEF": "v" } ) ] )` compile une source de
-domaine une fois par configuration et la lie. `SDOT_FORCE_BUILD=1` force la cible demandée.
+La compilation passe par **deux graphes**, le critère étant *avoir des dépendants ou non*
+(`loom/src/loom/compilation/build.py`) :
+
+* le graphe **commun** (`build/build.ninja`, réécrit depuis `build/ninja/manifest.json`) porte
+  `libloom_runtime` (la file de threads, une par signature de compilateur) et les **unités de
+  domaine** -- `FfiCode( sources = [ ( "x.cpp", { "DEF": "v" } ) ] )` compile une source une fois
+  par configuration et la lie dans tous les noyaux qui la nomment ;
+* le graphe **propre** d'un noyau (`build/noyaux/<cible>/`) porte sa source engendrée, son objet et
+  sa bibliothèque : zéro dépendant, donc effacer son répertoire suffit à l'oublier
+  (`loom-kernels prune [--older-than JOURS]`). Le verrou est par graphe : deux processus qui
+  compilent deux noyaux différents ne s'attendent pas.
+
+Une unité n'est refaite que si l'un de SES en-têtes a changé (depfiles du compilateur) -- c'est la
+seule chose difficile, et elle coûte 88 ms de graphe par noyau contre ~8 s de compilation.
+`LOOM_FORCE_BUILD=1` force la cible demandée.
+
+**Réglages** : le préfixe est `LOOM_` (`LOOM_BUILD_DIR`, `LOOM_CACHE_DIR`, `LOOM_KERNELS`,
+`LOOM_CXX`, `LOOM_FTYPE`, ...), lus en un seul endroit, `loom/src/loom/util/env.py`. L'ancien
+préfixe `SDOT_` est encore accepté, avec un avertissement émis une fois par variable. Ce qui reste
+légitimement en `SDOT_` est ce que sdot lit pour lui-même : `SDOT_KTYPE` (le type du noyau de ses
+cellules) et `SDOT_CATALOGUE_DIR`.
+
+**Synchroniser le dépôt** : `.rsync-exclude` dit ce qui ne doit pas traverser, et le dit une fois
+pour tous les scripts qui en ont besoin. Tout ce que loom fabrique dans le dépôt tient sous un
+**seul** répertoire (`build/`, en-têtes engendrés compris) et rien n'en sort : le graphe porte des
+chemins absolus et une signature de compilateur qui inclut le modèle de CPU sous `-march=native`,
+donc il ne vaut que sur la machine qui l'a écrit. Ce qui DOIT traverser, et n'y est donc pas :
+`catalogue_record/`, indépendant de la machine, qui est précisément ce qui permet de compiler les
+noyaux ailleurs.

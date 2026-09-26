@@ -17,8 +17,8 @@ PY  ?= python
 
 # Réglages consommés par la couche de compilation JIT (loom/compilation/adaptive_cpp).
 export SDOT_XMAKE_MODE  ?= debug
-export SDOT_FORCE_BUILD ?= 0
-export SDOT_FTYPE       ?= FP64
+export LOOM_FORCE_BUILD ?= 0
+export LOOM_FTYPE       ?= FP64
 
 # Filtre de test (pytest -k) :
 #   make test T=Cell
@@ -37,7 +37,7 @@ install: ## Install editable des 3 packages dans l'ordre
 # (sdot/include, loom/include) n'entrent pas dans la clé. Une modif de kernel réutiliserait donc
 # silencieusement l'ancien .dylib -- inacceptable pour des tests, qui forcent la reconstruction.
 # (`./run test` fait de même, cf. `loom/cli/main.py::_run_entries`.)
-test test-loom test-sdot test-otrec: export SDOT_FORCE_BUILD = 1
+test test-loom test-sdot test-otrec: export LOOM_FORCE_BUILD = 1
 
 test: test-loom test-sdot test-otrec ## Tous les tests
 

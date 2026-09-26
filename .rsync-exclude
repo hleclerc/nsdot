@@ -1,0 +1,64 @@
+# Ce qu'une synchronisation du dépôt NE DOIT PAS emporter.
+#
+#   rsync -a --exclude-from=.rsync-exclude . machine:/chemin/
+#
+# Versionné exprès : la liste est une propriété du dépôt, pas du script qui l'utilise -- sinon
+# chaque script la redevine, et se trompe. C'est notamment ce que le SYSTÈME DE CONSTRUCTION impose :
+# tout ce que loom fabrique dans le dépôt tient sous UN SEUL répertoire (`build/`), et rien de ce
+# qu'il y met ne peut traverser vers une autre machine.
+#
+# Pourquoi `build/` ne traverse pas, précisément :
+#   * `build.ninja`, `ninja/manifest.json` et les `.d` contiennent des chemins ABSOLUS (`-I
+#     /home/.../loom/include`, la racine `-C`) : sur une machine dont le checkout est ailleurs, le
+#     graphe désigne des fichiers qui n'existent pas ;
+#   * la signature du compilateur entre dans le nom des cibles, et elle inclut le MODÈLE DE CPU
+#     quand `-march=native` est dans les flags -- ce qui a été compilé ici ne sert à rien là-bas,
+#     et n'y serait de toute façon jamais retrouvé ;
+#   * c'est un cache : il se reconstruit, et il pèse des gigaoctets (2,7 Go mesurés).
+#
+# Ce qui DOIT traverser, et qu'on ne met donc pas ici : `catalogue_record/`, le relevé des sources
+# engendrées. Il est versionné, il est indépendant de la machine, et c'est précisément lui qui
+# permet de compiler les noyaux ailleurs (`loom-kernels compile`).
+
+# le répertoire de construction : le graphe, les objets, le runtime, un sous-répertoire par noyau,
+# et les en-têtes engendrés ( `build/include` ). Tout est reconstructible.
+build/
+
+# les sorties d'exécution : un répertoire par cas d'errand, les fichiers regardés, les artefacts
+runs/
+tmp/
+dist/
+wheelhouse/
+*.whl
+graphify-out/
+
+# le catalogue compilé ( le relevé, lui, traverse )
+sdot/catalogue/*
+!sdot/catalogue/README.md
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+.venv/
+
+# dépôts et outils qui ne sont pas ce dépôt
+errand/
+.private/
+.claude/
+node_modules/
+
+# `.git/` n'est PAS exclu ici : c'est un choix qui appartient à l'appelant ( une machine de calcul
+# n'en a pas besoin et ça pèse, mais un script qui lit la révision sur place, oui ). L'ajouter en
+# ligne de commande : `--exclude .git/`.
+
+# artefacts C++ qui traînent hors du répertoire de construction
+*.o
+*.a
+*.so
+*.dylib
+*.sif
+compile_commands.json
+.xmake/
