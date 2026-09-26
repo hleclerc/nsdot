@@ -16,6 +16,7 @@ xmake run check                  # l'engin contre le balayage complet -- 2D, 3D,
 xmake run diagramme              # un diagramme chronométré, sur la suite
 xmake run newton --help          # le transport résolu, chronométré par poste
 xmake run ecrasement --help      # jusqu'où une direction de Newton peut aller avant une cellule vide
+xmake run image --help           # une IMAGE pour source : mesurer sur le bord, et résoudre dessous
 ```
 
 Les nuages durs sont lus dans `../2d_des_familles/cases/` (`--cases DIR` pour les mettre
@@ -55,6 +56,7 @@ src/solver/    Laplacien.h        c_ij = |facette| / ( 2 |p_i - p_j| ), assembl�
                Ecrasement.h       le polynôme d'une cellule le long de w + alpha d, à combinatoire figée
                Prolongation.h     le multi-échelle : paquets, prolongations, relèvement minimal (§ 8)
                Densite.h          plancher + gaussiennes : la masse d'une cellule par circulation (§ 9)
+               Image.h            une IMAGE pour densite : la masse integree SUR LE BORD, jamais de decoupage (§ 12)
                PremierOrdre.h     L-BFGS et gradient conjugué sur le dual, laplacien figé, bascule vers Newton (§ 10)
 
 src/bench/     Nuages.h/.cpp      uniforme, lecture/écriture de cases/, la suite
@@ -68,6 +70,10 @@ src/mains/     main_check.cpp     l'exactitude
                main_ecrasement.cpp les cellules qui se vident le long d'une direction (§ 7)
                main_multiechelle.cpp la prolongation du multi-échelle, mesurée (§ 8)
                main_densite.cpp   les densités hétérogènes, la continuation en largeur (§ 9)
+               main_image.cpp     la densité IMAGE : le témoin par découpage, les chronos, Newton (§ 12),
+                                  le relèvement par moindres carrés pondérés (§ 13), le
+                                  sous-problème local à objectif barrière (§ 14), son
+                                  branchement dans Newton (§ 15) et sa version par amas (§ 16)
                main_memo.cpp      la mémoire en 3D, sa borne supérieure et ses souvenirs périmés (§ 11)
 
 directions/    les directions « à problème » sauvées, leurs CSV et leurs figures
@@ -1226,3 +1232,1867 @@ Les premiers chiffres de § 11 avaient été pris pendant que trois sessions et 
 partageaient les seize cœurs : le *sans mémoire* de l'uniforme y valait 0.232 à 0.305 s contre
 0.174 s seul, et les écarts relatifs bougeaient de ±15 %. Les *comptes* (plans, boîtes, coupes)
 ne dépendent pas de la charge ; les temps, si. Ne jamais chronométrer hors d'un `job -b`.
+
+---
+
+# 12. LA DENSITÉ IMAGE : INTÉGRER SUR LE BORD (`image`)
+
+Le § 9 prenait pour source une somme de gaussiennes — lisse, connue en fermé, jamais nulle. Une
+application réelle donne une **image** : une densité constante par pixel sur une grille régulière,
+**discontinue**, et qui peut valoir **exactement zéro** sur des régions entières. C'est le portage
+sur CPU de ce que [`gpu_des_familles`](../gpu_des_familles/doc/08-densites.md) a mesuré sur la
+carte — même méthode, même image de synthèse — pour deux raisons : voir ce que ça donne ici, et
+**pouvoir instrumenter la simple précision**, ce qui est bien plus facile sur le CPU.
+
+```
+xmake run image --check -n 20000 --image 512                     la justesse, contre le découpage en pixels
+xmake run image --chrono -n 1000000 --image 512 --threads 8      le bord contre le découpage, à machine égale
+xmake run image --threads 8 -n 20000 --pas essai-limites         résoudre
+xmake run image --threads 8 -n 20000 --pas essai-limites --chemin conv --adaptatif --chooseur   le meilleur réglage (§ 12.6)
+xmake run image --check --acc float                              ce que la fp32 coûte
+```
+
+## 12.1 Ne pas découper
+
+La façon naturelle de mesurer une cellule sous une image est de la **découper par les bords de
+pixels** et de sommer `ρ × aire` : c'est ce que fait `sdot` en production, et ça coûte quatre
+coupes et une copie de la cellule **par pixel de la boîte englobante**. Ici on ne coupe rien.
+Green donne
+
+        masse( P ) = ∫_P ρ dA = ∮_(∂P) G( x, y ) dy,      G( x, y ) = ∫_0^x ρ( t, y ) dt
+
+et pour une image `G` est connue en fermé : sur la ligne `j`, `ρ` ne dépend plus de `y`, donc
+`G_j( x ) = S[ j ][ i ] + ρ[ j ][ i ] ( x − i hx )` avec `S` la **somme préfixe de la ligne**,
+calculée une fois. Sur un morceau d'arête qui reste dans un pixel, `G` est **affine en `x`** : son
+intégrale en `y` est exacte au point milieu. Le coût passe de `pixels dans la cellule` à `pixels
+sous le bord`, et le parcours est un Amanatides-Woo de quatre lignes (`src/solver/Image.h`). C'est
+**exact**, pas approché — contrairement à la quadrature de `Densite.h`.
+
+**Deux sorties pour une seule marche.** La même sous-arête donne aussi `∫ ρ ds`, le coefficient de
+hessienne (§ 12.4). C'est pourquoi tout le fichier travaille **arête par arête**.
+
+**La référence `sref`.** Sur un polygone fermé `Σ dy = 0` : retrancher une constante à `G` ne change
+rien. Sans elle les termes sont d'ordre `taille de cellule × S`, pour une masse mille fois plus
+petite — trois chiffres perdus par annulation. On retranche `S` au premier sommet.
+
+**Le contraste est appliqué à la sortie, pas aux pixels.** On ne stocke que l'image nue
+(normalisée) ; `ρ_t = ( 1 − t ) + t ρ` se lit `masse = ( 1 − t ) aire + t masse_ρ`, et la marche
+rend les deux morceaux. Donc `d masse / d t = masse_ρ − aire` **ne coûte rien** — la tangente de la
+continuation est gratuite, comme sur le chemin `mélange` du § 9.4.
+
+## 12.2 Le témoin, et ce qu'il dit
+
+Le témoin **découpe** (Sutherland-Hodgman) et n'a pas une ligne commune avec le noyau ; celui des
+facettes **liste les traversées de lignes de grille et les trie**, sans un incrément. Deux
+algorithmes opposés pour les mêmes nombres. `--check`, `n = 2·10⁴`, image 512², `t = 1` :
+
+| | médian | p99.99 | max |
+|---|---|---|---|
+| masse / découpage en pixels (rapporté à la masse moyenne) | 1.0e−13 | 3.9e−11 | 3.9e−11 |
+| `∫ ρ ds` / traversées triées | 0.0 | 7.5e−16 | 7.5e−16 |
+| `d m_i / d w_i` / `Σ_j c_ij` (différence finie centrée) | 2.2e−10 | 6.7e−09 | 4.4e−08 |
+| somme des masses | | | `1` à 1.3e−14 |
+
+La troisième ligne est le seul contrôle de la hessienne **qui ne suppose ni le signe ni le
+facteur** : on ne bouge que le poids de `i` (`cellule_avec_poids`), et la dérivée attendue est
+exactement la somme des coefficients de ses facettes intérieures. Comparer deux implémentations de
+la même formule n'aurait rien prouvé.
+
+## 12.3 Ce que la méthode vaut, à machine égale
+
+Les mêmes cellules du même moteur, mesurées deux fois dans le même binaire, `double`, 8 fils,
+`job -b`. Les deux colonnes rendent **masse et facettes** : ce sont deux algorithmes complets, pas
+deux fragments.
+
+| `n` | image | `W / √n` | Lebesgue | **bord** | découpage | |
+|---|---|---|---|---|---|---|
+| 10⁶ | 512² | 0.5 | 0.172 s | **0.196 s** | 0.276 s | ×1.4 |
+| 10⁶ | 2048² | 2.0 | 0.171 s | **0.206 s** | 0.497 s | ×2.4 |
+| 10⁶ | 8192² | 8.2 | 0.169 s | **0.261 s** | 1.832 s | ×7.0 |
+| 10⁵ | 8192² | 25.9 | 0.017 s | **0.044 s** | 1.039 s | ×23.7 |
+| 2.5·10⁴ | 8192² | 51.8 | 0.005 s | **0.026 s** | 0.930 s | ×35.8 |
+
+Le rapport suit la **surface contre le périmètre** : la seule grandeur qui compte est `W / √n`, le
+nombre de pixels que traverse un côté de cellule. Et le **surcoût sur Lebesgue** est de +14 % à
+512², +20 % à 2048², +54 % à 8192² — à comparer aux +7 % et +14 % de la carte aux mêmes
+`W / √n` : le CPU paie la marche un peu plus cher, non pas parce qu'elle y est plus lente, mais
+parce qu'elle s'y greffe sur un noyau de cellules qui, lui, est déjà bien plus lent que celui du
+GPU.
+
+## 12.4 Résoudre dessous : le pas par les limites débloque tout
+
+Dès que `ρ` n'est pas uniforme, `c_ij = ∫_(facette ij) ρ ds / ( 2 |p_i − p_j| )` et non plus
+`|facette| / ( 2 |p_i − p_j| )`. Newton n'a rien à savoir de la source : `Newton<PD,Lin,Rho>` est
+maintenant paramétré par la densité, et `Densite` comme `Image` offrent la même
+`mesure( cel, facette, dl )`.
+
+`n = 2·10⁴`, image de synthèse 512² **sans zéros** (contraste 60:1), tolérance `1e−6` :
+
+| | itérations | diagrammes (reculs) | temps | fin |
+|---|---|---|---|---|
+| contraste 3:1, essais (KMT) | 19 | 65 (45) | 1.35 s | converge |
+| contraste 3:1, **limites en masse** | 14 | **23 (0)** | 0.88 s | converge |
+| 60:1, essais (KMT) | 100 | 1041 (940) | 12.1 s | **résidu 18.2 → 15.5, PAS CONVERGÉ** |
+| 60:1, **limites en masse** | 226 | **448 (2)** | 16.5 s | converge |
+| 60:1, limites + continuation `K = 8` | 195 | 398 (22) | 13.7 s | converge |
+
+**Le mécanisme du § 9.7 s'applique tel quel** — `limites_masse` : une bissection sur `α`, pas de
+polynôme, la masse sous une image n'étant pas plus polynomiale que sous une gaussienne — et ici il
+ne rapporte pas un pourcentage, il fait la différence entre converger et ne pas converger. Les 940
+reculs tombent à 2.
+
+Il faut lire ce chiffre pour ce qu'il est. Ce qui coûte 940 reculs, c'est une recherche linéaire
+qui **repart de `t = 1` à chaque itération** alors que le pas admissible sous une image vaut
+`1e−3` : c'est la faiblesse que le banc GPU a corrigée autrement, en repartant du pas précédent
+doublé (2322 → 967 diagrammes), sans calculer aucune limite. `limites_masse` prend la même part de
+gain, et en plus le **pas exact** au lieu du barreau dyadique en dessous. Les deux remèdes visent
+la même chose ; celui-ci est simplement le plus précis, et il est déjà écrit ici.
+
+Et il ne faut pas le confondre avec le **relèvement par cellule** (`--garde cellule`, § 9.5), qui
+reste perdant : le banc GPU a tracé la population des cellules condamnées en fonction du pas et n'y
+trouve **aucun palier** — ce n'est pas une cellule isolée qui borne le pas sous une image, c'est
+une fraction de la population proportionnelle au pas. Les deux idées se ressemblent et n'ont rien
+à voir.
+
+La **continuation en contraste** ne gagne ici que ×1.2, et la **tangente** (`--ordre 1`) ne gagne
+rien du tout : elle est pourtant gratuite à calculer, mais ses essais gardés coûtent quatre à cinq
+diagrammes par étape et sont presque toujours refusés (`θ ≤ 1/16`). Même leçon qu'au § 9.7 : une
+fois le pas réglé par les limites, il ne reste plus grand-chose à gagner sur le départ. **Sur la
+continuation, ce chiffre de ×1.2 est trompeur** : il est celui du chemin par le plancher, qui est
+le mauvais chemin — la continuation en **largeur de convolution** fait ×4 à ×5, et le § 12.6 la
+mesure contre celui-ci.
+
+## 12.5 Les zéros : il faut la bonne échelle de continuation, pas autre chose
+
+L'image de synthèse du banc CPU a en plus un **carré exactement nul** (5.8 % des pixels ;
+`--sans-trou` l'enlève). Ce qu'on en croyait d'abord — que `t = 1` serait un problème *différent* —
+est faux, et la mesure le dit sans ambiguïté.
+
+**Ce qui casse, et pourquoi.** Une cellule dont tout le voisinage est dans le trou ne vit que du
+plancher `1 − t` : sa masse vaut `( 1 − t ) × aire`, donc pour tenir `ν = 1/n` il lui faut une aire
+`1 / ( n ( 1 − t ) )`. Les `≈ 5.8 %` de germes tombés dans le trou réclament ensemble une aire
+`0.058 / ( 1 − t )`, qui dépasse celle du trou dès que `1 − t < 1` et **celle du carré entier** dès
+que `1 − t < 0.058`, soit **`t > 0.942`**. Passé ce seuil, ces cellules ne peuvent plus être
+nourries par le plancher : il faut qu'elles **sortent du trou** et aillent chercher du vrai `ρ`.
+C'est une réorganisation géométrique, pas un pas de Newton, et une échelle uniforme `k/8` **enjambe
+le seuil d'un seul pas** — de 0.875 à 1. D'où la stagnation à résidu 2.43, avec 151 cellules sous
+`ν/2` et une masse minimale de −2e−19.
+
+**Ce qu'il fallait faire** : ne pas sauter à `1` quand ça vide des cellules, mais passer par un `t`
+intermédiaire. La bonne variable est **`log( 1 − t )`** — `--etapes-geo K` : `1 − t = 1/2, 1/4, …
+2⁻ᴷ`, puis `t = 1`. `n = 2·10⁴`, image 512² avec le trou :
+
+| échelle | issue | diagrammes |
+|---|---|---|
+| directe (`t = 1`) | STAGNATION, résidu 18.4 | 33 |
+| uniforme `k/8` | STAGNATION à la dernière marche, résidu 2.43 | 323 |
+| **géométrique, `K = 14`** | **converge** (reste 7.3e−7) | 476 |
+
+Et la suite des `|w|max` dit pourquoi ça marche : 0.173, 0.190, 0.198, 0.2025, 0.2047, 0.2058,
+0.2063, 0.2066, 0.2067, **0.2069**. Les poids **convergent géométriquement** — ils ne divergent pas.
+Une solution finie existe bien à `t = 1`, et le seul obstacle était d'y arriver par un chemin
+admissible. Les dernières marches sont d'ailleurs les moins chères : 7, 5, 5, 5, 4 itérations, et
+`t = 1` lui-même 4 itérations / 5 diagrammes / 0 recul.
+
+Reste une chose vraie de ce qu'on croyait : à `t = 1` **exactement**, une cellule encore prisonnière
+du trou aurait une ligne de hessienne entièrement nulle (`∫ ρ ds = 0` sur toutes ses facettes), et
+Newton n'aurait rien à lui dire. La continuation ne contourne pas ce fait — elle fait en sorte
+qu'il n'y ait plus personne dans ce cas quand on y arrive.
+
+---
+
+## 12.6 Deux chemins, et un pas qui se règle tout seul
+
+Le § 12.5 ne dit rien sur le **choix du chemin**, et il n'y a aucune raison de s'en tenir au
+plancher. `Image.h` et `main_image.cpp` portent les deux, paramétrés par **un seul nombre `λ` qui
+décroît vers zéro** — ce qui les rend comparables à armes égales :
+
+| `--chemin` | `λ` | la densité de l'étape | ce que `λ` bouche |
+|---|---|---|---|
+| `melange` (défaut) | `1 − t` | `λ + ( 1 − λ ) ρ` | les zéros, par un plancher **uniforme** |
+| `conv` | `σ` | `ρ * G_σ`, `σ` en fraction du côté | les zéros, par la **matière voisine** |
+
+La convolution est **approchée et pas chère** : trois passes de moyenne glissante séparable (une
+B-spline d'ordre 3, à quelques pour cent d'une gaussienne), `O( W H )` par passe *quel que soit le
+rayon* grâce à une somme courante, puis renormalisation pour que la masse totale reste `1`. Elle n'a
+aucune raison d'être exacte — c'est un chemin, pas un résultat, et seule la dernière étape
+(`σ = 0`, l'image nue) porte la réponse. On part de `σ = 1`, c'est-à-dire d'un flou à l'échelle du
+domaine, qui rend une densité quasi constante : Lebesgue, comme `t = 0` de l'autre côté.
+
+**Le pas adaptatif** (`--adaptatif`) ne pose alors plus aucune échelle : on résout la densité plate,
+puis **on vise la cible à chaque fois**, et c'est le refus qui fabrique les étapes intermédiaires
+(retour sur `√( λ_ok · λ )`, ou `λ_ok / 2` quand la cible est zéro). Le juge est le **diagramme de
+départ** de l'étape — les cellules aux poids courants sous la densité proposée — et il ne coûte
+rien quand il passe, puisque c'est exactement le diagramme dont Newton a besoin pour démarrer. Deux
+critères de refus, sur ce même diagramme :
+
+* **des cellules meurent** : `min_i a_i < 0.05 ν` (`--seuil`) ;
+* **la densité a trop bougé** : `max_i |a_i − ν| / ν > 2` (`--seuil-residu`).
+
+`n = 2·10⁴`, image 512², `--pas essai-limites`, en diagrammes (et secondes) :
+
+| | mélange, avec trou | conv, avec trou | mélange, sans trou | conv, sans trou |
+|---|---|---|---|---|
+| directe (pas de continuation) | ✗ 33 | ✗ 33 | ✗ 1041 (essais) / 448 | — |
+| échelle géométrique réglée à la main | 476 (16.9 s) | **100 (3.9 s)** | 451 (16.2 s) | **90 (3.6 s)** |
+| adaptatif, critère « cellules mortes » seul | 469 (16.3 s) | 124 (4.7 s) | **544 (20.7 s)** | **531 (20.1 s)** |
+| adaptatif, **les deux critères** | 475 (16.3 s) | 124 (4.9 s) | **387 (13.9 s)** | **95 (3.7 s)** |
+
+**Trois choses à retenir.**
+
+**1. La convolution gagne un facteur 4 à 5, sur les deux images.** Et pas parce qu'elle éviterait
+une difficulté : elle arrive à la même solution (`|w|max` = 0.2069 des deux côtés). La raison est
+que les deux chemins ne déplacent pas la même chose. Le plancher change la densité **partout à
+chaque étape** — le diagramme entier doit se réorganiser, 20 à 40 itérations de Newton par étape.
+La convolution ne change la densité **que là où l'image est rugueuse** : la structure grossière est
+juste dès les premières étapes, et affiner `σ` ne perturbe les poids que localement — 4 à 8
+itérations par étape, **zéro recul sur tout le parcours**. C'est le même verdict que le § 9.2 avait
+rendu pour les gaussiennes, où la continuation en largeur de convolution était déjà le bon chemin ;
+l'image le confirme, et le chemin par le plancher, hérité du banc GPU, était le mauvais défaut.
+
+**2. Le critère « cellules vides » est juste, et il est aveugle à la moitié du problème.** Sur
+l'image *sans trou*, il ne se déclenche **jamais** (0 refus) : aucune cellule ne meurt d'un coup, la
+difficulté vient du contraste. L'adaptatif saute alors directement à la cible et Newton paie
+l'addition — 531 à 544 diagrammes, pire que n'importe quelle échelle fixe. Le second critère, qui
+regarde simplement **à quelle distance de la cible le diagramme de départ se trouve**, coûte le même
+diagramme et rattrape tout : 387 et 95. Les deux ensemble couvrent les deux causes, et on ne connaît
+pas de troisième.
+
+**3. Avec les deux critères, l'adaptatif fait aussi bien qu'une échelle réglée à la main** — mieux
+sur `mélange` sans trou (387 contre 451), à 5 % près sur `conv` (95 contre 90), 24 % de plus sur
+`conv` avec trou (124 contre 100) — et il n'y a **plus de `K` à choisir**. Le prix est d'un
+diagramme par refus (8 à 17 sur un parcours), ce qui se lit directement dans l'écart.
+
+Le meilleur réglage du banc est donc `--chemin conv --adaptatif --pas essai-limites` : **95
+diagrammes et 3.7 s** là où le Newton direct amorti en demandait 448 et n'aboutissait pas du tout
+dès que l'image a des zéros.
+
+
+### 12.6.1 Trois prédicteurs, et pourquoi celui qui porte le gradient ne peut pas marcher
+
+Le critère « la densité a trop bougé » regarde `r_max = max_i |a_i − ν| / ν` au départ de l'étape.
+C'est l'effet **visible** du changement de densité ; ce n'est pas ce qu'il **coûte**. Ce qu'il coûte,
+c'est la correction de poids qu'il réclame,
+
+        d = L⁻¹ ( ν − a ),      L la hessienne du diagramme de départ, c'est-à-dire `∂a / ∂w`
+
+rapportée à l'échelle naturelle `h² = 1/n`. C'est bien le gradient qui entre : deux étapes de même
+`r_max` n'ont pas du tout le même `d` — là où la densité est forte les facettes pèsent lourd et une
+petite correction suffit, là où elle est faible `L` est presque singulière et il faut beaucoup
+bouger. Et **c'est bon marché** : une résolution linéaire, pas un diagramme, et c'est exactement le
+système que la première itération de Newton résoudra de toute façon. `--seuil-dw`, `--diagnostic`.
+
+Mesuré, `n = 2·10⁴`, image 512², au départ de chaque étape :
+
+| l'étape | `r_max` | `‖d‖∞ / h²` | cellules mortes | ce qu'elle a coûté |
+|---|---|---|---|---|
+| géométrique, sept marches `0.75 → 0.996` | **0.500 exactement**, sept fois | 1379 → 30 (décroît) | 0 | 5 à 39 it. |
+| géométrique, cinq dernières marches | 0.46 → 0.017 | 11 → 0.34 | 0 | 4 à 7 it. |
+| convolution, `σ = 0.5 → 0` | 0.15 → 1.0 | 420 → 0.19 | 0 à 11 | 4 à 8 it. |
+| **saut direct** depuis la densité plate | **7.2** | **1.1e4** | 1118 (trou) / 0 (sans) | ✗ / 273 it. |
+| **la marche fatale `0.875 → 1`** | **1.000 exactement** | **490** | **124** | ✗ stagnation |
+
+**Le prédicteur de gradient voit le saut direct — et il est aveugle sur la marche fatale.** 490, au
+milieu de la plage des bonnes étapes (479 à 1379) : il annonce une étape *plus facile que la
+moyenne* au moment précis où elle est infaisable. La raison est structurelle, et elle vaut mieux
+qu'une constatation : les cellules qui meurent ont **toute leur ligne de `L` nulle**
+(`∫ ρ ds = 0` sur chacune de leurs facettes). Le système qu'on résout pour les interroger est
+exactement celui qui a perdu son sens à cause d'elles. **Un prédicteur construit sur `L` ne peut pas
+prévenir de la dégénérescence de `L`.** Il faut regarder les masses, pas le système.
+
+**Et `r_max` est plafonné.** `( ν − a_i ) / ν ≤ 1` toujours, puisque `a_i ≥ 0` : le résidu ne peut
+dépasser `1` que par des cellules **trop grosses**, jamais par des cellules qui se vident. C'est
+pour ça qu'il vaut `7.2` sur le saut direct (des cellules explosent) et exactement `1.000` sur la
+marche fatale. Pire, sur le chemin par le plancher il est **arithmétique** : diviser le plancher par
+deux divise par deux la masse des cellules qui n'en vivent que, donc `r_max = 0.5` — sept fois de
+suite, quelle que soit la difficulté réelle. Il mesure le **rapport de l'échelle**, pas le problème.
+
+Le balayage du seuil le confirme, et répond au « 0.1 ? » qu'on pouvait avoir en tête :
+
+| `--seuil-residu` | 0.1 | 0.3 | 0.5 | 1 | **2** | 5 | éteint |
+|---|---|---|---|---|---|---|---|
+| conv, avec trou (diagrammes) | 399 | 424 | 399 | 124 | **124** | 124 | 124 |
+| mélange, sans trou (diagrammes) | 685 | 492 | 409 | 423 | **390** | 412 | 554 |
+
+Sous `1`, le seuil mord sur le plafond au lieu de mordre sur la difficulté : il refuse en boucle
+(162 refus au lieu de 17) et triple la facture. L'optimum est plat autour de `2`, et il **doit** être
+au-dessus de `1` — non par réglage, mais parce qu'au-dessous il ne teste plus rien d'autre que
+l'arithmétique du plafond.
+
+**Ce à quoi `‖d‖∞ / h²` sert quand même.** C'est le seul des trois qui décroît **proprement** le
+long d'une continuation qui marche : 1379 → 0.34 sur les douze marches géométriques, pendant que
+`r_max` reste collé à 0.500. Il ne dit pas « refuse cette étape », il dit « la continuation
+converge, tu peux accélérer ». C'est un **chooseur de pas**, pas un critère de refus — c'est ainsi
+qu'il est branché, et le § 12.6.2 le mesure. En refus, le code reste là (`--seuil-dw`, éteint par
+défaut) avec le verdict ci-dessus.
+
+
+### 12.6.2 Le chooseur de pas : ce que l'accélérateur donne
+
+Le § 12.6.1 finit sur une proposition : `amp = ‖L⁻¹( ν − a )‖∞ / h²` ne sait pas dire « refuse »,
+mais il sait dire « accélère ». `--chooseur` la met en œuvre. On suppose localement
+`amp ≈ C · Δlog λ`, on estime `C` sur l'étape qui vient de passer, et on choisit le `Δlog` suivant
+pour viser `--amp-cible` — borné à `[ 1.1, 64 ]` en rapport, et on vise directement la cible dès que
+le `λ` proposé passe sous un tiers de pixel. L'échelle fixe disparaît ; le refus reste le filet.
+
+**C'est gratuit.** La première itération de chaque étape calcule déjà `d = L⁻¹( ν − a )` : Newton la
+rapporte maintenant (`NewtonStats::amp_d0`, deux lignes) au lieu qu'on la recalcule dans un juge.
+Zéro diagramme, zéro résolution de plus.
+
+**Il a fallu lui apprendre ses refus.** Écrit naïvement, il oscille : la correction devient petite,
+il saute à la cible, le critère des cellules mortes refuse, il replie, la correction est toujours
+petite, il ressaute — douze refus sur un parcours qui en demandait cinq. C'est le § 12.6.1 en
+action : la correction de poids **ne voit pas mourir les cellules**, c'est donc au refus de le lui
+dire. Une ligne (`dlog ← log( λ_ok / λ_replié )`) et l'oscillation disparaît.
+
+Diagrammes (et secondes), `n = 2·10⁴`, image 512², `--pas essai-limites`, refus actif partout :
+
+| | conv, trou | conv, sans trou | mélange, trou | mélange, sans trou |
+|---|---|---|---|---|
+| échelle géométrique réglée à la main | 100 (3.95) | 90 (3.69) | 469 (16.5) | 458 (15.9) |
+| adaptatif seul | 124 (4.73) | 95 (3.82) | 474 (16.3) | **394 (14.5)** |
+| chooseur, cible 200 | 203 | 173 | 653 | 621 |
+| chooseur, cible 400 | 156 | 117 | 502 | 489 |
+| chooseur, cible 800 | **113 (4.36)** | 85 (3.41) | 475 | 448 |
+| chooseur, cible 1600 | 114 | 85 | 436 | 439 |
+| chooseur, cible 3200 | 123 | **83 (3.31)** | **425 (14.9)** | 405 (14.7) |
+
+**Ça paie, modestement et sans réglage fin.** Au-dessus de 800, le chooseur bat l'échelle réglée à
+la main sur les quatre cas (−15 %, −8 %, −9 %, −12 %) et l'adaptatif seul sur trois. Le meilleur
+point du banc devient **83 diagrammes et 3.31 s** (conv, sans trou) contre 448 et 16.5 s pour le
+Newton direct amorti de départ. Le plateau est large : 800 à 3200 se tiennent à 10 % près partout.
+
+**Et il faut viser haut.** À 200 et 400, il est une fois et demie à deux fois plus lent que tout le
+reste : viser une petite correction, c'est prendre des pas minuscules et payer un Newton complet
+pour chacun. Le seul réglage dangereux est celui qu'on croirait prudent — la même leçon qu'au
+§ 12.6.1 pour le seuil de résidu.
+
+**Ce que la trace apprend sur ce qui travaille vraiment.** À cible 800, les sept premières étapes
+sont réellement pilotées : rapports 2.00, 3.75, 1.30, 1.81, 2.43, 4.33, 13.32 — le contrôleur
+ralentit là où la densité bouge (`σ` autour de 0.1) et accélère ensuite. Mais la queue sature au
+plafond de 64, et à cible 3200 c'est presque tout le parcours qui sature. Autrement dit le gain se
+partage : le **contrôle** dans la phase difficile, le **plafond plus le refus** dans la phase facile.
+Ce n'est pas « le prédicteur choisit le pas » de bout en bout, et il ne faut pas le lire comme ça.
+
+**Une limite du noyau de convolution, énoncée pour qu'on ne s'y trompe pas.** Les trois moyennes
+glissantes ont un **support compact** : une région nulle plus large que `3 ( 2r + 1 )` pixels reste
+nulle. Les zéros du trou réapparaissent donc dès `σ ≲ 0.03`, et le parcours les traverse pourtant
+sans un recul — parce qu'à ce moment-là les cellules nées dans le trou en sont **déjà sorties** et
+n'y reviennent pas. Une vraie gaussienne ne changerait rien d'utile : à dix écarts-types elle vaut
+`1e−22`, ce qui demanderait une cellule d'aire `1e22`. Rencontrer les zéros est une propriété du
+problème, pas du noyau ; ce qui compte est de les rencontrer **quand le diagramme est déjà rangé**.
+
+---
+
+## 12.7 La simple précision, instrumentée
+
+`--acc A` choisit le flottant de **la mesure** (la marche, les sommes préfixes, les accumulations),
+indépendamment de `--kernel`, qui est celui de **la géométrie**. Même image, mêmes cellules, `float`
+contre `double` :
+
+| | médian | p99 | p99.99 | max |
+|---|---|---|---|---|
+| masse (écart absolu / masse moyenne) | 1.1e−06 | 2.9e−05 | 8.3e−05 | 9.8e−05 |
+| `∫ ρ ds` (écart relatif) | 2.5e−06 | 1.5e−04 | 1.1e−02 | **1.5e−01** |
+
+Le médian est celui qu'on attend d'un `float` (1e−6 ≈ 2⁻²³ à quelques annulations près). Ce sont
+les **queues** qui décident : `1e−4` sur une masse rapportée à la moyenne, c'est cent fois la
+tolérance de Newton (`1e−6`) — et **15 % d'erreur sur une facette** interdit la hessienne telle
+quelle. Les deux viennent du même endroit : `S[ j ][ i ] − sref`, une différence de sommes préfixes
+dont les deux termes sont d'ordre `1` quand leur différence est d'ordre `1/W`. `sref` sauve trois
+chiffres, pas huit.
+
+Ce que ça dit pour la suite : en `float`, la marche doit accumuler **relativement au pixel de
+départ de l'arête**, pas à celui du premier sommet de la cellule — ou bien la table des sommes
+préfixes doit être stockée **par blocs**, avec une origine par bloc. C'est mesurable maintenant, et
+c'était le but du portage.
+
+## 12.8 Ce qui reste
+
+* La référence prise **par arête** plutôt que par cellule (§ 12.6) — le seul vrai obstacle à la
+  chaîne complète en `float`, et il est bon marché.
+* **Le plafond de rapport du chooseur** (64) borne le parcours facile plus souvent que le
+  contrôleur lui-même (§ 12.6.2) : dans la phase où `amp` s'écroule, c'est lui et le refus qui
+  décident, pas la prédiction. Le relever, ou proposer directement la cible dès que `amp` passe
+  sous un seuil, économiserait les dernières étapes — quelques pour cent, pas plus.
+* **Un critère de refus qui verrait la dégénérescence avant qu'elle arrive.** Les deux d'aujourd'hui
+  sont réactifs : ils constatent des cellules mortes ou une mesure trop loin. Le prédicteur bâti sur
+  `L` ne peut pas le faire (§ 12.6.1). Une piste non mesurée : suivre, par cellule, la masse
+  `∫ρ` de son **voisinage** plutôt que d'elle-même — une cellule dont tout le voisinage s'éteint est
+  condamnée une étape avant de l'être.
+* **La convolution en 3D** viendra avec le reste : trois passes séparables au lieu de deux, même
+  coût par voxel.
+* La **3D** : le même raisonnement donne `∮_(∂P) G dS`, `G` la primitive en `x` du voxel, et une
+  marche sur les faces du polyèdre. `Image.h` est écrit 2D.
+* Le nuage `--diracs rho` (germes tirés selon l'image) n'a pas encore servi : c'est le départ
+  naturel pour un vrai cas, et il devrait supprimer une bonne partie des cellules mortes.
+
+---
+
+# 13. RELEVER DES CELLULES PAR DES MOINDRES CARRÉS PONDÉRÉS (`image --relevement`)
+
+L'idée, posée en une ligne : plutôt que `L d = ν − a`, résoudre
+
+        min_d  ½ Σ_i C_i ( a_i + ( L d )_i − ν_i )²
+
+avec des `C_i` **grands sur les cellules qui se vident et autour d'elles** (une cloche de largeur à
+trouver), pour que la direction s'occupe d'abord d'elles et qu'on puisse prendre un plus grand
+coefficient de relaxation. Pas comme substitut à Newton — ce n'est pas le même système — mais pour
+fabriquer, depuis un état **sain**, un **point de départ pas trop mauvais** quand on constate que la
+direction de Newton mène à un état dégénéré.
+
+Les notations : `L` est la matrice du système de Newton, `L_ij = ∂a_i / ∂w_j` (le laplacien de
+Laguerre, § 1) ; `a` les masses courantes, `ν` la cible, `d` le pas cherché. `a_i + ( L d )_i` est
+donc la masse de la cellule `i` **prédite** après le pas.
+
+```
+xmake run image --relevement --sans-trou --rel-depuis 0.125 --rel-vers 0 --rel-solve
+```
+
+## 13.1 Les poids sont invisibles, et c'est une identité
+
+`L` est **carrée** et inversible sur les moyennes nulles (son noyau est exactement les constantes).
+Il existe donc un `d` qui met **chaque terme** de la somme à zéro exactement — c'est `L d = ν − a`,
+la direction de Newton. Le minimum du problème pondéré vaut alors **zéro**, et il est atteint là,
+**quels que soient les `C_i` positifs**. C'est la même chose que d'ajuster une droite à deux points :
+avec autant de paramètres que d'équations on passe par tous les points de toute façon, et pondérer
+ne change rien.
+
+Ce n'est pas non plus un artefact de la linéarisation : Gauss-Newton sur `Σ C_i ( a_i(w) − ν_i )²`
+refait ce calcul à chaque itération, donc redonne le pas de Newton à chaque itération.
+
+Vérifié plutôt qu'affirmé. Les équations normales `L C L d = L C ( ν − a )` sont résolues par un CG
+sans matrice (deux produits `L x` par itération — le remplissage en voisins-de-voisins n'existe
+jamais), avec une cloche `κ = 1000` de largeur 2 :
+
+| `n` | itérations de CG | écart relatif à la direction de Newton (à la jauge près) |
+|---|---|---|
+| 2 000 | 15 817 | **7.8e−09** |
+| 5 000 | 30 215 | **7.6e−09** |
+
+soit la tolérance du CG. Le conditionnement est carré (`κ(L)²`), d'où les dizaines de milliers
+d'itérations : **on paie très cher pour retrouver exactement ce que Cholesky donne d'un coup.**
+
+Une remarque qui explique un chiffre du § 12.6.1 : une cellule de masse nulle a toutes ses `c_ij`
+nulles, `Laplacien::assemble` **neutralise sa ligne** (`dia = 1`), et alors `d_i = ν_i` — une
+correction de poids de l'ordre de `h²` là où il en faudrait une de l'ordre du domaine. Aucun choix
+de `C`, aucun amortissement et aucun patch ne changent ce `d_i` : `C_i` se simplifie des deux côtés.
+**Une cellule déjà morte est hors de portée de toute cette famille d'idées.**
+
+## 13.2 Deux façons de rendre les poids visibles
+
+L'identité tient tant que le système est carré, résolu exactement, sur tout le diagramme. Il faut
+donc casser l'une de ces trois choses. Deux façons sont implémentées et mesurées :
+
+* **amortir** (`--rel-mus`) : `( L C L + μ I ) d = L C ( ν − a )`, Levenberg-Marquardt. À `μ = 0`
+  c'est Newton quels que soient les poids ; quand `μ` domine, `d → ( 1/μ ) L C ( ν − a )` et les
+  `C_i` poussent franchement les cellules visées. Global, sans patch. `μ` est donné en fraction de
+  la diagonale moyenne, faute de quoi il n'a pas d'échelle ;
+* **restreindre** (`--rel-largeurs`) : `d` nul hors d'un patch `P` (une boule de rayon donné autour
+  des cellules visées, par parcours en largeur). Le système devient sur-déterminé, le résidu ne peut
+  plus être annulé, et les `C_i` décident **ce qu'on sacrifie**. C'est bon marché : `A x` n'est que
+  `L` appliqué au `x` complété de zéros, `Aᵀ y` la restriction de `L y` au patch — rien à assembler.
+
+## 13.3 Le protocole, et le cas d'essai
+
+Exactement celui qu'on veut : partir d'un **état sain**, constater que Newton n'y va plus, essayer
+autre chose. Image 512² sans zéros, `n = 2·10⁴` ; continuation par le plancher **convergée** en
+`t = 0.875` ; on pousse la densité à `t = 1`. **16 cellules passent sous `0.1 ν`** — un pincement
+localisé, pas une réorganisation générale — et le pas admissible de Newton tombe à `1.6e−02` au lieu
+de 1.
+
+`α*` est le plus grand pas essayé qui garde toutes les masses au-dessus de `ε` : le coefficient de
+relaxation que l'amortissement pourrait prendre. Au départ, masse min `0.556 ν`, `‖r‖₂ = 1.123e−3`,
+`max|a−ν|/ν = 0.444`.
+
+| direction | inconnues | `‖d‖∞ / h²` | `α*` | masse min | **les 16 visées** | `max|a−ν|/ν` |
+|---|---|---|---|---|---|---|
+| **newton** | 20 000 | **716** | 1.6e−02 | 0.559 ν | 0.563 ν | 0.441 |
+| amorti `μ=0.01 κ=1` | 20 000 | 0.133 | 1.0 | 0.544 ν | 0.553 ν | 0.456 |
+| amorti `μ=0.01 κ=100` | 20 000 | 0.771 | 5.0e−01 | 0.339 ν | 0.560 ν | 0.661 |
+| amorti `μ=0.01 κ=10⁴` | 20 000 | 1.02 | 1.2e−01 | 0.429 ν | 0.557 ν | 0.659 |
+| amorti `μ=1 κ=1` | 20 000 | 9.4e−03 | 1.0 | 0.554 ν | 0.556 ν | 0.446 |
+| amorti `μ=1 κ=10⁴` | 20 000 | 7.6e−02 | 1.0 | 0.448 ν | 0.554 ν | 0.552 |
+| amorti `μ=100 κ=10⁴` | 20 000 | 4.1e−03 | 1.0 | 0.553 ν | 0.556 ν | 0.447 |
+| local `κ=1 l=1` | 67 | 0.552 | 1.0 | 0.527 ν | 0.556 ν | 0.473 |
+| local `κ=100 l=1` | 67 | 0.738 | 1.0 | 0.483 ν | **0.614 ν** | 0.517 |
+| local `κ=10⁴ l=1` | 67 | 0.740 | 1.0 | 0.482 ν | 0.615 ν | 0.518 |
+
+**Les poids agissent maintenant** — `κ = 1`, `100`, `10⁴` donnent trois directions différentes à
+`μ = 0.01` (`‖d‖∞` = 0.133, 0.771, 1.02). La mécanique fonctionne. Mais regarder la colonne `‖d‖∞`
+suffit à voir le piège : **l'amortissement écrase la direction de trois ordres de grandeur** (716 →
+1) bien avant que les poids ne pèsent. Les cellules visées passent de 0.556 ν à 0.557 — autant dire
+qu'on n'a pas bougé. Il n'y a pas de fenêtre où `μ` soit assez grand pour que `C` compte et assez
+petit pour que le pas serve à quelque chose.
+
+Le patch, lui, relève pour de bon : **0.556 → 0.614 ν** sur les cellules visées, au pas plein, avec
+67 inconnues et 63 itérations de CG — le coût d'un dixième de diagramme.
+
+## 13.4 La mesure qui tranche : et après ?
+
+Relever n'est utile que si le Newton d'après en profite. Newton mené à **convergence** depuis chaque
+point relevé :
+
+| départ de Newton | itérations | **diagrammes** |
+|---|---|---|
+| le point de départ (référence) | 53 | **105** |
+| amorti `μ=0.01 κ=1` — *pas de pondération du tout* | 51 | **100** |
+| amorti `μ=0.01 κ=10⁴` | 50 | **98** |
+| amorti `μ=1 κ=100` | 50 | 98 |
+| amorti `μ=100`, tous `κ` | 53 | 105 |
+| local `κ=100 l=1` | 51 | 102 |
+| local `κ=100 l=4` | 51 | **101** |
+
+**Sept diagrammes sur cent cinq, au mieux.** Et le contrôle est sans appel : `κ = 1`, c'est-à-dire
+**aucune pondération**, en gagne déjà cinq. Le peu qu'on gagne vient de l'amortissement — un petit
+pas prudent avant Newton — et non du fait d'avoir forcé les cellules pincées. La pondération
+elle-même vaut deux diagrammes sur cent cinq.
+
+Pour le patch, deux observations disent pourquoi. **La hauteur de la cloche ne compte pas** :
+`κ = 100` et `κ = 10 000` donnent des directions identiques à trois chiffres. Ce qui agit est le
+**patch**, pas la pondération dedans — une fois `d` restreint, forcer plus ne force rien de plus. Et
+**la cellule qui borne le pas de Newton n'est pas celle qu'on a relevée** : après le relèvement, la
+masse minimale globale au pas de Newton est *plus basse* qu'avant (0.491 ν contre 0.559), une autre
+cellule ayant pris la place. C'est le même constat que le banc GPU a tiré de sa courbe `N(t)` sans
+palier et que le § 9.5 avait tiré de `--garde cellule` : **ce n'est pas une cellule isolée qui borne
+le pas, c'est une population**, et la réparer déplace le problème au lieu de le résoudre.
+
+Sur un pincement moins localisé (793 cellules sous `0.1 ν`, continuation par convolution
+`σ = 0.0156 → 0`), même histoire en plus net : la direction locale quadruple son propre pas
+admissible (3.9e−3 → 1.6e−2) et le Newton d'après revient à 3.9e−3, pour un résidu meilleur de
+0.2 %.
+
+## 13.5 Ce que l'étude laisse ouvert
+
+Elle ferme la porte qu'on voulait pousser — et surtout elle dit **pourquoi** elle est fermée, ce qui
+vaut mieux qu'un chiffre décevant. Deux autres restent entrebâillées, et elles ne sont **pas**
+mesurées :
+
+* **Pondérer le mérite, pas la direction.** `Σ C_i r_i²` ne change pas `d`, mais il change quels pas
+  l'amortissement **accepte**. C'est le seul endroit où des `C_i` peuvent agir sans que l'algèbre les
+  simplifie ni que l'amortissement les écrase, et c'est un objet entièrement différent de celui-ci.
+* **Un sous-problème local résolu NON LINÉAIREMENT.** Ici le patch ne restreint qu'**un pas
+  linéaire**. Résoudre à convergence le vrai problème de transport sur le patch, les poids extérieurs
+  gelés, est autre chose — `--garde cellule` (§ 9.5) en est le cas dégénéré à une cellule, et il
+  perd ; rien ne dit qu'un patch de rayon 2 ou 3 se comporte pareil. **C'est fait, et c'est le
+  § 14.**
+
+---
+
+# 14. LE SOUS-PROBLÈME LOCAL : SAUTER PUIS RÉPARER, OU SUIVRE UN CHEMIN (`image --local-nl`)
+
+Le § 13 a fermé la voie des directions pondérées et en laissait une ouverte : ne pas chercher une
+direction, mais **résoudre** sur un morceau du diagramme. Le schéma :
+
+* on prend le pas de Newton `w₀ + F·d` et on **repère les cellules qui pincent là** — pas celles qui
+  sont petites au départ : au point convergé tout est à la cible, c'est le **pas** qui les tue ;
+* on va chercher **`N` anneaux plus loin** autour d'elles (parcours en largeur ; les composantes qui
+  se touchent fusionnent d'elles-mêmes) ; seuls les poids du **bord** sont imposés ;
+* l'intérieur est cherché en minimisant
+
+        Φ = Σ_( boule et anneau )  ( A_i / ν_i  −  ν_i / A_i )²
+
+**L'anneau est dans l'objectif, et c'est ce qui le protège.** Descendre une cellule d'anneau de 1 à
+0.9 ne coûte presque rien (`g = −0.21`) ; la descendre à 0.1 coûte `g = −9.9`. La barrière arbitre
+d'elle-même, sans plancher à poser, et vaut `+∞` si une cellule meurt. Ce n'est pas le système de
+Newton : `A_i = ν_i` sur toute la boule serait en général infaisable (le budget de masse local est
+fermé), alors que le minimum de `Φ` existe toujours. On ne cherche pas la solution, on cherche un
+**point de départ sans écrasement**.
+
+Gauss-Newton sur `Φ`, sans matrice, amorti sur `Φ` elle-même. (Un L-BFGS conviendrait aussi ; ici
+Gauss-Newton est meilleur parce que la jacobienne exacte est `L`, qui sort **gratuitement** avec les
+cellules.) Le coût est en **cellules calculées** — chaque itération ne recalcule que la boule et son
+anneau.
+
+## 14.1 La seule question qui compte : saute-t-on, ou suit-on un chemin ?
+
+Deux façons d'amener les poids du bord de `w₀` à `w₀ + F·d` :
+
+* **le saut** (`--local-saut`) : on pose tout le monde à `w₀ + F·d`, puis on répare ;
+* **la continuation** (le défaut) : on part de `w₀`, **qui est sain et où il n'y a rien à résoudre**,
+  et on fait glisser le bord vers `w₀ + F·d` par sous-pas, l'intérieur étant re-résolu à chaque
+  sous-pas. On ne traverse alors **jamais** un état où une cellule est déjà morte : la barrière les
+  maintient en vie *le long du chemin*, au lieu d'avoir à ressusciter ce qui est mort — ce qu'aucune
+  méthode passant par `L` ne sait faire (§ 13.1).
+
+**La différence est décisive.** Le saut plafonne à `F = 0.033` : au-delà une cellule atteint
+exactement zéro, `Φ = 10¹⁸`, et le solveur cale en une itération. La continuation atteint `s = 1`
+**à chaque fois, jusqu'à `F = 0.2` au moins** — et les cibles y ont pourtant des cellules mortes
+(colonne « min boule à la cible » = 0.000 partout). Il n'y a pas de verrou ; il y avait un mauvais
+chemin.
+
+**Deux détails d'implémentation, chacun payé par une mesure fausse.** (i) Le critère de succès d'un
+sous-pas est « l'état est sain », pas « la boule est à la cible » : le budget de masse local étant
+fermé, l'exiger fait rejeter des sous-pas où la réparation marchait. (ii) Au démarrage à chaud d'un
+sous-pas, **l'intérieur doit avancer du même incrément que le bord** le long de `d` avant d'être
+corrigé ; le laisser figé pendant que le bord avance recrée une marche différentielle à la frontière
+de la boule, qui tue une cellule avant que le solveur ne réagisse — le sous-pas admissible tombe
+alors à 0.002, en falaise.
+
+## 14.2 Ce que ça donne
+
+Image 512² sans zéros, `n = 2·10⁴`, continuation convergée en `t = 0.875`, densité poussée à `t = 1`.
+Sans réparation, le pas de Newton est refusé au-delà de `α* = 1.6e−02`, et **107 diagrammes** suffisent
+ensuite à converger depuis `w₀`.
+
+`s` vaut **1.00 partout** : la continuation atteint la cible dans tous les cas, y compris quand
+celle-ci a des cellules mortes (colonne « min boule à la cible » = 0.000). `N` est le nombre de
+couches, et la colonne **amas** compte les composantes connexes de la boule.
+
+| `F` | `N` | pincées | boule | **amas** | **+ gros** | itér. | cellules | fuites | min boule (cible → fin) | min **globale** | diag. après |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| — | | | | | | | | | | | **103** |
+| 0.03 | 1 | 5 | 23 | **2** | **18** | 42 | 12 000 | 21 | 0.137 → 0.875 | 0.532 | — |
+| 0.03 | **2** | 5 | 63 | **1** | **63** | 128 | **39 000** | 131 | 0.137 → 0.616 | 0.532 | **98** |
+| 0.03 | 3 | 5 | 114 | 1 | 114 | 125 | 65 000 | 128 | 0.137 → 0.620 | 0.532 | — |
+| 0.05 | 1 | 38 | 130 | **22** | **21** | 519 | 580 000 | 9 179 | 0.000 → 0.807 | 0.117 | — |
+| 0.05 | **2** | 38 | 343 | **20** | **62** | 106 | **224 000** | 415 | 0.000 → 0.617 | **0.523** | **96** |
+| 0.05 | 3 | 38 | 684 | 17 | 141 | 277 | 669 000 | 1 729 | 0.000 → 0.569 | 0.510 | 92 |
+| 0.10 | 1 | 234 | 584 | 143 | 66 | 1 515 | 5 266 000 | 45 289 | 0.000 → 0.379 | **0.000** ✗ | ✗ |
+| 0.10 | **2** | 234 | 1 241 | 126 | 248 | 341 | **1 539 000** | 3 884 | 0.000 → 0.603 | 0.482 | **87** |
+| 0.10 | 3 | 234 | 2 046 | 117 | 488 | 397 | 2 485 000 | 3 309 | 0.000 → 0.584 | 0.525 | 91 |
+| 0.20 | 3 | 809 | 3 448 | — | — | 1 342 | 18 716 000 | 51 884 | 0.000 → 0.610 | 0.525 | **72** |
+
+**Le pas admissible passe de `0.016` à `0.2` — un facteur treize** — et l'état obtenu est
+franchement sain. Le Newton qui repart de là converge en **72 diagrammes au lieu de 103**.
+
+**L'épaisseur de couronne ne sert pas à donner de la marge de masse, elle sert à contenir la
+fuite.** Avec une seule couche, la réparation pousse le dommage hors de la zone surveillée — la
+boule finit à 0.379 pendant que le minimum *global* tombe à zéro, et tout est perdu dès `F = 0.1`.
+C'est exactement le risque de changement de connectivité au bord : réel, mesurable, et il se paie en
+épaisseur. **Deux couches suffisent**, et le coût est **fortement non monotone** en `N` : une
+couronne trop mince coûte *plus* (580 000 cellules à `N = 1` contre 224 000 à `N = 2`, à `F = 0.05`)
+parce que la fuite fait patiner la continuation en sous-pas refusés.
+
+**La boule n'est pas un bloc, c'est une poussière d'amas** — et ça change le dessin du solveur. À
+`F = 0.05` et deux couches : 20 composantes connexes, la plus grosse de 62 cellules. À `F = 0.1` :
+126 composantes. Même épaissie, la zone reste une collection de petits problèmes indépendants de
+quelques dizaines d'inconnues chacun. Or le code les résout **tous ensemble**, comme un seul système
+couplé de 343 ou 1 241 inconnues, par gradient conjugué, à travers l'arbre global. C'est une triple
+maladresse : le couplage entre amas éloignés est fictif ; le sous-pas de continuation est le
+**minimum sur tous les amas**, donc un amas difficile impose sa lenteur aux autres ; et sur vingt
+inconnues il n'y a **aucune raison de passer par une structure d'accélération** — une cellule d'amas
+se calcule en force brute contre l'amas et sa couronne, quelques dizaines de germes, au lieu d'un
+parcours de BSP précédé d'un `set_weights` en `O(n)`. Le découpage par amas ne rend pas ce coût plus
+petit : il le fait disparaître.
+
+**Le bilan net, en comptant un diagramme pour `n` calculs de cellule** (et sans compter le
+`set_weights`, qui se paie en plus) :
+
+| `F` (avec `N = 2`) | dépensés | économisés | net |
+|---|---|---|---|
+| 0.03 | ≈ 2 | 5 | **+3** |
+| 0.05 | ≈ 11 | 7 | −4 |
+| 0.10 | ≈ 77 | 16 | −61 |
+
+À `F = 0.03` — **un seul amas de 63 cellules** — le relèvement est net positif pour la première
+fois. Le régime favorable est donc celui des foyers rares et petits, ce qui est précisément le
+régime où le découpage par amas s'impose.
+
+## 14.3 Ce qui empêche encore d'en faire quelque chose
+
+**Le coût, et il est entièrement dans l'implémentation.** 18.7 millions de cellules calculées pour la
+réparation à `F = 0.2`, soit l'équivalent de **940 diagrammes** — contre 35 économisés. Attention à
+ne pas mal lire ce chiffre : ce ne sont pas des cellules *réparées* mais des **évaluations**, soit
+4 138 passes sur l'ensemble surveillé. Les cellules à réparer, elles, sont bien peu nombreuses — ce
+sont les **anneaux** qui font le volume :
+
+| | pincées | boule `N = 3` | boule + anneau | passes |
+|---|---|---|---|---|
+| `F = 0.05` | 38 = **0.19 %** | 684 = 3.4 % | 1 124 = **5.6 %** | 674 |
+| `F = 0.10` | 234 = 1.2 % | 2 046 = 10 % | 2 944 = 15 % | 2 186 |
+| `F = 0.20` | 809 = 4.0 % | 3 448 = 17 % | 4 523 = **23 %** | 4 138 |
+
+À `F = 0.2` on « répare » près d'un quart du diagramme : ce n'est plus local. Le régime où le schéma
+tient sa promesse est celui de `F = 0.05` — deux pour mille de cellules pincées, cinq pour cent
+surveillées — et il donne déjà 92 diagrammes contre 107.
+
+Deux causes au reste, toutes deux réductibles et aucune inhérente au schéma :
+
+* **LE PRÉDICTEUR. C'est fait, et ça paie.** Au démarrage à chaud d'un sous-pas, extrapoler
+  l'intérieur le long de `d` (la direction de Newton *globale*) n'est pas la bonne tangente. Celle du
+  sous-problème l'est : à masses constantes dans la boule, `L_PP dw = − L_(P,bord) db`, c'est-à-dire
+  une résolution de plus sur `L_PP` — SPD, Dirichlet, bien mieux conditionnée que les équations
+  normales de Gauss-Newton (`--local-sans-tangente` pour l'enlever). À état final **rigoureusement
+  identique** :
+
+  | `F` | prédicteur | itér. de Gauss-Newton | cellules calculées | diagrammes après |
+  |---|---|---|---|---|
+  | 0.05 | le long de `d` | 234 | 757 576 | 92 |
+  | 0.05 | **la tangente** | 277 | **668 780** (−12 %) | 92 |
+  | 0.10 | le long de `d` | 863 | 6 435 584 | 91 |
+  | 0.10 | **la tangente** | **397** (−54 %) | **2 484 736** (−61 %) | **87** |
+
+* **Le `set_weights` global.** Chaque évaluation locale rafraîchit l'arbre en `O(n)` alors qu'on ne
+  touche que quelques centaines de poids. C'est le chantier restant, et il est purement mécanique.
+
+Avec la tangente et sans le `set_weights` local, on en est à `F = 0.1` pour 2.5 M évaluations
+(≈ 124 diagrammes) contre 20 économisés : **le schéma gagne sur le pas et perd encore sur le temps,
+d'un facteur six au lieu de quinze**. Ce qui est acquis et ne dépend pas de l'implémentation, c'est
+qu'il n'y a **pas d'obstacle de principe** là où on en voyait un : la continuation traverse les
+cellules mortes sans les rencontrer, et l'épaisseur d'anneau contrôle la fuite.
+
+---
+
+# 15. LE RELÈVEMENT BRANCHÉ DANS NEWTON (`image --newton-releve`)
+
+Le § 14 a montré que la réparation locale marche sur **un** pas. Reste la vraie question : dans la
+boucle, où le pincement se reforme à chaque itération. Le schéma implémenté est celui qui a été
+proposé, avec une condition de plus que la mesure impose :
+
+1. **Le pas** n'est plus borné par « aucune cellule sous `ε` » mais par « **au plus `ratio·n`
+   cellules sous `ε`** » — on avance donc bien plus loin, en acceptant un nombre borné de malades ;
+2. **et aucune cellule sous `ε_mort`**. Ce n'est pas un raffinement : une cellule de masse nulle a
+   toutes ses `c_ij` nulles, donc une ligne de hessienne neutralisée (§ 13.1), et la réparation
+   échoue à coup sûr. Le § 14.3 a mesuré cette frontière, et elle est franche ;
+3. **le coloriage** : les malades, `N` anneaux autour, coalescés par le parcours en largeur ; seuls
+   les poids du bord sont imposés ;
+4. **la résolution** de l'intérieur sur l'objectif barrière `Φ = Σ (A/ν − ν/A)²` (§ 14) ;
+5. si la réparation échoue, **on redescend le pas** — les « poids imposés intermédiaires » — jusqu'à
+   ce qu'elle passe ; et le pas n'est accepté que si le **mérite descend**, sans quoi on perdrait la
+   garantie de l'amortissement pour un point « sain » mais plus mauvais.
+
+Sur le solveur local, **Gauss-Newton bat L-BFGS** ici : la jacobienne exacte est `L`, qui sort
+gratuitement avec les cellules, et le patch fait trente inconnues — dix itérations suffisent. Le
+line-search conservatif est bien le bon ingrédient, mais sous la forme de l'amortissement sur `Φ`
+elle-même, qui vaut `+∞` si une cellule meurt.
+
+## 15.1 Ce que ça donne sur un solve complet
+
+Image 512² sans zéros, `n = 2·10⁴`, continuation géométrique à 14 marches, jusqu'à `t = 1`.
+
+| | itérations | **diagrammes** | reculs | temps |
+|---|---|---|---|---|
+| **A.** Newton `essai-limites` (la référence du banc) | 239 | **451** | 33 | **15.8 s** |
+| **B.** la même boucle, **sans** réparation (témoin) | 264 | 1 135 | 842 | 21.2 s |
+| **C.** avec réparation, `ratio` 0.5 %, 1 anneau | 220 | **918** | 615 | 21.8 s |
+| C. `ratio` 1 %, 1 anneau | 220 | 918 | 615 | 21.6 s |
+| C. `ratio` 3 %, 1 anneau | 220 | 918 | 615 | 22.3 s |
+| C. `ratio` 10 %, 1 anneau | 220 | 918 | 615 | 22.0 s |
+| C. `ratio` 0.5 % … 10 %, **2 anneaux** | 219 | 923 | 619 | 23.6–24.0 s |
+
+**La réparation marche dans la boucle : −19 % de diagrammes à boucle égale** (1 135 → 918), et 44
+itérations de moins. C'est le résultat positif.
+
+**Mais le ratio ne sert à rien.** De 0.5 % à 10 % — vingt fois plus de malades autorisées — le
+résultat est **strictement identique** : 918 diagrammes, 615 reculs. Ce n'est donc pas le plafond de
+malades qui borne le pas, c'est la **mort de la première cellule** (`ε_mort`), exactement comme le
+§ 14.3 le prévoyait. La formulation « jusqu'où avancer sans dépasser 3 % de malades » est la bonne
+question, mais en pratique le pas s'arrête avant, sur la première mort. Et un deuxième anneau ne
+sert à rien non plus (923 contre 918, pour 8 % de temps en plus) — le § 14.2 l'avait déjà vu sur un
+pas isolé : élargir dilue l'effort au lieu de le concentrer.
+
+**En temps, c'est un match nul** (21.2 → 21.6 s) : les diagrammes économisés sont repayés en
+cellules recalculées par les réparations.
+
+## 15.2 Ce qu'il faut en conclure
+
+Le gain est réel mais **il est petit devant celui de la règle de pas elle-même**. Sur la même
+instance, passer de l'amortissement dyadique naïf à `essai-limites` — qui calcule le pas admissible
+exact au lieu de le chercher par moitiés (§ 9.7) — fait 1 135 → 451 diagrammes. Le relèvement en
+fait 1 135 → 918. **Calculer le bon pas vaut trois fois ce que vaut réparer après coup.**
+
+Les deux ne sont pas concurrents pour autant : `essai-limites` s'arrête au pas où la **première**
+cellule atteint le plancher, et le relèvement sert précisément à aller **au-delà**. Les combiner est
+le prolongement naturel, et c'est ce que la mesure indique :
+
+* **Mettre la réparation par-dessus `essai-limites`** plutôt que par-dessus le dyadique. L'ordre de
+  grandeur attendu est celui du § 14.2 sur un pas isolé : un pas deux fois plus grand pour un
+  cinquième de diagramme, soit environ −10 % sur les 451. Ça demande de toucher à `Newton.h`, ce qui
+  n'a pas été fait ici : la boucle du § 15 est écrite dans `main_image.cpp` pour ne rien casser
+  ailleurs, et c'est pour ça que son témoin est le dyadique naïf.
+* **Lever le plafond des cellules mortes** : c'est fait, et autrement qu'on ne le croyait — la
+  réparation par **continuation** (§ 14.1) ne rencontre jamais l'état mort, donc il n'y avait pas de
+  verrou. La boucle a été reprise avec elle, et le § 15.3 dit ce que ça donne.
+
+## 15.3 La boucle avec la réparation par amas : la séquence des pas, et ce que ça coûte
+
+La réparation par amas (§ 16) est maintenant câblée dans la boucle, avec **le ratio pour seul
+paramètre** : à chaque direction on cherche le plus grand `F` qui laisse au plus `ratio·n` cellules
+sous `ε`, on répare, on avance. Le filtre `ε_mort` est retiré dans ce mode — il n'avait de sens que
+pour la réparation par saut. Une résolution complète produit donc **une séquence de `F`**, une par
+itération, et c'est elle qu'on veut lire.
+
+**La séquence, sans réparation** (`n = 5·10³`, quatre étapes de continuation) :
+
+```
+étape 1 : 0.031 0.016 0.031 0.031 … 0.062 … 0.125 … 0.25 … 1
+étape 3 : 0.031 0.062 0.062 … 0.125 … 0.25 0.25 0.5 0.5 1 1 1 1 1
+```
+
+**C'est l'information qui manquait à toute la discussion.** Le coefficient de relaxation n'est petit
+qu'**au début de chaque étape** et remonte à 1 : sur 22 à 31 itérations par étape, une bonne moitié
+se fait déjà à pas plein. Le relèvement ne peut donc agir que sur la première moitié — ce qui
+**borne son gain possible**, indépendamment de ce qu'il coûte.
+
+**Et ce qu'il coûte l'exclut.** `n = 5·10³`, quatre étapes :
+
+| | itérations | diagrammes | temps |
+|---|---|---|---|
+| Newton `essai-limites` | 98 | 186 | **2.57 s** |
+| la boucle, sans réparation | 113 | 471 | 4.40 s |
+| la boucle **avec** réparation par amas | — | — | **> 20 min, interrompue** |
+
+La ligne du bas est un **mur d'horloge, pas une divergence** : le calcul a été tué, on ne savait donc
+rien de son profil. Le § 15.4 le mesure à `n` réduit, et le verdict s'inverse.
+
+La raison est arithmétique : la réparation coûte 0.1 à 7 s, elle est appelée à **chacune** des ~110
+itérations, et chaque appel paie en plus un diagramme global de rafraîchissement par sous-pas. Les
+mesures isolées du § 16 — un diagramme dépensé, treize gagnés sur un foyer unique — **ne se
+transposent pas** à la boucle, où la plupart des itérations ont des dizaines d'amas.
+
+Tant que le rafraîchissement n'est pas **local**, le relèvement dans la boucle n'est pas utilisable.
+Et la séquence des pas dit que, même rendu gratuit, son gain serait plafonné par la fraction
+d'itérations qui ne sont pas déjà à pas plein.
+
+## 15.4 Le profil de convergence, à `n` réduit — et le résidu ne remonte pas
+
+Le temps n'est pas le bon instrument tant que le rafraîchissement est global : il mesure le
+rafraîchissement, pas la méthode. À `n = 10³` la boucle va au bout dans les trois configurations, et
+on peut lire ce qui nous intéresse — le **nombre d'itérations**, et ce que la réparation fait au
+**résidu**. La trace imprime à chaque itération trois quantités : `|r|` avant, `|r|` après
+réparation, et `|r|` du **pas nu au même `F`**, qui est la seule référence honnête.
+
+| `n = 10³`, quatre étapes | itérations | diagrammes | verdict |
+|---|---|---|---|
+| la boucle, sans réparation | 56 | **166** | converge |
+| avec réparation, aire de bord pénalisée | **40** | 342 | converge |
+| avec réparation, objectif gradient d'aire | 41 | 349 | converge |
+
+**Ça converge, et en 29 % d'itérations de moins.** Les diagrammes doublent, et ce doublement est
+**entièrement** le rafraîchissement global — c'est-à-dire précisément la partie qu'on sait être
+locale par nature et qui ne l'est pas encore.
+
+**Le résidu ne remonte pas ; il descend plus vite.** Sur les quinze réparations acceptées, le rapport
+`|r| après réparation / |r| du pas nu` vaut
+
+```
+0.21  0.29  0.36  0.37  0.46  0.51  0.51  0.52  0.67  0.92  0.97  0.98  0.99  1.00  1.03
+```
+
+— treize sur quinze **au-dessous de 1**, médiane 0.51, la meilleure à 0.21. La réparation ne défait
+donc pas le progrès du pas : elle rend un état **meilleur en résidu que le pas nu** qu'elle corrige,
+souvent d'un facteur deux à cinq. C'est cohérent avec ce qu'on cherchait — les cellules écrasées
+sont aussi celles qui portent le gros du résidu.
+
+Et la séquence des pas remonte en conséquence : `0.25 0.5 0.5 1 1 1 1 1` sur la dernière étape,
+contre `0.125 ×5 0.25 ×4 0.5 1 1 1 1` sans réparation.
+
+**Un défaut du critère d'acceptation, visible dans la trace.** Cinq pas sont refusés pour « encore
+malade » alors que l'état réparé est **meilleur que les deux autres** — le plus net :
+
+```
+it 7  F 0.5  REFUS ( encore malade )   |r| 1.374e-02 -> 7.96e-03   pas nu 1.033e-02
+```
+
+On jette un état dont le résidu a chuté de 42 % parce qu'une cellule reste sous le seuil. Le critère
+`amin3 > eps` est trop raide : accepter dès que l'état réparé est **sain ou strictement moins malade
+que le pas nu**, et meilleur en résidu, supprimerait plusieurs reculs. Non fait.
+
+## 15.5 Le rafraîchissement sur les patchs (`--local-patch`), et le seuil qui faussait tout
+
+Le rafraîchissement global était la dernière dépendance en `n` de la réparation : un diagramme
+complet par sous-pas, alors que tout ce qu'on en tire est le graphe de Laguerre **autour des amas**.
+On le relit donc en force brute sur les seuls coupeurs, patch par patch, et on le donne au même
+constructeur d'amas.
+
+**À quelle condition c'est légitime.** Ne plus relire l'extérieur ne se défend que si l'extérieur n'a
+pas bougé — et il ne bouge que par la couronne, sa frontière avec la zone réparée. C'est exactement
+ce que `--local-bord` tient : l'**aire** de la couronne, pas seulement son poids. Le mode l'exige
+donc et l'allume s'il ne l'est pas. Une cellule du patch est exacte dès que tous ses coupeurs y sont,
+soit jusqu'à la distance `N+1+coupeurs` — la profondeur dont la construction a besoin, sans un poil
+de marge ; comme la géométrie bouge, le mode élargit `C` d'une couche.
+
+**Le seuil qui faussait tout.** La première mesure donnait **666 inconnues pour deux cellules
+malades**, et 9.6 s sur 10.7 dans un seul amas. Les deux critères de « malade » n'étaient pas le
+même : la boucle compte sous `eps`, un plancher **absolu** ; la réparation construisait ses amas
+autour de `a < local_pince·ν` avec `local_pince = 0.5`, la **moitié de la cible cellule par
+cellule**. Au départ d'une étape de continuation, où tout le diagramme est encore loin de sa cible,
+des centaines de cellules passent sous cette barre sans être en danger. `repare_amas` prend
+désormais le seuil de son appelant ; l'étude isolée du § 16 garde `local_pince`.
+
+`n = 10³`, quatre étapes — le seuil corrigé ramène les amas à 1–4 par pas, 15 à 107 inconnues :
+
+| | itérations | diagrammes | temps |
+|---|---|---|---|
+| sans réparation | 56 | 166 | 0.47 s |
+| réparation, rafraîchissement global | **41** | 280 | 1.52 s |
+| réparation, rafraîchissement **sur les patchs** | 44 | **141** | **0.91 s** |
+
+Les 141 diagrammes du mode patch sont **sous** les 166 de la boucle nue : le relèvement ne se paie
+plus du tout en `n`. L'écart 280 − 141, c'est exactement le rafraîchissement global.
+
+`n = 5·10³`, quatre étapes — **le mur des 20 minutes est levé** :
+
+| | itérations | diagrammes | temps | cellules locales |
+|---|---|---|---|---|
+| Newton `essai-limites` | 100 | **193** | **2.76 s** | — |
+| la boucle, sans réparation | 113 | 471 | 4.19 s | — |
+| la boucle, patchs | **95** | 478 | 19.2 s | 6.2 M |
+
+**Les itérations sont les meilleures des trois** — 95, contre 100 pour la référence du banc. Mais le
+temps est sept fois celui de la référence, et les diagrammes ne baissent pas. Deux causes, mesurées :
+
+* **les cellules locales**, 6.2 M, soit 14.8 s des 19.2 : à `n = 5·10³` il y a une dizaine d'amas par
+  appel et une centaine d'appels, et la force brute sans arbre les paie tous ;
+* **les réparations refusées**, 96 en tout, dont **chacune paie un diagramme global** pour être
+  jugée. C'est là que sont les 478 − 193 diagrammes, et c'est ce que le § 15.4 avait déjà désigné :
+  le critère `amin3 > eps` refuse des états strictement meilleurs que le pas nu.
+
+## 15.6 Où passe le temps dans la réparation — et ce qui n'y passe pas
+
+Trois questions, trois mesures. Le binaire est *stripped*, donc `perf` ne rend que des adresses : on
+instrumente à la main, en cinq postes disjoints posés au même endroit que le travail, plus un résidu
+pour éviter de se raconter que la somme fait le total.
+
+**Les inconnues.** Le système ne porte que sur `p < m`, c'est-à-dire `P` seul. La couronne a ses
+poids **imposés** et n'est jamais mise à jour : la recherche linéaire n'écrit que `w[A.ens[p]]` pour
+`p < m`, et la matrice locale ne garde une colonne que si `p < m`. La couronne n'entre que par son
+**aire**, dans l'objectif.
+
+**Le parallélisme : il n'y en a pas.** `mesures_et_facettes` tourne sur huit threads
+(`parallel_for`) ; `resout_amas` et le rafraîchissement par patchs sont des boucles nues, un seul
+cœur. Toute comparaison de temps entre la réparation et la référence du banc compare donc un cœur à
+huit. Les amas d'un même sous-pas ont des inconnues disjointes par construction, donc la boucle est
+parallélisable telle quelle — au prix d'un passage de Gauss-Seidel à Jacobi entre amas voisins.
+
+**Le profil**, `n = 5·10³`, quatre étapes cumulées, sur les ~13 s de réparation :
+
+| poste | temps | appels |
+|---|---|---|
+| **géométrie** (recherche linéaire) | **10.0 s** | **274 426** mesures |
+| assemblage (dont `place` / `coupeur`) | 1.57 s | 24 910 |
+| rafraîchissement sur les patchs | 0.98 s | |
+| verdict | 0.33 s | |
+| algèbre (Gauss-Newton + CG) | 0.20 s | |
+
+Les deux suspects désignés avant mesure — les recherches linéaires de `place` et `coupeur` dans le
+chemin chaud — sont dans l'assemblage, qui pèse 12 %. L'algèbre pèse 1.5 %. **Le coût est la
+recherche linéaire** : onze évaluations géométriques par itération de Gauss-Newton.
+
+### Ce qui a marché, ce qui n'a pas marché
+
+**Le départ à chaud : presque rien.** Repartir du dernier pas accepté (doublé) au lieu de `t = 1` ne
+retire que 5 % des évaluations (274 426 → 261 625). L'hypothèse « on repaie la descente à chaque
+itération » était donc fausse.
+
+**Le plafond de halvings : tout, à résultat identique.** Les 11 essais de moyenne étaient tirés par
+les recherches **qui ne trouvent rien** : 9 371 échecs à 26.8 essais, soit **94 à 98 % du travail
+géométrique**. Une recherche qui échoue descend jusqu'à `10⁻⁸`, et elle termine de toute façon la
+boucle de Gauss-Newton (`break` au premier échec). En plafonnant à douze essais :
+
+| | avant | après |
+|---|---|---|
+| évaluations | 261 625 | **133 701** |
+| géométrie | 8.67 s | **5.24 s** |
+| total | 15.25 s | **11.84 s** |
+| itérations / diagrammes | 95 / 478 | **95 / 478** |
+
+**L'arrêt « sain avec marge » : moins cher, moins bon, éteint** (`--local-marge`, défaut 0). On ne
+cherche pas le minimum de la barrière mais un état non dégénéré, donc s'arrêter dès que le plancher
+dépasse le seuil semblait gratuit. Mesure : 1.80 M cellules au lieu de 3.75 M et 9.92 s au lieu de
+11.84 — mais **103 itérations et 549 diagrammes contre 95 et 478**. L'état rendu est *tout juste*
+sain et ne survit pas au sous-pas suivant : les réparations acceptées tombent de 22 à 15, les refus
+montent de 96 à 119, et chaque refus paie un diagramme global.
+
+### Ce qui reste
+
+Les 9 371 recherches en échec coûtent encore treize évaluations chacune, soit **91 % du travail
+géométrique, uniquement pour constater que le sous-problème est fini**. Le bon critère d'arrêt n'est
+ni la barrière (trop tard) ni la santé (trop tôt) : il reste à trouver. Les deux autres leviers non
+tirés sont le parallélisme sur les amas et les listes de coupeurs par cellule — chaque cellule est
+calculée contre les ~300 coupeurs de l'amas alors que les siens sont une vingtaine.
+
+## 15.7 L'échelle : les événements exceptionnels étranglent le pas, et de plus en plus
+
+La moyenne de la suite des pas cachait ce qu'on cherchait. Ce qui compte, ce sont le **minimum** et
+la **fraction d'itérations sous 1/8** — la signature d'une poignée de cellules qui impose son pas à
+tout le monde. Image 512², quatre étapes géométriques, boucle pilotée par le ratio de malades :
+
+| `n` | min du pas | itér. sous 1/8 | diag. boucle nue | diag. `essai-limites` | rapport |
+|---|---|---|---|---|---|
+| 10³ | 6.3·10⁻² | 13 % | 166 | 96 | 1.7 |
+| 5·10³ | 1.6·10⁻² | 51 % | 471 | 186 | 2.5 |
+| 2·10⁴ | 7.8·10⁻³ | 72 % | 1 175 | 353 | 3.3 |
+| 10⁵ | **2.0·10⁻³** | **88 %** | **3 308** | 786 | **4.2** |
+
+Le pas minimal décroît à peu près comme `n^-3/4`, la fraction d'itérations étranglées sature vers
+90 %, et le surcoût par rapport au pas exact **double tous les facteurs dix**. À 10⁵ diracs, la
+boucle passe l'essentiel de son temps à des pas de l'ordre de 1/256. C'est le meilleur argument pour
+le relèvement local — et le pire pour la façon dont on le pilote, puisque `essai-limites` fait quatre
+fois mieux sans rien réparer.
+
+## 15.8 Le gain potentiel, corrections supposées gratuites
+
+Chaque tentative de réparation paie **exactement un diagramme global** pour être jugée : on les
+compte, donc on sait retrancher ce que coûterait une correction rendue gratuite (le temps local, lui,
+se lit directement dans le poste « relèvement »).
+
+> **Ces chiffres sont périmés** : ils ont été pris avant la correction du § 15.9, et ils mesurent en
+> grande partie un défaut de la réparation plutôt que la méthode. Conservés pour le raisonnement.
+
+| diagrammes | boucle nue | avec réparation | **réparation gratuite** | `essai-limites` |
+|---|---|---|---|---|
+| 10³ | 166 | 141 | **114** | 96 |
+| 5·10³ | 471 | 478 | **360** | 186 |
+| 2·10⁴ | 1 175 | 1 159 | **852** | 353 |
+
+Deux lectures, et elles ne disent pas la même chose.
+
+**Contre la même boucle sans réparation**, le gain à correction gratuite est réel et stable : −31 %,
+−24 %, −27 % de diagrammes, et −21 %, −16 %, −22 % d'itérations. Il ne dépend pas de la taille.
+
+**Contre `essai-limites`, il ne rattrape rien et l'écart se creuse** : 1.19, 1.94, 2.41 fois plus de
+diagrammes. Le pas exact par limites de masse reste très supérieur à « le plus grand pas qui garde
+1 % de malades, puis on répare ».
+
+Le coût local, lui, reste massif tant qu'il est monocœur : à `n = 2·10⁴`, 108 s de réparation sur
+131 s, pour 34 M cellules — à comparer aux 1 159 × 2·10⁴ = 23 M cellules de tous les diagrammes du
+Newton. **La réparation calcule plus de cellules que le Newton entier**, sur un cœur contre huit. Le
+sous-problème est pourtant bien petit : 13 à 16 évaluations et quelques centaines de cellules
+chacun ; c'est leur **nombre** qui fait la facture — des dizaines de milliers de sous-résolutions.
+
+## 15.9 D'où venaient les refus : la réparation cherchait les malades là où ils avaient disparu
+
+« Les diagrammes d'écart sont les refus » décrivait une comptabilité, pas une cause — et la cause ne
+devait pas exister : la continuation ne valide un sous-pas que si l'état est sain, et au pire elle
+rend `s = 0`, l'état de départ. On a donc classé chaque refus au lieu de le supposer : `s = 0`,
+résidu, cellule morte **dans** la zone réparée (inconnue ou couronne), cellule morte **hors** d'elle
+— et, pour chacune, ce que la mesure **locale** annonçait sur les mêmes poids.
+
+Le verdict a été net : **100 % des refus étaient des cellules mortes dans la zone, que la mesure
+locale déclarait saines.** Avec, en prime, un symptôme absurde :
+
+```
+it 1  F 6.250e-02  s 1.000  REFUS ( inconnue )  --  LOCAL dit 5.000e+03, GLOBAL dit 0.000e+00
+```
+
+`5.000e+03` à `n = 5000` : la cellule locale a **cinq mille fois sa masse cible**, c'est-à-dire tout
+le domaine. Elle n'est coupée par rien.
+
+**La cause.** `S`, l'ensemble à réparer, était repéré sur le diagramme de la **cible** `w₀ + F·d`. Or
+une cellule déjà morte là-bas **ne produit aucune facette** : elle n'a donc aucun voisin dans le
+graphe de Laguerre de la cible, son amas se réduit à elle seule, sans couronne et sans coupeurs. La
+force brute la calcule contre une liste vide, rend le domaine entier, et la déclare florissante. La
+continuation allait jusqu'à `s = 1` sans rien réparer, puis la mesure globale découvrait le cadavre.
+**On construisait la structure de voisinage là où l'information avait précisément disparu.**
+
+**Les corrections**, dans l'ordre de leur effet à `n = 5·10³` :
+
+| | diagrammes | itérations | refus |
+|---|---|---|---|
+| avant | 478 | 95 | 96 |
+| amas bâtis sur le diagramme de `w₀`, qui est sain | 420 | 87 | 76 |
+| **le graphe local ne peut que croître** | **208** | **59** | **8** |
+| seuils de santé alignés sur l'appelant | 215 | 61 | 5 |
+
+La deuxième est la décisive, et c'est le même défaut un cran plus bas : le rafraîchissement rebâtit
+la structure à partir des facettes de l'état **courant**, et une cellule qui meurt en chemin y perd
+à nouveau tous ses voisins. On donne donc toujours à la construction l'**union** des facettes
+fraîches et de celles de `w₀` — filtrées une fois par appel sur les patchs, pas une par sous-pas. Le
+graphe ne peut alors plus rétrécir. Le rafraîchissement global souffrait du même défaut.
+
+La troisième est **neutre en mesure** et gardée pour la cohérence : la réparation validait sur
+`a/ν > local_eps` (relatif) là où la boucle exige `a > eps` (absolu), donc les deux pouvaient
+diverger sans que ni l'une ni l'autre ait tort. Ce désaccord existait bien — il était visible dans
+les derniers refus, `LOCAL dit 2.850e-01, GLOBAL dit 2.850e-01, eps/nu 3.095e-01` — mais il ne
+coûtait presque plus rien une fois le vrai défaut corrigé.
+
+**Ce que ça change au § 15.8.** Le tableau du gain à correction gratuite mesurait le bug, pas la
+méthode : les diagrammes de jugement que j'y attribuais à un coût structurel du relèvement étaient
+presque tous des cellules mortes invisibles à la réparation. Après correction :
+
+| | itérations | diagrammes | `essai-limites` |
+|---|---|---|---|
+| `n = 10³` | **36** | **93** | 52 / 96 |
+| `n = 5·10³` | **61** | 215 | 98 / 186 |
+
+Le relèvement fait **40 % d'itérations de moins** que le pas exact par limites de masse, et le bat en
+diagrammes à `10³`.
+
+## 15.10 L'échelle, remesurée sur le code corrigé
+
+Le § 15.7 mesurait la boucle nue, qui reste valable. Le § 15.8 mesurait le relèvement, et il mesurait
+le défaut du § 15.9. Voici la même campagne sur le code corrigé, image 512², quatre étapes
+géométriques :
+
+| `n` | `essai-limites` | boucle nue | **avec relèvement** | relèvement, **correction gratuite** |
+|---|---|---|---|---|
+| 10³ | 52 it / 96 diag | 56 / 166 | **36 / 93** | **73** |
+| 5·10³ | 100 / 193 | 113 / 471 | **61 / 215** | **170** |
+| 2·10⁴ | 181 / 355 | 223 / 1175 | **108 / 504** | **395** |
+
+**Le rapport d'itérations au pas exact est stable à 0.60** — 0.69, 0.61, 0.60. Le relèvement fait
+constamment 40 % d'itérations de moins, et **ça ne se dégrade pas avec la taille**. En diagrammes à
+correction gratuite, 0.76, 0.88, 1.11 fois `essai-limites` : l'avantage s'érode, lentement.
+
+Sur les pas, à `n = 2·10⁴`, c'est le nombre d'étapes qui s'effondre — **32, 33, 19, 24 itérations par
+étape contre 54, 62, 41, 66** — et le pas minimal remonte de 7.8·10⁻³ à 1.3·10⁻².
+
+**Le coût est désormais le seul obstacle, et il est entier** : 360 s de réparation sur les 371 à
+`n = 2·10⁴`, 86 M de cellules, **sur un cœur**. Il a beaucoup augmenté par rapport au § 15.6, et pour
+une bonne raison : la réparation travaille maintenant au lieu de faire semblant — 5 914 cellules
+malades traitées à `n = 2·10⁴`, contre une centaine avant la correction.
+
+Les trois leviers restants, tous identifiés et aucun tiré :
+
+* **le parallélisme**, un facteur 8 gratuit : les amas d'un sous-pas ont des inconnues disjointes ;
+* **les listes de coupeurs par cellule** — chaque cellule est calculée contre les ~300 coupeurs de
+  son amas alors que les siens sont une vingtaine ;
+* **le critère d'arrêt du sous-problème**, qui coûte encore treize évaluations par sous-résolution
+  juste pour constater qu'elle est finie (§ 15.6).
+
+## 15.11 Le départ par prolongement harmonique : plus de sous-pas, et un relèvement enfin bon marché
+
+La continuation faisait glisser la couronne de `w₀` à `w₀ + F·d` par sous-pas, et c'était son coût :
+les cellules de bord bougent **beaucoup** avec `F`, donc il faut beaucoup de sous-pas, et chacun paie
+une résolution locale complète. On pose donc la couronne **directement** à sa valeur finale — tous
+les poids sont ceux de `F`, sauf ceux de `E` qu'on reconstruit — et c'est l'intérieur qu'on place.
+
+### Ce qui n'a pas marché, et pourquoi
+
+**L'homothétie exacte des cellules.** En diagramme de Laguerre, une homothétie de rapport `λ` et une
+translation `−c` du diagramme s'écrivent en forme fermée :
+`w_i = λ w0_i + (1−λ)|p_i|² + 2c·p_i`, et alors `C_i(w) = λ C_i(w0) − c`. Toutes les cellules
+rétrécissent du même facteur `λ²`, donc aucune ne meurt — c'est séduisant, et c'est inutilisable
+ici : le terme `|p_i|²` est d'ordre 1 là où tout ce qui se passe localement est d'ordre `10⁻⁴`. Les
+seuls `λ` de cette famille qui ne détruisent pas l'amas sont ceux qu'on ne distingue pas de 1.
+Mesure : `λ` retenu entre 0.93 et 1.00, et 80 à 123 amas abandonnés sur 96 à 143.
+
+**Le Voronoï décalé** (`w_i = λ(w0_i − w̄) + β`, dont `λ = 0` donne tous les poids égaux). Il a une
+garantie apparente — pour `β` assez grand chaque germe appartient à sa propre cellule — et elle est
+fausse, parce que la couronne doit survivre aussi. Le balayage de `β` le montre sans appel, sur un
+amas de 31 inconnues et 19 de couronne dont les poids s'étalent de `−1.4·10⁻³` à `+4.4·10⁻³` :
+
+```
+beta -4.28e-03   interieures mortes  30      couronne morte 0
+beta -6.62e-04   interieures mortes  15      couronne morte 0
+beta +6.40e-04   interieures mortes  10      couronne morte 0
+beta +1.07e-03   interieures mortes   8      couronne morte 1   <-- la couronne lâche
+```
+
+**Aucun `β` ne passe, et il s'en faut de huit à dix cellules.** L'arithmétique le confirme :
+l'étalement des poids de couronne vaut `5.8·10⁻³` quand le carré de la distance entre germes vaut
+`9·10⁻⁴` ; la condition pour qu'un `β` unique existe est que l'étalement reste sous `2·dist²`, on en
+est à **six fois trop**.
+
+### Ce qui marche : le prolongement harmonique
+
+Le défaut est maintenant nommable : **un niveau constant ne peut pas suivre une frontière qui
+varie**. On donne donc à l'intérieur le prolongement harmonique du bord — `L_PP w_P = −L_PR w_R` sur
+le graphe de l'amas, avec les conductivités de Laguerre, résolu en Gauss-Seidel sur quelques dizaines
+d'inconnues. Le champ obtenu épouse la frontière par construction et, étant harmonique, il n'a **ni
+maximum ni minimum intérieur** — or c'est la courbure du champ de poids qui écrase une cellule, pas
+son niveau. La famille complète est
+
+```
+w_i = harm( w_F )_i  +  λ ( w0_i − harm( w0 )_i )  +  β
+```
+
+où `λ = 1` garde le détail local de `w₀` en le reposant sur la nouvelle frontière, `λ = 0` rend le
+prolongement pur, et `β` est encadré par bissection (les inconnues grossissent avec lui, la couronne
+rétrécit : deux monotonies opposées). Le Voronoï décalé en est le cas « frontière constante ».
+
+| `n = 10³`, 2 anneaux | itérations | diagrammes | amas abandonnés | cellules / étape |
+|---|---|---|---|---|
+| `essai-limites` | 52 | 96 | — | — |
+| Voronoï décalé | 48 | 151 | 9 sur 11 | 0.5 – 0.7 M |
+| **harmonique** | **36** | **91** | **0** | **7 k – 27 k** |
+
+Zéro amas abandonné, zéro à un refus par étape, et le coût de la réparation divisé par **cinquante**.
+La boucle bat `essai-limites` sur les deux comptes à la fois.
+
+`n = 5·10³`, 2 anneaux : **59 itérations et 223 diagrammes** contre 100 et 193 — 41 % d'itérations en
+moins, et 170 diagrammes à correction gratuite (53 des 223 sont des jugements), sous les 193 de la
+référence.
+
+**Quatre anneaux sont moins bons que deux** : mêmes itérations, coût multiplié par cinq.
+
+## 15.12 Les amas abandonnés sont les gros, et il n'y a rien à y chercher
+
+À `n = 5·10³`, la première étape gardait 17 amas abandonnés coûtant 2.4 M cellules à eux seuls. Le
+balayage de `β` sur l'un d'eux dit pourquoi — **266 inconnues et 177 de couronne**, soit 5 % du
+diagramme dans un seul bloc :
+
+```
+beta  0.000e+00   interieures mortes 109      couronne morte   8
+beta +4.85e-04    interieures mortes  76      couronne morte  97
+```
+
+À `β = 0`, c'est-à-dire **le prolongement harmonique pur**, 109 des 266 cellules intérieures sont
+déjà mortes. Et la raison est dimensionnelle, donc sans recours : les poids de couronne s'étalent sur
+`10⁻²` à travers un amas large d'une dizaine de cellules, soit `10⁻³` d'écart **par arête**, contre
+`dist² ≈ 9·10⁻⁴`. Le champ de poids est **trop raide pour l'espacement des germes**, et aucune
+interpolation ne peut l'annuler puisque la pente est imposée par le bord. Il n'y a pas de placement
+initial à trouver : la géométrie demandée est elle-même écrasée.
+
+Le remède est donc de **refuser tôt** (`--local-amas-max K`) : au-delà de `K` inconnues on décline
+sans chercher, la boucle divise `F` par deux, et l'amas suivant est plus petit. La taille des amas
+devient le vrai paramètre de la réparation — plus fidèle que le ratio global, qui ne dit rien de la
+façon dont les malades se groupent.
+
+| `n = 5·10³` | itérations | diagrammes | temps | cellules | abandons |
+|---|---|---|---|---|---|
+| sans plafond | 59 | 223 | 9.39 s | 3.6 M | 23 |
+| **K = 128** | **60** | **238** | **3.22 s** | **0.54 M** | **3** |
+| K = 64 | 71 | 303 | 3.10 s | | |
+| K = 32 | 83 | 389 | 3.63 s | | |
+
+À 128 on garde le résultat du cas sans plafond pour **trois fois moins de travail**. En dessous, le
+plafond mord et il faut payer en itérations. C'est le défaut.
+
+### Où en est le relèvement
+
+`n = 5·10³`, contre la référence du banc : **60 itérations contre 97** (0.62×), 238 diagrammes contre
+184 — dont 53 de jugement, donc **185 à correction gratuite, à égalité**, avec 38 % d'itérations en
+moins. La réparation coûte 1.25 s sur 3.22, **monocœur**, face à un Newton sur huit threads.
+
+Ce qui reste, par ordre de rendement : le parallélisme sur les amas (facteur 8, les inconnues de deux
+amas d'un même pas sont disjointes) ; le critère d'arrêt du sous-problème (§ 15.6), qui brûle encore
+treize évaluations par sous-résolution pour constater qu'elle est finie ; les 53 diagrammes de
+jugement, qu'un verdict local suffirait peut-être à remplacer.
+
+## 15.13 `U` : le pas se lit au lieu de se chercher
+
+La boucle cherchait `F` à tâtons — un **diagramme complet par essai**, 113 reculs pour 60 itérations à
+`n = 5·10³`. Or l'information est déjà là. Le flux d'aire qui sort de la cellule `i` par la facette
+`j` vaut exactement `c_ij ( d_j − d_i )`, le terme du laplacien déjà assemblé. Le temps que cette
+facette met à consommer toute la cellule est donc
+
+```
+U_i  =  a_i  /  max_j [ c_ij ( d_j − d_i ) ]        sur les j qui font perdre de l'aire
+```
+
+**Aucune géométrie supplémentaire, aucun calcul de cellule** : une passe sur les arêtes. (Cohérence :
+la somme des flux vaut `( L d )_i = ν_i − a_i`.) La bissection de `limites_masse` était le mauvais
+chemin — 8 695 cellules pour 100 itérations en ne traitant que les mauvaises, donc une dizaine de
+diagrammes par itération si on l'étendait à toutes.
+
+**La courbe des amas est gratuite elle aussi.** On insère les cellules par `U_i` croissant dans une
+union-find en fusionnant avec les voisines déjà insérées : à chaque insertion on connaît la taille du
+plus gros amas. Un tri et `O( n α( n ) )` donnent donc, **pour tous les `F` à la fois**, le nombre de
+malades, le nombre d'amas et la taille du plus gros. Pas besoin d'un essai par `F`, ni d'un thread
+par proposition.
+
+**Le prédicteur est bon.** Le `F` prédit pour un amas de malades ≤ 8 tombe systématiquement juste
+au-dessus du dyadique que la boucle finissait par retenir : 6.49·10⁻² contre 6.25·10⁻² à l'itération
+0, 1.23·10⁻¹ contre 1.25·10⁻¹ à la 8, 2.53·10⁻¹ contre 2.50·10⁻¹ à la 13. Il sur-estime parfois, donc
+la dyadique reste en repli — mais elle ne sert plus qu'aux exceptions.
+
+| | `essai-limites` | relèvement, dyadique | **relèvement par `U`** |
+|---|---|---|---|
+| `n = 10³` | 52 it / 96 diag / 0.32 s | 36 / 91 / 0.40 s | **36 / 79 / 0.83 s** |
+| `n = 5·10³` | 98 / 186 / 2.45 s | 60 / 238 / 2.92 s | **61 / 159 / 2.91 s** |
+| `n = 2·10⁴` | 181 / 355 / 12.41 s | 118 / 659 / 16.36 s | **116 / 384 / 13.37 s** |
+
+Les reculs s'effondrent — 113 → 38, 364 → 102 — et avec eux un tiers à 42 % des diagrammes. **À `10³`
+et `5·10³` le relèvement bat désormais `essai-limites` en diagrammes bruts**, plus seulement à
+correction gratuite. À `2·10⁴` il reste 8 % au-dessus, avec 116 itérations contre 181, et le temps est
+à la parité à 8 % près — la réparation étant encore **monocœur** face à un Newton sur huit threads.
+
+**Le seuil `M` n'est pas critique** : `M = 4` et `M = 8` donnent exactement le même résultat, 16 et 32
+dégradent nettement (455 diagrammes à 32 contre 384 à 8). Défaut : 8. Et il recoupe le plafond de
+taille du § 15.12, mesuré par un chemin indépendant : 8 malades entourés de deux anneaux donnent 15 à
+110 inconnues, soit exactement la plage sous 128.
+
+## 15.14 `U` par la somme des flux, et le relèvement passe devant
+
+Les reculs restants venaient d'une approximation grossière dans `U` : prendre `max_j` du flux revient
+à supposer qu'**une seule** facette dévore la cellule, alors que plusieurs la mangent en même temps.
+La somme des flux sortants est strictement plus conservative et se calcule dans la **même boucle** :
+
+```
+U_i  =  a_i  /  Σ_j max( 0, c_ij ( d_j − d_i ) )
+```
+
+Ce n'était donc pas d'un plafond de confiance sur `F` qu'on avait besoin — un plafond n'aurait fait
+que masquer l'imprécision. C'était que la quantité était fausse d'un facteur qui dépend du nombre de
+facettes dévorantes.
+
+| | `essai-limites` | `U` max | **`U` somme** |
+|---|---|---|---|
+| `n = 5·10³` | 100 it / 193 diag | 61 / 159 (38 reculs) | **61 / 122** (15 reculs) |
+| `n = 2·10⁴` | 183 / 362 | 116 / 384 (102 reculs) | **123 / 331** (65 reculs) |
+
+**−37 % de diagrammes contre la référence du banc à `5·10³`, −9 % à `2·10⁴`** : pour la première fois
+le relèvement gagne sur les deux tailles en diagrammes bruts. Les reculs tombent encore de moitié.
+(Les temps mesurés — 1.57 s contre 2.45 à 3.07 s selon les passes à `5·10³`, 11.4 contre 12.2 s à
+`2·10⁴` — vont dans le même sens, mais ils sont pris hors mode banc et ne valent que comme ordre de
+grandeur.)
+
+**Deux ajouts au passage.** La recherche linéaire du sous-problème est parallélisée : sans
+assemblage, sa boucle n'écrit que `a[q]`, donc aucune dépendance entre cellules. Paralléliser **sur
+les amas** demanderait en revanche de supprimer le `w` partagé, leurs coupeurs se recouvrant — pas
+fait. Et un **buffer tournant** garde les quatre derniers états sains : si une itération démarrait
+d'un état dégénéré, la boucle n'aurait aucun recours, puisqu'une cellule morte n'a plus de voisins
+donc plus de réparation possible (§ 15.9). Il ne s'est jamais déclenché, ce qui est le résultat
+attendu — il reste comme filet, avec son compteur.
+
+## 15.15 Le `U` exact est moins bon que le `U` grossier — et ce qui marche à la place
+
+`U` est une linéarisation en `t = 0` : les flux y sont figés, et la géométrie accélère quand des
+facettes disparaissent. On a donc calculé la **vraie** limite, par bissection, pour les seules
+cellules dont le `U` bon marché tombe sous un horizon `β` — c'est le seul rôle utile de `β` : borner
+le nombre de candidates, une bissection coûtant des calculs de cellule.
+
+**La bissection doit être géométrique.** En arithmétique, `mid = (a_ok + a_bad)/2` depuis `a_ok = 0`
+met dix-sept demi-pas rien que pour descendre jusqu'à `10⁻⁵·β`, alors que `max_tours` en vaut douze :
+elle rend `a_ok = 0`, c'est-à-dire un pas nul — d'autant plus sûrement que `n` est grand, les pas
+admissibles y étant minuscules. On descend donc par facteur 4 puis on prend la moyenne géométrique
+(`OptionsLimites::log_ech`).
+
+**Et le verdict est monotone, dans le mauvais sens** (diagrammes, bissection géométrique) :
+
+| | `n = 5·10³` | `n = 2·10⁴` |
+|---|---|---|
+| sans bissection | **122** | **331** |
+| β = 1/64 | 122 (7 cellules raffinées) | 331 (460) |
+| β = 1/16 | 133 | 369 |
+| β = 1/4 | 161 | 430 |
+
+Plus on raffine, pire c'est, et `β → 0` retrouve le comportement non raffiné. Le mécanisme se lit
+dans les reculs — 65 sans raffinement, 122 à `β = 1/4` — alors même que `β` **plafonne** `F`. Le
+raffinement **remonte** `U` (la vraie limite est bien plus loin que ce que le flux en `t = 0`
+suggère), donc `F` monte, donc la réparation échoue plus souvent. La conservativité accidentelle du
+`U` grossier faisait du bon travail.
+
+**Ce n'est donc pas `U` qui est faux, c'est le critère.** « Le plus grand `F` laissant au plus 8
+malades » ne prédit pas la réussite de la réparation ; avec un `U` exact il est appliqué exactement,
+et il choisit mal.
+
+### La raideur, qui est le bon critère
+
+Ce qui décide vraiment a été mesuré au § 15.12 : un amas échoue quand l'étalement des poids **à
+travers lui** dépasse quelques `dist²`. C'est un gradient accumulé sur une dizaine de cellules, pas
+une condition par arête. (Une paire `i, j` avec `|w_i − w_j| > |p_i − p_j|²` signifie seulement que le
+bissecteur passe au-delà d'un germe — parfaitement banal en Laguerre, et sans conséquence.)
+
+L'union-find peut le suivre : en insérant par `U` croissant, on maintient par amas les `min`/`max` de
+`w` et de `d` et le plus petit `dist²` de ses arêtes, donc la borne
+
+```
+étalement( F )  ≤  ( w_max − w_min )  +  F ( d_max − d_min )
+```
+
+croissante en `F`, lisible dans le même balayage.
+
+| diagrammes | `n = 5·10³` | `n = 2·10⁴` |
+|---|---|---|
+| `essai-limites` | 186 | 363 |
+| taille d'amas seule | 122 (15 reculs) | 331 (65 reculs) |
+| **+ raideur** | 123 (**8 reculs**) | **257** (**26 reculs**) |
+
+**−22 % de diagrammes contre la version précédente à `2·10⁴`, −29 % contre `essai-limites`**, et les
+reculs divisés par 2.5.
+
+**Mais `R` n'est pas un vrai réglage** : 1, 2, 4 et 8 donnent le même résultat au diagramme près. La
+borne ne franchit pas le plafond progressivement, elle **saute** — et ce saut est la fusion de deux
+amas, qui fait bondir l'étalement d'un coup. Le critère revient donc en pratique à « s'arrêter à la
+première grosse fusion ». Défaut : 2.
+
+**Le seuil de « malade » en ratio `a/ν`** (`--releve-ratio-eps`) est neutre à 0.05 et **casse la
+boucle** à 0.2 et 0.5 — quatre itérations puis stagnation. Élargir la définition de malade sans
+élargir le budget `--releve-ratio` rend tout pas inacceptable : les deux réglages sont couplés, et ils
+n'ont pas été balayés ensemble.
+
+**Une limite structurelle à garder en tête** : `U` comme la raideur se lisent sur le graphe à
+`F = 0`, donc **tous deux sont aveugles aux coupes qui n'existent pas encore**. C'est la même cécité
+qu'au § 15.9 — un coupeur absent ne produit aucune facette, donc rien dans `L` ne le signale.
+
+## 15.16 « Peut-on toujours y placer un diagramme ? » — non, et pourquoi
+
+L'homothétie exacte des cellules est un fait, pas une approximation :
+
+```
+w_i = λ w⁰_i + (1−λ)|p_i|² − 2 t·p_i + β      ⟹      C_i(w) = λ·C_i(w⁰) + t
+```
+
+Le motif entier se contracte, **aucune cellule ne disparaît**. La question était donc : peut-on
+toujours insérer un tel motif, aussi petit qu'il faille, dans un amas dont la couronne est gelée à
+`w_F` ? La réponse mesurée est **non**, et le chemin pour y arriver a coûté quatre hypothèses
+théoriques successives, toutes fausses.
+
+**Ce qu'il a fallu corriger pour que la mesure veuille dire quelque chose.**
+
+* `x*` **n'est pas `argmin g`** avec `g(y) = max_k(2y·q_k − |q_k|² + v_k)`. « Là où l'intérieur gagne
+  le moins cher » veut dire « là où l'arrangement gelé résiste le moins », donc là où une cellule
+  gelée est déjà la plus mince : on la tue au moment même où l'intérieur apparaît.
+* La version « centrée » par transformée de distance sur grille rendait un rayon libre de 0.099 sur
+  un amas de diamètre 0.05 — la région marquée touchait le bord de la grille. `x*` est finalement le
+  **barycentre des cellules intérieures valides à `F`**, sans grille ni paramètre.
+* **La translation dépend de `λ`** : `t = x* − λ z₀`, avec `z₀` le centre du motif d'origine. Poser
+  `t = x*` est inoffensif à `λ = 10⁻⁸` mais place le motif à `(0.19, 0.17)` de la cible à `λ = 0.25`
+  — hors d'un amas large de 0.15. Les deux bouts de l'échelle échouaient donc pour deux raisons
+  différentes, ce qui donnait l'illusion d'une impossibilité uniforme.
+* Un balayage géométrique de `β` **ne peut pas répondre** : la fenêtre cherchée peut être `10⁷` fois
+  plus étroite que son pas. Il faut une **bissection encadrée**, et imprimer la largeur.
+
+**Le verdict, une fois tout cela corrigé.** Sur deux amas, sept décades de `λ`, bissection à
+l'epsilon machine : aucun `β` ne garde intérieur et couronne vivants. Et le comptage au passage dit
+pourquoi — ce n'est pas une transition, c'est un **recouvrement** :
+
+```
+transition autour de beta +9.248e-01 :
+  beta -1e-12 :   1 inconnue morte / 66,  54 couronnes mortes / 55
+  beta +1e-16 :   0 inconnue morte / 66,  54 couronnes mortes / 55
+```
+
+Au moment où la dernière inconnue s'allume, **54 cellules de couronne sur 55 sont mortes depuis
+longtemps**.
+
+**Le mécanisme.** Contracter d'un facteur `λ` impose le profil `(1−λ)|p_i − z|²`, dont l'étalement à
+travers l'amas est non nul dès que `λ < 1`. Les germes **loin de `z`** ont donc un poids bien plus
+élevé et avalent la couronne, pendant que ceux **près de `z`**, de poids plus faible, dorment encore.
+Le `β` qui réveille les derniers a depuis longtemps tué les premières. **Contraction et compatibilité
+de niveau avec la couronne sont antagonistes** : l'une exige un profil quadratique, l'autre un profil
+plat.
+
+**Ce qui réconcilie tout.** La famille qui marche (§ 15.11) est bien un *scaling* — mais de l'écart
+au champ compatible avec le bord, pas du motif géométrique :
+
+```
+w_i  =  harm( w_F )_i  +  λ ( w⁰_i − harm( w⁰ )_i )  +  β
+```
+
+À `λ = 0` c'est le champ harmonique pur, dont l'étalement est celui de la couronne **par
+construction** ; à `λ = 1` on garde tout le détail local de `w⁰`. C'est le bon objet à contracter.
+
+## 15.17 Les tailles, remesurées sur le code complet — et deux réglages qui se périment
+
+Le plafond `K = 128` (§ 15.12) et le seuil `M = 8` (§ 15.13) avaient été réglés **avant** `U`, avant
+le critère de raideur et avant le parallélisme. Remesurés sur le code complet, en diagrammes :
+
+| | `n = 5·10³` | `n = 2·10⁴` |
+|---|---|---|
+| `K = 32` | 202 | 431 |
+| `K = 64` | 165 | 317 |
+| `K = 128` *(ancien défaut)* | 123 | 257 |
+| `K = 256` | 114 | 227 |
+| **`K = 0`, sans plafond** | **114** | **227** |
+
+**Le plafond nuit désormais, et on l'éteint.** `K = 256` égale `K = 0` : plus aucun amas n'atteint
+cette taille. Il était la bonne réponse mesurée à un problème qui n'existe plus — à l'époque les gros
+amas coûtaient 2.4 M cellules pour rien ; depuis, le critère de raideur choisit `F` de sorte qu'ils
+ne se forment plus, et le plafond ne décline que des amas qui auraient réussi.
+
+**`M` est devenu inerte** : 4, 8, 16, 32 donnent des résultats identiques au diagramme près, parce
+que la raideur choisit `F` en premier à chaque fois. C'est le signe qu'un mécanisme en amont a pris
+la main.
+
+**Les anneaux confirment 2**, franchement : 174 / **123** / 177 à `5·10³`, 316 / **257** / 322 à
+`2·10⁴` pour 1, 2, 3 anneaux.
+
+### Raideur contre `M` : deux tempéraments, et lequel tient à l'échelle
+
+Raideur éteinte, `M` seul pilote `F`. Les deux critères se partagent le terrain en sens opposés —
+`M` prend de plus grands pas mais se trompe plus souvent :
+
+| | `essai-limites` | raideur | `M = 8` seul |
+|---|---|---|---|
+| `n = 5·10³` | 98 it / 186 diag | 72 / 114 (5 reculs) | **57 / 106** (10 reculs) |
+| `n = 2·10⁴` | 179 / 351 | **134 / 227** (15) | 113 / 277 (47) |
+| `n = 10⁵` | 397 / 792 / 188 s | **324 / 574 / 167 s** (55) | 267 / 747 / 265 s (156) |
+
+À `5·10³` l'audace gagne ; dès `2·10⁴` la prudence l'emporte en diagrammes, et à `10⁵` l'écart est
+franc — 574 contre 747, et 167 s contre 265 s. **La raideur reste le défaut**, et son avance grandit
+avec `n`. `R` n'est d'ailleurs plus tout à fait insensible : 0.5 et 4 coûtent 233 diagrammes contre
+227 pour 1 et 2 à `2·10⁴` — optimum plat entre 1 et 2, ce qui lève la réserve du § 15.15.
+
+### Où en est le relèvement, sur trois décades
+
+| `n` | `essai-limites` | **relèvement** | diagrammes |
+|---|---|---|---|
+| 5·10³ | 98 it / 186 diag | **72 / 114** | **−39 %** |
+| 2·10⁴ | 179 / 351 | **134 / 227** | **−35 %** |
+| 10⁵ | 397 / 792 / 188 s | **324 / 574 / 167 s** | **−28 %** |
+
+**Une leçon de méthode.** Deux réglages mesurés se sont périmés dans cette session par l'arrivée d'un
+mécanisme en amont : le plafond `K`, et les 307 diagrammes de jugement du § 15.8 que je croyais
+structurels et qui étaient un bug. Un réglage devenu **inerte** — comme `M` aujourd'hui — signale que
+quelque chose en amont a pris la main, et mérite qu'on aille voir.
+
+## 15.18 Le gradient local après le placement : indispensable, et quatre itérations suffisent
+
+Le placement harmonique (§ 15.11) pose un motif **vivant mais très contracté** — les aires valent
+`lam²` de leur taille. Ce qui le redéploie, c'est la boucle de Gauss-Newton locale sur
+
+    Phi = somme_( aretes ) ( x_i - x_j )²,   x = A / nu
+
+qui tourne juste après, dans `resout_amas`. Question légitime : le Newton global qui suit ne
+ferait-il pas le travail tout seul ? Balayage du plafond d'itérations, `n = 10⁵` :
+
+| `--local-maxit` | itérations | diagrammes | reculs | temps |
+|---|---|---|---|---|
+| **0** (placement seul) | 416 | **1063** | 243 | 209,7 s |
+| 1 | 384 | 897 | 180 | 182,7 s |
+| 2 | 333 | 622 | 72 | 145,4 s |
+| **4** | 323 | **566** | 53 | **141,4 s** |
+| 40 *(ancien défaut)* | 324 | 574 | 55 | 142,2 s |
+
+**Non.** Sans ces itérations le relèvement est *pire qu'`essai-limites`* (1063 diagrammes contre 792)
+— le Newton global n'absorbe pas un motif contracté, il l'encaisse en 243 reculs. Le placement seul
+ne suffit donc pas : il rend un état **vivant**, pas un état **utilisable**.
+
+Mais **quatre itérations font aussi bien que quarante**, et légèrement mieux. Le défaut passe de 40 à
+4 : même résultat, coût borné — et comme cette boucle est séquentielle, son plafond est aussi un
+plafond sur la part non parallélisable du relèvement (§ 17.9).
+
+---
+
+# 16. LE RELÈVEMENT PAR AMAS (`image --local-nl --local-amas`)
+
+Le § 14 répare la zone pincée comme **un seul système couplé**, résolu par gradient conjugué à
+travers l'arbre global. C'est une maladresse, et la mesure la désigne : la zone n'est pas un bloc
+mais une **poussière d'amas** — 20 composantes connexes dont la plus grosse fait 62 cellules, à
+`F = 0.05` et deux couches ; 126 composantes à `F = 0.1`. Le couplage entre amas éloignés est
+fictif, et sur vingt inconnues il n'y a **aucune raison de passer par une structure
+d'accélération** : une cellule d'amas se calcule en force brute contre l'amas et sa couronne,
+quelques dizaines de germes (`Balayage2`, le fournisseur témoin du banc), au lieu d'un parcours de
+BSP précédé d'un `set_weights` en `O( n )`. Le découpage par amas ne réduit pas ce coût : il le
+supprime.
+
+Les trois ensembles d'un amas : `P` les **inconnues** (la composante connexe) ; `R` la **couronne**,
+à poids imposés mais **dans l'objectif** — c'est ce qui la protège ; `C` les **coupeurs**,
+`P + R + N( R )`, dont la force brute rend les cellules de `P + R` exactes.
+
+**Deux choses qui ont chacune coûté une mesure fausse.** Les amas se fusionnent dès que **leurs
+couronnes** se touchent (composantes de `dist ≤ N+1`, pas de `dist ≤ N`) : sinon deux amas voisins
+partagent des cellules de bord, chacun les protège dans son coin, et leurs effets s'additionnent
+pour les tuer. Et **le chemin reste commun** : donner à chaque amas sa propre continuation ne marche
+pas, chacun résolvant en supposant les autres non réparés, la superposition n'est cohérente avec
+aucune des solutions.
+
+## 16.1 Le coût s'effondre, comme prévu
+
+`n = 2·10⁴`, image 512², deux couches, référence à 100–103 diagrammes :
+
+| `F` | amas | + gros | inconnues | sous-pas (refus) | itér. | cellules | **temps** | diag. après |
+|---|---|---|---|---|---|---|---|---|
+| 0.03 | **1** | 63 | 63 | 4 (0) | 18 | 30 438 | **0.05 s** | **94** |
+| 0.05 | 17 | 76 | 343 | 21 (10) | 732 | 442 152 | 0.77 s | ✗ |
+| 0.10 | 117 | 289 | 1 241 | 31 (21) | 4 646 | 2 994 350 | 11.1 s | ✗ |
+
+À `F = 0.03` — **un seul amas de 63 inconnues** — la réparation coûte **cinquante millisecondes**,
+soit environ un diagramme, et le Newton qui repart de là converge en 98 diagrammes au lieu de 100.
+C'est le régime que l'idée visait, et il est net.
+
+## 16.2 Le défaut, trouvé puis corrigé : la structure de voisinage vieillit
+
+Au-delà de `F = 0.03`, la première version tombait à une masse globale nulle. Trois hypothèses
+raisonnables ont été **éliminées par la mesure** : la liste de coupeurs trop courte (deux couches de
+plus ne changent rien au chiffre près) ; la dérive de l'aire de la couronne (lui donner pour cible
+**l'aire qu'elle avait avant la réparation**, résidu `g( x ) + √λ ( x − x_ref )`, **divise le coût
+par deux** — 0.60 → 0.31 s à `λ = 10` — et ne change pas la masse minimale) ; le verdict pris amas
+par amas (remesuré après la boucle maintenant, correct mais sans effet).
+
+**La cause, trouvée par contradiction** : la mesure locale d'un amas annonçait `0.303 ν` pour sa pire
+cellule là où la mesure globale des **mêmes poids** donnait `0.000` — pour une **inconnue**, à
+distance 2. La cellule locale était un **sur-ensemble** : il lui manquait un coupeur. Aucun compteur
+de facettes ne pouvait le voir, puisqu'un coupeur manquant ne produit **aucune facette**. Les listes
+de candidats étaient calculées **une fois**, sur la géométrie de la cible, alors que la réparation
+**déplace beaucoup** les cellules — c'est son objet : un amas qui gonfle avale une cellule d'un amas
+voisin qui ne l'avait jamais eue pour candidat.
+
+**Le remède** (`--local-refresh K`) : refaire la structure de voisinage **une fois par sous-pas**,
+pas par évaluation. Une passe globale par sous-pas contre des centaines d'évaluations locales — le
+facteur cent est préservé. Et il corrige : à `F = 0.05`, masse minimale globale **0.280** au lieu de
+0.000, et le Newton d'après converge en **87 diagrammes contre 105**.
+
+## 16.3 Deux objectifs, et celui qui a l'air mieux posé perd
+
+Viser `ν` sur l'intérieur **force** à prendre de la masse à la couronne : on s'impose une contrainte
+de conservation dont on n'a pas besoin, puisqu'on ne cherche pas la solution mais un état non
+dégénéré. Un objectif sans cible absolue s'impose donc naturellement — le **gradient d'aire**
+(`--local-grad`) :
+
+        Φ = Σ_( arêtes de la zone ) ( A_i/ν_i − A_j/ν_j )²
+
+qui ne pousse sur rien, et dont un zéro au milieu d'un champ lisse est impossible. Gauss-Newton sans
+matrice : `Lᵀ D K D L d = − Lᵀ D K x`, avec `K` le laplacien du graphe et `D = diag( 1/ν )`.
+
+`n = 2·10⁴`, image 512², deux couches, référence **105 diagrammes** :
+
+À la sortie, les poids valent `w₀ + s·F·d` partout sauf sur les inconnues : **le bord n'est le pas
+de Newton demandé que si `s = 1`**. Sinon le coefficient de relaxation réellement obtenu est
+`s·F`, et c'est lui qu'il faut lire — la colonne est là pour ça. Rappel : `α* = 0.0156` sans
+réparation.
+
+| objectif | rafr. | `F` | `s` | **coeff. réel `s·F`** | min globale | cellules | passes | temps | **diag. après** |
+|---|---|---|---|---|---|---|---|---|---|
+| barrière | non | 0.03 | 1.00 | 0.030 | 0.358 | 25 764 | 0 | 0.05 s | **92** |
+| barrière | non | 0.05 | 1.00 | 0.050 | **0.000** ✗ | 213 989 | 0 | 0.29 s | ✗ |
+| barrière | oui | 0.03 | 1.00 | 0.030 | 0.338 | 21 030 | 4 | 0.10 s | 95 |
+| barrière | oui | 0.05 | 1.00 | **0.050** | **0.280** | 326 076 | 12 | 0.84 s | **87** |
+| barrière | oui | 0.10 | 0.34 | 0.034 | 0.041 | 1 358 717 | 21 | 7.08 s | 89 |
+| **gradient** | oui | 0.03 | 1.00 | 0.030 | 0.213 | 18 935 | 5 | 0.14 s | **114** |
+| **gradient** | oui | 0.05 | 1.00 | 0.050 | 0.240 | 544 666 | 19 | 1.40 s | 92 |
+| **gradient** | oui | 0.10 | 0.12 | **0.0125** | 0.326 | 814 853 | 13 | 3.70 s | 102 |
+
+**Deux lignes ne disent pas ce que leur `F` laisse croire.** « Barrière, `F = 0.10` » ne prend pas un
+pas de 0.1 mais de **0.034** : elle est comparable à la ligne `F = 0.03`, pas à un pas trois fois plus
+grand. Et « gradient, `F = 0.10` » prend un pas de **0.0125**, c'est-à-dire **sous `α*`** : ce run
+avance moins loin que le Newton amorti tout seul, et demande quand même 102 diagrammes ensuite.
+
+**Le gradient d'aire tient toutes ses promesses et perd quand même.** Il rend bien un état non
+dégénéré (0.213 à 0.326), sans aucune pression sur la couronne, et il est moins cher par itération.
+Mais le point qu'il produit est un **plus mauvais départ pour Newton** : 114, 92 et 102 diagrammes
+contre 95, 87 et 89 pour la barrière — et à `F = 0.03` il est carrément **nuisible** (114 contre 105
+sans rien faire).
+
+La raison est instructive, et elle retourne l'argument : en visant `ν`, la barrière fait *une partie
+du travail de Newton*. Sa « pression » sur la couronne n'est pas un défaut à corriger — c'est le
+prix de l'avance qu'elle prend. Lisser le champ d'aires garantit la non-dégénérescence, ce qui était
+bien le but affiché, mais ne rapproche de rien.
+
+## 16.4 Le bilan net, et où est le régime utile
+
+En comptant un diagramme pour `n` calculs de cellule, et les passes de rafraîchissement pour ce
+qu'elles sont :
+
+| | dépensés | économisés | **net** |
+|---|---|---|---|
+| barrière, `F = 0.03`, sans rafraîchissement | 1.3 | 13 | **+11.7** |
+| barrière, `F = 0.05`, avec | 16 + 12 | 18 | −10 |
+| gradient, `F = 0.03`, avec | 1 + 5 | −9 | −15 |
+
+Le régime utile est donc **un amas, pas de rafraîchissement, objectif barrière** : là où le pincement
+est un foyer unique, la réparation coûte un diagramme et en fait gagner treize. Le rafraîchissement
+n'est nécessaire **que** dès qu'il y a plusieurs amas susceptibles de s'avaler l'un l'autre — et son
+coût mange alors le gain. Rendre le rafraîchissement **local** (ne relire que le voisinage des amas
+qui ont bougé, au lieu d'un diagramme complet) est le chantier qui déciderait de tout le reste.
+
+**L'acquis** est ailleurs et il est solide : la décomposition en amas fait tomber le coût d'un
+facteur qui n'a rien de marginal — un diagramme au lieu de quarante pour le même relèvement — parce
+qu'elle supprime la dépendance en `n`. C'est la seule voie mesurée qui rende le relèvement
+économiquement défendable.
+
+---
+
+# 17. LE SOLVEUR LINÉAIRE, OU 60 % DU TEMPS DANS UN SEUL FIL
+
+## 17.1 Le constat : `--threads 8` n'achetait pas ce qu'on croyait
+
+Un œil sur le CPU pendant un banc suffit à voir le problème : la machine passe le plus clair de son
+temps **mono-thread**. Mesuré, `n = 10⁵`, `--threads 8`, huit cœurs physiques :
+
+| | temps écoulé | `task-clock` | **CPU occupés** |
+|---|---|---|---|
+| `essai-limites` | 155,7 s | 410,3 s | **2,64 / 8** |
+| relèvement | 144,1 s | 369,3 s | **2,56 / 8** |
+
+Le diagramme, lui, est bien réparti. Le coupable était ailleurs, et la comptabilité interne ne le
+montrait pas : la ligne du relèvement affichait `lin 0.00`, **un trou dans les compteurs et pas un
+solveur gratuit** — `resout_releve` appelait `lin.resout` sans le chronométrer. Une fois le poste
+rebranché, tout est visible :
+
+```
+newton CONVERGE : 51 it, 32.63 s  [ diag 8.24  asm 0.28  lin 13.27  lim 0.00 ]
+```
+
+Par étape de continuation, à `n = 10⁵`, relèvement : **`lin` = 84,4 s sur 142,0 s, soit 59 %** — et
+68 % pour `essai-limites`. Un seul fil, tout du long.
+
+## 17.2 Trois réglages jamais remis en question
+
+La cause tenait en trois lignes de `Opts`, chacune posée pour de bonnes raisons devenues fausses.
+
+**`solver = "chol"`.** `main_image` résolvait par Eigen `SimplicialLDLT` — une factorisation de
+Cholesky creuse, **strictement séquentielle**, en `O( n^1.5 )`. Or `Lineaire.h` documente lui-même
+l'alternative depuis le début : *« AMGCL […] se construit en parallèle (OpenMP). 4.9x sur le total à
+n=1e6 contre Cholesky »*. Elle n'avait simplement jamais été activée ici.
+
+**`amgvar = RS_GS`.** Le variant par défaut d'AMGCL était Ruge-Stuben + Gauss-Seidel, choisi sur le
+**nuage de lignes**, où son choix de nœuds grossiers arête par arête divise les itérations par trois.
+Sur une densité image il perd — et il est **doublement séquentiel** chez amgcl, le coarsening comme
+le lisseur. L'agrégation lissée + `spai0` est parallèle des deux côtés.
+
+**`tol = 1e-10`, jamais remplacée.** Une direction de Newton **amortie** ne demande pas dix chiffres :
+la recherche linéaire vérifie le pas de toute façon. Mesure à `n = 2·10⁴` (`amg var 0`) : 8,27 s à
+`1e-10`, 7,58 à `1e-6`, 7,06 à `1e-4`. On s'arrête à `1e-6` — à `1e-4` le compte de diagrammes
+remonte (566 → 574 à `n = 10⁵`) et le gain de solveur commence à être repayé en géométrie.
+
+## 17.3 Ce que ça vaut, sur trois décades
+
+Nouveau défaut : `--solver amg --amg-var 0 --amg-tol 1e-6`.
+
+| `n` | méthode | avant (`chol`) | après | gain | diagrammes |
+|---|---|---|---|---|---|
+| 5·10³ | `essai-limites` | 2,63 s | **1,67 s** | −36 % | 186 = 186 |
+| 5·10³ | relèvement | 1,91 s | 1,88 s | — | 114 = 114 |
+| 2·10⁴ | `essai-limites` | 12,52 s | **7,31 s** | −42 % | 353 → 357 |
+| 2·10⁴ | relèvement | 10,98 s | **7,92 s** | −28 % | 218 = 218 |
+| **10⁵** | `essai-limites` | 159,34 s | **90,72 s** | **−43 %** | 809 → 796 |
+| **10⁵** | relèvement | 144,96 s | **93,37 s** | **−36 %** | 566 = 566 |
+
+Le gain **croît avec `n`**, ce qui est la signature attendue : `O( n^1.5 )` séquentiel contre `O( n )`
+parallèle. Le nombre de diagrammes ne bouge pas — la direction est la même — donc le gain est pur.
+L'occupation passe de **2,32 à 5,63 CPU** sur 8 à `n = 10⁵`.
+
+**Hors du cas facile.** Tout le réglage ci-dessus a été fait sur `--sans-trou`, et un solveur itératif
+n'a pas les marges d'une factorisation directe : on vérifie.
+
+| cas | `chol` | défaut | diagrammes |
+|---|---|---|---|
+| avec trous (zéros dans l'image), `2·10⁴` | 8,16 s | **5,12 s** | 170 = 170 |
+| avec trous, `10⁵` | 115,37 s | **69,51 s** | 442 = 442 |
+| diracs tirés selon `rho`, `2·10⁴` | 9,78 s | **6,99 s** | 204 = 204 |
+
+Résultats **identiques au diagramme près** dans tous les cas, et plus rapides dans tous les cas. Les
+cas à trous ne convergent pas — mais ni avant ni après : c'est le problème des zéros de l'image
+(§ 11), indépendant du solveur.
+
+## 17.4 Le multigrille maison, porté du GPU (`--solver mg`)
+
+`gpu_des_familles/src/gpu/Amg2D.cuh` contient un multigrille écrit pour la carte, dont l'idée
+centrale est belle et *a priori* aussi valable sur CPU :
+
+> **L'agrégation est gratuite.** Les germes sont rangés dans l'ordre de l'arbre, qui est une courbe
+> remplissante : des rangs consécutifs sont voisins dans le plan. Agréger, c'est `rang >> 2` — quatre
+> germes par paquet, sans appariement, sans matching, sans compaction. Le niveau suivant s'agrège
+> pareil (`a >> 2`) : la hiérarchie entière tient dans un décalage.
+
+`src/solver/Multigrille.h` le porte fidèlement — même agrégation, même cycle en V (Jacobi amorti
+`ω = 0.7`, `ν = 2`), même K-cycle, mêmes constantes. **Quatre écarts assumés**, chacun pour une
+raison mesurée.
+
+**La carte inverse est gratuite elle aussi, et on s'en sert.** Le paquet `a` contient exactement les
+rangs `4a..4a+3`. On assemble donc le grossier **en balayant les lignes grossières**, un fil par
+ligne, sans atomique et **sans le tri CUB** que le GPU doit faire (il émet un triplet par arête, trie,
+réduit par clef). La restriction se fait de même par **ramassage** au lieu de dispersion.
+
+**Jacobi à deux tampons.** Le noyau CUDA lit `x[ col ]` pendant que d'autres fils l'écrivent : c'est
+un hybride Jacobi/Gauss-Seidel non déterministe. Sur la carte ça passe ; dans un préconditionneur de
+CG c'est faux en droit — CG exige un opérateur **linéaire fixe**. Un vecteur de plus, et l'opérateur
+redevient exactement symétrique.
+
+**OpenMP et pas `parallel_for`.** `util/parallel.h` crée et joint ses fils à chaque appel, avec
+épinglage : une cinquantaine de microsecondes. Le niveau le plus grossier en demande cent vingt par
+cycle sur mille inconnues — la création coûterait cent fois le calcul.
+
+**Le niveau le plus grossier est résolu, pas lissé** (§ 17.6).
+
+### La jauge : un piège qui coûte tout
+
+Premier essai : Newton **stagne immédiatement** — résidu `1.14e+01` inchangé après deux itérations,
+31 reculs. La cause n'est pas dans le multigrille, elle est dans son contrat avec l'appelant.
+
+La moyenne nulle est la bonne jauge **pour résoudre** : le laplacien a les constantes pour noyau,
+`b = ν − a` est déjà de somme nulle, et projeter est symétrique là où rayer une ligne ne l'est pas.
+Mais le reste du code suppose l'autre — `Newton.h` écrit
+
+```cpp
+for ( SI i = 0; i < n; ++i ) w2[ i ] = w[ i ] + t * d[ i ];
+w2[ 0 ] = 0;                         // la jauge, imposee et non esperee
+```
+
+Avec `d[ 0 ] ≠ 0`, cette ligne **n'impose plus une jauge, elle mutile la direction sur une
+composante**. Les deux jauges décrivent la même direction à une constante près — on translate donc
+la solution en sortie. Une ligne, et le multigrille rend exactement les mêmes 114 diagrammes que
+Cholesky.
+
+**La leçon** : une jauge n'est pas un détail interne au solveur, c'est une **interface**. Quand deux
+codes en supposent deux, l'un des deux échoue silencieusement — ici par stagnation, le symptôme le
+plus difficile à rattacher à sa cause.
+
+## 17.5 Le niveau le plus grossier était le poste dominant
+
+Le portage tel quel coûtait **23,84 s** à `n = 2·10⁴`, contre 11,07 pour Cholesky. Trois mesures
+indépendantes désignent le même coupable :
+
+| | temps |
+|---|---|
+| `mg` défaut (K-cycle 2, 120 Jacobi au fond) | 23,84 s |
+| `--mg-gros 40` (moins de balayages) | 15,94 s |
+| `--mg-k 0` (moins de visites) | 16,01 s |
+| `--mg-stop 200` (un fond plus petit) | 17,80 s |
+| `--mg-gros 300` | 40,67 s |
+| `--mg-stop 4000` | 54,72 s |
+| `--mg-nu 1 / 3 / 4` | 26,0 / 24,1 / 24,0 |
+
+Moins de balayages, moins de visites, ou un niveau plus petit donnent **le même −30 %** : c'est bien
+le travail au fond du cycle qu'on paie, et pas le lissage. Le K-cycle visite le fond **quatre fois**
+par application, à 120 balayages chacune — 480 boucles minuscules par itération de CG. Sur la carte
+c'est un bon arbitrage : le parallélisme est massif et un lancement de noyau coûte 5 µs. Sur huit
+cœurs, c'est le poste dominant.
+
+## 17.6 Le fond résolu, et le K-cycle qui se périme
+
+À mille inconnues, une factorisation de Cholesky creuse coûte quelques millisecondes **une fois par
+hiérarchie** et vingt microsecondes par visite. On résout donc, au lieu de lisser — et la correction
+grossière devient **exacte**.
+
+| | temps |
+|---|---|
+| `mg` réglé, sans fond exact | 13,68 s |
+| **`mg` fond exact, `--mg-k 0`** | **11,23 s** |
+| `mg` fond exact, `--mg-k 1` | 11,68 s |
+| `mg` fond exact, `--mg-k 2` | 12,47 s |
+
+**Le K-cycle coûte désormais au lieu de rapporter**, et c'est cohérent : il n'était là que pour
+compenser la faiblesse de la correction grossière de l'agrégation non lissée. Une fois cette
+correction exacte, il ne reste que son prix. C'est le deuxième réglage de cette étude qui se périme
+par l'arrivée d'un mécanisme en amont (cf. § 15.17).
+
+## 17.7 Le verdict : le portage est juste, et c'est le matériel qui a changé d'avis
+
+`n = 10⁵`, relèvement, **566 diagrammes pour tous** — les trois solveurs rendent la même direction.
+
+| solveur | total | mise en forme | **hiérarchie** | résolution | it. CG | CPU / 8 |
+|---|---|---|---|---|---|---|
+| `chol` | 145,1 s | 3,6 | 25,8 | 55,9 | — | 2,3 |
+| `amg0` | 103,8 s | 3,0 | 13,1 | 33,0 | 14 373 | 5,9 |
+| `amg0 --amg-tol 1e-4` | **87,5 s** | 3,0 | 13,0 | 15,9 | 6 809 | 5,5 |
+| `mg --mg-k 0` | 157,4 s | 0 | **1,77** | 100,7 | 47 146 | **6,8** |
+| `mg k0 stop3000 tol1e-4` | 98,8 s | 0 | **2,37** | 40,4 | 18 607 | 6,0 |
+
+**Le pari tient exactement là où il était annoncé, et échoue exactement là où l'agrégation non lissée
+est faible.** La hiérarchie du portage coûte **2,4 s contre 13,0 s** pour AMGCL — l'agrégation par
+`rang >> 2` est bien gratuite, 5,5× moins cher, et c'est son seul avantage. Mais il lui faut
+**18 607 itérations de CG contre 6 809**, soit 2,7×, et sur CPU ce facteur écrase l'économie de
+montée. Aucun réglage du fond n'y change rien : ce n'est pas le cycle, c'est le **taux de
+convergence** de l'agrégation non lissée. Le remède est connu et c'est ce que fait AMGCL — la
+prolongation lissée `P̂ = P − ω D⁻¹ A P`, qui demande un vrai produit triple creux.
+
+Sur carte l'arbitrage s'inverse : les itérations y sont quasi gratuites, le tri et la réduction de la
+montée coûtent, et le produit triple est exactement ce qu'un GPU n'aime pas. **Le portage est fidèle ;
+c'est le matériel qui a changé d'avis.** `--solver mg` reste dans le code, à parité avec Cholesky et
+à 13 % d'AMGCL ; le chemin pour le faire gagner est la prolongation lissée, et il est chiffré : il
+faudrait diviser ses itérations par 2,7 pour rentabiliser sa montée cinq fois moins chère.
+
+## 17.8 Le critère d'arrêt à 1 % : gratuit, et sans effet
+
+Proposition : arrêter Newton sur `max_i | A_i / ν_i − 1 | < 1 %` au lieu de `1e-6`. C'est exactement
+la quantité déjà affichée (`max|a-nu|/nu`) et déjà comparée à `NewtonOptions::tol` — donc rien à
+coder, `--newton-tol 1e-2`.
+
+| `n = 2·10⁴`, relèvement | diagrammes | temps |
+|---|---|---|
+| `chol` | 218 | 11,09 s |
+| `chol --newton-tol 1e-2` | 211 | 10,84 s |
+| `amg0` | 218 | 8,25 s |
+| `amg0 --newton-tol 1e-2` | 211 | 8,39 s |
+
+Sept diagrammes de moins sur 218 (−3 %), et **aucun gain de temps mesurable**. La raison est
+mécanique : les itérations supprimées sont les **dernières** de chaque étape, celles où le résidu est
+déjà petit. Le diagramme y coûte le prix normal, mais le système linéaire y converge en quelques
+itérations de CG — on coupe la queue la moins chère. Newton étant quadratique à l'arrivée, il n'y a
+que deux itérations entre 1 % et `1e-6`.
+
+Le réglage reste disponible pour qui veut un plan approché ; il n'y a pas de raison d'en faire le
+défaut, puisqu'il dégrade la précision du plan sans rien rendre en échange.
+
+## 17.9 Ce qui reste séquentiel
+
+Une fois le solveur linéaire parallèle, le poste séquentiel suivant est **la recherche `( λ, β )` du
+placement harmonique** : 4,62 s sur les 8,35 s de réparation à la dernière étape de `n = 10⁵` (le
+reste : géométrie 0,57, assemblage 0,69, algèbre 0,52, construction des amas 0,92). C'est un balayage
+géométrique suivi d'une bissection, amas par amas, sur 628 amas — et les amas sont indépendants.
+
+Le chantier suivant est donc **paralléliser sur les amas**, ce qui demande de supprimer le `w`
+partagé : les coupeurs de deux amas se recouvrent. La bonne forme est un `w` gelé en lecture plus, par
+amas, les poids de ses propres inconnues — ce qui rend au passage la réparation **déterministe**, là
+où l'ordre de traitement la fait aujourd'hui dépendre de l'amas précédent.
+
+Un dernier détail mesuré au passage : `perf` comptait **10 % des cycles dans `libgomp`**, les fils qui
+attendent sur les barrières de boucles OpenMP portant sur trente cellules. Une clause `if( M >= 256 )`
+sur la recherche linéaire locale rend la boucle séquentielle quand elle est courte.

@@ -9,6 +9,7 @@
 --   xmake run ecrasement --help      jusqu'ou une direction de Newton peut aller avant une cellule vide
 --   xmake run multiechelle --help    resoudre sur des representants, prolonger, resoudre en dessous
 --   xmake run densite --help         une somme de gaussiennes pour densite, la continuation en largeur
+--   xmake run image --help           une IMAGE pour densite, integree SUR LE BORD ( jamais de decoupage )
 --   xmake run memo                   la memoire en 3D : les voisins d'hier proposes d'abord, borne superieure
 --
 -- OU EST QUOI :
@@ -25,6 +26,10 @@
 set_project( "solvers_des_familles" )
 set_languages( "c++20" )
 add_rules( "mode.release", "mode.debug" )
+
+-- `mode.release` DEPOUILLE LE BINAIRE, ce qui rendait `-g` inutile : `perf report` ne sortait que
+-- des adresses. On garde les symboles -- ils ne coutent que de la place sur le disque.
+set_strip( "none" )
 
 target( "bench" )
     set_kind( "static" )
@@ -44,6 +49,12 @@ local function reglages()
     set_warnings( "all" )
     if is_mode( "release" ) then
         -- `-march=native` est ASSUME : ces binaires ne quittent pas la machine.
+        -- PAS DE `-g` ICI, ET C'EST MESURE. Sur `main_image.cpp` -- une unite de traduction de
+        -- quatre mille lignes, templatee sur trois axes -- `-g` fait passer `cc1plus` de 3 a 7 Go
+        -- et la compilation de six a douze minutes ; le plafond memoire de `job` ( 8 Go pour un
+        -- travail generique ) le fait tuer une fois sur deux. `set_strip( "none" )` garde la table
+        -- des symboles, ce qui suffit a `perf` pour nommer les fonctions -- seules les LIGNES
+        -- manquent, et les chronos internes par poste les remplacent avantageusement.
         add_cxflags( "-O3", "-march=native", "-fno-math-errno", { force = true } )
         add_defines( "NDEBUG" )
     end
@@ -56,7 +67,7 @@ local function reglages()
     add_syslinks( "pthread" )
 end
 
-for _, nom in ipairs( { "check", "diagramme", "newton", "ecrasement", "glissement", "homotopie", "multiechelle", "densite", "memo" } ) do
+for _, nom in ipairs( { "check", "diagramme", "newton", "ecrasement", "glissement", "homotopie", "multiechelle", "densite", "image", "memo" } ) do
     target( nom )
         set_kind( "binary" )
         add_files( "src/mains/main_" .. nom .. ".cpp" )

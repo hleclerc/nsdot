@@ -391,6 +391,14 @@ struct OptionsLimites {
     int max_tours = 12;
     SI  trace     = -1;         ///< une cellule dont on imprime chaque tour
     bool global   = false;      ///< seul `min_i alpha_i` compte : voir `limites`
+    // LA BISSECTION EN ECHELLE GEOMETRIQUE. En arithmetique, `mid = ( a_ok + a_bad ) / 2` depuis
+    // `a_ok = 0` met dix-sept demi-pas rien que pour DESCENDRE jusqu'a `1e-5 x horizon`, alors que
+    // `max_tours` en vaut douze : la bissection rend `a_ok = 0`, c'est a dire un pas nul. Et c'est
+    // d'autant plus sur que `n` est grand, les pas admissibles y etant minuscules. En geometrique,
+    // on descend par facteur 4 tant qu'aucun bon point n'est connu, puis on prend la moyenne
+    // geometrique : neuf decades en une vingtaine de tours au lieu d'en epuiser douze sur la premiere.
+    bool log_ech  = false;      ///< bissecter en echelle geometrique, avec un plancher relatif
+    TF   plancher = 1e-9;       ///< ... ce plancher, en fraction de l'horizon
 };
 
 /// LA PASSE « predire, verifier, corriger », sur toutes les cellules. `pd` doit porter les poids
@@ -700,8 +708,15 @@ void limites_masse( const PD &pd, const TF *const *P, const std::vector<TF> &w, 
                 a_bad = c;
             }
         }
-        for ( ; L.tours < o.max_tours && a_bad - a_ok > o.tol * a_bad; ) {
-            const TF mid = TF( 0.5 ) * ( a_ok + a_bad );
+        const TF pla = o.log_ech ? o.plancher * o.horizon : TF( 0 );
+        auto encore = [ & ]() {
+            return o.log_ech ? a_bad > ( 1 + o.tol ) * std::max( a_ok, pla )
+                             : a_bad - a_ok > o.tol * a_bad;
+        };
+        for ( ; L.tours < o.max_tours && encore(); ) {
+            const TF mid = o.log_ech ? ( a_ok > 0 ? std::sqrt( a_ok * a_bad ) : std::max( a_bad / 4, pla ) )
+                                     : TF( 0.5 ) * ( a_ok + a_bad );
+            if ( mid <= a_ok || mid >= a_bad ) break;
             if ( masse_en( mid ) >= o.niveau ) { a_ok = mid; garde_voisins(); } else a_bad = mid;
         }
         L.alpha = a_ok;
