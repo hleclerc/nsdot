@@ -474,12 +474,73 @@ contraste de valeurs. C'est l'outil des problèmes anisotropes, et ça fait gagn
 
 #### Ce qu'il y a à faire ici, par ordre
 
-1. **le recyclage à `k = 2`** — deux `spmv` par résolution, −15 % d'itérations sur le poste qui fait
-   98 % du temps ;
-2. **le décalage d'agrégation réglable**, balayé **conjointement avec `AMG_NU`** — séparément on
-   trouve le mauvais optimum ;
+1. ~~le recyclage à `k = 2`~~ — **fait et mesuré**, voir ci-dessous ;
+2. ~~le décalage d'agrégation réglable~~ — **fait, balayé, et la conclusion s'inverse** ;
 3. **Chebyshev**, avec la borne de Gershgorin et la boucle fusionnée ;
 4. la hiérarchie gardée, si jamais la montée redevient un poste.
+
+### CE QUE ÇA DONNE SUR LA CARTE ( `AMG_RECYCLE`, `AMG_AGREG` )
+
+Uniforme 2D, `n = 10⁶`, `double`, résidu `1e-10`, sept itérations de Newton et dix-huit diagrammes.
+
+**Le recyclage tient ses promesses, et il sature au même endroit qu'au CPU.**
+
+| | itér. de CG | temps de CG | total |
+|---|---|---|---|
+| `AMG_RECYCLE=0` | 151 | 1,86 s | 4,67 s |
+| `AMG_RECYCLE=1` | 131 | 1,65 s | 4,48 s |
+| **`AMG_RECYCLE=2`** | **129** | **1,64 s** | **4,49 s** |
+| `AMG_RECYCLE=4` | 128 | 1,64 s | 4,51 s |
+
+**−15 % d'itérations pour deux produits matrice-vecteur par résolution**, et rien de plus au-delà de
+deux vecteurs gardés : la solution précédente porte à elle seule presque toute l'information. C'est
+le défaut désormais. Le prix mémoire est `2 k n` doubles — 16 Mo à `10⁶`, mais **à rouvrir si on vise
+`10⁹`**, où deux vecteurs de plus ne sont plus gratuits.
+
+Sur le CG seul c'est −12 % ; sur le total, −4 %, le diagramme pesant 2,7 s des 4,5.
+
+**La taille de paquet : `>> 2` est le bon choix ICI, et c'est l'inverse du CPU.**
+
+| ( avec `AMG_RECYCLE=2` ) | itér. de CG | temps de CG |
+|---|---|---|
+| **`AMG_AGREG=4 AMG_NU=2`** *(l'existant)* | **129** | **1,64 s** |
+| `AMG_AGREG=4 AMG_NU=1` | 246 | 2,29 s |
+| `AMG_AGREG=8 AMG_NU=2` | 165 | 1,81 s |
+| `AMG_AGREG=8 AMG_NU=3` | 172 | 2,29 s |
+| `AMG_AGREG=16 AMG_NU=2` | 212 | 2,18 s |
+| `AMG_AGREG=16 AMG_NU=1` | 456 | 3,48 s |
+| `AMG_AGREG=32 AMG_NU=1` | 858 | 6,11 s |
+
+Sur CPU l'optimum est huit dans les deux dimensions, parce que la complexité d'opérateur y commande.
+**Ici c'est quatre**, et pour la raison qu'on soupçonnait : la résolution étant le poste dominant et
+chaque itération peu chère, c'est la *qualité de l'espace grossier* qui prime, pas le remplissage.
+Le `>> 2` hérité de Morton se trouve donc être le bon choix — mais on le sait maintenant au lieu de
+le supposer, et le réglage est ouvert pour le jour où la 3D arrivera (où le CPU, lui, demande huit).
+
+### UNE ANOMALIE BORNÉE, ET LAISSÉE OUVERTE
+
+Le couple **`AMG_AGREG=8` avec `AMG_NU=1`** prend **155 s de CG au lieu de 1,8** à `n = 10⁶`, soit
+environ une seconde par itération contre onze millisecondes. Ce qu'on en sait :
+
+* **reproductible**, à l'identique sur trois exécutions ;
+* **indépendant du reste** : même chiffre avec `AMG_RECYCLE` 0 ou 2, `AMG_K` 0 ou 2, `AMG_GROS` 40
+  ou 120, `AMG_STOP` 200, 1000 ou 4000 — donc ni le recyclage, ni la structure du cycle, ni le
+  niveau le plus grossier, ni la profondeur de hiérarchie ;
+* **spécifique au couple** : `agreg 4 nu 1` (2,42 s), `agreg 32 nu 1` (6,11 s), `agreg 8 nu 2`
+  (1,81 s) et `agreg 8 nu 3` (2,29 s) sont tous sains ;
+* **lié à la taille** : à `n = 10⁵` il ne se produit pas du tout (2,3 ms par itération) ;
+* **ce n'est PAS une faute mémoire** : `compute-sanitizer --tool memcheck` ne rapporte que
+  l'avertissement bénin `Duplicate entry kernels named "cub::EmptyKernel"`.
+
+Un surcoût constant par itération, indifférent à la structure du cycle, oriente vers de
+l'arithmétique dégénérée sur le niveau fin plutôt que vers l'algorithme — des sous-normaux en
+`double`, par exemple. C'est laissé ouvert : la configuration perd de toute façon, mais un facteur
+quatre-vingts reproductible mérite d'être écrit plutôt qu'oublié.
+
+**Et un défaut trouvé au passage, qui lui est corrigé** : le tampon `A U` du recyclage était alloué
+pour la taille *courante* du sous-espace, qui se remplit progressivement — à la deuxième résolution
+on écrivait au-delà. Écriture hors bornes sur la carte, sans autre symptôme qu'un résidu de Newton
+qui part à 0,43. C'est la mesure qui l'a attrapée, pas le compilateur ni le lanceur.
 
 ---
 

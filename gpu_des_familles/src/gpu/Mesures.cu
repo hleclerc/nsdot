@@ -73,6 +73,16 @@ struct DiagrammeGpu<D,TK>::Impl {
     int          gros = 120;                         ///< lissages au niveau le plus grossier
     int          nu = 2;                             ///< lissages avant et apres, par niveau
     int          stop = 1000;                        ///< on arrete de grossir en dessous
+    int          agreg = 4;                          ///< germes par paquet -- UNE PUISSANCE DE DEUX
+    // DEUX VECTEURS GARDES, ET C'EST LA MESURE QUI LE DIT ( `AMG_RECYCLE` ). A `n = 1e6`, 2D,
+    // sept iterations de Newton : 151 iterations de CG sans, 131 a un vecteur, 129 a deux, 128 a
+    // quatre. Il SATURE, exactement comme sur CPU -- la solution precedente porte a elle seule
+    // presque toute l'information. Le prix est `k` produits matrice-vecteur par resolution et
+    // `2 k n` doubles de memoire ( 16 Mo a 1e6 ) : a tres grand `n` il faudra le rouvrir.
+    int          recycle = 2;                        ///< solutions gardees pour le demarrage ( 0 : off )
+    std::vector<double *> rec_u;                     ///< le sous-espace recycle, sur la carte
+    double      *rec_au = nullptr;                   ///< `A U`, un tampon de `recycle` vecteurs
+    int          rec_n = 0;                          ///< la taille pour laquelle il a ete alloue
     int          lisse = 0;                          ///< la prolongation LISSEE ( `cusparseSpGEMM` )
     cusparseHandle_t cus = nullptr;
     int         *rang_de = nullptr;                  ///< identifiant -> rang ( l'agregation du niveau fin )
@@ -821,6 +831,8 @@ void DiagrammeGpu<D,TK>::monte_amg( const Hessienne &H ) {
     if ( const char *e = std::getenv( "AMG_GROS" ) ) m.gros = std::atoi( e );
     if ( const char *e = std::getenv( "AMG_NU" ) ) m.nu = std::atoi( e );
     if ( const char *e = std::getenv( "AMG_STOP" ) ) m.stop = std::atoi( e );
+    if ( const char *e = std::getenv( "AMG_AGREG" ) ) m.agreg = std::max( 2, std::atoi( e ) );
+    if ( const char *e = std::getenv( "AMG_RECYCLE" ) ) m.recycle = std::atoi( e );
     if ( const char *e = std::getenv( "AMG_LISSE" ) ) m.lisse = std::atoi( e );
     if ( m.lisse && ! m.cus ) cusparseCreate( &m.cus );
     if ( ! m.rang_de ) {
@@ -842,11 +854,14 @@ void DiagrammeGpu<D,TK>::monte_amg( const Hessienne &H ) {
     // nombre de niveaux, et trois cents lissages de Jacobi suffisent a ce niveau-la.
     for ( int l = 0; m.niv[ l ].n > m.stop && l < 24; ++l ) {
         const Niveau &g = m.niv[ l ];
-        const int nc = ( g.n + 3 ) / 4;
+        int sh = 1;
+        while ( ( 1 << sh ) < m.agreg && sh < 16 ) ++sh;
+        const int S = 1 << sh;
+        const int nc = ( g.n + S - 1 ) / S;
         int *mp = nullptr;
         CUDA_OK( cudaMalloc( &mp, size_t( g.n ) * sizeof( int ) ) );
-        if ( l == 0 ) k_amg_map_fin<<<gr( g.n ), BL>>>( m.rang_de, mp, g.n );
-        else          k_amg_map<<<gr( g.n ), BL>>>( mp, g.n );
+        if ( l == 0 ) k_amg_map_fin<<<gr( g.n ), BL>>>( m.rang_de, mp, g.n, sh );
+        else          k_amg_map<<<gr( g.n ), BL>>>( mp, g.n, sh );
         m.map.push_back( mp );
 
         unsigned long long *cl, *cl2;
@@ -1019,6 +1034,41 @@ void DiagrammeGpu<D,TK>::cycle_v( int l ) {
         k_amg_jacobi<<<gr( g.n ), BL>>>( g.row, g.col, g.val, g.dia, g.x, g.b, OM, g.n );
 }
 
+/// LE PETIT SYSTEME DENSE `G y = f` DU RECYCLAGE, `G` symetrique definie positive et `k <= 8`.
+/// Cholesky a la main, sur l'hote, avec une crete de securite : deux solutions successives
+/// peuvent etre presque colineaires et `G` devenir singuliere -- on decline plutot que de rendre
+/// n'importe quoi, le demarrage n'etant qu'un bonus.
+static bool resout_dense( std::vector<double> &G, std::vector<double> &f, int k ) {
+    double tr = 0;
+    for ( int j = 0; j < k; ++j ) tr += G[ size_t( j ) * k + j ];
+    if ( ! ( tr > 0 ) ) return false;
+    const double eps = tr / double( k ) * 1e-12;
+    for ( int j = 0; j < k; ++j ) G[ size_t( j ) * k + j ] += eps;
+    for ( int j = 0; j < k; ++j ) {
+        double sm = G[ size_t( j ) * k + j ];
+        for ( int q = 0; q < j; ++q ) sm -= G[ size_t( j ) * k + q ] * G[ size_t( j ) * k + q ];
+        if ( ! ( sm > 0 ) ) return false;
+        const double dj = std::sqrt( sm );
+        G[ size_t( j ) * k + j ] = dj;
+        for ( int i = j + 1; i < k; ++i ) {
+            double t = G[ size_t( i ) * k + j ];
+            for ( int q = 0; q < j; ++q ) t -= G[ size_t( i ) * k + q ] * G[ size_t( j ) * k + q ];
+            G[ size_t( i ) * k + j ] = t / dj;
+        }
+    }
+    for ( int i = 0; i < k; ++i ) {
+        double t = f[ i ];
+        for ( int q = 0; q < i; ++q ) t -= G[ size_t( i ) * k + q ] * f[ q ];
+        f[ i ] = t / G[ size_t( i ) * k + i ];
+    }
+    for ( int i = k - 1; i >= 0; --i ) {
+        double t = f[ i ];
+        for ( int q = i + 1; q < k; ++q ) t -= G[ size_t( q ) * k + i ] * f[ q ];
+        f[ i ] = t / G[ size_t( i ) * k + i ];
+    }
+    return true;
+}
+
 /// LE GRADIENT CONJUGUE PRECONDITIONNE. Les scalaires restent sur la carte ; seul le test d'arret
 /// redescend un nombre par iteration.
 template<int D, class TK>
@@ -1054,6 +1104,62 @@ int DiagrammeGpu<D,TK>::resout( const Hessienne &H, const double *b, double *x, 
             centre( zz );
         };
         centre( r );
+
+        // ---- LE DEMARRAGE DE GALERKIN SUR LE SOUS-ESPACE RECYCLE ( `AMG_RECYCLE` )
+        //
+        // On ne resout pas UN systeme mais des centaines qui se ressemblent : meme graphe a
+        // quelques aretes pres, second membre correle. Partir de `x = 0` a chaque fois jette
+        // cette information. On garde les `k` dernieres solutions dans `U` et on demarre sur
+        //
+        //      x0 = U ( U^t A U )^-1 U^t b
+        //
+        // la meilleure approximation dans `span( U )` au sens de l'energie. Le residu
+        // `r0 = b - ( A U ) y` sort du calcul deja fait : le prix est exactement `k` produits
+        // matrice-vecteur, plus un systeme dense `k x k` que l'hote resout en microsecondes.
+        //
+        // SUR CPU IL SATURE A DEUX VECTEURS ( 5117 -> 4337 iterations a `n = 2e4`, et plus rien
+        // ensuite ) : la solution precedente porte a elle seule presque toute l'information. On
+        // garde donc `k` petit -- et ici, ou la resolution fait 98 % du temps, -15 % d'iterations
+        // pour deux `spmv` est le meilleur rapport de toute la liste.
+        const int kr = std::max( 0, std::min( m.recycle, 8 ) );
+        if ( kr > 0 && m.rec_n != n ) {                  // la taille a change : tout est caduc
+            for ( double *u : m.rec_u ) cudaFree( u );
+            m.rec_u.clear();
+            cudaFree( m.rec_au ); m.rec_au = nullptr;
+            m.rec_n = n;
+        }
+        if ( kr > 0 && ! m.rec_u.empty() ) {
+            const int k = int( m.rec_u.size() );
+            // ON ALLOUE POUR LE MAXIMUM, PAS POUR LA TAILLE COURANTE. Le sous-espace se remplit
+            // progressivement : allouer `k * n` a la premiere resolution ( ou `k` vaut un ) puis
+            // ecrire `A U_1` a la deuxieme depasse le tampon. Ecriture hors bornes sur la carte,
+            // et un residu de Newton qui part a 0.43 sans autre symptome -- c'est la mesure qui
+            // l'a attrape, pas le compilateur.
+            if ( ! m.rec_au ) CUDA_OK( cudaMalloc( &m.rec_au, size_t( kr ) * n * sizeof( double ) ) );
+            std::vector<double> G( size_t( k ) * k ), f( k );
+            for ( int j = 0; j < k; ++j )
+                k_cg_mul<<<gr, BL>>>( H.row, H.col, H.val, H.dia, m.rec_u[ j ], m.rec_au + size_t( j ) * n, n );
+            for ( int j = 0; j < k; ++j ) {
+                dot( m.rec_u[ j ], r, m.acc );
+                CUDA_OK( cudaMemcpy( &f[ j ], m.acc, sizeof( double ), cudaMemcpyDeviceToHost ) );
+                for ( int l = 0; l <= j; ++l ) {
+                    dot( m.rec_u[ j ], m.rec_au + size_t( l ) * n, m.acc );
+                    double g = 0;
+                    CUDA_OK( cudaMemcpy( &g, m.acc, sizeof( double ), cudaMemcpyDeviceToHost ) );
+                    G[ size_t( j ) * k + l ] = g;
+                    G[ size_t( l ) * k + j ] = g;
+                }
+            }
+            if ( resout_dense( G, f, k ) ) {
+                for ( int j = 0; j < k; ++j ) {
+                    k_rec_axpy<<<gr, BL>>>( x, m.rec_u[ j ], f[ j ], n );
+                    k_rec_axpy<<<gr, BL>>>( r, m.rec_au + size_t( j ) * n, -f[ j ], n );
+                }
+                centre( x );
+                centre( r );
+            }
+        }
+
         dot( r, r, sbb );
         precond( r, z );
         CUDA_OK( cudaMemcpyAsync( p, z, size_t( n ) * sizeof( double ), cudaMemcpyDeviceToDevice ) );
@@ -1077,6 +1183,16 @@ int DiagrammeGpu<D,TK>::resout( const Hessienne &H, const double *b, double *x, 
             k_cg_dir<<<gr, BL>>>( p, z, sbe, n );
             k_cg_copie<<<1,1>>>( srz, srz2 );
         }
+        // LA SOLUTION REJOINT LE SOUS-ESPACE, a moyenne nulle -- c'est la jauge dans laquelle on
+        // resout, et donc celle dans laquelle `U` doit vivre.
+        if ( kr > 0 ) {
+            double *u = nullptr;
+            if ( int( m.rec_u.size() ) >= kr ) { u = m.rec_u.front(); m.rec_u.erase( m.rec_u.begin() ); }
+            else                                 CUDA_OK( cudaMalloc( &u, size_t( n ) * sizeof( double ) ) );
+            CUDA_OK( cudaMemcpyAsync( u, x, size_t( n ) * sizeof( double ), cudaMemcpyDeviceToDevice ) );
+            m.rec_u.push_back( u );
+        }
+
         CUDA_OK( cudaEventRecord( e1 ) );
         CUDA_OK( cudaEventSynchronize( e1 ) );
         float t = 0;

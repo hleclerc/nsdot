@@ -7,10 +7,21 @@
 //
 // L'AGREGATION EST GRATUITE, et c'est le point. Les germes sont ranges DANS L'ORDRE DE L'ARBRE,
 // qui est une courbe remplissante : des RANGS CONSECUTIFS sont voisins dans le plan. Agreger,
-// c'est donc `rang >> 2` -- quatre germes par paquet, sans un noyau d'appariement, sans matching,
-// sans compaction. Et comme les indices d'agregat restent ordonnes par rang, le niveau suivant
-// s'agrege pareil : `a >> 2`. La hierarchie entiere tient dans un decalage.
+// c'est donc `rang >> sh` -- sans un noyau d'appariement, sans matching, sans compaction. Et
+// comme les indices d'agregat restent ordonnes par rang, le niveau suivant s'agrege pareil :
+// `a >> sh`. La hierarchie entiere tient dans un decalage.
 // ( Le niveau fin est indexe par IDENTIFIANT ; on passe par `rang_de` une seule fois. )
+//
+// LA TAILLE DU PAQUET EST UN REGLAGE, ET ELLE N'AVAIT JAMAIS ETE BALAYEE. Quatre etait le choix
+// naturel d'une courbe de Morton en 2D. Mais `AaBsp` ne fait pas du Morton : il coupe A LA
+// MEDIANE SUR L'AXE LE PLUS LONG, donc une fenetre alignee de `2^k` rangs est exactement un
+// sous-arbre -- localite parfaite -- et `k` impair ne donne qu'une boite 2:1, ce qui pour de
+// l'agregation va tres bien. TOUTES LES PUISSANCES DE DEUX sont donc disponibles.
+//
+// Sur CPU ( `solvers_des_familles/README.md` § 17.11 et § 17.15 ) l'optimum est HUIT dans les
+// deux dimensions -- et l'attraper demande de regler le nombre de lissages EN MEME TEMPS : a
+// `nu = 3` l'optimum 3D semble etre seize, parce qu'un cycle trop lisse force a grossir les
+// paquets pour rester payable. Les balayer separement donne le mauvais point. `AMG_AGREG`.
 //
 // LE GROSSIER est le produit de Galerkin `A_c = P^T A P` avec `P` constant par morceaux. Sur un
 // laplacien de graphe c'est encore un laplacien : il suffit de sommer les poids d'aretes entre
@@ -47,13 +58,13 @@ struct Niveau {
 };
 
 /// `m[ i ]` : le paquet du niveau suivant. Au niveau fin on passe par le rang, ensuite non.
-__global__ void k_amg_map_fin( const int *rang_de, int *m, int n ) {
+__global__ void k_amg_map_fin( const int *rang_de, int *m, int n, int sh ) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if ( i < n ) m[ i ] = rang_de[ i ] >> 2;
+    if ( i < n ) m[ i ] = rang_de[ i ] >> sh;
 }
-__global__ void k_amg_map( int *m, int n ) {
+__global__ void k_amg_map( int *m, int n, int sh ) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if ( i < n ) m[ i ] = i >> 2;
+    if ( i < n ) m[ i ] = i >> sh;
 }
 
 /// un triplet par arete inter-paquets : la clef porte `( a, b )`, la valeur le poids
@@ -212,6 +223,13 @@ __global__ void k_amg_matvec( const int *row, const int *col, const double *val,
 __global__ void k_amg_copie( double *dst, const double *src, int n ) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if ( i < n ) dst[ i ] = src[ i ];
+}
+
+/// `y += a x`, `a` sur l'HOTE -- le recyclage n'en fait que `2 k` par resolution, et les
+/// coefficients sortent d'un systeme dense `k x k` resolu sur l'hote de toute facon.
+__global__ void k_rec_axpy( double *y, const double *x, double a, int n ) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if ( i < n ) y[ i ] += a * x[ i ];
 }
 
 /// la projection sur la moyenne nulle : le noyau du laplacien
