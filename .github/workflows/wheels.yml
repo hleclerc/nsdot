@@ -1,5 +1,5 @@
 # Les wheels `loom` et `sdot`, avec le CATALOGUE des noyaux précompilés (voir
-# `loom/compilation/catalogue.py` et `scripts/build_catalogue.py`).
+# `loom/compilation/catalogue.py` et la commande `loom-kernels`).
 #
 # Le relevé des sources (`catalogue_record/`) est fait sur une machine de développement -- il
 # faut EXÉCUTER les appels, donc un GPU pour la partie CUDA -- et versionné avec le dépôt. Ici on
@@ -42,11 +42,11 @@ jobs:
       - name: catalogue CPU, une variante par niveau
         run: |
           for v in x86-64-v2 x86-64-v3 x86-64-v4; do
-            python scripts/build_catalogue.py compile --record catalogue_record --out sdot/catalogue --variant $v
+            loom-kernels compile --record catalogue_record --out sdot/catalogue --import sdot --variant $v
           done
       - name: catalogue CUDA (compilation seule, pas de GPU)
         run: |
-          python scripts/build_catalogue.py compile --record catalogue_record --out sdot/catalogue --device cuda --arch sm_70,sm_75,sm_80,sm_86,sm_89,sm_90
+          loom-kernels compile --record catalogue_record --out sdot/catalogue --import sdot --device cuda --arch sm_70,sm_75,sm_80,sm_86,sm_89,sm_90
       - name: wheels
         run: |
           python -m pip wheel --no-deps -w dist loom
@@ -75,7 +75,7 @@ jobs:
           python -m pip install -r requirements.txt ninja wheel jax
       - name: catalogue CPU
         run: |
-          python scripts/build_catalogue.py compile --record catalogue_record --out sdot/catalogue --variant armv8-a
+          loom-kernels compile --record catalogue_record --out sdot/catalogue --import sdot --variant armv8-a
       - name: wheels
         run: |
           python -m pip wheel --no-deps -w dist loom

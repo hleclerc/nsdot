@@ -212,11 +212,19 @@ les atomiques par `atomic_add.h`, les étiquettes globales par `LOOM_TAG` : les 
 cible.
 
 Un wheel embarque un **catalogue** de noyaux précompilés (`sdot/_catalogue`, une bibliothèque par
-variante : `cpu-x86-64-v3`, `cuda`, ...) : l'usage standard n'y compile rien. Le relevé
-(`catalogue_record/`, versionné) vient de `scripts/build_catalogue.py record`, qui exerce
-`python -m sdot.catalogue` ; la compilation par variante est `build_catalogue.py compile`, ce que
+variante : `cpu-x86-64-v3`, `cuda`, ...) : l'usage standard n'y compile rien. Tout passe par la
+commande `loom-kernels`, qui est l'artefact par lequel **n'importe quel système de construction**
+(cmake, bazel, xmake, un Makefile) fait produire les noyaux à l'avance plutôt qu'à l'exécution :
+
+```bash
+loom-kernels record  --out catalogue_record -- python -m sdot.catalogue    # le relevé, versionné
+loom-kernels compile --record catalogue_record --out sdot/catalogue --import sdot --variant x86-64-v3
+```
+
+`record` ne sait rien de ce qu'on lance (la commande vient après `--`) et `compile` n'exécute rien
+du projet, `--import` nommant seulement les modules qui enregistrent leur racine C++. C'est ce que
 fait `.github/workflows/wheels.yml`. `SDOT_KERNELS=auto|catalogue|atelier`. Voir
-`loom/src/loom/compilation/catalogue.py`.
+`loom/src/loom/compilation/{catalogue,cli}.py`.
 
 Le transport semi-discret (`sdot.OtPlan`) est résolu **en un appel**, tout en C++
 (`sdot/include/sdot/otplan/`) : le Newton amorti du banc `solvers_des_familles`, le laplacien
