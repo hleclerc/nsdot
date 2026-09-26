@@ -326,6 +326,163 @@ changent à chaque pas : la hiérarchie doit être remontée, et c'est notre 14 
 résolutions, AMGCL passerait devant d'un facteur 2.6. Le balayage complet est rejouable :
 `AMGCL_VAR` choisit la configuration, `AMG_K`, `AMG_NU` et `AMG_GROS` règlent la nôtre.
 
+### CE QUE LE PORTAGE CPU A APPRIS, ET CE QUI REVIENT ICI
+
+Le multigrille ci-dessus a été **porté sur CPU** (`solvers_des_familles/src/solver/Multigrille.h`,
+`--solver mg`, README § 17). L'exercice valait surtout pour ce qu'il a forcé à mesurer : sur une
+machine où les itérations coûtent cher, chaque faiblesse du cycle devient visible en heures. Le
+portage a fini **devant AMGCL** (90,2 s contre 93,0 à `n = 10⁵` en 2D, diagrammes identiques), et
+quatre des choses qui l'y ont mené reviennent ici. Une cinquième non, et c'est utile de dire
+laquelle.
+
+**Le tableau de cette page dit que la résolution fait 873 ms sur 887.** Tout ce qui réduit les
+itérations paie donc presque en proportion, et tout ce qui touche à la montée ne paie presque rien.
+C'est l'inverse exact du CPU, et ça classe les candidats.
+
+#### 1. Le recyclage de sous-espace — le meilleur candidat
+
+On ne résout pas un système mais des centaines qui se ressemblent : même graphe à quelques arêtes
+près, second membre corrélé. Partir de `x = 0` à chaque fois jette cette information. On garde les
+`k` dernières solutions dans `U` et on démarre sur la projection de Galerkin
+
+    x₀ = U ( Uᵀ A U )⁻¹ Uᵀ b
+
+qui est la meilleure approximation dans `span( U )` au sens de l'énergie. Le résidu `r₀ = b − (AU)y`
+sort du calcul déjà fait : **le prix est exactement `k` produits matrice-vecteur**, plus un système
+dense `k × k`.
+
+Mesuré sur CPU (2D, `n = 2·10⁴`) : **5 117 → 4 337 itérations, −15 %** — et **ça sature à k = 2**
+(4 332 à quatre, 4 334 à huit, 4 336 à seize). La solution précédente porte à elle seule presque
+toute l'information ; les directions de Newton successives n'engendrent utilement qu'un ou deux
+degrés de liberté.
+
+Ici, ça veut dire **deux `spmv` et deux produits scalaires par résolution** pour −15 % d'itérations,
+sur un poste qui fait 98 % du temps. C'est le meilleur rapport de toute la liste, et c'est une
+cinquantaine de lignes dans `DiagrammeGpu::resout`.
+
+#### 2. Chebyshev — et pourquoi la ligne du tableau ci-dessus ne le condamne pas
+
+Le tableau AMGCL/CUDA donne « agrégation lissée + Chebyshev : 145 itérations » contre 49 pour
+`spai0`. **Il ne faut pas en conclure que Chebyshev ne marche pas**, mais que celui d'AMGCL, avec
+sa propre estimation de rayon spectral, est mal réglé sur ce problème. Sur CPU, avec une borne de
+**Gershgorin** — exacte, une passe sur les arêtes, `λ_max ≤ max_i m_i ( dia_i + Σ |val_e| )`, et
+deux pour un laplacien pur — il donne **−21 % d'itérations à temps égal**.
+
+C'est un lisseur **uniquement matrice-vecteur**, donc exactement ce qu'une carte veut, et il
+remplacerait les 2+2 Jacobi amortis à coût identique en `spmv`.
+
+**Avec un avertissement gagné à la dure.** Premier essai sur CPU : −8 % d'itérations mais +12 % de
+coût par itération, un lavage — parce que j'écrivais `A y` dans un tampon puis refaisais une passe
+pour mettre à jour `r` et la direction. Sur un cycle limité par la bande passante, cette passe
+coûtait exactement ce que le polynôme gagnait. Fusionnée (le double tampon **reste nécessaire** —
+le produit de la ligne `i` lit `y` chez les voisins — mais la seconde passe non) : 4 687 it / 2,19 s
+devient 4 043 / 1,83. **Sur carte ce piège est pire, pas meilleur** : compter les passes avant les
+flops.
+
+#### 3. La taille de paquet — `>> 2` n'a jamais été balayé, et ce n'est pas l'optimum
+
+L'agrégation est `rang >> 2`, quatre germes par paquet, parce que c'est ce qu'une courbe de Morton
+donne en 2D. Mais **`AaBsp` ne fait pas du Morton** : il coupe à la médiane sur l'axe le plus long.
+Une fenêtre alignée de `2^k` rangs est donc *exactement un sous-arbre* — localité parfaite — et sa
+boîte a été coupée `k` fois sur son côté le plus long : `k` pair donne une boîte carrée, `k` impair
+une boîte 2:1, ce qui pour de l'agrégation va très bien. **Toutes les puissances de deux sont
+disponibles.**
+
+C'est le réglage qui pilote la complexité d'opérateur, et la courbe est en U. Mesuré sur CPU :
+
+| paquet | 2D, `n = 2·10⁴`, total | complexité | 3D, `n = 5·10⁵`, linéaire | complexité |
+|---|---|---|---|---|
+| 4 | 8,84 s | 2,25 | — | 2,67 |
+| **8** | **7,38 s** | 1,34 | **4,81 s** | 1,48 |
+| 16 | 8,49 s | 1,13 | 5,64 s | 1,18 |
+| 32 | — | — | 6,14 s | 1,07 |
+| 64 | 11,09 s | 1,02 | — | — |
+| AMGCL | 7,31 s | — | 7,32 s | — |
+
+**Le paquet optimal est 8 dans les deux dimensions** — c'est-à-dire un bloc 2×2 en 2D et 2×2×2 en
+3D, ce qui est rassurant. Mais **l'attraper en 3D demande de régler le lissage en même temps**, et
+c'est là qu'est la leçon : à `nu = 3` (le réglage 2D) l'optimum 3D semblait être 16, parce qu'un
+cycle trop lissé force à grossir les paquets pour rester payable. À `nu = 1` il redescend à 8.
+
+Le graphe de Laguerre 3D part de **15,1 non-nuls par ligne contre 6,0 en 2D** : un seul passage de
+Jacobi y propage déjà l'information bien plus loin, et le deuxième n'ajoute plus que de la bande
+passante. Passer de `nu 3` à `nu 1` coûte **+69 % d'itérations en 2D mais seulement +32 % en 3D**,
+et en 3D ça fait gagner 33 % de temps.
+
+Ce que ça veut dire ici : `k_amg_map_fin` doit prendre un décalage réglable, **et il faut balayer le
+décalage et `AMG_NU` ensemble** — les balayer séparément donne le mauvais optimum, on en a fait
+l'expérience. Le sens du réglage sur carte reste à mesurer : les itérations y étant le poste
+dominant, l'arbitrage peut pencher autrement qu'ici.
+
+#### 4. La hiérarchie gardée — possible, mais à une condition nommée
+
+Cette page dit : *« si au contraire on pouvait figer la hiérarchie et ne refaire que les résolutions,
+AMGCL passerait devant d'un facteur 2.6 »*. On **peut** la figer, partiellement — mais à une
+condition que la mesure a révélée.
+
+Gardée quatre résolutions, notre hiérarchie CPU ne perd que **11 %** d'itérations. La même chose sur
+AMGCL en perd **79 %** (9 369 → 16 764). La différence est entière : `Mg::rebranche` **recalcule les
+coefficients du lisseur au niveau fin** avec les nouvelles valeurs, alors qu'AMGCL garde les siens,
+construits sur l'ancienne matrice — et n'expose aucune API pour rafraîchir ce seul niveau.
+
+Ici le gain serait faible (la montée fait 14 ms sur 887), donc ce n'est pas une priorité. Mais c'est
+l'argument le plus net en faveur de posséder le solveur : **la dissociation entre la matrice que voit
+le CG et celle qui a servi au préconditionneur n'est exploitable que si on contrôle le
+rafraîchissement.**
+
+#### 5. Ce qui NE transfère pas : le fond résolu, et donc la péremption du K-cycle
+
+Sur CPU, remplacer les 120 lissages du niveau le plus grossier par une **factorisation de Cholesky
+creuse** (quelques millisecondes une fois par hiérarchie, vingt microsecondes par visite) fait
+tomber le total de 23,8 s à 11,2 — et **périme le K-cycle** : 11,2 s en V pur, 11,7 à K=1, 12,5 à
+K=2. Il n'était là que pour compenser une correction grossière faible ; celle-ci devenue exacte, il
+ne reste que son prix.
+
+**Rien de tout cela ne s'applique ici.** Il n'y a pas de Cholesky creux sur la carte, et le noyau
+« tout le grossier dans un bloc » a été essayé et perd (un seul SM sur soixante-huit, 969 ms contre
+873). Le K-cycle reste donc le bon compensateur sur GPU, et le réglage mesuré ici — K sur deux
+niveaux, 60 lissages — tient. C'est la même faiblesse traitée par deux moyens différents parce que
+les deux machines n'offrent pas les mêmes.
+
+#### 6. La prolongation lissée : ce qu'elle coûte vraiment en mémoire
+
+Cette page la décrit comme « lourde sur GPU en mémoire comme en code ». Le portage CPU chiffre la
+première moitié, et c'est pire qu'on pourrait croire — **sans troncature, la complexité d'opérateur
+passe de 1,44 à 4,08** et le niveau le plus profond atteint **278 non-nuls par ligne** (contre 7,2
+sans lissage) :
+
+| 2D, `n = 2·10⁴` | remplissage par niveau | complexité |
+|---|---|---|
+| non lissée | 6,0 → 8,0 → 7,9 → 7,2 | 1,44 |
+| lissée, brute | 6,0 → 27,1 → 115,4 → **278,1** | 4,08 |
+| lissée, `tronque 0,2` | 6,0 → 18,2 → 31,0 → 46,2 | 2,21 |
+
+Ce qui la rend viable est la **troncature renormalisée** : on ne garde que les entrées au-dessus
+d'une fraction du maximum de la ligne, puis **on remet la somme de la ligne à un** — et cette
+renormalisation n'est pas cosmétique, c'est elle qui laisse le vecteur constant exactement dans
+l'image de `P`, donc le noyau du laplacien représenté à tous les niveaux.
+
+Elle vaut ce qu'on cherchait ici : **8 641 → 3 051 itérations**, c'est-à-dire *sous* les 3 320
+d'AMGCL. Si le produit triple est un jour tenté sur carte, c'est avec la troncature dès le premier
+essai, pas après.
+
+**Et un remède standard qui ne marche pas** : filtrer par force de connexion (`c_ij ≥ θ max_k c_ik`)
+ne change rien à la valeur classique θ = 0,08 — complexité 2,69 contre 2,67. Dans un graphe de
+Laguerre les `c_ij = |facette| / ( 2 |p_i − p_j| )` sont toutes du même ordre : **il n'y a pas de
+connexion faible à jeter.** La densification vient du motif (`P` a `1 + deg` entrées), pas d'un
+contraste de valeurs. C'est l'outil des problèmes anisotropes, et ça fait gagner un voyage.
+
+#### Ce qu'il y a à faire ici, par ordre
+
+1. **le recyclage à `k = 2`** — deux `spmv` par résolution, −15 % d'itérations sur le poste qui fait
+   98 % du temps ;
+2. **le décalage d'agrégation réglable**, balayé **conjointement avec `AMG_NU`** — séparément on
+   trouve le mauvais optimum ;
+3. **Chebyshev**, avec la borne de Gershgorin et la boucle fusionnée ;
+4. la hiérarchie gardée, si jamais la montée redevient un poste.
+
+---
+
 ### LE NEWTON COMPLET (`--newton K`)
 
 La boucle entière est sur la carte. `∂m/∂w = L` (augmenter `w_i` pousse les plans qui bordent la

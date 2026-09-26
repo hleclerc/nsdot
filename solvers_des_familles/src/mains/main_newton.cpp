@@ -17,6 +17,7 @@
 #include "bench/Dispatch.h"
 #include "bench/Trames.h"
 #include "solver/Lineaire.h"
+#include "solver/Multigrille.h"
 #include "solver/Newton.h"
 #include "solver/PremierOrdre.h"
 #ifdef _OPENMP
@@ -32,7 +33,29 @@ namespace {
 /// les options PROPRES au solveur.
 struct Opts {
     NewtonOptions newton;
-    std::string   solver = "amg";  ///< amg | chol
+    // LE DEFAUT DEPEND DE LA DIMENSION, PARCE QUE LA MESURE LE DIT. `auto` = `mg` en 3D, `amg`
+    // en 2D. Partie lineaire, nuage uniforme :
+    //
+    //      3D  n = 1e5   mg 0.83 s   amg 1.53 s   chol > 600 s ( plafond )
+    //      3D  n = 5e5   mg 4.79     amg 6.73
+    //      2D  n = 5e5   mg 6.43     amg 5.68
+    //
+    // En 3D le multigrille maison gagne largement, et Cholesky n'est plus une option du tout. En
+    // 2D UNIFORME il perd de 6 % au mieux, et aucun reglage ne renverse : notre cycle est moins
+    // cher par iteration ( 11.4 ms contre 15.6 ) mais il en faut deux fois plus.
+    //
+    // Attention, ce n'est pas « mg perd en 2D » : dans `main_image`, ou la continuation enchaine
+    // des CENTAINES de systemes voisins, il gagne ( 90.4 s contre 93.0 a n = 1e5 ) -- parce que
+    // le recyclage de sous-espace y trouve de quoi vivre, ce qu'une poignee d'iterations de
+    // Newton ne donne pas. C'est le REGIME qui decide, pas la dimension seule.
+    std::string   solver = "auto"; ///< auto ( mg en 3D, amg en 2D ) | mg | amg | chol
+    // LES REGLAGES DU MULTIGRILLE MAISON. Les defauts viennent de `Multigrille.h`, ou ils ont ete
+    // mesures EN 2D SUR UNE DENSITE IMAGE : `agreg 8` en particulier vaut ce que vaut son cas
+    // d'usage, et il n'y a aucune raison qu'il tienne en 3D ou le graphe a deux fois plus de
+    // voisins et ou le paquet naturel est 2x2x2. C'est ce que ce banc est la pour dire.
+    int           mg_agreg = 0, mg_lisseur = -1, mg_recycle = -1, mg_nu = 0;
+    double        mg_cheb = 0, mg_tronque = -1;
+    int           mg_trace = 0;
     int           amgvar = Amg::SA_SPAI0;
     TF            lintol = 1e-10;
     int           linmax = 20000;
@@ -53,6 +76,9 @@ int lance( const Args &a, const Opts &o, const Nuage<PD::dim> &nu, Lin &lin ) {
     PD pd;
     pd.build( nu.P, nullptr, n, a.leaf );
     const double t_arbre = now() - t0;
+    // L'ORDRE DE L'ARBRE, pour qui sait s'en servir : c'est l'agregation du multigrille maison.
+    if constexpr ( requires { lin.ordre( pd.ids.data(), n ); } )
+        lin.ordre( pd.ids.data(), n );
 
 #ifdef _OPENMP
     // AMGCL est parallelise en OpenMP, le diagramme en `std::thread` : sans ca les deux moities
@@ -152,14 +178,41 @@ int deroule( const Args &a, const Opts &o ) {
             continue;
         }
         std::printf( "-- %s\n", nu.nom.c_str() );
+        const std::string sol = o.solver == "auto" ? ( D == 3 ? "mg" : "amg" ) : o.solver;
         bad += dispatch<D>( a, [ & ]( auto tag ) {
             using PD = typename decltype( tag )::type;
 #ifdef SF_EIGEN
-            if ( o.solver == "chol" ) {
+            if ( sol == "chol" ) {
                 Cholesky lin;
                 return lance<PD>( a, o, nu, lin );
             }
 #endif
+            if ( sol == "mg" ) {
+                Mg lin;
+                lin.tol = o.lintol;
+                lin.maxit = o.linmax;
+                if ( o.mg_agreg   > 0 ) lin.agreg   = o.mg_agreg;
+                // UN SEUL LISSAGE EN 3D, ET C'EST LA MESURE QUI LE DIT. Les defauts de
+                // `Multigrille.h` viennent du 2D sous une densite image, ou `nu` est PLAT entre 1
+                // et 3 ( 88.6 / 88.0 / 89.6 s a `n = 1e5`, sous le bruit de +/- 8 % ). En 3D il ne
+                // l'est pas du tout -- partie lineaire a `n = 5e5`, paquets de 8 :
+                //
+                //      nu 1 :  165 it,  4.81 s        nu 2 :  120 it,  5.30 s
+                //      nu 3 :  ( 156 it a paquet 16 ), 7.16 s      AMGCL : 129 it, 7.32 s
+                //
+                // Le graphe 3D a 15.1 non-nuls par ligne contre 6.0 en 2D : un seul passage de
+                // Jacobi y propage deja l'information bien plus loin, donc le deuxieme et le
+                // troisieme ne font plus qu'ajouter de la bande passante. Passer de `nu 3` a
+                // `nu 1` fait +69 % d'iterations en 2D mais seulement +32 % en 3D.
+                if      ( o.mg_nu > 0 ) lin.nu = o.mg_nu;
+                else if ( D == 3 )      lin.nu = 1;
+                if ( o.mg_lisseur >= 0 ) lin.lisseur = o.mg_lisseur;
+                if ( o.mg_recycle >= 0 ) lin.recycle = o.mg_recycle;
+                if ( o.mg_cheb    > 0 ) lin.cheb    = TF( o.mg_cheb );
+                if ( o.mg_tronque >= 0 ) lin.tronque = TF( o.mg_tronque );
+                lin.trace = o.mg_trace;
+                return lance<PD>( a, o, nu, lin );
+            }
 #ifdef SF_AMGCL
             Amg lin;
             lin.variante = o.amgvar;
@@ -167,8 +220,9 @@ int deroule( const Args &a, const Opts &o ) {
             lin.maxit = o.linmax;
             return lance<PD>( a, o, nu, lin );
 #else
-            std::printf( "  AMGCL absent : --solver chol\n" );
-            return 1;
+            std::printf( "  AMGCL absent : on retombe sur Cholesky\n" );
+            Cholesky lin;
+            return lance<PD>( a, o, nu, lin );
 #endif
         } );
     }
@@ -190,6 +244,13 @@ int main( int argc, char **argv ) {
         else if ( s == "--lin-tol" )    o.lintol = std::atof( val() );
         else if ( s == "--lin-max" )    o.linmax = std::atoi( val() );
         else if ( s == "--solver" )     o.solver = val();
+        else if ( s == "--mg-agreg" )   o.mg_agreg = std::atoi( val() );
+        else if ( s == "--mg-nu" )      o.mg_nu = std::atoi( val() );
+        else if ( s == "--mg-lisseur" ) o.mg_lisseur = std::atoi( val() );
+        else if ( s == "--mg-recycle" ) o.mg_recycle = std::atoi( val() );
+        else if ( s == "--mg-cheb" )    o.mg_cheb = std::atof( val() );
+        else if ( s == "--mg-tronque" ) o.mg_tronque = std::atof( val() );
+        else if ( s == "--mg-trace" )   o.mg_trace = 1;
         else if ( s == "--amg-var" )    o.amgvar = std::atoi( val() );
         else if ( s == "--ecrire" )     o.ecrire = val();
         else if ( s == "--quiet" )      o.newton.trace = false;
@@ -230,7 +291,9 @@ int main( int argc, char **argv ) {
             std::printf( "usage: newton [options]\n" );
             Args::usage();
             std::printf(
-                "  --solver S      amg ( AMGCL, defaut ) | chol ( Eigen )\n"
+                "  --solver S      auto ( defaut : mg en 3D, amg en 2D ) | mg | amg | chol\n"
+                "  --mg-agreg S --mg-nu N --mg-lisseur 0|1|2 --mg-recycle K --mg-cheb R\n"
+                "  --mg-tronque T --mg-trace   les reglages du multigrille maison\n"
                 "  --amg-var V     0 = agregation+spai0 | 1 = agregation+GS | 2 = Ruge-Stuben+GS  (0)\n"
                 "  --newton-tol T  arret sur max|a_i - nu| / nu             (1e-6)\n"
                 "  --newton-max K  iterations au maximum                    (100)\n"

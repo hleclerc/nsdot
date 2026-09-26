@@ -3246,6 +3246,89 @@ ont été calés sur *ce* cas d'usage, alors qu'AMGCL ne l'a pas été. Il reste
 et c'est à ce titre qu'il doit rester dans le code. Sur carte, tout sera à re-mesurer : c'est
 précisément l'arbitrage matériel qui change, et c'est ce que toute cette section raconte.
 
+## 17.15 Et en 3D (`newton --3d --solver mg`)
+
+Le multigrille est branché dans `main_newton`, qui déroule les deux dimensions. Le 3D n'est pas le
+2D avec une coordonnée de plus : **le graphe de Laguerre y a 15,1 non-nuls par ligne contre 6,0**,
+et il n'est plus planaire.
+
+### Cholesky n'est pas une option en 3D
+
+| `n = 10⁵`, 3D uniforme | partie linéaire |
+|---|---|
+| `chol` (Eigen LDLT, AMD) | **> 600 s** (plafond atteint) |
+| `amg` | 1,53 s |
+| `mg` | **0,83 s** |
+
+Plus de **400×**, et c'est structurel : la dissection emboîtée d'un maillage 3D coûte `O(n²)` de
+flops contre `O(n^1,5)` en 2D. En 2D `chol` restait un témoin utilisable ; en 3D il ne finit pas.
+
+### Le paquet optimal est 8 dans les deux dimensions — mais il faut régler le lissage avec
+
+Partie linéaire (hiérarchie + résolution), 3D uniforme :
+
+| | `n = 10⁵` it / s | `n = 5·10⁵` it / s |
+|---|---|---|
+| `amg` (témoin) | 138 / 1,53 | 129 / 7,32 |
+| `a16 nu3` | 151 / 1,00 | 156 / 7,16 |
+| `a16 nu2` | 168 / 0,85 | 176 / 6,40 |
+| `a16 nu1` | 239 / 0,83 | 250 / 5,64 |
+| **`a8 nu1`** | 200 / **0,84** | 165 / **4,81** |
+| `a8 nu2` | 144 / 0,95 | 120 / 5,30 |
+| `a32 nu1` | 340 / 0,94 | 288 / 6,14 |
+
+**−46 % sur AMGCL à `10⁵`, −34 % à `5·10⁵`.**
+
+Et une leçon de méthode qui a failli me faire écrire l'inverse. En balayant la taille de paquet
+**à `nu = 3`** — le réglage 2D — l'optimum 3D semblait être 16, et j'ai commencé à l'écrire. C'était
+un artefact : **un cycle trop lissé force à grossir les paquets pour rester payable**. À `nu = 1`
+l'optimum redescend à 8, c'est-à-dire au bloc 2×2×2, celui que la géométrie suggérait. Les deux
+réglages ne sont pas séparables, et les balayer l'un après l'autre donne le mauvais point.
+
+Pourquoi `nu = 1` en 3D et pas en 2D : avec quinze voisins au lieu de six, **un seul passage de
+Jacobi propage déjà l'information bien plus loin**. Passer de `nu 3` à `nu 1` coûte **+69 %
+d'itérations en 2D mais seulement +32 % en 3D** — et en 3D ces 32 % sont largement repayés par le
+tiers de bande passante économisé. En 2D, `nu` est **plat** entre 1 et 3 (88,6 / 88,0 / 89,6 s à
+`n = 10⁵`, sous le bruit de ±8 %) : on y garde 3, qui fait le moins d'itérations à temps égal.
+
+`main_newton` met donc `nu = 1` en 3D et laisse le défaut de `Multigrille.h` en 2D. Chebyshev gagne
+dans les deux dimensions (3D, `n = 5·10⁵` : 176 it / 5,61 s contre 191 / 6,48 pour `spai0`).
+
+### Et en 2D uniforme, il perd — ce qui dit ce qui décide vraiment
+
+Le réglage 2D venait entièrement du cas **image** de `main_image`. Sur le **nuage uniforme** de
+`main_newton`, il ne tient pas. `n = 5·10⁵`, 2D :
+
+| | it. CG | hiérarchie | résolution | TOTAL |
+|---|---|---|---|---|
+| **`amg`** | 258 | 1,655 | 4,029 | **8,03 s** |
+| `a8 nu3` *(le défaut image)* | 310 | 0,806 | 6,780 | 9,76 s |
+| `a8 nu1` | 495 | 0,803 | 5,624 | 8,56 s |
+| `a4 nu2` | 233 | 1,510 | 4,913 | 8,68 s |
+| `a16 nu1` | 935 | 0,567 | 9,799 | 12,50 s |
+
+**Aucun réglage ne renverse** : le meilleur reste à +6,5 %. Notre cycle est pourtant *moins cher par
+itération* (11,4 ms contre 15,6) — il en faut simplement deux fois plus.
+
+**Ce n'est donc pas « mg perd en 2D ».** Dans `main_image`, à dimension égale, il gagne. La
+différence n'est pas la dimension, c'est le **régime** : la continuation sous image enchaîne 133 à
+323 itérations de Newton, donc des centaines de systèmes voisins, et c'est de ça que le recyclage
+vit. Le cas uniforme converge en une poignée d'itérations : `U` ne se remplit pas, et il ne reste
+que la qualité brute du préconditionneur, où AMGCL est devant.
+
+`main_newton` prend donc `--solver auto` : **`mg` en 3D, `amg` en 2D**. `main_image` garde `mg`.
+Un défaut qui dépend du cas est moins élégant qu'un défaut unique, mais c'est ce que trois bancs
+disent, et forcer l'uniformité coûterait 6 à 20 % quelque part.
+
+### Ce que ce banc ne dit PAS : le recyclage
+
+En 3D uniforme, le recyclage ne change rien (151 itérations avec, 155 sans). Ce n'est **pas** un
+résultat sur la méthode, c'est un banc inadapté à la question : ce cas converge en **six itérations
+de Newton et neuf diagrammes**, donc `U` n'a pas le temps de se remplir et les systèmes successifs
+ne se ressemblent pas assez. Le recyclage vit du régime « longue séquence de systèmes voisins »,
+que le cas image 2D fournit (133 à 323 itérations de Newton) et que celui-ci ne fournit pas. Pour
+le juger en 3D il faudrait une continuation 3D — ce qui n'existe pas encore ici.
+
 ## 17.8 Le critère d'arrêt à 1 % : gratuit, et sans effet
 
 Proposition : arrêter Newton sur `max_i | A_i / ν_i − 1 | < 1 %` au lieu de `1e-6`. C'est exactement
