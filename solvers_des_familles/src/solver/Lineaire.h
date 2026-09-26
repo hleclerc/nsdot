@@ -67,9 +67,30 @@ struct Amg {
     int      variante = SA_SPAI0;
     TF       tol      = 1e-10;     ///< residu RELATIF
     int      maxit    = 20000;
+    // LA HIERARCHIE PEUT SERVIR PLUSIEURS FOIS. Entre deux iterations de Newton la hessienne
+    // change, mais son graphe bouge a peine -- quelques aretes. Or un PRECONDITIONNEUR n'a pas
+    // besoin d'etre exact : seule la matrice que voit le CG doit l'etre, et on la reconstruit a
+    // chaque fois. `make_solver` d'amgcl expose exactement cette dissociation par sa surcharge
+    // `( A, rhs, x )` -- resoudre avec une matrice NEUVE contre la hierarchie deja montee.
+    // MAIS CA NE MARCHE PAS ICI, ET LA MESURE EST NETTE : a `n = 1e5`, `refaire 4` fait tomber la
+    // montee de 13.4 a 3.4 s et monte la resolution de 21.9 a 41.1 -- les iterations de CG passent
+    // de 9369 a 16764, soit +79 %. Total 93.9 s contre 103.0.
+    //
+    // La raison se lit dans notre propre implementation : `Mg::rebranche` RECALCULE les
+    // coefficients du lisseur au niveau FIN avec les nouvelles valeurs, et n'y perd que 11 %
+    // d'iterations. Amgcl garde les siens -- son `spai0` du niveau fin reste celui de l'ancienne
+    // matrice -- et il n'y a pas d'API pour le rafraichir seul. La dissociation entre la matrice
+    // du CG et celle du preconditionneur ne paie donc que si on peut rafraichir le niveau fin,
+    // c'est-a-dire si on possede le solveur. Defaut : 1, et l'option reste pour qui veut verifier.
+    int      refaire  = 1;         ///< la hierarchie refaite toutes les `refaire` resolutions
     StatsLin st;
     /// la derniere hierarchie, gardee pour `resout_encore` ( le type du solveur depend de la variante )
     std::function<std::tuple<int,double>( const std::vector<double> &, std::vector<double> & )> encore;
+    /// ... et la meme, mais avec UNE AUTRE MATRICE : c'est elle qui sert a `refaire`
+    std::function<std::tuple<int,double>( std::vector<int> &, std::vector<int> &, std::vector<double> &,
+                                          const std::vector<double> &, std::vector<double> & )> avec_A;
+    int      depuis   = 0;         ///< resolutions depuis la derniere montee
+    SI       n_prec   = 0;         ///< la taille de la derniere hierarchie
 
     const char *nom() const {
         return variante == RS_GS ? "AMGCL Ruge-Stuben+GS"
@@ -118,13 +139,33 @@ struct Amg {
             std::tie( it, err ) = ( *so )( rb, sol );
             st.t_res += now() - ta;
             encore = [ so ]( const std::vector<double> &b, std::vector<double> &x ) { return ( *so )( b, x ); };
+            // LA MEME HIERARCHIE, UNE MATRICE NEUVE. On passe par `Back::matrix` plutot que par
+            // l'adaptateur de tuple : l'adaptateur sait CONSTRUIRE une hierarchie, le CG a besoin
+            // d'un operateur qui sait faire un produit matrice-vecteur.
+            avec_A = [ so ]( std::vector<int> &p, std::vector<int> &c, std::vector<double> &v,
+                             const std::vector<double> &bb, std::vector<double> &x ) {
+                const SI mm = SI( p.size() ) - 1;
+                typename Back::matrix Am( std::tie( mm, p, c, v ) );
+                int i2 = 0; double e2 = 0;
+                std::tie( i2, e2 ) = ( *so )( Am, bb, x );
+                return std::make_tuple( i2, e2 );
+            };
         };
         using SaSpai = amgcl::make_solver<amgcl::amg<Back, amgcl::coarsening::smoothed_aggregation, amgcl::relaxation::spai0>, amgcl::solver::cg<Back>>;
         using SaGs   = amgcl::make_solver<amgcl::amg<Back, amgcl::coarsening::smoothed_aggregation, amgcl::relaxation::gauss_seidel>, amgcl::solver::cg<Back>>;
         using RsGs   = amgcl::make_solver<amgcl::amg<Back, amgcl::coarsening::ruge_stuben, amgcl::relaxation::gauss_seidel>, amgcl::solver::cg<Back>>;
-        if      ( variante == SA_GS ) lance( std::type_identity<SaGs>{} );
-        else if ( variante == RS_GS ) lance( std::type_identity<RsGs>{} );
-        else                          lance( std::type_identity<SaSpai>{} );
+        if ( avec_A && n == n_prec && depuis < std::max( refaire, 1 ) ) {
+            const double ta = now();
+            std::tie( it, err ) = avec_A( ptr, col, val, rb, sol );
+            st.t_res += now() - ta;
+            ++depuis;
+        } else {
+            if      ( variante == SA_GS ) lance( std::type_identity<SaGs>{} );
+            else if ( variante == RS_GS ) lance( std::type_identity<RsGs>{} );
+            else                          lance( std::type_identity<SaSpai>{} );
+            depuis = 1;
+            n_prec = n;
+        }
         st.nb_iter += it;
         st.pire = std::max( st.pire, TF( err ) );
 

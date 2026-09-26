@@ -3150,12 +3150,101 @@ boucle la plus chaude du cycle.
 | **AMGCL `var 0`** | **7,31 s** | **92,1 s** | **667,6 s** |
 | `mg` maison, réglé | 7,38 s | 96,8 s | 756,7 s |
 
-**De 2,2× plus lent que Cholesky à l'égalité avec AMGCL à `2·10⁴`, et à 5 % à `10⁵`.** Il reste
-13 % derrière à `3·10⁵`, et c'est le même poste qui l'explique depuis le début : à taux de convergence
-égal, notre cycle brasse plus de non-nuls. Le défaut reste donc `--solver amg` — on ne change pas un
-défaut sur une égalité — mais `mg` est complet, mesuré, et à un drapeau de distance ; et il a deux
-choses qu'AMGCL n'a pas : une agrégation qui ne coûte rien, et la dissociation entre la matrice du CG
-et celle du préconditionneur.
+**De 2,2× plus lent que Cholesky à l'égalité avec AMGCL à `2·10⁴`, et à 5 % à `10⁵`.** Il restait
+13 % derrière à `3·10⁵`, et c'est le même poste qui l'expliquait depuis le début : à taux de
+convergence égal, notre cycle brasse plus de non-nuls. Trois ajouts ont fait le reste du chemin
+(§ 17.13).
+
+## 17.13 Ce qu'on prend à la littérature : le recyclage, Chebyshev, et un échec
+
+### La hiérarchie gardée ne paie que si on possède le solveur
+
+`Mg` gardait déjà sa hiérarchie plusieurs résolutions (§ 17.10). AMGCL expose la même dissociation —
+`make_solver::operator()( A, rhs, x )` résout avec une matrice **neuve** contre la hiérarchie déjà
+montée. On l'a branchée (`--amg-refaire`) et mesurée à `n = 10⁵` :
+
+| | hiérarchie | résolution | it. CG | total |
+|---|---|---|---|---|
+| `amg --amg-refaire 1` | 13,3 s | 21,9 s | **9 369** | **93,9 s** |
+| `amg --amg-refaire 4` | 3,4 s | 41,1 s | **16 764** *(+79 %)* | 103,0 s |
+| `mg --mg-refaire 4` | 3,5 s | 39,3 s | 16 944 | 98,1 s |
+
+**Ça échoue sur AMGCL et ça marche chez nous, pour une raison qu'on peut nommer** : `Mg::rebranche`
+**recalcule les coefficients du lisseur au niveau fin** avec les nouvelles valeurs, et n'y perd que
+11 % d'itérations ; AMGCL garde son `spai0` du niveau fin construit sur l'ancienne matrice, et paie
+79 %. Il n'existe pas d'API amgcl pour rafraîchir ce seul niveau. Défaut `--amg-refaire 1`, l'option
+reste pour vérifier.
+
+C'est l'argument le plus net en faveur de posséder le solveur : la dissociation entre *la matrice que
+voit le CG* et *celle qui a servi au préconditionneur* n'est exploitable que si on contrôle le
+rafraîchissement, et une bibliothèque ne l'expose pas.
+
+### Le recyclage de sous-espace : −19 %, et il sature à deux vecteurs
+
+On ne résout pas un système mais des centaines qui se ressemblent. On garde les `k` dernières
+solutions dans `U` et on démarre sur la projection de Galerkin `x₀ = U(UᵀAU)⁻¹Uᵀb` — la meilleure
+approximation dans `span(U)` au sens de l'énergie. Le résidu `r₀ = b − (AU)y` sort du calcul déjà
+fait, donc le prix est exactement `k` produits matrice-vecteur (Parks et al., *Recycling Krylov
+Subspaces for Sequences of Linear Systems*).
+
+| `n = 2·10⁴` | it. CG |
+|---|---|
+| `--mg-recycle 0` | 5 117 |
+| **`--mg-recycle 2`** | **4 337** *(−15 %)* |
+| `--mg-recycle 4 / 8 / 16` | 4 332 / 4 334 / 4 336 |
+
+**Il sature à deux**, ce qui est le résultat intéressant : la solution précédente porte à elle seule
+presque toute l'information, et les directions de Newton successives n'engendrent utilement qu'un ou
+deux degrés de liberté. On s'arrête donc à 2, où le surcoût est négligeable.
+
+### Chebyshev, et une passe de trop qui coûtait tout le gain
+
+Un polynôme de degré `nu` en `M⁻¹A`, minimisant le maximum sur `[λ_max/r, λ_max]` — la partie du
+spectre que le grossier ne corrige pas. Uniquement des produits matrice-vecteur, **donc le même code
+sur les deux machines**, ce que Gauss-Seidel n'est pas. `λ_max` ne se devine pas, il se **borne** par
+Gershgorin sur `M⁻¹A` : exact, une passe sur les arêtes, et deux pour un laplacien pur.
+
+Premier essai : −8 % d'itérations, mais +12 % de coût par itération — un lavage. La cause était mon
+implémentation, pas la méthode : j'écrivais `A y` dans un tampon puis refaisais une passe pour mettre
+à jour `r` et la direction. Sur un cycle limité par la bande passante, cette passe coûtait exactement
+ce que le polynôme gagnait. Le double tampon **reste nécessaire** — le produit de la ligne `i` lit
+`y` chez les voisins, on ne peut pas écrire dedans — mais la seconde passe non : on lit `y`, on met
+`r` à jour sur place, on écrit la direction suivante dans `z`, et on échange.
+
+| `n = 2·10⁴` | it. CG | résolution |
+|---|---|---|
+| Chebyshev `nu2 cheb10`, deux passes | 4 687 | 2,19 s |
+| Chebyshev `nu2 cheb10`, **fusionné** | **4 043** | **1,83 s** |
+
+### Ce que les trois donnent ensemble
+
+| `n = 10⁵` | it. CG | hiérarchie | résolution | **total** |
+|---|---|---|---|---|
+| `amg` (témoin) | 9 369 | 13,32 | 21,71 | 93,04 s |
+| `mg`, sans recyclage | 16 941 | 3,45 | 39,62 | 98,17 s |
+| `mg` + `recycle 2` | 13 641 | 3,48 | 32,14 | 90,42 s |
+| **`mg` + Chebyshev + `recycle 2`** | **10 732** | 3,50 | 31,61 | **90,19 s** |
+
+Les deux briques se composent : le recyclage retire 19 % des itérations, Chebyshev 21 % de plus, et
+la montée gratuite fait le reste. Sur le **temps**, Chebyshev et `spai0` sont à égalité (90,19 contre
+90,42) ; ce qui le fait choisir par défaut est ailleurs — **−21 % d'itérations pour le même temps**,
+donc de la marge quand le problème durcit, et un lisseur qui se porte à l'identique sur carte.
+
+## 17.14 Le solveur maison devient le défaut
+
+| | `5·10³` | `2·10⁴` | `2·10⁴` trous | `2·10⁴` diracs ρ | `10⁵` |
+|---|---|---|---|---|---|
+| `chol` | 1,91 | 10,99 | — | — | — |
+| `amg var 0` | 1,70 | **7,26** | 5,63 | 7,05 | 92,57 |
+| **`mg` maison** | **1,54** | 7,44 | **4,48** | **6,47** | **90,43** |
+
+Quatre cas sur cinq, diagrammes identiques partout, et le cinquième est à 2,5 % — sous le bruit de
+±8 % qu'on mesure en rejouant la même commande. `--solver mg` devient le défaut.
+
+**Avec une réserve honnête** : nos réglages (`agreg 8`, `tronque 0,2`, `cheb 10`, `nu 3`, `recycle 2`)
+ont été calés sur *ce* cas d'usage, alors qu'AMGCL ne l'a pas été. Il reste le témoin, à un drapeau,
+et c'est à ce titre qu'il doit rester dans le code. Sur carte, tout sera à re-mesurer : c'est
+précisément l'arbitrage matériel qui change, et c'est ce que toute cette section raconte.
 
 ## 17.8 Le critère d'arrêt à 1 % : gratuit, et sans effet
 

@@ -128,6 +128,19 @@
 // Le filtrage, quand on l'active, ne sert QU'A CONSTRUIRE `P`. Le Galerkin se fait sur le vrai
 // `A` : on ne change pas l'operateur, seulement l'espace grossier.
 //
+// = LE LISSEUR DE CHEBYSHEV, qui est le meme sur les deux machines
+//
+// Un polynome de degre `nu` en `M^-1 A` choisi pour minimiser le maximum sur `[ lmin, lmax ]` --
+// la partie du spectre que le grossier NE CORRIGE PAS. Il ne demande que des produits
+// matrice-vecteur, donc il se comporte pareil sur CPU et sur carte, la ou Gauss-Seidel demande
+// un ordre et se parallelise mal. Adams, Brezina, Hu et Tuminaro ( « Parallel multigrid
+// smoothing: polynomial versus Gauss-Seidel », 2003 ) montrent qu'il tient meme en sequentiel.
+//
+// `lmax` ne se devine pas, il se BORNE : Gershgorin sur `M^-1 A` donne
+// `lmax <= max_i m_i ( dia_i + somme_e |val_e| )`, exact et gratuit -- deux pour un laplacien
+// pur et son preconditionneur de Jacobi. `lmin = lmax / ratio` : on ne demande au lisseur que la
+// moitie haute du spectre, le reste etant l'affaire du niveau grossier.
+//
 // = LE LISSEUR : `spai0` PLUTOT QUE JACOBI AMORTI
 //
 // `spai0` est la meilleure approximation DIAGONALE de `A^-1` au sens de Frobenius : minimiser
@@ -161,6 +174,21 @@
 // `util/parallel.h` cree et joint ses fils A CHAQUE APPEL, avec epinglage : une cinquantaine de
 // microsecondes. Un cycle en demande des dizaines sur des niveaux de mille inconnues. Le pool
 // d'OpenMP est deja la, et la clause `if` rend la boucle sequentielle quand elle est courte.
+//
+// = LE RECYCLAGE DE SOUS-ESPACE ( `recycle` )
+//
+// On ne resout pas UN systeme, on en resout des centaines qui se ressemblent -- meme graphe a
+// quelques aretes pres, second membre correle. Partir de zero a chaque fois jette cette
+// information. On garde donc les `recycle` dernieres solutions dans `U` et on demarre sur la
+// meilleure combinaison qu'elles permettent, au sens de l'energie :
+//
+//      x0 = U ( U^t A U )^-1 U^t b
+//
+// c'est-a-dire la projection de Galerkin sur `span( U )`. Elle coute `k` produits
+// matrice-vecteur pour former `AU`, un systeme dense `k x k`, et RIEN de plus -- le residu
+// `r0 = b - AU y` sort du calcul deja fait. C'est le premier etage du recyclage de Krylov
+// ( Parks et al., « Recycling Krylov Subspaces for Sequences of Linear Systems » ) ; la
+// deflation en cours de boucle serait le second.
 //
 // = LA HIERARCHIE PEUT SERVIR PLUSIEURS FOIS ( `refaire` )
 //
@@ -201,7 +229,8 @@ struct NiveauMg {
     std::vector<SI>  arow, acol;                     ///< la possession, pour les niveaux grossiers
     std::vector<TF>  aval, adia;
     std::vector<TF>  rlx;                            ///< le coefficient de relaxation, UN PAR LIGNE
-    std::vector<TF>  x, b, r, y;                     ///< le cycle ( `y` : le second tampon de Jacobi )
+    TF               lmax = 2;                       ///< la borne de Gershgorin sur `M^-1 A`
+    std::vector<TF>  x, b, r, y, z;                  ///< le cycle ( `y`, `z` : les tampons )
     std::vector<TF>  v1, v2, t, rc;                  ///< le K-cycle
 };
 
@@ -216,7 +245,19 @@ struct CsrMg {
 struct Mg {
     // ---- LES REGLAGES. Les valeurs viennent de la mesure sur CPU ( README § 17 ), pas de la carte.
     int      agreg   = 8;          ///< germes par paquet -- UNE PUISSANCE DE DEUX ( 4, 8, 16, ... )
-    int      lisseur = 1;          ///< 0 : Jacobi amorti ; 1 : spai0 ( diagonale de Frobenius )
+    // CHEBYSHEV PAR DEFAUT, ET SUR LE TEMPS C'EST UN MATCH NUL. A `n = 1e5` : 90.19 s contre
+    // 90.42 pour spai0 -- indiscernable. Ce qui tranche est ailleurs : il fait 10 732 iterations
+    // de CG la ou spai0 en fait 13 641, soit -21 % pour le meme temps. C'est de la marge quand le
+    // probleme durcit, et c'est un lisseur PUREMENT MATRICE-VECTEUR, donc le meme code sur les
+    // deux machines -- ce que Gauss-Seidel n'est pas et ce qu'un `omega` global devine mal.
+    int      lisseur = 2;          ///< 0 : Jacobi amorti ; 1 : spai0 ; 2 : Chebyshev
+    TF       cheb    = TF( 10 );   ///< `lmin = lmax / cheb` -- la part du spectre laissee au grossier
+    // DEUX SUFFISENT, ET C'EST LA MESURE QUI LE DIT. A `n = 2e4` le compte d'iterations de CG
+    // passe de 5117 a 4337 avec DEUX vecteurs gardes ( -15 % ), et ne bouge plus ensuite : 4332 a
+    // quatre, 4334 a huit, 4336 a seize. La solution precedente porte a elle seule presque toute
+    // l'information -- les directions de Newton successives n'engendrent utilement qu'un ou deux
+    // degres de liberte. Le prix etant `k` produits matrice-vecteur par resolution, on s'arrete la.
+    int      recycle = 2;          ///< solutions gardees pour le demarrage de Galerkin ( 0 : off )
     bool     lisse   = true;       ///< la PROLONGATION LISSEE ( sinon : constante par morceaux )
     TF       omega_p = TF( 0.7 );  ///< l'amortissement du lissage de `P`
     TF       tronque = TF( 0.2 );  ///< on jette les entrees de `P` sous cette fraction du max de la ligne
@@ -225,7 +266,7 @@ struct Mg {
     int      trace   = 0;          ///< 1 : la taille et le remplissage de chaque niveau, une fois
     int      kcycle  = 0;          ///< niveaux acceleres par Krylov ( le fond etant resolu : aucun )
     int      gros    = 120;        ///< lissages au fond, SI la factorisation n'est pas disponible
-    int      nu      = 2;          ///< lissages avant et apres, par niveau
+    int      nu      = 3;          ///< lissages avant et apres, par niveau ( 3 avec Chebyshev )
     int      stop    = 1000;       ///< on arrete de grossir en dessous
     bool     exact   = true;       ///< le fond RESOLU ( Cholesky creux ) au lieu de lisse
     // QUATRE RESOLUTIONS PAR HIERARCHIE. La prolongation lissee coute plus cher a monter qu'a
@@ -248,6 +289,7 @@ struct Mg {
         rg.resize( nb );
         for ( SI k = 0; k < nb; ++k ) { ord[ k ] = SI( ids[ k ] ); rg[ ord[ k ] ] = k; }
         niv.clear();                                 // l'agregation change : la hierarchie est caduque
+        Uv.clear(); AUv.clear();                     // ... et le sous-espace recycle aussi
     }
     bool a_l_ordre() const { return ! ord.empty(); }
 
@@ -273,6 +315,7 @@ struct Mg {
         // LA HIERARCHIE PEUT RESSERVIR : entre deux iterations de Newton le graphe bouge a peine,
         // et un preconditionneur n'a pas besoin d'etre exact. On ne rafraichit alors que le
         // pointeur du niveau fin -- `L` est reassemble a chaque fois et peut avoir demenage.
+        if ( ! niv.empty() && niv[ 0 ].n != L.n ) { Uv.clear(); AUv.clear(); }
         const bool neuf = niv.empty() || niv[ 0 ].n != L.n || depuis >= std::max( refaire, 1 );
         if ( neuf ) { monte( L ); depuis = 0; ++st.nb_hier; }
         else          rebranche( L );
@@ -290,6 +333,8 @@ private:
     std::vector<std::vector<SI>> carte;    ///< `carte[ l ][ i ]` : le paquet de `i` au niveau `l+1`
     std::vector<CsrMg>    prol, prolt;     ///< `P` ( fin x grossier ) et `P^t`, quand on lisse
     std::vector<TF>       cr, cz, cp, cq;  ///< les vecteurs du CG externe
+    std::vector<std::vector<TF>> Uv;       ///< LE SOUS-ESPACE RECYCLE : les dernieres solutions
+    std::vector<std::vector<TF>> AUv;      ///< `A U`, refait a chaque resolution ( `A` change )
     int                   depuis = 0;      ///< resolutions depuis la derniere montee
     // les tampons des assemblages, gardes d'un appel a l'autre
     std::vector<std::vector<TF>>   acc, tval;
@@ -364,10 +409,74 @@ private:
         for ( SI i = 0; i < n; ++i ) {
             const TF d = v.dia[ i ];
             if ( lisseur == 0 ) { v.rlx[ i ] = d > 0 ? omega / d : TF( 0 ); continue; }
-            TF q = d * d;
+            TF q = d * d;                                // `spai0`, aussi pour l'interieur de Chebyshev
             for ( SI e = v.row[ i ]; e < v.row[ i + 1 ]; ++e ) q += v.val[ e ] * v.val[ e ];
             v.rlx[ i ] = q > 0 ? d / q : TF( 0 );
         }
+        if ( lisseur != 2 )
+            return;
+        // GERSHGORIN SUR `M^-1 A` : exact, et une passe sur les aretes.
+        TF mx = 0;
+        #pragma omp parallel for schedule( static ) reduction( max : mx ) if( n >= MG_SEUIL_PAR )
+        for ( SI i = 0; i < n; ++i ) {
+            TF s = v.dia[ i ];
+            for ( SI e = v.row[ i ]; e < v.row[ i + 1 ]; ++e ) s += std::fabs( v.val[ e ] );
+            mx = std::max( mx, v.rlx[ i ] * s );
+        }
+        v.lmax = mx > 0 ? mx : TF( 2 );
+    }
+
+    /// LE LISSEUR DE CHEBYSHEV, la recurrence a trois termes. `deg` produits matrice-vecteur,
+    /// exactement comme `deg` balayages de Jacobi -- mais un polynome choisi pour ecraser la
+    /// partie haute du spectre, celle que le niveau grossier ne voit pas.
+    void chebyshev( NiveauMg &v, int deg, bool net ) const {
+        const SI n = v.n;
+        if ( deg <= 0 ) { if ( net ) std::fill( v.x.begin(), v.x.end(), TF( 0 ) ); return; }
+        const TF hi = v.lmax, lo = hi / std::max( cheb, TF( 1.01 ) );
+        const TF th = ( hi + lo ) / 2, de = ( hi - lo ) / 2;
+        const TF si = th / de;
+        TF rh = 1 / si;
+        if ( net ) {
+            std::fill( v.x.begin(), v.x.end(), TF( 0 ) );
+            v.r = v.b;
+        } else {
+            #pragma omp parallel for schedule( static ) if( n >= MG_SEUIL_PAR )
+            for ( SI i = 0; i < n; ++i ) {
+                TF s = v.dia[ i ] * v.x[ i ];
+                for ( SI e = v.row[ i ]; e < v.row[ i + 1 ]; ++e ) s -= v.val[ e ] * v.x[ v.col[ e ] ];
+                v.r[ i ] = v.b[ i ] - s;
+            }
+        }
+        #pragma omp parallel for schedule( static ) if( n >= MG_SEUIL_PAR )
+        for ( SI i = 0; i < n; ++i ) v.y[ i ] = v.rlx[ i ] * v.r[ i ] / th;     // `y` porte la direction
+        for ( int k = 0; k < deg; ++k ) {
+            #pragma omp parallel for schedule( static ) if( n >= MG_SEUIL_PAR )
+            for ( SI i = 0; i < n; ++i ) v.x[ i ] += v.y[ i ];
+            if ( k + 1 == deg ) break;
+            // UNE SEULE PASSE, ET LE DOUBLE TAMPON RESTE NECESSAIRE. Le produit `A y` de la ligne
+            // `i` lit `y` chez les voisins : on ne peut donc pas ecrire la nouvelle direction dans
+            // `y`. Mais on n'a pas besoin d'une passe de plus pour autant -- on lit `y`, on met
+            // `r` a jour sur place ( chacun son indice ), et on ecrit la direction suivante dans
+            // `z`, qu'on echange. Mesure de l'erreur inverse : avec deux passes, Chebyshev rendait
+            // en cout par iteration ( 0.467 ms contre 0.418 ) ce qu'il gagnait en nombre.
+            const TF r2 = 1 / ( 2 * si - rh ), c1 = r2 * rh, c2 = 2 * r2 / de;
+            #pragma omp parallel for schedule( static ) if( n >= MG_SEUIL_PAR )
+            for ( SI i = 0; i < n; ++i ) {
+                TF s = v.dia[ i ] * v.y[ i ];
+                for ( SI e = v.row[ i ]; e < v.row[ i + 1 ]; ++e ) s -= v.val[ e ] * v.y[ v.col[ e ] ];
+                const TF ri = v.r[ i ] - s;
+                v.r[ i ] = ri;
+                v.z[ i ] = c1 * v.y[ i ] + c2 * v.rlx[ i ] * ri;
+            }
+            v.y.swap( v.z );
+            rh = r2;
+        }
+    }
+
+    /// le lissage demande, quel qu'il soit
+    void lisse_un( NiveauMg &v, int nb, bool net ) const {
+        if ( lisseur == 2 ) chebyshev( v, nb, net );
+        else                jacobi( v, nb, net );
     }
 
     void monte( const Laplacien &L ) {
@@ -384,6 +493,7 @@ private:
         for ( NiveauMg &v : niv ) {
             v.x.assign( v.n, TF( 0 ) ); v.b.assign( v.n, TF( 0 ) );
             v.r.assign( v.n, TF( 0 ) ); v.y.assign( v.n, TF( 0 ) );
+            if ( lisseur == 2 ) v.z.assign( v.n, TF( 0 ) );
             calcule_relax( v );
         }
         for ( int l = 1; l <= kcycle && l < int( niv.size() ); ++l ) {
@@ -733,13 +843,13 @@ private:
                 return;
             }
 #endif
-            jacobi( g, gros, true );
+            lisse_un( g, gros, true );
             return;
         }
         NiveauMg &c = niv[ l + 1 ];
         const SI nf = g.n, ncc = c.n;
 
-        jacobi( g, nu, true );
+        lisse_un( g, nu, true );
         #pragma omp parallel for schedule( static ) if( nf >= MG_SEUIL_PAR )
         for ( SI i = 0; i < nf; ++i ) {                  // `r = b - A x`
             TF s = g.dia[ i ] * g.x[ i ];
@@ -781,7 +891,7 @@ private:
             #pragma omp parallel for schedule( static ) if( nf >= MG_SEUIL_PAR )
             for ( SI i = 0; i < nf; ++i ) g.x[ i ] += c.x[ m[ i ] ];
         }
-        jacobi( g, nu, false );
+        lisse_un( g, nu, false );
     }
 
     /// DEUX PAS DE GRADIENT CONJUGUE SUR LE NIVEAU `l`, preconditionnes par le niveau d'en
@@ -810,6 +920,41 @@ private:
         #pragma omp parallel for schedule( static ) if( n >= MG_SEUIL_PAR )
         for ( SI i = 0; i < n; ++i ) c.x[ i ] = k1c * c.v1[ i ] + k2 * c.v2[ i ];
         c.b.swap( c.rc );                                // rendu tel qu'on l'a trouve
+    }
+
+    /// LE PETIT SYSTEME DENSE `G y = f`, `G` symetrique definie positive et `k <= 32`. Cholesky
+    /// a la main, avec une crete de securite : deux solutions successives peuvent etre presque
+    /// colineaires, et `G` devient alors singuliere -- on decline plutot que de rendre n'importe
+    /// quoi, le demarrage n'etant qu'un bonus.
+    static bool resout_dense( std::vector<TF> &G, std::vector<TF> &f, int k ) {
+        TF tr = 0;
+        for ( int j = 0; j < k; ++j ) tr += G[ size_t( j ) * k + j ];
+        if ( ! ( tr > 0 ) ) return false;
+        const TF eps = tr / TF( k ) * TF( 1e-12 );
+        for ( int j = 0; j < k; ++j ) G[ size_t( j ) * k + j ] += eps;
+        for ( int j = 0; j < k; ++j ) {                  // Cholesky en place, triangle inferieur
+            TF s = G[ size_t( j ) * k + j ];
+            for ( int q = 0; q < j; ++q ) s -= G[ size_t( j ) * k + q ] * G[ size_t( j ) * k + q ];
+            if ( ! ( s > 0 ) ) return false;
+            const TF dj = std::sqrt( s );
+            G[ size_t( j ) * k + j ] = dj;
+            for ( int i = j + 1; i < k; ++i ) {
+                TF t = G[ size_t( i ) * k + j ];
+                for ( int q = 0; q < j; ++q ) t -= G[ size_t( i ) * k + q ] * G[ size_t( j ) * k + q ];
+                G[ size_t( i ) * k + j ] = t / dj;
+            }
+        }
+        for ( int i = 0; i < k; ++i ) {                  // descente
+            TF t = f[ i ];
+            for ( int q = 0; q < i; ++q ) t -= G[ size_t( i ) * k + q ] * f[ q ];
+            f[ i ] = t / G[ size_t( i ) * k + i ];
+        }
+        for ( int i = k - 1; i >= 0; --i ) {             // remontee
+            TF t = f[ i ];
+            for ( int q = i + 1; q < k; ++q ) t -= G[ size_t( q ) * k + i ] * f[ q ];
+            f[ i ] = t / G[ size_t( i ) * k + i ];
+        }
+        return true;
     }
 
     /// la jauge : moyenne nulle, le noyau du laplacien
@@ -847,6 +992,41 @@ private:
 
         const TF bb = dot( cr, cr );
         if ( ! ( bb > 0 ) ) return true;                 // rien a resoudre
+
+        // ---- LE DEMARRAGE DE GALERKIN SUR LE SOUS-ESPACE RECYCLE
+        //
+        // `x0 = U ( U^t A U )^-1 U^t b` est la MEILLEURE approximation dans `span( U )` au sens
+        // de l'energie, et son residu sort du calcul deja fait : `r0 = b - ( AU ) y`. Le prix est
+        // `k` produits matrice-vecteur, a comparer aux iterations qu'on espere epargner.
+        if ( recycle > 0 && ! Uv.empty() ) {
+            const int k = int( Uv.size() );
+            AUv.resize( k );
+            for ( int j = 0; j < k; ++j ) {
+                AUv[ j ].resize( n );
+                matvec( niv[ 0 ], Uv[ j ], AUv[ j ] );
+            }
+            std::vector<TF> G( size_t( k ) * k ), f( k );
+            for ( int j = 0; j < k; ++j ) {
+                f[ j ] = dot( Uv[ j ], cr );
+                for ( int l = 0; l <= j; ++l ) {
+                    const TF g = dot( Uv[ j ], AUv[ l ] );
+                    G[ size_t( j ) * k + l ] = g;
+                    G[ size_t( l ) * k + j ] = g;
+                }
+            }
+            if ( resout_dense( G, f, k ) ) {
+                #pragma omp parallel for schedule( static ) if( n >= MG_SEUIL_PAR )
+                for ( SI i = 0; i < n; ++i ) {
+                    TF sx = 0, sr = 0;
+                    for ( int j = 0; j < k; ++j ) { sx += f[ j ] * Uv[ j ][ i ]; sr += f[ j ] * AUv[ j ][ i ]; }
+                    d[ i ] = sx;
+                    cr[ i ] -= sr;
+                }
+                centre( d );
+                centre( cr );
+            }
+        }
+
         precond( cr, cz );
         cp = cz;
         TF rz = dot( cr, cz );
@@ -875,6 +1055,12 @@ private:
             for ( SI i = 0; i < n; ++i ) cp[ i ] = cz[ i ] + be * cp[ i ];
         }
         st.nb_iter += it;
+        // LA SOLUTION REJOINT LE SOUS-ESPACE, a moyenne nulle -- c'est la jauge dans laquelle on
+        // resout, et donc celle dans laquelle `U` doit vivre.
+        if ( recycle > 0 ) {
+            if ( int( Uv.size() ) >= recycle ) Uv.erase( Uv.begin() );
+            Uv.push_back( d );
+        }
         // ON REND LA JAUGE `d[ 0 ] = 0` : voir l'entete. Les deux jauges decrivent la meme
         // direction a une constante pres, mais `Newton.h` ecrase `w2[ 0 ]` apres le pas.
         const TF d0 = d[ 0 ];

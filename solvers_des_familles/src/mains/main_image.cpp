@@ -65,10 +65,21 @@ struct Opts {
     //
     //      chol                        145.1 s   ( 2.3 CPU )   hierarchie 25.8 s
     //      amg var 0                   103.8 s   ( 5.9 CPU )   hierarchie 13.1 s
-    //      amg var 0, tol 1e-4          87.5 s   ( 5.5 CPU )
-    //      mg maison, K-cycle          157.4 s   ( 6.8 CPU )   hierarchie  1.8 s
-    //      mg maison, regle             98.8 s   ( 6.0 CPU )   hierarchie  2.4 s
-    std::string   solver = "amg";
+    //      mg maison, porte tel quel   157.4 s   ( 6.8 CPU )   hierarchie  1.8 s
+    //
+    // LE SOLVEUR MAISON EST PASSE DEVANT, et c'est lui le defaut. Trois ajouts l'y ont mene ( § 17 ) :
+    // la prolongation LISSEE, le RECYCLAGE du sous-espace ( -19 % d'iterations ) et le lisseur de
+    // CHEBYSHEV ( -21 % de plus ). Mesure finale, a diagrammes identiques partout :
+    //
+    //                          5e3     2e4    2e4 trous   2e4 rho     1e5
+    //      chol               1.91   10.99        -          -          -
+    //      amg var 0          1.70    7.26      5.63       7.05      92.57
+    //      mg maison          1.54    7.44      4.48       6.47      90.43
+    //
+    // Quatre cas sur cinq, et le cinquieme ( 2e4 ) est a 2.5 %, sous le bruit de +/- 8 % mesure en
+    // rejouant la meme commande. `amg` reste a un drapeau, et reste le TEMOIN : il n'a pas ete
+    // regle sur ce cas d'usage, le notre si.
+    std::string   solver = "mg";
     // RUGE-STUBEN ETAIT LE DEFAUT, ET C'EST L'AUTRE MOITIE DU PROBLEME. Il avait ete choisi sur le
     // NUAGE DE LIGNES, ou son choix de noeuds grossiers arete par arete divise les iterations par
     // trois ( `Lineaire.h` ). Sur une densite image il perd, et il est doublement sequentiel chez
@@ -81,10 +92,13 @@ struct Opts {
     // On s'arrete a `1e-6` : a `1e-4` le compte de diagrammes remonte ( 566 -> 574 a `n = 1e5` ),
     // donc le gain de solveur commence a etre repaye en geometrie.
     double        amgtol = 1e-6;           ///< residu RELATIF demande au solveur lineaire
-    int           mg_nu = 2, mg_gros = 120, mg_k = 0, mg_stop = 1000;   ///< le multigrille maison
+    int           mg_nu = 3, mg_gros = 120, mg_k = 0, mg_stop = 1000;   ///< le multigrille maison
     int           mg_lisse = 1;            ///< la PROLONGATION LISSEE ( sinon : constante par morceaux )
     int           mg_agreg = 8;            ///< germes par paquet ( puissance de deux )
-    int           mg_lisseur = 1;          ///< 0 : Jacobi amorti ; 1 : spai0
+    int           mg_lisseur = 2;          ///< 0 : Jacobi amorti ; 1 : spai0 ; 2 : Chebyshev
+    double        mg_cheb = 10;            ///< `lmin = lmax / cheb` pour Chebyshev
+    int           mg_recycle = 2;          ///< solutions gardees pour le demarrage de Galerkin
+    int           amg_refaire = 1;         ///< la hierarchie d'AMGCL gardee N resolutions ( mesure : 1 )
     int           mg_refaire = 4;          ///< la hierarchie refaite toutes les N resolutions
     double        mg_omega_p = 0.7;        ///< l'amortissement du lissage de `P`
     double        mg_tronque = 0.2;        ///< troncature de `P`, en fraction du max de la ligne
@@ -3650,6 +3664,9 @@ int main( int argc, char **argv ) {
         else if ( s == "--mg-lisse" )   o.mg_lisse = std::atoi( val() );
         else if ( s == "--mg-agreg" )   o.mg_agreg = std::atoi( val() );
         else if ( s == "--mg-lisseur" ) o.mg_lisseur = std::atoi( val() );
+        else if ( s == "--mg-cheb" )    o.mg_cheb = std::atof( val() );
+        else if ( s == "--mg-recycle" ) o.mg_recycle = std::atoi( val() );
+        else if ( s == "--amg-refaire" ) o.amg_refaire = std::atoi( val() );
         else if ( s == "--mg-refaire" ) o.mg_refaire = std::atoi( val() );
         else if ( s == "--mg-omega-p" ) o.mg_omega_p = std::atof( val() );
         else if ( s == "--mg-tronque" ) o.mg_tronque = std::atof( val() );
@@ -3787,6 +3804,9 @@ int main( int argc, char **argv ) {
                 "                  direction de Newton amortie n'en demande pas tant )\n"
                 "  --chrono        le bord contre le decoupage, sur les memes cellules ( `job -b` )\n"
                 "  --solver S      amg ( AMGCL, defaut ) | chol ( Eigen, sequentiel ) | mg ( § 17 )\n"
+                "  --amg-refaire N  la hierarchie d'AMGCL gardee N resolutions ( defaut 4 )\n"
+                "  --mg-lisseur 0|1|2  Jacobi amorti | spai0 | Chebyshev ; --mg-cheb R le rapport\n"
+                "                  `lmax / lmin` de Chebyshev ; --mg-recycle K le sous-espace garde\n"
                 "  --mg-lisse 0|1 --mg-refaire N --mg-omega-p W --mg-nu N --mg-gros G --mg-k K\n"
                 "  --mg-stop S --mg-exact 0|1   les reglages du multigrille maison ( § 17 ) :\n"
                 "                  `lisse` la prolongation lissee, `refaire` la hierarchie gardee N\n"
@@ -3842,6 +3862,8 @@ int main( int argc, char **argv ) {
                 lin.lisse = oc.mg_lisse != 0;
                 lin.agreg = oc.mg_agreg;
                 lin.lisseur = oc.mg_lisseur;
+                lin.cheb = TF( oc.mg_cheb );
+                lin.recycle = oc.mg_recycle;
                 lin.refaire = oc.mg_refaire;
                 lin.omega_p = TF( oc.mg_omega_p );
                 lin.tronque = TF( oc.mg_tronque );
@@ -3853,6 +3875,7 @@ int main( int argc, char **argv ) {
             Amg lin;
             lin.variante = oc.amgvar;
             lin.tol = TF( oc.amgtol );
+            lin.refaire = oc.amg_refaire;
             return lance<PD>( a, oc, nu, lin, im );
 #else
             // AMGCL ABSENT : on retombe sur Cholesky plutot que d'abandonner, maintenant que `amg`
