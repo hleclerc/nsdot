@@ -3050,14 +3050,112 @@ est faible.** La hiérarchie du portage coûte **2,4 s contre 13,0 s** pour AMGC
 `rang >> 2` est bien gratuite, 5,5× moins cher, et c'est son seul avantage. Mais il lui faut
 **18 607 itérations de CG contre 6 809**, soit 2,7×, et sur CPU ce facteur écrase l'économie de
 montée. Aucun réglage du fond n'y change rien : ce n'est pas le cycle, c'est le **taux de
-convergence** de l'agrégation non lissée. Le remède est connu et c'est ce que fait AMGCL — la
-prolongation lissée `P̂ = P − ω D⁻¹ A P`, qui demande un vrai produit triple creux.
+convergence** de l'agrégation non lissée.
 
 Sur carte l'arbitrage s'inverse : les itérations y sont quasi gratuites, le tri et la réduction de la
-montée coûtent, et le produit triple est exactement ce qu'un GPU n'aime pas. **Le portage est fidèle ;
-c'est le matériel qui a changé d'avis.** `--solver mg` reste dans le code, à parité avec Cholesky et
-à 13 % d'AMGCL ; le chemin pour le faire gagner est la prolongation lissée, et il est chiffré : il
-faudrait diviser ses itérations par 2,7 pour rentabiliser sa montée cinq fois moins chère.
+montée coûtent, et le produit triple est exactement ce qu'un GPU n'aime pas — le chemin lissé y
+existe (`AMG_LISSE`, via `cusparseSpGEMM`) mais reste **éteint**. **Le portage est fidèle ; c'est le
+matériel qui a changé d'avis.** Ce qui manquait sur CPU était donc identifié et chiffré, et la suite
+le corrige (§ 17.10).
+
+## 17.10 La prolongation lissée, portée sur CPU
+
+`P̂ = ( I − ω D⁻¹ A ) P₀`, soit, ligne par ligne :
+
+    P̂[ i ][ a ] = ( 1 − ω ) [ mᵢ = a ] + ( ω / diaᵢ ) Σ_( j ≠ i, mⱼ = a ) c_ij
+
+Toutes les entrées sont positives pour `ω ≤ 1`, et **les lignes somment à un** : le vecteur constant
+reste exactement dans l'image de `P̂`, donc le noyau du laplacien est représenté à tous les niveaux et
+`A_c = P̂ᵀ A P̂` est encore un laplacien.
+
+**La carte inverse gratuite sert une troisième fois.** Le produit triple se fait en deux passes à
+accumulateur dense, une ligne par fil : `AP = A P̂` par ligne fine, puis `A_c = P̂ᵀ ( AP )` par ligne
+grossière. Et `P̂ᵀ` **s'obtient sans passe de transposition** : `P̂[ i ][ a ] ≠ 0` exige `mᵢ = a` ou un
+voisin de `i` dans le paquet `a`, donc la ligne `a` de `P̂ᵀ` est portée par les membres du paquet et
+leurs voisins — que `Sa .. Sa+S−1` donne immédiatement.
+
+**Le résultat est net sur ce qu'on visait** : à `n = 2·10⁴`, les itérations de CG tombent de **8 641
+à 3 051**, c'est-à-dire *en dessous* des 3 320 d'AMGCL. Le diagnostic du § 17.7 était le bon.
+
+### Ce que le lissage coûte, et les trois remèdes
+
+Il déplace le problème sur la montée : 0,29 → 6,97 s. La cause se lit dans la trace, en non-nuls par
+ligne niveau par niveau (`--mg-trace`) :
+
+| `n = 2·10⁴` | remplissage | complexité |
+|---|---|---|
+| brut | 6,0 → 8,0 → 7,9 → 7,2 | 1,44 |
+| lissé, sans rien | 6,0 → 27,1 → 115,4 → **278,1** | 4,08 |
+| lissé, `--mg-tronque 0.1` | 6,0 → 21,7 → 56,0 → 105,7 | 2,78 |
+| lissé, `--mg-tronque 0.2` | 6,0 → 18,2 → 31,0 → 46,2 | 2,21 |
+
+**La troncature** (`tronque`) jette les entrées de `P̂` sous une fraction du maximum de la ligne, puis
+**renormalise pour que la ligne somme à un** — la renormalisation n'est pas cosmétique, c'est elle qui
+garde le vecteur constant dans l'image. Monotone jusqu'à 0,35 sans que les itérations bougent.
+
+**La hiérarchie gardée** (`refaire`) : entre deux itérations de Newton la hessienne change mais son
+graphe bouge à peine, et un *préconditionneur* n'a pas besoin d'être exact — seule la matrice que voit
+le CG doit l'être, et on la rafraîchit. AMGCL ne permet pas cette dissociation (son `make_solver` lie
+matrice et hiérarchie) ; posséder le solveur, si. `112,3 → 95,9 s` à `n = 10⁵`, optimum à 4.
+
+**Le filtre de force est un échec, et c'est un résultat.** Le remède standard — ne lisser que le long
+des `c_ij ≥ θ·max_k c_ik` — ne change **rien** à la valeur classique θ = 0,08 : complexité 2,69 contre
+2,67. La raison est structurelle : dans un graphe de Laguerre les `c_ij = |facette| / (2|pᵢ−pⱼ|)` sont
+toutes du même ordre, **il n'y a pas de connexion faible à jeter**. La densification vient du *motif*
+(`P̂` a `1 + deg` entrées, `deg ≈ 6` partout), pas d'un contraste de valeurs. Le filtre de force est
+l'outil des problèmes anisotropes ; sur un diagramme de puissance il est hors sujet. Défaut : `0`.
+
+## 17.11 La taille du paquet, et ce que l'arbre autorise
+
+Le vrai levier était ailleurs. La complexité est dominée par **le niveau 1** : à `n = 3·10⁵`,
+`75 000 × 18,6 = 1,4 M` non-nuls contre `1,8 M` au niveau fin, soit 0,78 à lui seul. Des paquets plus
+gros donnent moins de lignes grossières *et* moins de niveaux.
+
+La carte en prend quatre, parce que quatre est ce qu'un noyau CUDA aime — et parce qu'avec une courbe
+de Morton, quatre est ce qu'on a en 2D. Mais **`AaBsp.h` ne fait pas du Morton** : « coupes MÉDIANES
+sur l'axe le plus long ». Une fenêtre alignée de `2^k` rangs consécutifs est donc *exactement un
+sous-arbre* — localité parfaite — et sa boîte a été coupée `k` fois sur son côté le plus long : `k`
+pair donne une boîte carrée, `k` impair une boîte 2:1, ce qui pour de l'agrégation va très bien.
+**Toutes les puissances de deux sont donc disponibles, pas seulement les puissances de quatre.**
+
+Ce qui reste interdit, ce sont les tailles qui ne sont pas des puissances de deux : une fenêtre de
+neuf rangs n'est alignée sur aucune frontière de sous-arbre, et certains paquets enjamberaient une
+coupe de haut niveau — deux moitiés du domaine dans le même agrégat.
+
+| paquet | `n = 2·10⁴` | `n = 10⁵` | complexité |
+|---|---|---|---|
+| 4 | 8,84 s | 96,75 s | 2,25 |
+| **8** | **7,38 s** | 97,99 s | **1,34** |
+| 16 | 8,49 s | 105,70 s | 1,13 |
+| 64 | 11,09 s | — | 1,02 |
+| AMGCL | 7,31 s | 92,14 s | — |
+
+La courbe est en U et son fond est plat entre 4 et 16 : la complexité tombe quand le paquet grossit,
+les itérations montent, et les deux se croisent **vers huit** — pile là où AMGCL se place avec son
+ensemble indépendant maximal (sept à neuf), et là où une courbe de Morton ne nous aurait pas laissés
+aller. Au-delà de seize l'espace grossier devient trop pauvre et rien ne rattrape : 981 s à
+`n = 3·10⁵` contre 757 à paquet 4.
+
+**`spai0` plutôt que Jacobi amorti**, enfin : `m_i = A_ii / Σ_j A_ij²` est la meilleure approximation
+diagonale de `A⁻¹` au sens de Frobenius, coûte exactement un balayage de Jacobi, et son amortissement
+se règle tout seul ligne par ligne au lieu d'un `ω` global deviné — 8,98 s contre 9,86 à paquets
+égaux. Dans les deux cas le coefficient est **précalculé par ligne**, ce qui retire une division de la
+boucle la plus chaude du cycle.
+
+## 17.12 Où en est le solveur maison
+
+| | `2·10⁴` | `10⁵` | `3·10⁵` |
+|---|---|---|---|
+| `chol` | 11,1 s | 145,4 s | — |
+| **AMGCL `var 0`** | **7,31 s** | **92,1 s** | **667,6 s** |
+| `mg` maison, réglé | 7,38 s | 96,8 s | 756,7 s |
+
+**De 2,2× plus lent que Cholesky à l'égalité avec AMGCL à `2·10⁴`, et à 5 % à `10⁵`.** Il reste
+13 % derrière à `3·10⁵`, et c'est le même poste qui l'explique depuis le début : à taux de convergence
+égal, notre cycle brasse plus de non-nuls. Le défaut reste donc `--solver amg` — on ne change pas un
+défaut sur une égalité — mais `mg` est complet, mesuré, et à un drapeau de distance ; et il a deux
+choses qu'AMGCL n'a pas : une agrégation qui ne coûte rien, et la dissociation entre la matrice du CG
+et celle du préconditionneur.
 
 ## 17.8 Le critère d'arrêt à 1 % : gratuit, et sans effet
 

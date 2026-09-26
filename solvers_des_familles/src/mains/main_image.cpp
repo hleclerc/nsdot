@@ -81,7 +81,15 @@ struct Opts {
     // On s'arrete a `1e-6` : a `1e-4` le compte de diagrammes remonte ( 566 -> 574 a `n = 1e5` ),
     // donc le gain de solveur commence a etre repaye en geometrie.
     double        amgtol = 1e-6;           ///< residu RELATIF demande au solveur lineaire
-    int           mg_nu = 2, mg_gros = 120, mg_k = 2, mg_stop = 1000;   ///< le multigrille maison
+    int           mg_nu = 2, mg_gros = 120, mg_k = 0, mg_stop = 1000;   ///< le multigrille maison
+    int           mg_lisse = 1;            ///< la PROLONGATION LISSEE ( sinon : constante par morceaux )
+    int           mg_agreg = 8;            ///< germes par paquet ( puissance de deux )
+    int           mg_lisseur = 1;          ///< 0 : Jacobi amorti ; 1 : spai0
+    int           mg_refaire = 4;          ///< la hierarchie refaite toutes les N resolutions
+    double        mg_omega_p = 0.7;        ///< l'amortissement du lissage de `P`
+    double        mg_tronque = 0.2;        ///< troncature de `P`, en fraction du max de la ligne
+    double        mg_force = 0.0;          ///< connexions FORTES seules ( 0 : eteint, cf. § 17 )
+    int           mg_trace = 0;            ///< la taille et le remplissage de chaque niveau
     int           mg_exact = 1;            ///< le niveau grossier RESOLU ( Cholesky ) au lieu de lisse
     int           taille = 512;        ///< l'image de synthese : `taille x taille`
     std::string   pgm;                 ///< a la place de la synthese
@@ -3639,6 +3647,14 @@ int main( int argc, char **argv ) {
         else if ( s == "--mg-k" )       o.mg_k = std::atoi( val() );
         else if ( s == "--mg-stop" )    o.mg_stop = std::atoi( val() );
         else if ( s == "--mg-exact" )   o.mg_exact = std::atoi( val() );
+        else if ( s == "--mg-lisse" )   o.mg_lisse = std::atoi( val() );
+        else if ( s == "--mg-agreg" )   o.mg_agreg = std::atoi( val() );
+        else if ( s == "--mg-lisseur" ) o.mg_lisseur = std::atoi( val() );
+        else if ( s == "--mg-refaire" ) o.mg_refaire = std::atoi( val() );
+        else if ( s == "--mg-omega-p" ) o.mg_omega_p = std::atof( val() );
+        else if ( s == "--mg-tronque" ) o.mg_tronque = std::atof( val() );
+        else if ( s == "--mg-force" )   o.mg_force = std::atof( val() );
+        else if ( s == "--mg-trace" )   o.mg_trace = 1;
         else if ( s == "--newton-tol" ) o.newton.tol = std::atof( val() );
         else if ( s == "--newton-max" ) o.newton.maxit = std::atoi( val() );
         else if ( s == "--t-min" )      o.newton.t_min = std::atof( val() );
@@ -3771,8 +3787,10 @@ int main( int argc, char **argv ) {
                 "                  direction de Newton amortie n'en demande pas tant )\n"
                 "  --chrono        le bord contre le decoupage, sur les memes cellules ( `job -b` )\n"
                 "  --solver S      amg ( AMGCL, defaut ) | chol ( Eigen, sequentiel ) | mg ( § 17 )\n"
-                "  --mg-nu N --mg-gros G --mg-k K --mg-stop S --mg-exact 0|1   les reglages du\n"
-                "                  multigrille maison ( `exact` : le fond resolu au lieu de lisse )\n"
+                "  --mg-lisse 0|1 --mg-refaire N --mg-omega-p W --mg-nu N --mg-gros G --mg-k K\n"
+                "  --mg-stop S --mg-exact 0|1   les reglages du multigrille maison ( § 17 ) :\n"
+                "                  `lisse` la prolongation lissee, `refaire` la hierarchie gardee N\n"
+                "                  resolutions, `exact` le fond resolu au lieu d'etre lisse\n"
                 "  --amg-var V     0 = agregation+spai0 | 1 = agregation+GS | 2 = Ruge-Stuben+GS   (2)\n"
                 "  --pas P         essais ( KMT, defaut ) | essai-limites ( les cellules pincees relevees seules )\n"
                 "  --newton-tol T --newton-max K --t-min T --beta0 B --mult-ok M --facteur F --lim-tol T --residu R --quiet\n"
@@ -3821,6 +3839,14 @@ int main( int argc, char **argv ) {
                 lin.tol = TF( oc.amgtol );
                 lin.nu = oc.mg_nu; lin.gros = oc.mg_gros; lin.kcycle = oc.mg_k; lin.stop = oc.mg_stop;
                 lin.exact = oc.mg_exact != 0;
+                lin.lisse = oc.mg_lisse != 0;
+                lin.agreg = oc.mg_agreg;
+                lin.lisseur = oc.mg_lisseur;
+                lin.refaire = oc.mg_refaire;
+                lin.omega_p = TF( oc.mg_omega_p );
+                lin.tronque = TF( oc.mg_tronque );
+                lin.force = TF( oc.mg_force );
+                lin.trace = oc.mg_trace;
                 return lance<PD>( a, oc, nu, lin, im );
             }
 #ifdef SF_AMGCL

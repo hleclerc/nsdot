@@ -1,18 +1,18 @@
 #pragma once
 
 // =====================================================================================
-// UN MULTIGRILLE ALGEBRIQUE MAISON, SUR CPU. C'est le portage de `gpu_des_familles/src/gpu/
-// Amg2D.cuh` -- meme agregation, meme cycle, memes constantes, qui y ont ete mesurees.
+// UN MULTIGRILLE ALGEBRIQUE MAISON, LE MEME QUE SUR LA CARTE, AUX REGLAGES PRES. C'est le portage
+// de `gpu_des_familles/src/gpu/Amg2D.cuh` -- meme agregation, meme cycle -- avec les choix que le
+// CPU impose et ceux qu'il autorise. Chacun est mesure ; aucun n'est repris tel quel.
 //
-// = Pourquoi le remplacer
+// = Pourquoi ne pas se contenter d'AMGCL
 //
-// `main_image` resolvait par Eigen `SimplicialLDLT`, qui est STRICTEMENT SEQUENTIEL : mesure a
-// `n = 1e5`, 84 s sur 142 pour le relevement et 106 s sur 157 pour `essai-limites`, soit 59 a
-// 68 % du temps dans un seul fil -- 2.6 CPU occupes sur 8 demandes. AMGCL parallelise, mais son
-// agregation coute un appariement, et sa variante par defaut ici ( Ruge-Stuben + Gauss-Seidel )
-// est elle-meme sequentielle des deux cotes.
+// On le garde en temoin ( `--solver amg` ). Mais un seul solveur pour les deux machines a un
+// interet propre : l'agregation est LA meme, donc ce qui est mesure ici se transpose la-bas, et
+// les deux codes vieillissent ensemble. Et il y a une raison technique : l'agregation d'AMGCL
+// coute un appariement, la notre est gratuite.
 //
-// = L'AGREGATION EST GRATUITE, et c'est tout le point
+// = L'AGREGATION EST GRATUITE, et c'est le point de depart
 //
 // Les germes sont ranges DANS L'ORDRE DE L'ARBRE ( `pd.ids` ), qui est une courbe remplissante :
 // des RANGS CONSECUTIFS sont voisins dans le plan. Agreger, c'est donc `rang >> 2` -- quatre
@@ -21,51 +21,153 @@
 // hierarchie entiere tient dans un decalage.
 //
 // Mieux : LA CARTE INVERSE EST GRATUITE ELLE AUSSI. Le paquet `a` contient exactement les rangs
-// `4a .. 4a+3`, donc les identifiants `ord[ 4a ] .. ord[ 4a+3 ]` au niveau fin et les indices
-// `4a .. 4a+3` ensuite. On assemble donc le grossier EN BALAYANT LES LIGNES GROSSIERES, chacune
+// `Sa .. Sa+S-1`. On peut donc parcourir le grossier EN BALAYANT LES LIGNES GROSSIERES, chacune
 // par un seul fil, sans atomique et sans tri -- la ou le GPU emet un triplet par arete, trie
-// ( CUB ) et reduit par clef. La restriction aussi se fait par RAMASSAGE au lieu de dispersion.
+// ( CUB ) et reduit par clef. C'est vrai de l'assemblage de Galerkin, de la restriction, ET de la
+// transposee de la prolongation, qu'on obtient donc sans passe de transposition.
 //
-// = LE GROSSIER : Galerkin, `A_c = P^T A P` avec `P` constant par morceaux
+// = LA TAILLE DU PAQUET ( `agreg` ), qui est LE reglage de la complexite
 //
-// Sur un laplacien de graphe c'est encore un laplacien : il suffit de sommer les poids d'aretes
-// entre paquets, `c_ab = somme des c_ij pour i dans a, j dans b`, et la diagonale est la somme de
-// la ligne ( la ligne fine somme deja a zero, donc le Galerkin preserve la propriete ).
+// La carte en prend quatre, parce que quatre est ce qu'un noyau CUDA aime. Ce n'est pas le bon
+// choix ici, et la trace le dit -- a `n = 3e5`, non-nuls par ligne niveau par niveau :
 //
-// = LE CYCLE EN V, et le K-CYCLE
+//      300000 ( 6.0 ) -> 75000 ( 18.6 ) -> 18750 ( 35.0 ) -> 4688 ( 60.4 ) -> 1172 ( 90.1 )
+//
+// La complexite 2.37 est dominee par LE NIVEAU 1 : `75000 x 18.6 = 1.4 M` non-nuls contre `1.8 M`
+// au niveau fin, soit 0.78 a lui seul. Avec des paquets de seize -- un bloc 4x4 sur la courbe
+// remplissante -- il y a quatre fois moins de lignes grossieres pour un remplissage a peine plus
+// grand, et deux niveaux de moins. C'est ce que fait AMGCL sans le dire ainsi : son ensemble
+// independant maximal sur le graphe de force donne en 2D des paquets de sept a neuf.
+//
+// LES PUISSANCES DE DEUX, ET C'EST L'ARBRE QUI LE PERMET. `AaBsp.h` fait des « coupes MEDIANES
+// sur l'axe le plus long » : une fenetre ALIGNEE de `2^k` rangs consecutifs est donc EXACTEMENT
+// un sous-arbre -- localite parfaite -- et sa boite a ete coupee `k` fois, chaque fois sur son
+// cote le plus long. `k` pair donne une boite carree ( 4, 16, 64 ), `k` impair une boite 2:1
+// ( 2, 8, 32 ), ce qui pour de l'agregation va tres bien : les paquets d'AMGCL ne sont pas carres
+// non plus, et comme la coupe suit l'axe long DU NUAGE LOCAL, le 2:1 est dans la metrique locale.
+//
+// Huit tombe donc pile dans la zone ou AMGCL se place ( sept a neuf ), ce qu'une courbe de Morton
+// -- puissances de quatre en 2D -- n'aurait pas permis. Et c'est le defaut, parce que c'est ce
+// que la mesure dit. `n = 2e4` / `n = 1e5`, relevement, en secondes de total :
+//
+//      paquet    4 :   8.84  /  96.75      complexite 2.25
+//      paquet    8 :   7.38  /  97.99      complexite 1.34
+//      paquet   16 :   8.49  / 105.70      complexite 1.13
+//      paquet   64 :  11.09  /    -        complexite 1.02
+//      AMGCL        :   7.31  /  92.14
+//
+// La courbe est en U et son fond est plat entre 4 et 16 : la complexite tombe quand le paquet
+// grossit, les iterations montent, et les deux se croisent vers huit. Au-dela de seize l'espace
+// grossier devient trop pauvre et rien ne rattrape ( 981 s a `n = 3e5` contre 757 a paquet 4 ).
+//
+// CE QUI RESTE INTERDIT, ce sont les tailles qui ne sont PAS des puissances de deux : une fenetre
+// de neuf rangs n'est alignee sur aucune frontiere de sous-arbre, donc certains paquets
+// enjamberaient une coupe de haut niveau -- deux moities du domaine dans le meme agregat.
+//
+// = LA PROLONGATION LISSEE, qui est ce que le CPU autorise
+//
+// L'agregation NON LISSEE -- `P0` constante par morceaux -- donne une correction grossiere faible,
+// et le prix se lit en iterations : 2.7 fois plus que l'agregation lissee d'AMGCL, mesure a
+// `n = 1e5`. Sur la carte on le paie volontiers ( une iteration y est presque gratuite ) et on
+// compense par un K-cycle ; le chemin lisse y existe mais reste ETEINT ( `AMG_LISSE`, via
+// `cusparseSpGEMM` ), parce qu'un produit triple creux est exactement ce qu'un GPU n'aime pas.
+//
+// Sur CPU c'est l'inverse. On lisse donc :
+//
+//     P = ( I - w D^-1 A ) P0,   soit   P[ i ][ a ] = ( 1 - w ) [ m_i = a ]
+//                                                   + ( w / dia_i ) somme_( j != i, m_j = a ) c_ij
+//
+// -- toutes les entrees positives pour `w <= 1`, et LES LIGNES SOMMENT A UN, donc le vecteur
+// constant est exactement dans l'image de `P`. C'est ce qui compte pour un laplacien : le noyau
+// est represente exactement a tous les niveaux, et `A_c = P^t A P` est encore un laplacien
+// ( `A_c 1 = P^t A P 1 = P^t A 1 = 0` ).
+//
+// Le produit triple se fait en deux passes, chacune avec un accumulateur DENSE par fil :
+//   1. `AP = A P`, une ligne FINE par fil ;
+//   2. `A_c = P^t ( AP )`, une ligne GROSSIERE par fil -- et `P^t` se construit sans tri, la
+//      ligne `a` de `P^t` etant portee par les membres du paquet `a` et leurs voisins.
+//
+// = LA TRONCATURE DE `P`, sans laquelle le lissage se paie trop cher
+//
+// `P` a `1 + deg` entrees par ligne la ou `P0` en avait une, donc `A_c = P^t A P` SE DENSIFIE a
+// chaque niveau, et le cout du produit triple croit comme le carre du remplissage. Mesure a
+// `n = 2e4` sans troncature : la montee passe de 0.29 s a 6.97 s, et le lissage perd ce qu'il
+// gagne en iterations. Deux indices le disaient avant qu'on le nomme -- garder la hierarchie
+// aidait beaucoup, et SUPPRIMER UN NIVEAU aussi.
+//
+// On tronque donc chaque ligne de `P` aux entrees qui valent au moins `tronque` fois le maximum
+// de la ligne, PUIS ON RENORMALISE pour que la ligne somme a un. La renormalisation n'est pas un
+// detail cosmetique : c'est elle qui garde le vecteur constant exactement dans l'image de `P`,
+// donc le noyau du laplacien represente a tous les niveaux. Sans elle, la troncature casse ce que
+// le lissage etait venu apporter.
+//
+// Mesure a `n = 2e4`, non-nuls par ligne niveau par niveau :
+//
+//      brut                6.0 ->   8.0 ->   7.9 ->   7.2     complexite 1.44
+//      lisse, sans rien    6.0 ->  27.1 -> 115.4 -> 278.1     complexite 4.08
+//      lisse, tronque 0.1  6.0 ->  21.7 ->  56.0 -> 105.7     complexite 2.78
+//      lisse, tronque 0.2  6.0 ->  18.2 ->  31.0 ->  46.2     complexite 2.21
+//
+// La troncature est MONOTONE jusqu'a 0.35 sans que le compte d'iterations bouge : on ne coupe
+// donc pas encore dans le vif. `0.2` est le defaut ; au-dela le gain s'aplatit.
+//
+// = LE FILTRE DE FORCE ( `force` ) EST INUTILE ICI, ET IL FALLAIT LE MESURER
+//
+// Le remede standard a la densification est de ne lisser que le long des connexions FORTES,
+// `c_ij >= force x max_k c_ik`, en reportant le reste sur la diagonale pour que la ligne de `P`
+// somme encore a un. On l'a implemente ( `force`, qui reste disponible ) et mesure : a la valeur
+// classique `0.08` il ne change RIEN -- complexite 2.69 contre 2.67, 10.97 s contre 10.64.
+//
+// La raison est structurelle et vaut d'etre retenue : dans un graphe de Laguerre les
+// `c_ij = |facette| / ( 2 |p_i - p_j| )` sont TOUTES DU MEME ORDRE. Il n'y a pas de connexion
+// faible a jeter. La densification vient du MOTIF -- `P` a `1 + deg` entrees et `deg ~ 6`
+// partout -- et pas d'un contraste de valeurs. Le filtre de force est l'outil des problemes
+// ANISOTROPES ; sur un diagramme de puissance il est hors sujet, et a `0.25` il ne fait plus que
+// couper au hasard. Le defaut est donc `0`.
+//
+// Le filtrage, quand on l'active, ne sert QU'A CONSTRUIRE `P`. Le Galerkin se fait sur le vrai
+// `A` : on ne change pas l'operateur, seulement l'espace grossier.
+//
+// = LE LISSEUR : `spai0` PLUTOT QUE JACOBI AMORTI
+//
+// `spai0` est la meilleure approximation DIAGONALE de `A^-1` au sens de Frobenius : minimiser
+// `|| I - M A ||_F` sur `M` diagonale donne `m_i = A_ii / somme_j A_ij^2`. C'est ce qu'AMGCL
+// emploie dans la variante qui gagne ici, ca coute exactement un balayage de Jacobi, et
+// l'amortissement s'y regle TOUT SEUL, ligne par ligne, au lieu d'un `omega` global devine.
+// Sur un laplacien a six voisins egaux il vaut `1 / ( 7 c )` la ou Jacobi non amorti vaut
+// `1 / ( 6 c )` : c'est un Jacobi amorti a 0.857, mais calcule et non pose.
+//
+// Dans les deux cas on precalcule UN COEFFICIENT PAR LIGNE, `rlx[ i ]`, applique au residu. La
+// boucle la plus chaude du cycle y perd une division.
+//
+// = LE CYCLE EN V, le fond RESOLU, et le K-cycle qui se perime
 //
 // Un lissage de Jacobi amorti avant, un apres ( meme `omega`, donc l'operateur est SYMETRIQUE et
-// le CG l'accepte comme preconditionneur ), restriction par somme sur le paquet, prolongation par
-// injection.
+// le CG l'accepte comme preconditionneur ). Le niveau le plus grossier, lui, est RESOLU par une
+// factorisation de Cholesky creuse, et c'est la deuxieme difference avec la carte : le GPU le
+// lisse 120 fois par visite et le K-cycle le visite quatre fois, soit 480 balayages par
+// application. Mesure a `n = 2e4` : le fond exact fait tomber 23.8 s a 11.2, et le K-cycle
+// devient un COUT ( 11.2 en V pur, 11.7 a K=1, 12.5 a K=2 ) -- il n'etait la que pour compenser
+// la faiblesse de la correction grossiere, qui n'existe plus.
 //
-// LE NIVEAU LE PLUS GROSSIER EST RESOLU EXACTEMENT, ET C'EST LA DEUXIEME DIFFERENCE AVEC LA CARTE.
-// Le GPU le lisse cent vingt fois par visite, et le K-cycle le visite quatre fois : quatre cent
-// quatre-vingts balayages par application du preconditionneur. Sur la carte c'est un bon
-// arbitrage -- le parallelisme est massif, un lancement de noyau coute cinq microsecondes. Sur
-// huit coeurs c'est le poste dominant, et la mesure le dit trois fois plutot qu'une ( `n = 2e4`,
-// en secondes ) : `gros 40` 15.9 contre 23.8, `k 0` 16.0, `stop 200` 17.8 -- moins de balayages,
-// moins de visites ou un niveau plus petit donnent le MEME gain, donc c'est bien le travail au
-// fond du cycle qu'on paie. Or a mille inconnues une factorisation de Cholesky creuse coute
-// quelques millisecondes une fois par hierarchie, et vingt microsecondes par visite. On resout
-// donc, au lieu de lisser -- et la correction grossiere devient EXACTE, ce qui enleve aussi la
-// faiblesse que le K-cycle etait la pour compenser.
+// = JACOBI A DEUX TAMPONS, troisieme difference
 //
-// Le defaut mesure de l'agregation NON LISSEE est que la correction grossiere est trop faible.
-// Le K-cycle y repond en ACCELERANT LES DEUX PREMIERS NIVEAUX PAR KRYLOV : au lieu d'un appel
-// recursif, DEUX pas d'un gradient conjugue sur le systeme grossier, preconditionnes par le
-// niveau d'en dessous.
+// Le noyau CUDA lit `x[ col ]` pendant que d'autres fils l'ecrivent : c'est un Jacobi/Gauss-Seidel
+// hybride, non deterministe. Sur la carte ca passe ; dans un preconditionneur de CG c'est faux en
+// droit -- CG exige un operateur LINEAIRE FIXE. On alterne donc deux tampons.
 //
-// JACOBI A DEUX TAMPONS, ET C'EST UNE DIFFERENCE ASSUMEE AVEC LE GPU. Le noyau CUDA lit
-// `x[ col ]` pendant que d'autres fils l'ecrivent : c'est un Jacobi/Gauss-Seidel hybride, non
-// deterministe. Sur la carte ca passe ; dans un preconditionneur de CG c'est faux en droit -- CG
-// exige un operateur LINEAIRE FIXE. On alterne donc deux tampons, ce qui coute un vecteur et rend
-// l'operateur exactement symetrique.
+// = OPENMP ET PAS `parallel_for`, quatrieme
 //
-// OPENMP ET PAS `parallel_for`. `util/parallel.h` cree et joint ses fils A CHAQUE APPEL, avec
-// epinglage : une cinquantaine de microsecondes. Le niveau le plus grossier en demande cent
-// vingt par cycle sur mille inconnues -- la creation couterait cent fois le calcul. Le pool
-// d'OpenMP, lui, est deja la, et la clause `if` rend la boucle sequentielle quand elle est
-// courte.
+// `util/parallel.h` cree et joint ses fils A CHAQUE APPEL, avec epinglage : une cinquantaine de
+// microsecondes. Un cycle en demande des dizaines sur des niveaux de mille inconnues. Le pool
+// d'OpenMP est deja la, et la clause `if` rend la boucle sequentielle quand elle est courte.
+//
+// = LA HIERARCHIE PEUT SERVIR PLUSIEURS FOIS ( `refaire` )
+//
+// Entre deux iterations de Newton la hessienne CHANGE, mais son graphe bouge a peine -- quelques
+// aretes. Un preconditionneur n'a pas besoin d'etre exact : on peut garder la hierarchie et ne
+// rafraichir que le pointeur du niveau fin, ce qui amortit la montee sur `refaire` resolutions.
+// C'est ce qui rend la prolongation lissee abordable : elle coute plus cher a monter qu'a servir.
 //
 // = LA JAUGE : MOYENNE NULLE POUR RESOUDRE, `d[ 0 ] = 0` POUR RENDRE
 //
@@ -73,14 +175,15 @@
 // noyau, `b = nu - a` est deja de somme nulle, et projeter est symetrique la ou rayer une ligne ne
 // l'est pas. Mais le reste du code suppose l'autre -- `Newton.h` ecrit `w2 = w + t d` PUIS
 // `w2[ 0 ] = 0`, « la jauge, imposee et non esperee ». On TRANSLATE donc la solution en sortie.
-// Les deux jauges decrivent la meme direction a une constante pres, et une constante ajoutee a
-// tous les poids ne change aucune cellule ; mais rendre l'une quand l'appelant attend l'autre
-// mutile une composante, et Newton stagne sur-le-champ ( mesure : residu inchange, 31 reculs ).
+// Les deux jauges decrivent la meme direction a une constante pres ; mais rendre l'une quand
+// l'appelant attend l'autre mutile une composante, et Newton stagne sur-le-champ ( mesure :
+// residu inchange apres deux iterations, 31 reculs ).
 // =====================================================================================
 
 #include "solver/Lineaire.h"
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <omp.h>
 #include <vector>
 
@@ -97,20 +200,42 @@ struct NiveauMg {
     const TF        *val = nullptr, *dia = nullptr;
     std::vector<SI>  arow, acol;                     ///< la possession, pour les niveaux grossiers
     std::vector<TF>  aval, adia;
+    std::vector<TF>  rlx;                            ///< le coefficient de relaxation, UN PAR LIGNE
     std::vector<TF>  x, b, r, y;                     ///< le cycle ( `y` : le second tampon de Jacobi )
     std::vector<TF>  v1, v2, t, rc;                  ///< le K-cycle
 };
 
+/// une matrice creuse rectangulaire en CSR : `P` ( fin x grossier ) ou sa transposee
+struct CsrMg {
+    std::vector<SI> row, col;
+    std::vector<TF> val;
+    SI              lignes = 0, colonnes = 0;
+    bool            vrai() const { return ! row.empty(); }
+};
+
 struct Mg {
-    // ---- LES CONSTANTES, mesurees sur la carte ( `gpu_des_familles`, `Amg2D.cuh` )
-    int      kcycle = 2;           ///< niveaux acceleres par Krylov ( 0 : cycle en V pur )
-    int      gros   = 120;         ///< lissages au niveau le plus grossier
-    int      nu     = 2;           ///< lissages avant et apres, par niveau
-    int      stop   = 1000;        ///< on arrete de grossir en dessous
-    bool     exact  = true;        ///< le niveau le plus grossier RESOLU ( Cholesky ) au lieu de lisse
-    TF       omega  = TF( 0.7 );   ///< l'amortissement de Jacobi
-    TF       tol    = TF( 1e-10 ); ///< residu RELATIF
-    int      maxit  = 20000;
+    // ---- LES REGLAGES. Les valeurs viennent de la mesure sur CPU ( README § 17 ), pas de la carte.
+    int      agreg   = 8;          ///< germes par paquet -- UNE PUISSANCE DE DEUX ( 4, 8, 16, ... )
+    int      lisseur = 1;          ///< 0 : Jacobi amorti ; 1 : spai0 ( diagonale de Frobenius )
+    bool     lisse   = true;       ///< la PROLONGATION LISSEE ( sinon : constante par morceaux )
+    TF       omega_p = TF( 0.7 );  ///< l'amortissement du lissage de `P`
+    TF       tronque = TF( 0.2 );  ///< on jette les entrees de `P` sous cette fraction du max de la ligne
+    TF       force   = TF( 0 );    ///< on ne LISSE que le long des `c_ij >= force x max_k c_ik`
+                                   ///< ( 0 : eteint -- mesure inutile sur un graphe de Laguerre )
+    int      trace   = 0;          ///< 1 : la taille et le remplissage de chaque niveau, une fois
+    int      kcycle  = 0;          ///< niveaux acceleres par Krylov ( le fond etant resolu : aucun )
+    int      gros    = 120;        ///< lissages au fond, SI la factorisation n'est pas disponible
+    int      nu      = 2;          ///< lissages avant et apres, par niveau
+    int      stop    = 1000;       ///< on arrete de grossir en dessous
+    bool     exact   = true;       ///< le fond RESOLU ( Cholesky creux ) au lieu de lisse
+    // QUATRE RESOLUTIONS PAR HIERARCHIE. La prolongation lissee coute plus cher a monter qu'a
+    // servir, et le graphe de la hessienne bouge a peine d'une iteration de Newton a l'autre.
+    // Mesure a `n = 1e5` ( relevement, en secondes de total ) : 112.3 a `refaire 1`, 95.9 a 4,
+    // 96.7 a 8 -- au-dela, le preconditionneur rancit et les iterations reviennent.
+    int      refaire = 4;          ///< la hierarchie refaite toutes les `refaire` resolutions
+    TF       omega   = TF( 0.7 );  ///< l'amortissement de Jacobi
+    TF       tol     = TF( 1e-6 ); ///< residu RELATIF
+    int      maxit   = 20000;
 
     StatsLin st;
 
@@ -122,10 +247,16 @@ struct Mg {
         ord.resize( nb );
         rg.resize( nb );
         for ( SI k = 0; k < nb; ++k ) { ord[ k ] = SI( ids[ k ] ); rg[ ord[ k ] ] = k; }
+        niv.clear();                                 // l'agregation change : la hierarchie est caduque
     }
     bool a_l_ordre() const { return ! ord.empty(); }
 
-    const char *nom() const { return "multigrille maison ( agregation par l'arbre, K-cycle )"; }
+    const char *nom() const {
+        return lisse ? "multigrille maison ( agregation par l'arbre, prolongation LISSEE )"
+                     : "multigrille maison ( agregation par l'arbre, prolongation constante )";
+    }
+    /// la taille de paquet effective, pour la trace
+    int taille_paquet() const { return 1 << decalage(); }
 
     /// combien de niveaux, et leurs tailles -- pour la trace
     const std::vector<NiveauMg> &niveaux() const { return niv; }
@@ -139,10 +270,15 @@ struct Mg {
 
     bool resout( const Laplacien &L, const std::vector<TF> &b, std::vector<TF> &d ) {
         const double t0 = now();
-        monte( L );
+        // LA HIERARCHIE PEUT RESSERVIR : entre deux iterations de Newton le graphe bouge a peine,
+        // et un preconditionneur n'a pas besoin d'etre exact. On ne rafraichit alors que le
+        // pointeur du niveau fin -- `L` est reassemble a chaque fois et peut avoir demenage.
+        const bool neuf = niv.empty() || niv[ 0 ].n != L.n || depuis >= std::max( refaire, 1 );
+        if ( neuf ) { monte( L ); depuis = 0; ++st.nb_hier; }
+        else          rebranche( L );
+        ++depuis;
         const double t1 = now();
         st.t_hier += t1 - t0;
-        ++st.nb_hier;
         const bool ok = cg( b, d );
         st.t_res += now() - t1;
         return ok;
@@ -152,10 +288,13 @@ private:
     std::vector<SI>       ord, rg;         ///< rang -> identifiant, et son inverse
     std::vector<NiveauMg> niv;
     std::vector<std::vector<SI>> carte;    ///< `carte[ l ][ i ]` : le paquet de `i` au niveau `l+1`
+    std::vector<CsrMg>    prol, prolt;     ///< `P` ( fin x grossier ) et `P^t`, quand on lisse
     std::vector<TF>       cr, cz, cp, cq;  ///< les vecteurs du CG externe
-    // les tampons de l'assemblage grossier, gardes d'un appel a l'autre
-    std::vector<std::vector<TF>> acc, tval;
-    std::vector<std::vector<SI>> tcol;
+    int                   depuis = 0;      ///< resolutions depuis la derniere montee
+    // les tampons des assemblages, gardes d'un appel a l'autre
+    std::vector<std::vector<TF>>   acc, tval;
+    std::vector<std::vector<SI>>   tcol, lst;
+    std::vector<std::vector<char>> mkc, mkf;
 #ifdef SF_EIGEN
     // LA FACTORISATION DU FOND. La jauge y est `x[ 0 ] = 0` -- on raye la ligne et la colonne --
     // parce que le laplacien grossier est singulier ( les constantes ), et que rayer suffit ici :
@@ -167,15 +306,72 @@ private:
 
     /// l'indice fin du `t`-ieme membre du paquet `a`, au niveau `l` ( -1 s'il n'existe pas )
     SI membre( int l, SI a, int t, SI nf ) const {
-        const SI k = 4 * a + t;
+        const SI k = SI( taille_paquet() ) * a + t;
         if ( k >= nf ) return -1;
         return ( l == 0 && ! ord.empty() ) ? ord[ k ] : k;
     }
+    /// `log2( agreg )`, arrondi a la puissance de deux superieure -- toutes sont alignees sur un
+    /// sous-arbre, donc toutes sont locales
+    int decalage() const {
+        int sh = 1;
+        while ( ( 1 << sh ) < agreg && sh < 16 ) ++sh;
+        return sh;
+    }
+
+    void prepare_tampons( int T, SI nc, SI nf ) {
+        acc.resize( T ); tval.resize( T ); tcol.resize( T ); lst.resize( T );
+        mkc.resize( T ); mkf.resize( T );
+        for ( int t = 0; t < T; ++t ) {
+            acc[ t ].assign( nc, TF( 0 ) );
+            mkc[ t ].assign( nc, 0 );
+            if ( nf > 0 ) mkf[ t ].assign( nf, 0 );
+            tcol[ t ].clear(); tval[ t ].clear(); lst[ t ].clear();
+        }
+    }
+
+    /// LE CSR SANS TRI NI ATOMIQUE. Chaque fil a rempli son arene dans l'ordre de SES lignes ; on
+    /// n'a donc qu'a sommer les longueurs et recopier, chaque ligne sachant ou elle est.
+    void assemble_csr( SI nl, const std::vector<SI> &len, const std::vector<SI> &loc,
+                       const std::vector<SI> &fil,
+                       std::vector<SI> &row, std::vector<SI> &col, std::vector<TF> &val ) const {
+        row.assign( nl + 1, 0 );
+        for ( SI i = 0; i < nl; ++i ) row[ i + 1 ] = row[ i ] + len[ i ];
+        col.resize( row[ nl ] );
+        val.resize( row[ nl ] );
+        #pragma omp parallel for schedule( static ) if( nl >= MG_SEUIL_PAR )
+        for ( SI i = 0; i < nl; ++i ) {
+            const int t = fil[ i ];
+            const SI  o = loc[ i ], p = row[ i ];
+            for ( SI k = 0; k < len[ i ]; ++k ) { col[ p + k ] = tcol[ t ][ o + k ]; val[ p + k ] = tval[ t ][ o + k ]; }
+        }
+    }
 
     // ---------------------------------------------------------------- LA HIERARCHIE
+    void rebranche( const Laplacien &L ) {
+        niv[ 0 ].row = L.row.data(); niv[ 0 ].col = L.col.data();
+        niv[ 0 ].val = L.c.data();   niv[ 0 ].dia = L.dia.data();
+        niv[ 0 ].nnz = SI( L.col.size() );
+        calcule_relax( niv[ 0 ] );                   // les valeurs ont change, les coefficients aussi
+    }
+
+    /// LE COEFFICIENT DE RELAXATION, UN PAR LIGNE, precalcule une fois. `spai0` minimise
+    /// `|| I - M A ||_F` sur les `M` diagonales, ce qui donne `m_i = A_ii / somme_j A_ij^2` --
+    /// un amortissement qui se regle tout seul, la ou Jacobi demande un `omega` devine.
+    void calcule_relax( NiveauMg &v ) const {
+        const SI n = v.n;
+        v.rlx.resize( n );
+        #pragma omp parallel for schedule( static ) if( n >= MG_SEUIL_PAR )
+        for ( SI i = 0; i < n; ++i ) {
+            const TF d = v.dia[ i ];
+            if ( lisseur == 0 ) { v.rlx[ i ] = d > 0 ? omega / d : TF( 0 ); continue; }
+            TF q = d * d;
+            for ( SI e = v.row[ i ]; e < v.row[ i + 1 ]; ++e ) q += v.val[ e ] * v.val[ e ];
+            v.rlx[ i ] = q > 0 ? d / q : TF( 0 );
+        }
+    }
+
     void monte( const Laplacien &L ) {
-        niv.clear();
-        carte.clear();
+        niv.clear(); carte.clear(); prol.clear(); prolt.clear();
 
         NiveauMg f;
         f.n = L.n; f.nnz = SI( L.col.size() );
@@ -188,6 +384,7 @@ private:
         for ( NiveauMg &v : niv ) {
             v.x.assign( v.n, TF( 0 ) ); v.b.assign( v.n, TF( 0 ) );
             v.r.assign( v.n, TF( 0 ) ); v.y.assign( v.n, TF( 0 ) );
+            calcule_relax( v );
         }
         for ( int l = 1; l <= kcycle && l < int( niv.size() ); ++l ) {
             NiveauMg &v = niv[ l ];
@@ -195,6 +392,271 @@ private:
             v.t.assign( v.n, TF( 0 ) );  v.rc.assign( v.n, TF( 0 ) );
         }
         factorise_le_fond();
+        if ( trace ) {
+            trace = 0;                               // une fois suffit
+            SI tot = 0;
+            std::printf( "   multigrille ( paquets de %d, %s ) : ", taille_paquet(),
+                         lisseur ? "spai0" : "Jacobi amorti" );
+            for ( size_t l = 0; l < niv.size(); ++l ) {
+                tot += niv[ l ].nnz;
+                std::printf( "%s%d ( %.1f nz/l )", l ? " -> " : "", int( niv[ l ].n ),
+                             niv[ l ].n ? double( niv[ l ].nnz ) / double( niv[ l ].n ) : 0.0 );
+            }
+            std::printf( "  --  complexite d'operateur %.2f\n",
+                         niv[ 0 ].nnz ? double( tot ) / double( niv[ 0 ].nnz ) : 0.0 );
+        }
+    }
+
+    void grossit( int l ) {
+        const SI S = taille_paquet();
+        const SI nf = niv[ l ].n, nc = ( nf + S - 1 ) / S;
+
+        std::vector<SI> &m = carte.emplace_back();     // la carte `fin -> paquet`
+        m.resize( nf );
+        {
+            const std::vector<SI> &r = rg;
+            const bool par_rang = ( l == 0 && ! r.empty() );
+            const int sh = decalage();
+            #pragma omp parallel for schedule( static ) if( nf >= MG_SEUIL_PAR )
+            for ( SI i = 0; i < nf; ++i ) m[ i ] = ( par_rang ? r[ i ] : i ) >> sh;
+        }
+        prol.emplace_back();
+        prolt.emplace_back();
+        if ( lisse ) galerkin_lisse( l, m, nc );
+        else         galerkin_brut( l, m, nc );
+    }
+
+    /// LE GALERKIN DE L'AGREGATION BRUTE : `P0` constante par morceaux, donc `A_c` s'obtient en
+    /// sommant les poids d'aretes entre paquets. Une ligne grossiere par fil, pas de tri.
+    void galerkin_brut( int l, const std::vector<SI> &m, SI nc ) {
+        const NiveauMg &g = niv[ l ];
+        const SI nf = g.n;
+        const int T = omp_get_max_threads();
+        prepare_tampons( T, nc, 0 );
+        std::vector<SI> len( nc ), loc( nc ), fil( nc );
+
+        #pragma omp parallel for schedule( static ) if( nc >= MG_SEUIL_PAR )
+        for ( SI a = 0; a < nc; ++a ) {
+            const int t = omp_get_thread_num();
+            std::vector<TF> &ac = acc[ t ];
+            std::vector<char> &mk = mkc[ t ];
+            std::vector<SI> &tc = tcol[ t ];
+            std::vector<TF> &tv = tval[ t ];
+            const SI deb = SI( tc.size() );
+            for ( int q = 0; q < taille_paquet(); ++q ) {
+                const SI i = membre( l, a, q, nf );
+                if ( i < 0 ) continue;
+                for ( SI e = g.row[ i ]; e < g.row[ i + 1 ]; ++e ) {
+                    const SI b = m[ g.col[ e ] ];
+                    if ( b == a ) continue;              // l'interieur du paquet disparait
+                    if ( ! mk[ b ] ) { mk[ b ] = 1; tc.push_back( b ); }
+                    ac[ b ] += g.val[ e ];
+                }
+            }
+            for ( SI k = deb; k < SI( tc.size() ); ++k ) {
+                tv.push_back( ac[ tc[ k ] ] );
+                ac[ tc[ k ] ] = 0; mk[ tc[ k ] ] = 0;
+            }
+            loc[ a ] = deb; len[ a ] = SI( tc.size() ) - deb; fil[ a ] = t;
+        }
+
+        NiveauMg c;
+        c.n = nc;
+        assemble_csr( nc, len, loc, fil, c.arow, c.acol, c.aval );
+        c.nnz = c.arow[ nc ];
+        c.adia.assign( nc, TF( 0 ) );
+        #pragma omp parallel for schedule( static ) if( nc >= MG_SEUIL_PAR )
+        for ( SI a = 0; a < nc; ++a ) {
+            TF s = 0;
+            for ( SI e = c.arow[ a ]; e < c.arow[ a + 1 ]; ++e ) s += c.aval[ e ];
+            c.adia[ a ] = s > 0 ? s : TF( 1 );           // une ligne nulle rendrait Jacobi fou
+        }
+        pose( std::move( c ) );
+    }
+
+    /// LE GALERKIN DE LA PROLONGATION LISSEE : `P`, `P^t`, `AP = A P`, puis `A_c = P^t ( AP )`.
+    void galerkin_lisse( int l, const std::vector<SI> &m, SI nc ) {
+        const NiveauMg &g = niv[ l ];
+        const SI nf = g.n;
+        const int T = omp_get_max_threads();
+        CsrMg &P = prol.back(), &Pt = prolt.back();
+
+        // ---- 1. `P = ( I - w D^-1 A ) P0`, une ligne FINE par fil
+        {
+            prepare_tampons( T, nc, 0 );
+            std::vector<SI> len( nf ), loc( nf ), fil( nf );
+            #pragma omp parallel for schedule( static ) if( nf >= MG_SEUIL_PAR )
+            for ( SI i = 0; i < nf; ++i ) {
+                const int t = omp_get_thread_num();
+                std::vector<TF> &ac = acc[ t ];
+                std::vector<char> &mk = mkc[ t ];
+                std::vector<SI> &tc = tcol[ t ];
+                std::vector<TF> &tv = tval[ t ];
+                const SI deb = SI( tc.size() );
+                // LES CONNEXIONS FORTES, ET ELLES SEULES. Le reste est reporte sur la diagonale
+                // ( `diaf` ne somme que les fortes ), donc la ligne du `A` filtre somme toujours a
+                // zero -- et la ligne de `P` somme toujours a un.
+                TF mxc = 0;
+                for ( SI e = g.row[ i ]; e < g.row[ i + 1 ]; ++e ) mxc = std::max( mxc, g.val[ e ] );
+                const TF sfo = force * mxc;
+                TF diaf = 0;
+                for ( SI e = g.row[ i ]; e < g.row[ i + 1 ]; ++e )
+                    if ( g.val[ e ] >= sfo ) diaf += g.val[ e ];
+                const SI ai = m[ i ];
+                if ( ! mk[ ai ] ) { mk[ ai ] = 1; tc.push_back( ai ); }
+                ac[ ai ] += 1 - omega_p;
+                const TF f = diaf > 0 ? omega_p / diaf : TF( 0 );
+                for ( SI e = g.row[ i ]; e < g.row[ i + 1 ]; ++e ) {
+                    if ( ! ( g.val[ e ] >= sfo ) ) continue;
+                    const SI b = m[ g.col[ e ] ];
+                    if ( ! mk[ b ] ) { mk[ b ] = 1; tc.push_back( b ); }
+                    ac[ b ] += f * g.val[ e ];
+                }
+                // LA TRONCATURE, PUIS LA RENORMALISATION. On garde les entrees qui pesent, et on
+                // remet la somme a un : c'est ce qui laisse le vecteur constant dans l'image de `P`.
+                TF mx = 0;
+                for ( SI k = deb; k < SI( tc.size() ); ++k ) mx = std::max( mx, std::fabs( ac[ tc[ k ] ] ) );
+                const TF seuil = tronque * mx;
+                SI garde = deb;
+                TF som = 0;
+                for ( SI k = deb; k < SI( tc.size() ); ++k ) {
+                    const SI b = tc[ k ];
+                    const TF v = ac[ b ];
+                    ac[ b ] = 0; mk[ b ] = 0;
+                    if ( ! ( std::fabs( v ) >= seuil ) || v == 0 ) continue;
+                    tc[ garde ] = b; tv.push_back( v ); ++garde; som += v;
+                }
+                tc.resize( garde );
+                if ( som > 0 )
+                    for ( SI k = deb; k < SI( tv.size() ); ++k ) tv[ k ] /= som;
+                loc[ i ] = deb; len[ i ] = garde - deb; fil[ i ] = t;
+            }
+            assemble_csr( nf, len, loc, fil, P.row, P.col, P.val );
+            P.lignes = nf; P.colonnes = nc;
+        }
+
+        // ---- 2. `P^t`, SANS PASSE DE TRANSPOSITION. `P[ i ][ a ] != 0` demande `m_i = a` ou un
+        //         voisin de `i` dans le paquet `a` : la ligne `a` de `P^t` est donc portee par les
+        //         membres du paquet et leurs voisins, que la carte inverse donne gratuitement.
+        {
+            prepare_tampons( T, nc, nf );
+            std::vector<SI> len( nc ), loc( nc ), fil( nc );
+            #pragma omp parallel for schedule( static ) if( nc >= MG_SEUIL_PAR )
+            for ( SI a = 0; a < nc; ++a ) {
+                const int t = omp_get_thread_num();
+                std::vector<char> &mk = mkf[ t ];
+                std::vector<SI> &ls = lst[ t ];
+                std::vector<SI> &tc = tcol[ t ];
+                std::vector<TF> &tv = tval[ t ];
+                ls.clear();
+                for ( int q = 0; q < taille_paquet(); ++q ) {
+                    const SI i = membre( l, a, q, nf );
+                    if ( i < 0 ) continue;
+                    if ( ! mk[ i ] ) { mk[ i ] = 1; ls.push_back( i ); }
+                    for ( SI e = g.row[ i ]; e < g.row[ i + 1 ]; ++e ) {
+                        const SI j = g.col[ e ];
+                        if ( ! mk[ j ] ) { mk[ j ] = 1; ls.push_back( j ); }
+                    }
+                }
+                const SI deb = SI( tc.size() );
+                for ( SI i : ls ) {
+                    mk[ i ] = 0;
+                    for ( SI e = P.row[ i ]; e < P.row[ i + 1 ]; ++e )
+                        if ( P.col[ e ] == a ) { tc.push_back( i ); tv.push_back( P.val[ e ] ); break; }
+                }
+                loc[ a ] = deb; len[ a ] = SI( tc.size() ) - deb; fil[ a ] = t;
+            }
+            assemble_csr( nc, len, loc, fil, Pt.row, Pt.col, Pt.val );
+            Pt.lignes = nc; Pt.colonnes = nf;
+        }
+
+        // ---- 3. `AP = A P`, une ligne FINE par fil
+        CsrMg AP;
+        {
+            prepare_tampons( T, nc, 0 );
+            std::vector<SI> len( nf ), loc( nf ), fil( nf );
+            #pragma omp parallel for schedule( static ) if( nf >= MG_SEUIL_PAR )
+            for ( SI i = 0; i < nf; ++i ) {
+                const int t = omp_get_thread_num();
+                std::vector<TF> &ac = acc[ t ];
+                std::vector<char> &mk = mkc[ t ];
+                std::vector<SI> &tc = tcol[ t ];
+                std::vector<TF> &tv = tval[ t ];
+                const SI deb = SI( tc.size() );
+                for ( SI e = P.row[ i ]; e < P.row[ i + 1 ]; ++e ) {   // `dia_i P[ i ][ . ]`
+                    const SI b = P.col[ e ];
+                    if ( ! mk[ b ] ) { mk[ b ] = 1; tc.push_back( b ); }
+                    ac[ b ] += g.dia[ i ] * P.val[ e ];
+                }
+                for ( SI e = g.row[ i ]; e < g.row[ i + 1 ]; ++e ) {   // `- somme_j c_ij P[ j ][ . ]`
+                    const SI j = g.col[ e ];
+                    const TF c = g.val[ e ];
+                    for ( SI f = P.row[ j ]; f < P.row[ j + 1 ]; ++f ) {
+                        const SI b = P.col[ f ];
+                        if ( ! mk[ b ] ) { mk[ b ] = 1; tc.push_back( b ); }
+                        ac[ b ] -= c * P.val[ f ];
+                    }
+                }
+                for ( SI k = deb; k < SI( tc.size() ); ++k ) {
+                    tv.push_back( ac[ tc[ k ] ] );
+                    ac[ tc[ k ] ] = 0; mk[ tc[ k ] ] = 0;
+                }
+                loc[ i ] = deb; len[ i ] = SI( tc.size() ) - deb; fil[ i ] = t;
+            }
+            assemble_csr( nf, len, loc, fil, AP.row, AP.col, AP.val );
+            AP.lignes = nf; AP.colonnes = nc;
+        }
+
+        // ---- 4. `A_c = P^t ( AP )`, une ligne GROSSIERE par fil
+        NiveauMg c;
+        c.n = nc;
+        {
+            prepare_tampons( T, nc, 0 );
+            std::vector<SI> len( nc ), loc( nc ), fil( nc );
+            std::vector<TF> dia( nc, TF( 0 ) );
+            #pragma omp parallel for schedule( static ) if( nc >= MG_SEUIL_PAR )
+            for ( SI a = 0; a < nc; ++a ) {
+                const int t = omp_get_thread_num();
+                std::vector<TF> &ac = acc[ t ];
+                std::vector<char> &mk = mkc[ t ];
+                std::vector<SI> &tc = tcol[ t ];
+                std::vector<TF> &tv = tval[ t ];
+                const SI deb = SI( tc.size() );
+                for ( SI k = Pt.row[ a ]; k < Pt.row[ a + 1 ]; ++k ) {
+                    const SI i = Pt.col[ k ];
+                    const TF w = Pt.val[ k ];
+                    for ( SI f = AP.row[ i ]; f < AP.row[ i + 1 ]; ++f ) {
+                        const SI b = AP.col[ f ];
+                        if ( ! mk[ b ] ) { mk[ b ] = 1; tc.push_back( b ); }
+                        ac[ b ] += w * AP.val[ f ];
+                    }
+                }
+                // LA DIAGONALE SORT DE LA LISTE, et les hors-diagonaux changent de signe : notre
+                // convention est `y = dia x - somme val x`, donc `val_ab = - A_c[ a ][ b ]`.
+                SI garde = deb;
+                for ( SI k = deb; k < SI( tc.size() ); ++k ) {
+                    const SI b = tc[ k ];
+                    const TF v = ac[ b ];
+                    ac[ b ] = 0; mk[ b ] = 0;
+                    if ( b == a ) { dia[ a ] = v; continue; }
+                    tc[ garde ] = b; tv.push_back( -v ); ++garde;
+                }
+                tc.resize( garde );
+                loc[ a ] = deb; len[ a ] = garde - deb; fil[ a ] = t;
+            }
+            assemble_csr( nc, len, loc, fil, c.arow, c.acol, c.aval );
+            c.nnz = c.arow[ nc ];
+            c.adia.resize( nc );
+            #pragma omp parallel for schedule( static ) if( nc >= MG_SEUIL_PAR )
+            for ( SI a = 0; a < nc; ++a ) c.adia[ a ] = dia[ a ] > 0 ? dia[ a ] : TF( 1 );
+        }
+        pose( std::move( c ) );
+    }
+
+    void pose( NiveauMg &&c ) {
+        niv.push_back( std::move( c ) );
+        NiveauMg &v = niv.back();                    // apres le deplacement : les tampons ont bouge
+        v.row = v.arow.data(); v.col = v.acol.data(); v.val = v.aval.data(); v.dia = v.adia.data();
     }
 
     /// le niveau le plus grossier, factorise UNE FOIS par hierarchie
@@ -223,76 +685,6 @@ private:
 #endif
     }
 
-    /// LE PRODUIT DE GALERKIN, UNE LIGNE GROSSIERE PAR FIL. Le paquet `a` est fait des rangs
-    /// `4a..4a+3`, donc un fil qui tient `a` connait ses membres sans rien chercher : il parcourt
-    /// leurs aretes, traduit chaque colonne en paquet, et accumule dans un tampon dense qu'il
-    /// remet a zero par la liste des cases touchees. Aucune atomique, aucun tri.
-    void grossit( int l ) {
-        const NiveauMg &g = niv[ l ];
-        const SI nf = g.n, nc = ( nf + 3 ) / 4;
-        const int T = omp_get_max_threads();
-
-        std::vector<SI> &m = carte.emplace_back();     // la carte `fin -> paquet`
-        m.resize( nf );
-        if ( l == 0 && ! rg.empty() ) {
-            #pragma omp parallel for schedule( static ) if( nf >= MG_SEUIL_PAR )
-            for ( SI i = 0; i < nf; ++i ) m[ i ] = rg[ i ] >> 2;
-        } else {
-            #pragma omp parallel for schedule( static ) if( nf >= MG_SEUIL_PAR )
-            for ( SI i = 0; i < nf; ++i ) m[ i ] = i >> 2;
-        }
-
-        acc.resize( T ); tcol.resize( T ); tval.resize( T );
-        for ( int t = 0; t < T; ++t ) { acc[ t ].assign( nc, TF( 0 ) ); tcol[ t ].clear(); tval[ t ].clear(); }
-        std::vector<SI> len( nc ), loc( nc ), fil( nc );
-
-        #pragma omp parallel for schedule( static ) if( nc >= MG_SEUIL_PAR )
-        for ( SI a = 0; a < nc; ++a ) {
-            const int t = omp_get_thread_num();
-            std::vector<TF> &ac = acc[ t ];
-            std::vector<SI> &tc = tcol[ t ];
-            std::vector<TF> &tv = tval[ t ];
-            const SI deb = SI( tc.size() );
-            for ( int q = 0; q < 4; ++q ) {
-                const SI i = membre( l, a, q, nf );
-                if ( i < 0 ) continue;
-                for ( SI e = g.row[ i ]; e < g.row[ i + 1 ]; ++e ) {
-                    const SI bb = m[ g.col[ e ] ];
-                    if ( bb == a ) continue;             // l'interieur du paquet disparait
-                    if ( ac[ bb ] == 0 ) tc.push_back( bb );
-                    ac[ bb ] += g.val[ e ];
-                }
-            }
-            for ( SI k = deb; k < SI( tc.size() ); ++k ) { tv.push_back( ac[ tc[ k ] ] ); ac[ tc[ k ] ] = 0; }
-            loc[ a ] = deb;
-            len[ a ] = SI( tc.size() ) - deb;
-            fil[ a ] = t;
-        }
-
-        NiveauMg c;
-        c.n = nc;
-        c.arow.assign( nc + 1, 0 );
-        for ( SI a = 0; a < nc; ++a ) c.arow[ a + 1 ] = c.arow[ a ] + len[ a ];
-        c.nnz = c.arow[ nc ];
-        c.acol.resize( c.nnz );
-        c.aval.resize( c.nnz );
-        c.adia.assign( nc, TF( 0 ) );
-        #pragma omp parallel for schedule( static ) if( nc >= MG_SEUIL_PAR )
-        for ( SI a = 0; a < nc; ++a ) {
-            const int t = fil[ a ];
-            const SI  o = loc[ a ], p = c.arow[ a ];
-            TF s = 0;
-            for ( SI k = 0; k < len[ a ]; ++k ) {
-                c.acol[ p + k ] = tcol[ t ][ o + k ];
-                c.aval[ p + k ] = tval[ t ][ o + k ];
-                s += tval[ t ][ o + k ];
-            }
-            c.adia[ a ] = s > 0 ? s : TF( 1 );           // une ligne nulle rendrait Jacobi fou
-        }
-        c.row = c.arow.data(); c.col = c.acol.data(); c.val = c.aval.data(); c.dia = c.adia.data();
-        niv.push_back( std::move( c ) );
-    }
-
     // ---------------------------------------------------------------- LES BRIQUES
     static void matvec( const NiveauMg &v, const std::vector<TF> &x, std::vector<TF> &y ) {
         const SI n = v.n;
@@ -303,7 +695,8 @@ private:
             y[ i ] = s;
         }
     }
-    /// `nb` lissages de Jacobi amorti, DEUX TAMPONS ; `net` : on part de `x = 0`
+    /// `nb` lissages, DEUX TAMPONS ; `net` : on part de `x = 0`. Le coefficient par ligne est
+    /// precalcule ( `rlx` ), donc la boucle chaude n'a plus de division.
     void jacobi( NiveauMg &v, int nb, bool net ) const {
         const SI n = v.n;
         if ( net ) std::fill( v.x.begin(), v.x.end(), TF( 0 ) );
@@ -314,7 +707,7 @@ private:
             for ( SI i = 0; i < n; ++i ) {
                 TF s = v.dia[ i ] * xi[ i ];
                 for ( SI e = v.row[ i ]; e < v.row[ i + 1 ]; ++e ) s -= v.val[ e ] * xi[ v.col[ e ] ];
-                xo[ i ] = xi[ i ] + omega * ( v.b[ i ] - s ) / v.dia[ i ];
+                xo[ i ] = xi[ i ] + v.rlx[ i ] * ( v.b[ i ] - s );
             }
             v.x.swap( v.y );
         }
@@ -353,20 +746,41 @@ private:
             for ( SI e = g.row[ i ]; e < g.row[ i + 1 ]; ++e ) s -= g.val[ e ] * g.x[ g.col[ e ] ];
             g.r[ i ] = g.b[ i ] - s;
         }
-        // LA RESTRICTION PAR RAMASSAGE : le paquet connait ses membres, donc pas d'atomique.
-        #pragma omp parallel for schedule( static ) if( ncc >= MG_SEUIL_PAR )
-        for ( SI a = 0; a < ncc; ++a ) {
-            TF s = 0;
-            for ( int q = 0; q < 4; ++q ) { const SI i = membre( l, a, q, nf ); if ( i >= 0 ) s += g.r[ i ]; }
-            c.b[ a ] = s;
+        // LA RESTRICTION SE FAIT PAR RAMASSAGE, jamais par dispersion : pas d'atomique. Sans
+        // lissage le paquet connait ses membres ; avec, `P^t` est la et c'est un produit CSR.
+        const CsrMg &Pt = prolt[ l ];
+        if ( Pt.vrai() ) {
+            #pragma omp parallel for schedule( static ) if( ncc >= MG_SEUIL_PAR )
+            for ( SI a = 0; a < ncc; ++a ) {
+                TF s = 0;
+                for ( SI k = Pt.row[ a ]; k < Pt.row[ a + 1 ]; ++k ) s += Pt.val[ k ] * g.r[ Pt.col[ k ] ];
+                c.b[ a ] = s;
+            }
+        } else {
+            #pragma omp parallel for schedule( static ) if( ncc >= MG_SEUIL_PAR )
+            for ( SI a = 0; a < ncc; ++a ) {
+                TF s = 0;
+                for ( int q = 0; q < taille_paquet(); ++q ) { const SI i = membre( l, a, q, nf ); if ( i >= 0 ) s += g.r[ i ]; }
+                c.b[ a ] = s;
+            }
         }
 
         if ( l >= kcycle ) cycle( l + 1 );
         else               kcycle_deux( l + 1 );
 
-        const std::vector<SI> &m = carte[ l ];
-        #pragma omp parallel for schedule( static ) if( nf >= MG_SEUIL_PAR )
-        for ( SI i = 0; i < nf; ++i ) g.x[ i ] += c.x[ m[ i ] ];
+        const CsrMg &P = prol[ l ];
+        if ( P.vrai() ) {
+            #pragma omp parallel for schedule( static ) if( nf >= MG_SEUIL_PAR )
+            for ( SI i = 0; i < nf; ++i ) {
+                TF s = 0;
+                for ( SI e = P.row[ i ]; e < P.row[ i + 1 ]; ++e ) s += P.val[ e ] * c.x[ P.col[ e ] ];
+                g.x[ i ] += s;
+            }
+        } else {
+            const std::vector<SI> &m = carte[ l ];
+            #pragma omp parallel for schedule( static ) if( nf >= MG_SEUIL_PAR )
+            for ( SI i = 0; i < nf; ++i ) g.x[ i ] += c.x[ m[ i ] ];
+        }
         jacobi( g, nu, false );
     }
 
@@ -424,9 +838,9 @@ private:
                 cycle( 0 );
                 zz = niv[ 0 ].x;
             } else {
-                const TF *di = niv[ 0 ].dia;
+                const TF *rl = niv[ 0 ].rlx.data();
                 #pragma omp parallel for schedule( static ) if( n >= MG_SEUIL_PAR )
-                for ( SI i = 0; i < n; ++i ) zz[ i ] = rr[ i ] / di[ i ];
+                for ( SI i = 0; i < n; ++i ) zz[ i ] = rl[ i ] * rr[ i ];
             }
             centre( zz );
         };
@@ -461,15 +875,8 @@ private:
             for ( SI i = 0; i < n; ++i ) cp[ i ] = cz[ i ] + be * cp[ i ];
         }
         st.nb_iter += it;
-        // ---- ON REND LA JAUGE `d[ 0 ] = 0`, ET CE N'EST PAS UN DETAIL
-        //
-        // La moyenne nulle est la bonne jauge POUR RESOUDRE ( le noyau du laplacien est les
-        // constantes, et projeter est symetrique la ou rayer une ligne ne l'est pas ), mais le
-        // reste du code suppose l'autre : `Newton.h` ecrit `w2[ i ] = w[ i ] + t d[ i ]` PUIS
-        // `w2[ 0 ] = 0`, « la jauge, imposee et non esperee ». Avec `d[ 0 ] != 0` cette ligne
-        // n'impose plus une jauge, elle MUTILE la direction sur une composante -- et Newton
-        // stagnait aussitot ( mesure : residu 1.14e+01 inchange apres deux iterations, 31 reculs ).
-        // Les deux jauges decrivent la MEME direction a une constante pres, donc on translate.
+        // ON REND LA JAUGE `d[ 0 ] = 0` : voir l'entete. Les deux jauges decrivent la meme
+        // direction a une constante pres, mais `Newton.h` ecrase `w2[ 0 ]` apres le pas.
         const TF d0 = d[ 0 ];
         #pragma omp parallel for schedule( static ) if( n >= MG_SEUIL_PAR )
         for ( SI i = 0; i < n; ++i ) d[ i ] -= d0;
