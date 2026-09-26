@@ -476,7 +476,8 @@ contraste de valeurs. C'est l'outil des problèmes anisotropes, et ça fait gagn
 
 1. ~~le recyclage à `k = 2`~~ — **fait et mesuré**, voir ci-dessous ;
 2. ~~le décalage d'agrégation réglable~~ — **fait, balayé, et la conclusion s'inverse** ;
-3. **Chebyshev**, avec la borne de Gershgorin et la boucle fusionnée ;
+3. ~~Chebyshev, avec la borne de Gershgorin et la boucle fusionnée~~ — **fait, et c'est le
+   nouveau défaut** ;
 4. la hiérarchie gardée, si jamais la montée redevient un poste.
 
 ### CE QUE ÇA DONNE SUR LA CARTE ( `AMG_RECYCLE`, `AMG_AGREG` )
@@ -517,6 +518,55 @@ chaque itération peu chère, c'est la *qualité de l'espace grossier* qui prime
 Le `>> 2` hérité de Morton se trouve donc être le bon choix — mais on le sait maintenant au lieu de
 le supposer, et le réglage est ouvert pour le jour où la 3D arrivera (où le CPU, lui, demande huit).
 
+### CHEBYSHEV ( `AMG_LISSEUR=2`, le défaut ) — −14 % sur le CG
+
+Un polynôme de degré `nu` en `M⁻¹A`, choisi pour écraser la partie du spectre que le grossier ne
+corrige pas. **Uniquement des produits matrice-vecteur**, donc exactement ce qu'une carte veut —
+là où Gauss-Seidel demande un ordre. Son intérieur est `spai0`, `m_i = A_ii / Σ_j A_ij²`, la
+meilleure approximation diagonale de `A⁻¹` au sens de Frobenius.
+
+**`λ_max` ne se devine pas, il se borne.** Gershgorin sur `M⁻¹A` donne
+`λ_max ≤ max_i m_i ( dia_i + Σ_e |val_e| )`, exact et en une passe sur les arêtes. `atomicMax`
+n'existe pas pour les `double`, mais le motif binaire d'un positif est monotone : on passe par
+`unsigned long long`. La valeur redescend sur l'hôte **une fois par niveau et par montée**, et les
+coefficients du polynôme partent ensuite en arguments de noyau — rien à lire sur la carte dans la
+boucle chaude.
+
+**La boucle est fusionnée dès le premier jet, et ce n'est pas un détail.** Sur CPU, en écrivant
+`A y` dans un tampon puis en refaisant une passe pour mettre à jour `r` et la direction, Chebyshev
+rendait en coût par itération (+12 %) ce qu'il gagnait en nombre (−8 %). Le double tampon **reste
+nécessaire** — le produit de la ligne `i` lit `y` chez les voisins, on ne peut pas écrire dedans —
+mais la seconde passe non : `k_cheb_pas` lit `y`, met `r` à jour sur place, et écrit la direction
+suivante dans `z`, qu'on échange. Sur carte, limitée par la bande passante, ce piège est pire.
+
+`n = 10⁶`, 2D, sept itérations de Newton, avec `AMG_RECYCLE=2` :
+
+| | itér. de CG | temps de CG | total |
+|---|---|---|---|
+| Jacobi 0,7 `nu 2` *(l'ancien défaut)* | 129 | 1,63 s | 4,43 s |
+| Chebyshev `nu 2 cheb 30` | 147 | 1,73 s | 4,54 s |
+| Chebyshev `nu 3 cheb 10` | **106** | 1,63 s | 4,47 s |
+| Chebyshev `nu 2 cheb 10` | 127 | 1,52 s | 4,33 s |
+| **Chebyshev `nu 1 cheb 10`** | 162 | **1,40 s** | **4,22 s** |
+
+**L'optimum est à UN lissage** : plus d'itérations (162 contre 129) mais un cycle deux fois plus
+léger. C'est le régime limité par la bande passante, et c'est l'inverse de ce qu'un compte
+d'itérations seul suggérerait — `nu 3` fait les 106 itérations les plus rares de tout le tableau et
+n'en tire rien. Le bon nombre dépend du lisseur, et se tromper coûte dans les deux sens : Jacobi à
+`nu 1` fait 246 itérations. Le défaut est donc `nu = 1` **avec Chebyshev** et 2 sans.
+
+### CE QUE LES TROIS DONNENT ENSEMBLE
+
+| `n = 10⁶`, 2D | itér. de CG | temps de CG | Newton complet |
+|---|---|---|---|
+| avant *(Jacobi `nu 2`, sans recyclage)* | 151 | 1,86 s | 4,70 s |
+| **après** *(Chebyshev `nu 1`, `recycle 2`)* | 162 | **1,40 s** | **4,22 s** |
+
+**−25 % sur le CG**, −10 % sur le Newton complet — le diagramme pesant 2,6 s des 4,2, c'est lui qui
+borne désormais. À noter : le compte d'itérations **monte** (151 → 162) pendant que le temps baisse
+d'un quart. Sur une machine limitée par la bande passante, compter les itérations induit en erreur ;
+c'est le coût du cycle qui décide.
+
 ### UNE ANOMALIE BORNÉE, ET LAISSÉE OUVERTE
 
 Le couple **`AMG_AGREG=8` avec `AMG_NU=1`** prend **155 s de CG au lieu de 1,8** à `n = 10⁶`, soit
@@ -532,10 +582,15 @@ environ une seconde par itération contre onze millisecondes. Ce qu'on en sait :
 * **ce n'est PAS une faute mémoire** : `compute-sanitizer --tool memcheck` ne rapporte que
   l'avertissement bénin `Duplicate entry kernels named "cub::EmptyKernel"`.
 
-Un surcoût constant par itération, indifférent à la structure du cycle, oriente vers de
-l'arithmétique dégénérée sur le niveau fin plutôt que vers l'algorithme — des sous-normaux en
-`double`, par exemple. C'est laissé ouvert : la configuration perd de toute façon, mais un facteur
-quatre-vingts reproductible mérite d'être écrit plutôt qu'oublié.
+* **et il disparaît avec Chebyshev** : `AMG_LISSEUR=2 AMG_AGREG=8 AMG_NU=1` donne 1,53 s, sain.
+
+Ce dernier point resserre beaucoup le soupçon. Chebyshev est à **deux tampons**, donc sans course ;
+`k_amg_jacobi` écrit `x[ i ]` pendant que d'autres fils lisent `x[ col ]`, une course assumée dont
+on accepte le non-déterminisme. L'anomalie est donc dans le chemin Jacobi, pas dans la hiérarchie
+ni dans le cycle — un surcoût constant par itération, indifférent à la structure du cycle, qui
+oriente vers de l'arithmétique dégénérée (des sous-normaux en `double`) produite par cette course
+dans cette configuration précise. C'est laissé ouvert : le chemin par défaut ne l'emprunte plus,
+mais un facteur quatre-vingts reproductible mérite d'être écrit plutôt qu'oublié.
 
 **Et un défaut trouvé au passage, qui lui est corrigé** : le tampon `A U` du recyclage était alloué
 pour la taille *courante* du sous-espace, qui se remplit progressivement — à la deuxième résolution

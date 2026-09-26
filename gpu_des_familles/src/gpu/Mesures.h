@@ -118,6 +118,8 @@ struct DiagrammeGpu {
     /// seuls les coefficients -- a remonter quand ils bougent )
     void monte_amg( const Hessienne &H );
     void cycle_v( int niveau );
+    /// le lissage d'un niveau : Jacobi amorti ou Chebyshev, selon `AMG_LISSEUR`
+    void lisse_un( int niveau, int nb, bool net );
 
     /// `y = L x` sur la carte ( pointeurs device ), pour verifier et pour le gradient conjugue
     void applique( const Hessienne &H, const double *x, double *y ) const;

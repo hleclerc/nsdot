@@ -84,6 +84,13 @@ struct DiagrammeGpu<D,TK>::Impl {
     double      *rec_au = nullptr;                   ///< `A U`, un tampon de `recycle` vecteurs
     int          rec_n = 0;                          ///< la taille pour laquelle il a ete alloue
     int          lisse = 0;                          ///< la prolongation LISSEE ( `cusparseSpGEMM` )
+    // CHEBYSHEV PAR DEFAUT, ET UN SEUL LISSAGE. Mesure a `n = 1e6`, 2D, sept iterations de
+    // Newton, temps de CG : Jacobi 0.7 `nu 2` 1.63 s, Chebyshev `nu 2` 1.52, Chebyshev `nu 1`
+    // 1.40 -- soit -14 %. L'optimum est a UN lissage : 162 iterations contre 129, mais un cycle
+    // deux fois plus leger. C'est le regime limite par la bande passante, et c'est l'inverse de
+    // ce qu'un compte d'iterations seul suggererait.
+    int          lisseur = 2;                        ///< 0 : Jacobi amorti ; 2 : Chebyshev
+    double       cheb = 10;                          ///< `lmin = lmax / cheb` pour Chebyshev
     cusparseHandle_t cus = nullptr;
     int         *rang_de = nullptr;                  ///< identifiant -> rang ( l'agregation du niveau fin )
     double      *acc = nullptr;                      ///< un scalaire de travail
@@ -823,16 +830,23 @@ void DiagrammeGpu<D,TK>::monte_amg( const Hessienne &H ) {
         if ( l ) { cudaFree( v.row ); cudaFree( v.col ); cudaFree( v.val ); cudaFree( v.dia ); }
         cudaFree( v.x ); cudaFree( v.b ); cudaFree( v.r );
         cudaFree( v.v1 ); cudaFree( v.v2 ); cudaFree( v.t ); cudaFree( v.rc ); cudaFree( v.sc );
+        cudaFree( v.rl ); cudaFree( v.sy ); cudaFree( v.sz );
         csr_libere( v.P ); csr_libere( v.R );
     }
     for ( int *p : m.map ) cudaFree( p );
     m.niv.clear(); m.map.clear();
     if ( const char *e = std::getenv( "AMG_K" ) ) m.kcycle = std::atoi( e );
     if ( const char *e = std::getenv( "AMG_GROS" ) ) m.gros = std::atoi( e );
-    if ( const char *e = std::getenv( "AMG_NU" ) ) m.nu = std::atoi( e );
+    bool nu_pose = false;
+    if ( const char *e = std::getenv( "AMG_NU" ) ) { m.nu = std::atoi( e ); nu_pose = true; }
     if ( const char *e = std::getenv( "AMG_STOP" ) ) m.stop = std::atoi( e );
     if ( const char *e = std::getenv( "AMG_AGREG" ) ) m.agreg = std::max( 2, std::atoi( e ) );
     if ( const char *e = std::getenv( "AMG_RECYCLE" ) ) m.recycle = std::atoi( e );
+    if ( const char *e = std::getenv( "AMG_LISSEUR" ) ) m.lisseur = std::atoi( e );
+    if ( const char *e = std::getenv( "AMG_CHEB" ) ) m.cheb = std::atof( e );
+    // UN LISSAGE AVEC CHEBYSHEV, DEUX AVEC JACOBI -- le bon nombre depend du lisseur, et se
+    // tromper coute cher dans les deux sens ( Jacobi `nu 1` : 246 iterations contre 129 ).
+    if ( ! nu_pose ) m.nu = m.lisseur == 2 ? 1 : 2;
     if ( const char *e = std::getenv( "AMG_LISSE" ) ) m.lisse = std::atoi( e );
     if ( m.lisse && ! m.cus ) cusparseCreate( &m.cus );
     if ( ! m.rang_de ) {
@@ -968,6 +982,59 @@ void DiagrammeGpu<D,TK>::monte_amg( const Hessienne &H ) {
     CUDA_OK( cudaMalloc( &m.niv[ 0 ].r, size_t( m.n ) * 8 ) );
     CUDA_OK( cudaMalloc( &m.niv[ 0 ].x, size_t( m.n ) * 8 ) );
     CUDA_OK( cudaMalloc( &m.niv[ 0 ].b, size_t( m.n ) * 8 ) );
+
+    // ---- CHEBYSHEV : le coefficient par ligne et la borne de Gershgorin, UNE FOIS PAR HIERARCHIE
+    //
+    // `lmax` redescend sur l'hote -- une synchronisation par niveau et par montee, contre des
+    // dizaines d'iterations de CG ensuite. Les coefficients du polynome s'en deduisent sur
+    // l'hote et partent en arguments de noyau : rien a lire sur la carte dans la boucle chaude.
+    if ( m.lisseur == 2 ) {
+        unsigned long long *mx = nullptr;
+        CUDA_OK( cudaMalloc( &mx, sizeof( unsigned long long ) ) );
+        for ( Niveau &v : m.niv ) {
+            CUDA_OK( cudaMalloc( &v.rl, size_t( v.n ) * 8 ) );
+            CUDA_OK( cudaMalloc( &v.sy, size_t( v.n ) * 8 ) );
+            CUDA_OK( cudaMalloc( &v.sz, size_t( v.n ) * 8 ) );
+            k_amg_relax<<<gr( v.n ), BL>>>( v.row, v.col, v.val, v.dia, v.rl, v.n );
+            CUDA_OK( cudaMemset( mx, 0, sizeof( unsigned long long ) ) );
+            k_amg_gersh<<<gr( v.n ), BL>>>( v.row, v.col, v.val, v.dia, v.rl, mx, v.n );
+            unsigned long long h = 0;
+            CUDA_OK( cudaMemcpy( &h, mx, sizeof( h ), cudaMemcpyDeviceToHost ) );
+            double lm = 0;
+            std::memcpy( &lm, &h, sizeof( double ) );    // le motif binaire, remis a l'endroit
+            v.lmax = lm > 0 ? lm : 2.0;
+        }
+        cudaFree( mx );
+    }
+}
+
+/// LE LISSAGE D'UN NIVEAU, quel que soit le lisseur. `net` : on part de `x = 0`.
+template<int D, class TK>
+void DiagrammeGpu<D,TK>::lisse_un( int l, int nb, bool net ) {
+    Impl &m = *impl;
+    Niveau &v = m.niv[ l ];
+    const int BL = 256, gr = ( v.n + BL - 1 ) / BL;
+    constexpr double OM = 0.7;
+    if ( net ) CUDA_OK( cudaMemsetAsync( v.x, 0, size_t( v.n ) * 8 ) );
+    if ( m.lisseur != 2 || ! v.rl ) {
+        for ( int k = 0; k < nb; ++k )
+            k_amg_jacobi<<<gr, BL>>>( v.row, v.col, v.val, v.dia, v.x, v.b, OM, v.n );
+        return;
+    }
+    if ( nb <= 0 ) return;
+    const double hi = v.lmax, lo = hi / ( m.cheb > 1.01 ? m.cheb : 1.01 );
+    const double th = ( hi + lo ) / 2, de = ( hi - lo ) / 2;
+    const double si = th / de;
+    double rh = 1 / si;
+    k_cheb_init<<<gr, BL>>>( v.row, v.col, v.val, v.dia, v.x, v.b, v.r, v.sy, v.rl,
+                             net ? 1 : 0, 1 / th, v.n );
+    for ( int k = 0; k + 1 < nb; ++k ) {
+        const double r2 = 1 / ( 2 * si - rh ), c1 = r2 * rh, c2 = 2 * r2 / de;
+        k_cheb_pas<<<gr, BL>>>( v.row, v.col, v.val, v.dia, v.x, v.r, v.sy, v.sz, v.rl, c1, c2, v.n );
+        std::swap( v.sy, v.sz );
+        rh = r2;
+    }
+    k_cheb_fin<<<gr, BL>>>( v.x, v.sy, v.n );
 }
 
 /// UN CYCLE EN V : lissage, restriction, recursion, prolongation, lissage
@@ -977,20 +1044,16 @@ void DiagrammeGpu<D,TK>::cycle_v( int l ) {
     const int BL = 256;
     auto gr = [ & ]( int k ) { return ( k + BL - 1 ) / BL; };
     Niveau &g = m.niv[ l ];
-    constexpr double OM = 0.7;
     const int NU = m.nu;                                 // pre et post, pour la symetrie
-    CUDA_OK( cudaMemsetAsync( g.x, 0, size_t( g.n ) * 8 ) );
     if ( l + 1 == int( m.niv.size() ) ) {
         // les `m.gros` lissages en UN SEUL noyau ( `k_amg_gros` ) ont ete essayes et PERDENT :
         // un seul bloc n'occupe qu'un SM sur soixante-huit, et la perte de parallelisme coute
         // plus que les soixante lancements epargnes ( 969 ms contre 873 a n = 1e6 ).
-        for ( int k = 0; k < m.gros; ++k )
-            k_amg_jacobi<<<gr( g.n ), BL>>>( g.row, g.col, g.val, g.dia, g.x, g.b, OM, g.n );
+        lisse_un( l, m.gros, true );
         return;
     }
     Niveau &c = m.niv[ l + 1 ];
-    for ( int k = 0; k < NU; ++k )
-        k_amg_jacobi<<<gr( g.n ), BL>>>( g.row, g.col, g.val, g.dia, g.x, g.b, OM, g.n );
+    lisse_un( l, NU, true );
     k_amg_residu<<<gr( g.n ), BL>>>( g.row, g.col, g.val, g.dia, g.x, g.b, g.r, g.n );
     if ( c.R.row ) {
         k_lis_spmv<<<( c.n + BL - 1 ) / BL, BL>>>( c.R.row, c.R.col, c.R.val, g.r, c.b, c.n, false );
@@ -1030,8 +1093,7 @@ void DiagrammeGpu<D,TK>::cycle_v( int l ) {
     }
     if ( c.P.row ) k_lis_spmv<<<gr( g.n ), BL>>>( c.P.row, c.P.col, c.P.val, c.x, g.x, g.n, true );
     else           k_amg_prolonge<<<gr( g.n ), BL>>>( g.x, c.x, m.map[ l ], g.n );
-    for ( int k = 0; k < NU; ++k )
-        k_amg_jacobi<<<gr( g.n ), BL>>>( g.row, g.col, g.val, g.dia, g.x, g.b, OM, g.n );
+    lisse_un( l, NU, false );
 }
 
 /// LE PETIT SYSTEME DENSE `G y = f` DU RECYCLAGE, `G` symetrique definie positive et `k <= 8`.

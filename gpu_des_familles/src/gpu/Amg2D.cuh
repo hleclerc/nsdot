@@ -29,10 +29,28 @@
 // ligne. On emet donc un triplet par arete, on TRIE ( CUB ), on REDUIT PAR CLEF, et le CSR sort
 // de la.
 //
-// LE CYCLE EN V : un lissage de Jacobi amorti avant, un apres ( meme `omega`, donc l'operateur
-// est SYMETRIQUE et le CG l'accepte comme preconditionneur ), restriction par somme sur le
-// paquet, prolongation par diffusion. Le niveau le plus grossier -- moins de mille inconnues --
-// est lisse cent fois.
+// LE CYCLE EN V : un lissage avant, un apres ( le meme des deux cotes, donc l'operateur est
+// SYMETRIQUE et le CG l'accepte comme preconditionneur ), restriction par somme sur le paquet,
+// prolongation par diffusion. Le niveau le plus grossier -- moins de mille inconnues -- est
+// lisse cent fois.
+//
+// DEUX LISSEURS ( `AMG_LISSEUR` ). Jacobi amorti a `omega = 0.7` ( 0, le defaut historique ), ou
+// CHEBYSHEV ( 2 ) : un polynome de degre `nu` en `M^-1 A` choisi pour minimiser le maximum sur
+// `[ lmax / r, lmax ]`, c'est-a-dire la partie du spectre que le grossier NE corrige pas. Il ne
+// demande que des produits matrice-vecteur -- exactement ce qu'une carte veut -- et son
+// amortissement ne se devine pas : il sort de `lmax`, qu'on BORNE par Gershgorin sur `M^-1 A`,
+// `lmax <= max_i m_i ( dia_i + somme_e |val_e| )`, exact et gratuit.
+//
+// L'interieur de Chebyshev est `spai0`, la meilleure approximation DIAGONALE de `A^-1` au sens de
+// Frobenius : `m_i = A_ii / somme_j A_ij^2`. Sur un laplacien a six voisins egaux elle vaut
+// `1 / ( 7 c )` la ou Jacobi non amorti vaut `1 / ( 6 c )` -- un amortissement CALCULE, pas pose.
+//
+// ET UNE PASSE DE TROP ANNULE LE GAIN. Sur CPU, en ecrivant `A y` dans un tampon puis en refaisant
+// une passe pour mettre a jour `r` et la direction, Chebyshev rendait en cout par iteration
+// ( +12 % ) ce qu'il gagnait en nombre ( -8 % ). Le double tampon RESTE necessaire -- le produit
+// de la ligne `i` lit `y` chez les voisins -- mais la seconde passe non : un seul noyau lit `y`,
+// met `r` a jour sur place, et ecrit la direction suivante dans `z`, qu'on echange. Sur carte,
+// limitee par la bande passante, ce piege est pire, pas meilleur.
 //
 // LA JAUGE passe de `x[ 0 ] = 0` a MOYENNE NULLE, qui est la bonne pour un multigrille : le
 // laplacien a les constantes pour noyau, `b = mesures - cible` est deja de somme nulle, et
@@ -53,6 +71,9 @@ struct Niveau {
     double *x = nullptr, *b = nullptr, *r = nullptr;     ///< les vecteurs de travail du cycle
     double *v1 = nullptr, *v2 = nullptr, *t = nullptr, *rc = nullptr;   ///< ceux du K-cycle
     double *sc = nullptr;                                ///< huit scalaires, sur la carte
+    double *rl = nullptr;                                ///< le coefficient de relaxation, un par ligne
+    double *sy = nullptr, *sz = nullptr;                 ///< les deux tampons de direction de Chebyshev
+    double  lmax = 2;                                    ///< la borne de Gershgorin sur `M^-1 A`
     Csr     P, R;                                        ///< prolongation lissee et sa transposee
     int     n = 0, nnz = 0;
 };
@@ -121,6 +142,70 @@ __global__ void k_amg_jacobi( const int *row, const int *col, const double *val,
     double s = dia[ i ] * x[ i ];
     for ( int p = row[ i ]; p < row[ i + 1 ]; ++p ) s -= val[ p ] * x[ col[ p ] ];
     x[ i ] += omega * ( b[ i ] - s ) / dia[ i ];
+}
+
+/// LE COEFFICIENT DE RELAXATION, UN PAR LIGNE : `spai0`, l'interieur de Chebyshev.
+__global__ void k_amg_relax( const int *row, const int *col, const double *val, const double *dia,
+                             double *rl, int n ) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if ( i >= n ) return;
+    ( void ) col;
+    const double d = dia[ i ];
+    double q = d * d;
+    for ( int p = row[ i ]; p < row[ i + 1 ]; ++p ) q += val[ p ] * val[ p ];
+    rl[ i ] = q > 0 ? d / q : 0.0;
+}
+
+/// LA BORNE DE GERSHGORIN SUR `M^-1 A`, exacte et en une passe. `atomicMax` n'existe pas pour les
+/// `double`, mais le motif binaire d'un POSITIF est monotone : on passe par `unsigned long long`.
+__global__ void k_amg_gersh( const int *row, const int *col, const double *val, const double *dia,
+                             const double *rl, unsigned long long *acc, int n ) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if ( i >= n ) return;
+    ( void ) col;
+    double sm = dia[ i ];
+    for ( int p = row[ i ]; p < row[ i + 1 ]; ++p ) sm += fabs( val[ p ] );
+    const double v = rl[ i ] * sm;
+    if ( v > 0 ) atomicMax( acc, ( unsigned long long ) __double_as_longlong( v ) );
+}
+
+/// CHEBYSHEV, le premier pas : `r = b - A x` ( ou `b` si on part de zero ), puis `y = r / theta`.
+__global__ void k_cheb_init( const int *row, const int *col, const double *val, const double *dia,
+                             const double *x, const double *b, double *r, double *y,
+                             const double *rl, int net, double invth, int n ) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if ( i >= n ) return;
+    double ri = b[ i ];
+    if ( ! net ) {
+        double sm = dia[ i ] * x[ i ];
+        for ( int p = row[ i ]; p < row[ i + 1 ]; ++p ) sm -= val[ p ] * x[ col[ p ] ];
+        ri = b[ i ] - sm;
+    }
+    r[ i ] = ri;
+    y[ i ] = rl[ i ] * ri * invth;
+}
+
+/// CHEBYSHEV, un pas : `x += y`, `r -= A y`, `z = c1 y + c2 M^-1 r`. UN SEUL NOYAU -- c'est tout
+/// l'objet : on lit `y`, on met `r` a jour sur place ( chacun son indice ), et la direction
+/// suivante part dans `z`, qu'on echange. Deux passes rendraient le gain.
+__global__ void k_cheb_pas( const int *row, const int *col, const double *val, const double *dia,
+                            double *x, double *r, const double *y, double *z, const double *rl,
+                            double c1, double c2, int n ) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if ( i >= n ) return;
+    const double yi = y[ i ];
+    x[ i ] += yi;
+    double sm = dia[ i ] * yi;
+    for ( int p = row[ i ]; p < row[ i + 1 ]; ++p ) sm -= val[ p ] * y[ col[ p ] ];
+    const double ri = r[ i ] - sm;
+    r[ i ] = ri;
+    z[ i ] = c1 * yi + c2 * rl[ i ] * ri;
+}
+
+/// ... et le dernier pas, qui n'a plus de direction a preparer
+__global__ void k_cheb_fin( double *x, const double *y, int n ) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if ( i < n ) x[ i ] += y[ i ];
 }
 
 /// LE NIVEAU LE PLUS GROSSIER EN UN SEUL NOYAU. Il fait moins de mille inconnues, donc il tient
