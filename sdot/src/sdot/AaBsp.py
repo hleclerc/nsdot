@@ -5,7 +5,7 @@ import numpy as np
 # `loom.tensor` D'ABORD : `AaBsp` est le premier module que `sdot/__init__.py` importe, et
 # `loom.drivers.driver` importé avant lui coupe le cycle `driver <-> tensor` du mauvais côté.
 from loom.tensor import Axis, CtShapeVar, IntTensor, RealTensor, ShapeVar, new_batch_axis
-from loom.compilation.FfiCode import FfiCodeParallel
+from loom.compilation.FfiCode import FfiCode
 from loom.drivers.driver import driver
 from loom.util import Aggregate
 
@@ -274,10 +274,10 @@ class AaBsp( SpatialAccelerator ):
         # une trace ils peuvent être des traceurs d'une trace close ( voir `OtPlan` ). Seules les
         # tranches entrent.
         driver.call(
-            FfiCodeParallel( name = "bsp_refresh_majorants",
-                includes = [ "sdot/bsp_build_level.h" ],
-                fwd_code = "bsp_refresh_majorant( cloud, node_begin( batch_index ), node_end( batch_index ), "
+            FfiCode( includes = [ "sdot/bsp_build_level.h" ],
+                code = "bsp_refresh_majorant( cloud, node_begin( batch_index ), node_end( batch_index ), "
                            "maj.wa( batch_index ), maj.wb( batch_index ) );" ),
+            name = "bsp_refresh_majorants",
             output_attributes = [ "maj" ],
             has_dynamic_capacity = False,
             cloud = cloud, maj = maj,
@@ -506,13 +506,13 @@ def _build_in_kernel( pos, w, leaf_size ):
         no_weights = [] if w is not None else [ "dst.weights", "lvl.wa", "lvl.wb" ]
 
         driver.call(
-            FfiCodeParallel( name = "bsp_build_level",
-                includes = [ "sdot/bsp_build_level.h" ],
-                fwd_code = "bsp_build_level( src, dst, perm, "
+            FfiCode( includes = [ "sdot/bsp_build_level.h" ],
+                code = "bsp_build_level( src, dst, perm, "
                            "lvl.begin( batch_index ), lvl.end( batch_index ), "
                            "lvl.box( batch_index ), "
                            "lvl.wa( batch_index ), lvl.wb( batch_index ), lvl.mid( batch_index ), "
                            "SI( leaf_size( 0 ) ) );" ),
+            name = "bsp_build_level",
             output_attributes = [ "dst", "lvl", "perm" ],
             # `begin` / `end` sont l'ENTRÉE du niveau : sous une sortie nommée, il faut les en
             # retirer explicitement pour qu'elles restent lues et non allouées.

@@ -1,6 +1,6 @@
 import numpy
 
-from loom.compilation.FfiCode import FfiCodeParallel
+from loom.compilation.FfiCode import FfiCode
 from loom.drivers.driver import driver
 from loom.tensor import Axis, AxisList, CtShapeVar, RealTensor, ShapeVar
 from loom.util import ComputedAttribute
@@ -126,11 +126,11 @@ class Image( Distribution ):
     def _update_current_mass( self ):
         # res = RealTensor[ tuple( self.batch_axes ) ]()
         driver.call(
-            FfiCodeParallel( name = "mass",
-                fwd_code = "image.current_mass( batch_index ) = image( batch_index ).measure();",
-                bwd_code = "image( batch_index ).measure_bwd( grad_for_image( batch_index ).values, "
-                           "grad_for_image( batch_index ).current_mass );",
-            ),
+            FfiCode( code = "image.current_mass( batch_index ) = image( batch_index ).measure();",
+                ),
+            FfiCode( "image( batch_index ).measure_bwd( grad_for_image( batch_index ).values, "
+                           "grad_for_image( batch_index ).current_mass );" ),
+            name = "mass",
             output_attributes = [ "image.current_mass" ],
             has_dynamic_capacity = False,
             image = self,
@@ -162,7 +162,7 @@ class Image( Distribution ):
         # `values`/`frame`/`knots` carry no real gradient THROUGH `cell_cum_mass`: it is a routing
         # helper for `OtPlan1d`'s walk, and `d cost/d values` is already computed there directly (a
         # closed form, `Phi_k`/`second_moment_about`), never via `cell_cum_mass`. `stop_gradient`
-        # them going INTO this call so it needs no `bwd_code` at all, and so `cell_cum_mass` itself
+        # them going INTO this call so it needs no `backward` at all, and so `cell_cum_mass` itself
         # never carries a gradient trace back to `values` wherever it is read afterwards (once, here
         # -- not at each read site, see `driver.stop_gradient`'s docstring).
         # `origin`/`frame`/`knots` may be unset (`NoneTensor`, defaulted later by `with_defaults`
@@ -194,9 +194,9 @@ class Image( Distribution ):
         cell_cum_mass = RealTensor[ *self.batch_axes, cum_axis ]()
 
         driver.call(
-            FfiCodeParallel( name = "cell_cum_mass",
-                fwd_code = "image( batch_index ).fill_cell_cum_mass( cell_cum_mass( batch_index ) );",
+            FfiCode( code = "image( batch_index ).fill_cell_cum_mass( cell_cum_mass( batch_index ) );",
             ),
+            name = "cell_cum_mass",
             output_attributes = [ "cell_cum_mass" ],
             has_dynamic_capacity = False,
             image = detached,

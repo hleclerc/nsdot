@@ -5,7 +5,7 @@ from loom.tensor import ShapeVar
 from loom.tensor import RealTensor
 from loom.tensor import Axis
 
-# from loom.compilation.FfiCode import FfiCodeParallel
+# from loom.compilation.FfiCode import FfiCode
 # from loom.util import Aggregate
 # from loom.drivers.driver import driver
 

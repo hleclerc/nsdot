@@ -222,10 +222,13 @@ class OtPlan:
 
         out = [ "weights", "history", "stats" ] + pd_kwargs[ "output_attributes" ]
         driver.call(
-            FfiCode( name = "otplan_solve",
-                includes = [ "sdot/otplan/Solve.h" ],
+            # `handler` et pas le noyau echafaude par defaut : ce corps EST le handler. Il est du
+            # code HOTE -- il a besoin de la `queue`, et il pilote lui-meme son parallelisme ( cent
+            # diagrammes dans un seul appel ), donc il n'y a ni foncteur par item ni `run_parallel`
+            # a engendrer autour de lui. Voir la docstring de `FfiCode`.
+            FfiCode.handler( includes = [ "sdot/otplan/Solve.h" ],
                 sources = [ "sdot/otplan/Lineaire.cpp" ],
-                fwd_code = "\n".join( [
+                code = "\n".join( [
                     "using TK_otplan = std::conditional_t<CT_VALUE( options.kernel_fp_size ) == 64, double, float>;",
                     f"auto pd_otplan = { pd_expr };",
                     "otplan::OptionsSolveur os;",
@@ -240,6 +243,7 @@ class OtPlan:
                     "os.conv_s0 = double( options.conv_s0 ); os.conv_ratio = double( options.conv_ratio ); os.conv_min = double( options.conv_min );",
                     f"otplan::resoudre<TK_otplan>( queue, pd_otplan, power_diagram, dom_cell, { dist_expr }, nu, w0, os, weights, history, stats );",
                 ] ) ),
+            name = "otplan_solve",
             output_attributes = out,
             output_exceptions = [] if keep_weights else [ "history.weights" ],
             output_capacities = { "history.nb_steps": int( max_iter ) + 1 },

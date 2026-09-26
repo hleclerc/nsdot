@@ -19,7 +19,7 @@ cellule n'est pas bornée.
 import os
 
 import numpy as np
-from loom.compilation.FfiCode import FfiCodeParallel
+from loom.compilation.FfiCode import FfiCode
 from loom.drivers.driver import driver
 from loom.tensor import Axis, RealTensor, ShapeVar, Tensor
 from loom.util import Aggregate
@@ -157,8 +157,8 @@ class Cell( Aggregate ):
         cap = self.dim + 1
         scratch, sc_kwargs = self._call_scratch( "scratch", cap )
         driver.call(
-            FfiCodeParallel( name = "init_as_unbounded",
-                fwd_code = "cell( batch_index ).init_as_unbounded( scratch( batch_index ) );" ),
+            FfiCode( code = "cell( batch_index ).init_as_unbounded( scratch( batch_index ) );" ),
+            name = "init_as_unbounded",
             **merge_call( dict(
                 output_capacities = { "cell.nb_vertices": cap, "cell.nb_cuts": cap },
                 output_attributes = [ "cell" ] ), sc_kwargs ),
@@ -179,8 +179,8 @@ class Cell( Aggregate ):
         cap = self.init_capacity()
         scratch, sc_kwargs = self._call_scratch( "scratch", cap )
         driver.call(
-            FfiCodeParallel( name = "init_as_hypercube",
-                fwd_code = "cell( batch_index ).init_as_hypercube( scratch( batch_index ), origin, axes, cut_id );" ),
+            FfiCode( code = "cell( batch_index ).init_as_hypercube( scratch( batch_index ), origin, axes, cut_id );" ),
+            name = "init_as_hypercube",
             **merge_call( dict(
                 output_capacities = { "cell.nb_vertices": cap, "cell.nb_cuts": cap },
                 output_attributes = [ "cell" ] ), sc_kwargs ),
@@ -206,8 +206,8 @@ class Cell( Aggregate ):
         res = self._empty_like_me()
         scratch, sc_kwargs = self._call_scratch( "scratch", max( cap_v, cap_c ) )
         driver.call(
-            FfiCodeParallel( name = "cut",
-                fwd_code = "cell( batch_index ).cut( res( batch_index ), scratch( batch_index ), direction, offset, cut_id );" ),
+            FfiCode( code = "cell( batch_index ).cut( res( batch_index ), scratch( batch_index ), direction, offset, cut_id );" ),
+            name = "cut",
             **merge_call( dict(
                 output_capacities = { "res.nb_vertices": cap_v, "res.nb_cuts": cap_c },
                 output_attributes = [ "res" ] ), sc_kwargs ),
@@ -239,10 +239,11 @@ class Cell( Aggregate ):
         res = RealTensor[ tuple( self.batch_axes ) ]()
         scratch, sc_kwargs = self._call_scratch( "scratch", max( self._cap_v(), self._cap_c() ) )
         driver.call(
-            FfiCodeParallel( name = "measure",
-                fwd_code = "cell( batch_index ).measure( res( batch_index ), scratch( batch_index ) );",
-                bwd_code = "cell( batch_index ).measure_bwd( res( batch_index ), grad_for_res( batch_index ), "
+            FfiCode( code = "cell( batch_index ).measure( res( batch_index ), scratch( batch_index ) );",
+                ),
+            FfiCode( "cell( batch_index ).measure_bwd( res( batch_index ), grad_for_res( batch_index ), "
                            "grad_for_cell( batch_index ).vertex_positions, scratch( batch_index ) );" ),
+            name = "measure",
             **merge_call( dict( output_attributes = [ "res" ] ), sc_kwargs ),
             cell = self,
             res = res,

@@ -11,7 +11,7 @@ from loom.tensor import RealTensor
 from loom.tensor import IntTensor
 from loom.tensor import Axis
 
-from loom.compilation.FfiCode import FfiCodeParallel
+from loom.compilation.FfiCode import FfiCode
 from loom.util import Aggregate
 from loom.drivers.driver import driver
 
@@ -82,7 +82,7 @@ class OtPlan1d( Aggregate ):
         NOT per-angle: `[ num_group, num_dirac ]`, so memory scales with CONCURRENT ANGLES (a RAM
         budget), not the total angle count (2*80GB -> ~2*nt*n*8 at 1e7 diracs x 1000 angles). Each
         work-GROUP indexes its own row `scratch( group_index )`, race-free (`group_index` unique and
-        STABLE over the strided item loop, see FfiCodeParallel) -- `local_size` work-items inside that
+        STABLE over the strided item loop, see FfiCode) -- `local_size` work-items inside that
         group then cooperate on the row via local memory + barriers (see `OtPlan1d.cxx::sort_diracs`),
         instead of one lone work-item doing it all. `nt`/`gs` are HOST decisions: `nt` (min of cores,
         a RAM budget, the batch size) is UNCHANGED by cooperation -- coop doesn't shrink the O(n)-per-
@@ -94,8 +94,8 @@ class OtPlan1d( Aggregate ):
         scratch, the ShapeVars being shared) but are READ AT RUN TIME by the kernel -- so the compiled
         kernel is independent of `nt`/`gs`, i.e. of the machine/RAM (a `CtShapeVar` would bake them in
         the type and recompile per box). `num_local_marker` carries NO real data -- it exists purely so
-        `group_size`/`thread_cap` can read `.shape( 0 )` off an already-mapped call argument, exactly
-        like `thread_cap` already does for `nt` via `sorted_indices.shape( 0 )` (never a literal, so one
+        `group_size`/`max_nb_threads` can read `.shape( 0 )` off an already-mapped call argument, exactly
+        like `max_nb_threads` already does for `nt` via `sorted_indices.shape( 0 )` (never a literal, so one
         compiled kernel serves every machine). See [[otplan1d-kernel-profile]].
 
         `group_scan` backs the PARALLEL sweep (see `chunked_weight_prefix`/`update_outputs`): a small
@@ -154,52 +154,46 @@ class OtPlan1d( Aggregate ):
         # as an OUTPUT (the forward writes it, guarded on `is_valid()` C++-side); leaving it out keeps
         # it a NoneTensor, and the backward recomputes b_i. This is what the flag decides.
         barycenters_out = [ "plan.barycenters" ] if self._with_barycenters else []
-        group_size_expr = "num_local_marker.shape( 0 )"
+        group_size_expr = "num_local_marker.shape( 0 )"   # une expression C++, lue sur un argument
+
+        # LA GEOMETRIE DE LANCEMENT, ecrite une fois et donnee aux DEUX sens. Ici ils la partagent,
+        # mais ce n'est plus impose : un adjoint est un `FfiCode` entier et peut avoir la sienne.
+        #
+        # `local_mem_elems` : `2 * ceil( local_size / subgroup_size )` lignes partagees PAR WARP --
+        # une ligne histogramme/curseur ET une ligne de masque par sous-groupe cooperant au
+        # histogramme/scatter radix ( voir `sort_diracs` ) -- plus une ligne pour les offsets de
+        # bucket inter-chunks ( `OtPlan1d.cxx::sort_diracs::radix_pass` ). Sans rapport avec
+        # `group_scan` ( scratch global ordinaire, pas de la memoire locale ).
+        #
+        # C'est un CORPS de methode C++ ( voir `FfiCode` ) : les arguments de l'appel y sont en
+        # portee sous leurs noms, et le calcul se lit. `256` reste `NB_BUCKETS` recopie a la main
+        # depuis `OtPlan1d.cxx`, et `subgroup_size` un litteral fige pour ce device -- mais puisque
+        # ceci est du C++, inclure l'en-tete qui declare `NB_BUCKETS` fera disparaitre la copie.
+        geometrie_cooperative = dict(
+            max_nb_threads = "return sorted_indices.shape( 0 );",
+            group_size = f"return { group_size_expr };",
+            local_mem_elems = ( f"const int gs = { group_size_expr };\n"
+                                f"        const int sg = { driver.device.subgroup_size };\n"
+                                f"        return ( 2 * ( ( gs + sg - 1 ) / sg ) + 1 ) * 256;" ),
+        )
         driver.call(
-            FfiCodeParallel( name = "update_outputs_OtPlan1d",
-                # `scratch( group_index )` yields this work-GROUP's shared rank-1 row (`scratch( k )`
+            FfiCode( # `scratch( group_index )` yields this work-GROUP's shared rank-1 row (`scratch( k )`
                 # inside, cooperatively). `plan( batch_index )` still picks the angle. The backward
                 # RE-SORTS into its OWN fresh scratch, so it needs all of them -- they are no longer
                 # residuals (per-group, their forward content is transient). `local_index`/`local_size`/
-                # `group`/`local_scratch` are the reserved cooperative params (see FfiCodeParallel).
+                # `group`/`local_scratch` are the reserved cooperative params (see FfiCode).
                 # `group_scan` backs the parallel sweep (see `_scratch`'s docstring); `cell_cum_mass`
                 # is read straight off `plan(batch_index).dst_dist`, not passed in here.
-                fwd_code = ( "plan( batch_index ).update_outputs( sorted_indices( group_index ), radix_tmp( group_index ), sorted_pos( group_index ), "
+                code = ( "plan( batch_index ).update_outputs( sorted_indices( group_index ), radix_tmp( group_index ), sorted_pos( group_index ), "
                             "group_scan( group_index ), "
                             "local_index, local_size, group, local_scratch, sub_group );" ),
-                bwd_code = ( "plan( batch_index ).update_outputs_bwd( grad_for_plan( batch_index ), sorted_indices( group_index ), radix_tmp( group_index ), sorted_pos( group_index ), "
+                **geometrie_cooperative ),
+            FfiCode( code = ( "plan( batch_index ).update_outputs_bwd( grad_for_plan( batch_index ), sorted_indices( group_index ), radix_tmp( group_index ), sorted_pos( group_index ), "
                             "group_scan( group_index ), "
                             "local_index, local_size, group, local_scratch, sub_group );" ),
-                # `grad_for_plan.src_dist`'s points gradient (a `ProjectedSumOfDiracs`) is SHARED and
-                # ATOMICALLY ACCUMULATED across every angle (see `ProjectedSumOfDiracs::add_position_grad`)
-                # -- unlike a per-angle output, Jax/XLA does not guarantee a fresh FFI result buffer
-                # starts zeroed, so without this pre-pass the atomic adds land on whatever device memory
-                # happened to be there (confirmed: reusing the same call site's output buffer picks up
-                # unrelated leftover content). Run ONCE, BEFORE the scaffolded `run_parallel` above -- a
-                # per-angle body cannot express a once-only pre-pass (see `FfiCode._setup_code`). Routed
-                # through `Tensor::fill_with( queue, ... )` (-> `run_parallel`) inside
-                # `zero_position_grad` itself, so this goes through the same, already-proven
-                # device-kernel launch path as every other kernel -- no hand-rolled `sycl::queue::submit`
-                # here. `zero_position_grad` is a template method (`auto&&` params, like
-                # `add_position_grad`), so its OWN `if constexpr` on `position_grad_wanted` genuinely
-                # discards the `NoneTensor` branch, exactly like `update_outputs_bwd` gets for
-                # `add_position_grad` -- no external gate needed. A no-op for a plain `SumOfDiracs` src
-                # (`SumOfDiracs::zero_position_grad`), so this call is unconditional here.
-                bwd_setup_code = "plan.src_dist.zero_position_grad( queue, grad_for_plan.src_dist );",
-                thread_cap = "sorted_indices.shape( 0 )",
-                group_size = group_size_expr,
-                # rows: `2 * ceil( local_size / subgroup_size )` shared per-WARP rows -- a histogram/
-                # cursor row AND a match-mask row per sub-group cooperating on the radix histogram/
-                # scatter (see `sort_diracs`'s docstring) -- plus one shared row for the cross-chunk
-                # bucket offsets (see `OtPlan1d.cxx::sort_diracs::radix_pass`). `256` = `NB_BUCKETS`
-                # there (kept in sync by hand); `subgroup_size` kept in sync with `Device.subgroup_size`
-                # for this device (a baked-in literal -- the compiled kernel already targets one
-                # concrete device/backend). Unrelated to `group_scan` (ordinary global scratch, not
-                # local memory -- this stays sized for the radix sort only).
-                local_mem_elems = (
-                    f"( 2 * ( ( ( { group_size_expr } ) + { driver.device.subgroup_size - 1 } ) "
-                    f"/ { driver.device.subgroup_size } ) + 1 ) * 256" ),
-            ),
+                    prologue = "plan.src_dist.zero_position_grad( queue, grad_for_plan.src_dist );",
+                    **geometrie_cooperative ),
+            name = "update_outputs_OtPlan1d",
             output_attributes = barycenters_out + [ "plan.cost", "plan.nb_diracs", "sorted_indices", "radix_tmp", "sorted_pos", "num_local_marker", "group_scan" ],
             # the scratch buffers are per-group transient: the backward re-allocates them fresh instead
             # of reading the forward's (stale) values as residuals -- see `_call_backward`. `sorted_pos`
@@ -279,7 +273,7 @@ class OtPlan1d( Aggregate ):
         `positions[jnp.argsort(positions)]` upstream).
         """
         self.dst_dist.ensure_cell_cum_mass()
-        group_size_expr = "num_local_marker.shape( 0 )"
+        group_size_expr = "num_local_marker.shape( 0 )"   # une expression C++, lue sur un argument
         gs = driver.device.group_size( nb_shared_bytes_per_subgroup = 0, nb_shared_bytes_fixed = 0 )
         # ONE group only: this call handles a SINGLE angle (the caller's `lax.scan` supplies the outer
         # angle loop), so there is no "concurrent angles" axis to size `num_group` on (contrast
@@ -287,20 +281,27 @@ class OtPlan1d( Aggregate ):
         num_group = Axis( ShapeVar( 1 ), name = "num_group" )
         num_local = Axis( ShapeVar( gs ), name = "num_local" )
         num_scan  = Axis( ShapeVar( gs + 1 ), name = "num_local_scan" )
+
+        # la geometrie de lancement, ecrite une fois et donnee aux DEUX sens : ici ils la partagent,
+        # mais ce n'est plus impose -- un adjoint est un `FfiCode` entier et peut avoir la sienne.
+        # no `sort_diracs` here (order already given) -> no radix-bucket local scratch needed.
+        geometrie_presortee = dict(
+            max_nb_threads = "return sorted_indices.shape( 0 );",
+            group_size = f"return { group_size_expr };",
+            local_mem_elems = "return 0;",
+        )
         driver.call(
-            FfiCodeParallel( name = "update_outputs_presorted_OtPlan1d",
-                fwd_code = ( "plan( batch_index ).update_outputs_presorted( sorted_indices( group_index ), sorted_pos( group_index ), "
+            FfiCode( code = ( "plan( batch_index ).update_outputs_presorted( sorted_indices( group_index ), sorted_pos( group_index ), "
                             "group_scan( group_index ), "
                             "local_index, local_size, group );" ),
-                bwd_code = ( "plan( batch_index ).update_outputs_bwd_presorted( grad_for_plan( batch_index ), sorted_indices( group_index ), sorted_pos( group_index ), "
-                            "group_scan( group_index ), "
-                            "local_index, local_size, group );" ),
-                bwd_setup_code = "plan.src_dist.zero_position_grad( queue, grad_for_plan.src_dist );",
-                thread_cap = "sorted_indices.shape( 0 )",
-                group_size = group_size_expr,
-                # no `sort_diracs` here (order already given) -> no radix-bucket local scratch needed.
-                local_mem_elems = "0",
+                **geometrie_presortee,
             ),
+            FfiCode( code = ( "plan( batch_index ).update_outputs_bwd_presorted( grad_for_plan( batch_index ), sorted_indices( group_index ), sorted_pos( group_index ), "
+                            "group_scan( group_index ), "
+                            "local_index, local_size, group );" ),
+                    prologue = "plan.src_dist.zero_position_grad( queue, grad_for_plan.src_dist );",
+                    **geometrie_presortee ),
+            name = "update_outputs_presorted_OtPlan1d",
             output_attributes = [ "plan.cost", "plan.nb_diracs", "num_local_marker", "group_scan" ],
             scratch_attributes = [ "num_local_marker", "group_scan" ],
             has_dynamic_capacity = False,

@@ -7,7 +7,7 @@ from loom.tensor import RealTensor
 from loom.tensor import Axis
 from loom.util import ComputedAttribute
 
-from loom.compilation.FfiCode import FfiCodeParallel
+from loom.compilation.FfiCode import FfiCode
 
 from .Distribution import Distribution
 
