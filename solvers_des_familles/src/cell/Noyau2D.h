@@ -31,6 +31,8 @@
 
 #include "cell/Contrat2D.h"
 #include <asimd/asimd.h>
+#include <cstdio>
+#include <cstdlib>
 
 namespace sf::d2 {
 
@@ -130,8 +132,8 @@ template<int NB, class TK, class Fourn, class Atl>
         if constexpr ( NB == 8 ) if ( nn > 8 ) {
             a->nb = 8;                                   // l'excursion partira de la
             a->attente = p;                              // ... et rejouera cette coupe-ci
-            vx.store_aligned( a->vx );
-            vy.store_aligned( a->vy );
+            vx.store_aligned( a->lx );
+            vy.store_aligned( a->ly );
             cid.store_aligned( a->cid );
             return DEBORDE;
         }
@@ -154,15 +156,15 @@ inline int excursion( asimd::SimdVec<TK,8> &vx, asimd::SimdVec<TK,8> &vy,
     int nb = a->nb;
     Plan2<TK> p = a->attente;
     for ( ;; ) {
-        nb = coupe_large<MaxNb>( a->vx, a->vy, a->cid, nb, p, s );
+        nb = coupe_large<MaxNb>( a->lx, a->ly, a->cid, nb, p, s );
         if ( nb <= 0 ) { a->nb = nb; return VIDE; }
         if ( nb <= 8 ) {
-            vx  = V::load_aligned( a->vx );
-            vy  = V::load_aligned( a->vy );
+            vx  = V::load_aligned( a->lx );
+            vy  = V::load_aligned( a->ly );
             cid = VI::load_aligned( a->cid );
             return nb;
         }
-        if ( ! f->suivant( EtatLarge<TK>{ nb, a->vx, a->vy, a->cid }, loc, p ) ) {
+        if ( ! f->suivant( EtatLarge<TK>{ nb, a->lx, a->ly, a->cid }, loc, p ) ) {
             a->nb = nb;
             return FINI;
         }
@@ -179,11 +181,32 @@ void moteur( Fourn *f, Atl *a ) {
     using V  = asimd::SimdVec<TK,8>;
     using VI = asimd::SimdVec<SI32,8>;
 
-    alignas( 64 ) static const TK   cx[ 8 ] = { 0, 1, 1, 0, 0, 0, 0, 0 };
-    alignas( 64 ) static const TK   cy[ 8 ] = { 0, 0, 1, 1, 0, 0, 0, 0 };
+    // LE CARRE UNITE DANS LE REPERE DU GERME. Les quatre coins sont translates EN DOUBLE puis
+    // arrondis : `0 - ox` porte alors l'erreur relative de sa propre valeur, pas celle de `1`.
+    TF ox = 0, oy = 0;
+    f->origine( ox, oy );
+    alignas( 64 ) TK cx[ 8 ] = {}, cy[ 8 ] = {};
+    static const double ux[ 4 ] = { 0, 1, 1, 0 }, uy[ 4 ] = { 0, 0, 1, 1 };
+    // DIAGNOSTIC, PAS UN REGLAGE ( `SF_R` ) : demarrer d'un carre de demi-cote `R` AUTOUR DU GERME
+    // au lieu du domaine. Ca ne rend une cellule juste que si elle y tient -- l'uniforme a `R >> h`
+    // -- et ca sert a repondre a une seule question : le plancher `eps n^( 1/D )` qui reste apres
+    // le repere local vient-il des PREMIERES coupes, celles qui s'appliquent a une cellule encore
+    // grande comme le domaine ? Un sommet cree quand la cellule mesure `L` porte `eps L`.
+    static const double R = []{
+        const char *e = std::getenv( "SF_R" );
+        if ( ! e ) return 0.0;
+        std::fprintf( stderr, "  SF_R = %s : DIAGNOSTIC -- les cellules qui depassent ce carre sont FAUSSES\n", e );
+        return std::atof( e );
+    }();
+    if ( R > 0 ) {
+        const double bx[ 4 ] = { -R, R, R, -R }, by[ 4 ] = { -R, -R, R, R };
+        for ( int q = 0; q < 4; ++q ) { cx[ q ] = TK( bx[ q ] ); cy[ q ] = TK( by[ q ] ); }
+    } else
+    for ( int q = 0; q < 4; ++q ) { cx[ q ] = TK( ux[ q ] - ox ); cy[ q ] = TK( uy[ q ] - oy ); }
     alignas( 64 ) static const SI32 ci[ 8 ] = { -1, -2, -3, -4, 0, 0, 0, 0 };
     V  vx  = V::load_aligned( cx ), vy = V::load_aligned( cy );
     VI cid = VI::load_aligned( ci );
+    a->ox = ox; a->oy = oy;
     int nb = 4;
     Local<Fourn> loc{};                                  // vit et meurt avec la cellule
     bool en_excursion = false;
@@ -206,8 +229,8 @@ void moteur( Fourn *f, Atl *a ) {
             }
             if ( r == FINI ) {                           // finie en registres
                 a->nb = nb;
-                vx.store_aligned( a->vx );
-                vy.store_aligned( a->vy );
+                vx.store_aligned( a->lx );
+                vy.store_aligned( a->ly );
                 cid.store_aligned( a->cid );
                 return;
             }

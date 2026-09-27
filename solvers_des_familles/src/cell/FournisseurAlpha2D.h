@@ -29,6 +29,7 @@
 #include "accel/AaBsp.h"
 #include "cell/Contrat2D.h"
 #include "cell/Elagage2D.h"
+#include "cell/Plan.h"
 
 namespace sf::d2 {
 
@@ -50,7 +51,8 @@ struct FournisseurAlpha {
     const TF *const *P;          ///< les positions, par identifiant ( pour les plans chauds )
     const TF       *w, *d;       ///< les poids et la direction, par identifiant
     TF              alpha;
-    TK              x0, y0, w0;  ///< le germe courant, `w0 = w_i + alpha d_i`
+    TF              x0, y0, w0;  ///< le germe courant EN DOUBLE, `w0 = w_i + alpha d_i` ( cf. `cell/Plan.h` )
+    TK              x0k, y0k;    ///< les memes, pour le test d'elagage
     SI32            i0;
     const SI32     *chauds;      ///< les germes a proposer d'abord ( `< 0` : ignore )
     int             nb_chauds;
@@ -60,34 +62,38 @@ struct FournisseurAlpha {
     FournisseurAlpha( const Arbre *arbre, const WMajT<2> *dm, const TF *dt, const TF *const *P,
                       const TF *w, const TF *d, TF alpha, SI32 i0, const SI32 *chauds, int nb_chauds )
         : arbre( arbre ), dm( dm ), dt( dt ), P( P ), w( w ), d( d ), alpha( alpha ),
-          x0( TK( P[ 0 ][ i0 ] ) ), y0( TK( P[ 1 ][ i0 ] ) ), w0( TK( w[ i0 ] + alpha * d[ i0 ] ) ),
+          x0( P[ 0 ][ i0 ] ), y0( P[ 1 ][ i0 ] ), w0( w[ i0 ] + alpha * d[ i0 ] ),
+          x0k( TK( x0 ) ), y0k( TK( y0 ) ),
           i0( i0 ), chauds( chauds ), nb_chauds( nb_chauds ) {}
 
     /// le plan de `j`, aux poids `w + alpha d`
-    void plan( SI32 j, TK xj, TK yj, TK wj, Plan2<TK> &p ) const {
-        p.dx  = xj - x0;
-        p.dy  = yj - y0;
-        p.off = TK( 0.5 ) * ( p.dx * ( xj + x0 ) + p.dy * ( yj + y0 ) + ( w0 - wj ) );
-        p.id  = j;
+    void plan( SI32 j, TF xj, TF yj, TF wj, Plan2<TK> &p ) const {
+        bissect2<true>( p, x0, y0, w0, xj, yj, wj, j );
     }
+
+    void origine( TF &x, TF &y ) const { x = x0; y = y0; }
 
     template<class Etat>
     bool peut_couper( int n, const Etat &e ) const {
         const auto &nd = arbre->nodes[ n ];
+        const TF o[ 2 ] = { x0, y0 };
         Boite2<TK> B;
+        double ap = 0;
         for ( int k = 0; k < 2; ++k ) {
-            B.lo[ k ] = TK( nd.lo[ k ] ); B.hi[ k ] = TK( nd.hi[ k ] );
-            B.a[ k ] = TK( nd.wm.a[ k ] + alpha * dm[ n ].a[ k ] );
+            B.lo[ k ] = TK( nd.lo[ k ] - o[ k ] ); B.hi[ k ] = TK( nd.hi[ k ] - o[ k ] );
+            const double ak = double( nd.wm.a[ k ] ) + alpha * dm[ n ].a[ k ];
+            B.a[ k ] = TK( ak );
+            ap += ak * o[ k ];
         }
-        B.b = TK( nd.wm.b + alpha * dm[ n ].b );
-        return peut_couper_boite<true>( e, x0, y0, w0, B );
+        B.cb = TK( w0 - ( nd.wm.b + alpha * dm[ n ].b ) - ap );
+        return peut_couper_boite<true>( e, B );
     }
 
     TK proximite( int n ) const {
         const auto &nd = arbre->nodes[ n ];
         TK s = 0;
         for ( int k = 0; k < 2; ++k ) {
-            const TK x = k ? y0 : x0;
+            const TK x = k ? y0k : x0k;
             const TK lo = TK( nd.lo[ k ] ), hi = TK( nd.hi[ k ] );
             const TK e = x < lo ? lo - x : x > hi ? x - hi : TK( 0 );
             s += e * e;
@@ -106,7 +112,7 @@ struct FournisseurAlpha {
         while ( l.chaud < nb_chauds ) {                  // ---- le depart a chaud
             const SI32 j = chauds[ l.chaud++ ];
             if ( j < 0 || j == i0 ) continue;
-            plan( j, TK( P[ 0 ][ j ] ), TK( P[ 1 ][ j ] ), TK( w[ j ] + alpha * d[ j ] ), p );
+            plan( j, P[ 0 ][ j ], P[ 1 ][ j ], w[ j ] + alpha * d[ j ], p );
             return true;
         }
         if ( ! parcours )
@@ -118,8 +124,8 @@ struct FournisseurAlpha {
                 const int k = l.k++;
                 const SI32 id = SI32( arbre->order[ k ] );
                 if ( id == i0 || deja_chaud( id ) ) continue;
-                plan( id, TK( arbre->seed_c( k, 0 ) ), TK( arbre->seed_c( k, 1 ) ),
-                      TK( arbre->seed_w( k ) + alpha * dt[ k ] ), p );
+                plan( id, arbre->seed_c( k, 0 ), arbre->seed_c( k, 1 ),
+                      arbre->seed_w( k ) + alpha * dt[ k ], p );
                 return true;
             }
             if ( l.haut == 0 )

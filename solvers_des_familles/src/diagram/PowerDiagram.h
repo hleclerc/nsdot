@@ -19,6 +19,11 @@
 // Les mesures sont accumulees en `TF` ( double ) depuis les sommets en `TK` : avec `TK = float`
 // le plancher relatif d'une aire est ~1e-7, ce qui est le plancher du residu de Newton. `double`
 // leve cette limite au prix mesure par `diagramme --kernel float|double`.
+//
+// `c` ET `w` SONT UNE COPIE EN `TK`, ET LES FOURNISSEURS NE S'EN SERVENT PLUS pour construire
+// les plans : ils lisent l'arbre, qui range germes et poids en `TF`, et n'arrondissent qu'une
+// fois le plan calcule ( `cell/Plan.h` -- c'est la reparation de la simple precision ). La copie
+// reste pour les temoins et pour qui veut les germes dans l'ordre de l'arbre.
 // =====================================================================================
 
 #include "accel/AaBsp.h"
@@ -104,11 +109,12 @@ struct PowerDiagram {
     /// aussi : les majorants ne parlent que des autres ). Laguerre seulement.
     bool cellule_avec_poids( SI k, TF wk, Cell &cel ) const {
         if constexpr ( D == 2 ) {
-            d2::FournisseurBsp<TK,true> f( &arbre, c[ 0 ][ k ], c[ 1 ][ k ], TK( wk ), ids[ k ] );
+            d2::FournisseurBsp<TK,true> f( &arbre, arbre.seed_c( k, 0 ), arbre.seed_c( k, 1 ), wk, ids[ k ] );
             d2::moteur<TK>( &f, &cel );
             return cel.nb >= 0;
         } else {
-            d3::FournisseurBsp3<TK,true> f( &arbre, c[ 0 ][ k ], c[ 1 ][ k ], c[ 2 ][ k ], TK( wk ), ids[ k ] );
+            d3::FournisseurBsp3<TK,true> f( &arbre, arbre.seed_c( k, 0 ), arbre.seed_c( k, 1 ),
+                                            arbre.seed_c( k, 2 ), wk, ids[ k ] );
             return d3::moteur( &f, &cel ) == 0;
         }
     }
@@ -136,12 +142,15 @@ struct PowerDiagram {
     static TF mesure( const Cell &cel, Facette &&facette ) {
         if constexpr ( D == 2 ) {
             if ( cel.nb <= 0 ) return 0;
+            // EN COORDONNEES LOCALES, et ce n'est pas seulement licite : l'aire et les longueurs
+            // sont invariantes par translation, mais en absolu le lacet somme des termes d'ordre
+            // `1` pour rendre `h^2`. Dans le repere du germe les termes SONT d'ordre `h^2`.
             TF a = 0;
             for ( int i = 0, j = cel.nb - 1; i < cel.nb; j = i++ ) {
-                a += TF( cel.vx[ j ] ) * TF( cel.vy[ i ] ) - TF( cel.vx[ i ] ) * TF( cel.vy[ j ] );
+                a += TF( cel.lx[ j ] ) * TF( cel.ly[ i ] ) - TF( cel.lx[ i ] ) * TF( cel.ly[ j ] );
                 if ( cel.cid[ j ] >= 0 ) {               // la coupe `j` porte l'arete [ v_j, v_i ]
-                    const TF ex = TF( cel.vx[ i ] ) - TF( cel.vx[ j ] );
-                    const TF ey = TF( cel.vy[ i ] ) - TF( cel.vy[ j ] );
+                    const TF ex = TF( cel.lx[ i ] ) - TF( cel.lx[ j ] );
+                    const TF ey = TF( cel.ly[ i ] ) - TF( cel.ly[ j ] );
                     facette( cel.cid[ j ], std::sqrt( ex * ex + ey * ey ) );
                 }
             }
@@ -217,7 +226,8 @@ private:
     bool cellule_memo_( SI k, Cell &cel, Memo &m ) const {
         if constexpr ( D == 3 ) {
             using F = d3::FournisseurBsp3<TK,POIDS,8,true>;
-            F f( &arbre, c[ 0 ][ k ], c[ 1 ][ k ], c[ 2 ][ k ], POIDS ? w[ k ] : TK( 0 ), ids[ k ] );
+            F f( &arbre, arbre.seed_c( k, 0 ), arbre.seed_c( k, 1 ), arbre.seed_c( k, 2 ),
+                 POIDS ? arbre.seed_w( k ) : TF( 0 ), ids[ k ] );
             f.pre = m.pre; f.npre = m.npre; f.saute = m.saute; f.parcours = m.parcours;
             f.fbeg = m.fbeg; f.fmask = m.fmask; f.nf = m.nf; f.tester = m.tester;
             f.front = m.front; f.nfront = m.nfront;
@@ -234,13 +244,14 @@ private:
 
     template<bool POIDS>
     bool cellule_( SI k, Cell &cel ) const {
-        const TK w0 = POIDS ? w[ k ] : TK( 0 );
+        const TF w0 = POIDS ? arbre.seed_w( k ) : TF( 0 );
         if constexpr ( D == 2 ) {
-            d2::FournisseurBsp<TK,POIDS> f( &arbre, c[ 0 ][ k ], c[ 1 ][ k ], w0, ids[ k ] );
+            d2::FournisseurBsp<TK,POIDS> f( &arbre, arbre.seed_c( k, 0 ), arbre.seed_c( k, 1 ), w0, ids[ k ] );
             d2::moteur<TK>( &f, &cel );
             return cel.nb >= 0;
         } else {
-            d3::FournisseurBsp3<TK,POIDS> f( &arbre, c[ 0 ][ k ], c[ 1 ][ k ], c[ 2 ][ k ], w0, ids[ k ] );
+            d3::FournisseurBsp3<TK,POIDS> f( &arbre, arbre.seed_c( k, 0 ), arbre.seed_c( k, 1 ),
+                                             arbre.seed_c( k, 2 ), w0, ids[ k ] );
             return d3::moteur( &f, &cel ) == 0;
         }
     }

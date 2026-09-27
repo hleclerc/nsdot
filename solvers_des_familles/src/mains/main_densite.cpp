@@ -132,7 +132,7 @@ void verifie( const PD &pd, const Nuage<2> &nu, Densite rho, const Parallel &par
         const TF m = rho.mesure( cel, []( int, TF ) {}, &dds );
         // la quadrature de surface
         TF cx = 0, cy = 0;
-        for ( int i = 0; i < cel.nb; ++i ) { cx += cel.vx[ i ]; cy += cel.vy[ i ]; }
+        for ( int i = 0; i < cel.nb; ++i ) { cx += cel.x( i ); cy += cel.y( i ); }
         cx /= cel.nb; cy /= cel.nb;
         TF q = 0;
         SI nt = 0;
@@ -151,7 +151,7 @@ void verifie( const PD &pd, const Nuage<2> &nu, Densite rho, const Parallel &par
             }
         };
         for ( int i = 0, j = cel.nb - 1; i < cel.nb; j = i++ )
-            tri( cel.vx[ j ], cel.vy[ j ], cel.vx[ i ], cel.vy[ i ], cx, cy );
+            tri( cel.x( j ), cel.y( j ), cel.x( i ), cel.y( i ), cx, cy );
         // la derivee par differences finies
         Densite rp = rho, rm = rho;
         if ( rho.chemin == Densite::MELANGE ) { rp.t = rho.t + 1e-4; rm.t = rho.t - 1e-4; }

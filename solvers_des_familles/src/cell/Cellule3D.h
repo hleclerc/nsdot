@@ -43,6 +43,9 @@ struct Cellule3 {
     static_assert( ( W & ( W - 1 ) ) == 0, "la largeur SIMD est une puissance de deux" );
 
     int nv = 0, nc = 0;
+    /// L'ORIGINE DU REPERE : le germe. `vx / vy / vz` lui sont RELATIFS -- voir `cell/Contrat2D.h`,
+    /// l'en-tete y explique pourquoi ( l'annulation `d . v` d'ordre `h` pour un `s` d'ordre `h^2` ).
+    TF ox = 0, oy = 0, oz = 0;
 
     alignas( 64 ) TK vx[ MaxNv ];
     alignas( 64 ) TK vy[ MaxNv ];
@@ -66,14 +69,21 @@ struct Cellule3 {
         f1 = k[ j == 2 ? 1 : 2 ];
     }
 
-    /// LE CUBE UNITE. Coupes `0:x=0 1:x=1 2:y=0 3:y=1 4:z=0 5:z=1`, identifiants `-1 .. -6`.
-    void init_cube() {
+    /// le sommet `i` en coordonnees ABSOLUES ( la somme en double : c'est tout l'interet )
+    TF x( int i ) const { return ox + TF( vx[ i ] ); }
+    TF y( int i ) const { return oy + TF( vy[ i ] ); }
+    TF z( int i ) const { return oz + TF( vz[ i ] ); }
+
+    /// LE CUBE UNITE, DANS LE REPERE DU GERME. Coupes `0:x=0 1:x=1 2:y=0 3:y=1 4:z=0 5:z=1`,
+    /// identifiants `-1 .. -6`. Les huit coins sont translates en double puis arrondis.
+    void init_cube( TF gx = 0, TF gy = 0, TF gz = 0 ) {
+        ox = gx; oy = gy; oz = gz;
         nc = 6;
         for ( int k = 0; k < 6; ++k ) cid[ k ] = -1 - k;
         nv = 8;
         for ( int b = 0; b < 8; ++b ) {
             const int i = b & 1, j = ( b >> 1 ) & 1, k = ( b >> 2 ) & 1;
-            vx[ b ] = TK( i ); vy[ b ] = TK( j ); vz[ b ] = TK( k );
+            vx[ b ] = TK( i - gx ); vy[ b ] = TK( j - gy ); vz[ b ] = TK( k - gz );
             vk0[ b ] = i;
             vk1[ b ] = 2 + j;
             vk2[ b ] = 4 + k;                            // deja croissant

@@ -24,9 +24,26 @@
 // Les plans ne sont pas gardes : l'ordre porte la connectivite, la geometrie est redondante.
 // `cid < 0` designe un cote du domaine ( `-1 .. -4` pour le carre unite ).
 //
+// = LE REPERE EST CELUI DU GERME, et c'est la seconde moitie de la reparation fp32
+//
+// `lx / ly` ne sont pas les coordonnees du sommet, ce sont ses coordonnees RELATIVES AU GERME.
+// La raison est la meme qu'au `cell/Plan.h` : le noyau evalue `s = d . v - off`, et en absolu
+// `d . v` vaut `h` pour un `s` qui vaut `h^2` -- une annulation de `log( 1 / h )` chiffres a
+// chaque coupe, donc un plancher `eps |p| / h = eps n^( 1/D )` sur TOUT ce qui sort. Dans le
+// repere du germe, `v` vaut `h` et les deux membres valent `h^2` : plus d'annulation, et le
+// plancher tombe a `eps`.
+//
+// Ce que ca donne aussi, gratuitement : l'elagage n'a plus de `p0` a soustraire ( il est a
+// l'origine ), et l'aire par la formule du lacet cesse d'etre une difference de termes d'ordre 1.
+//
+// `ox / oy` sont en DOUBLE et l'accesseur `x( i )` fait la somme en double : c'est le seul
+// endroit ou l'on revient a l'absolu, et il vaut mieux qu'il soit explicite -- un consommateur
+// qui lit `lx` croyant lire `x` se trompe de toute la position du germe.
+//
 // `TK` est le flottant du noyau : `float` ou `double`.
 // =====================================================================================
 
+#include "util/common.h"
 #include <cstdint>
 
 namespace sf::d2 {
@@ -66,8 +83,14 @@ struct Atelier {
 
     int  nb;                    ///< SORTIE : nb de sommets, 0 = vide, -1 = atelier trop petit
     Plan2<TK> attente;          ///< la coupe qui a fait deborder, PAS encore appliquee
-    alignas( 64 ) TK   vx[ MaxNb ], vy[ MaxNb ];
+    TF   ox = 0, oy = 0;        ///< L'ORIGINE DU REPERE : le germe ( voir l'en-tete )
+    alignas( 64 ) TK   lx[ MaxNb ], ly[ MaxNb ];   ///< les sommets, RELATIFS AU GERME
     alignas( 64 ) SI32 cid[ MaxNb ];
+
+    /// le sommet `i` en coordonnees ABSOLUES. La somme est en double, et c'est le point : `lx`
+    /// porte `h` avec une erreur relative `eps`, donc l'absolu sort a `eps h` et non `eps |p|`.
+    TF x( int i ) const { return ox + TF( lx[ i ] ); }
+    TF y( int i ) const { return oy + TF( ly[ i ] ); }
 };
 
 /// LA COUPE SCALAIRE, EN PLACE -- celle de l'excursion. Rend le nouveau nombre de sommets : `nb`

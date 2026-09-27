@@ -101,15 +101,15 @@ struct Densite {
         if ( nb <= 0 ) { if ( dl ) *dl = 0; return 0; }
 
         TF a2 = 0;                                       // l'aire signee, deux fois : l'orientation
-        for ( int i = 0, j = nb - 1; i < nb; j = i++ )
-            a2 += TF( cel.vx[ j ] ) * TF( cel.vy[ i ] ) - TF( cel.vx[ i ] ) * TF( cel.vy[ j ] );
+        for ( int i = 0, j = nb - 1; i < nb; j = i++ )   // en LOCAL : invariante, et sans annulation
+            a2 += TF( cel.lx[ j ] ) * TF( cel.ly[ i ] ) - TF( cel.lx[ i ] ) * TF( cel.ly[ j ] );
         const TF sgn = a2 >= 0 ? 1 : -1;
         const TF aire = TF( 0.5 ) * std::fabs( a2 ), pl = plancher_eff();
 
         TF gauss = 0, dm = 0;                            // `gauss` : sum_k m_k circ_k, AVANT melange
         for ( int i = 0, j = nb - 1; i < nb; j = i++ ) {  // l'arete [ v_j, v_i ], portee par `cid[ j ]`
-            const TF xj = TF( cel.vx[ j ] ), yj = TF( cel.vy[ j ] );
-            const TF ex = TF( cel.vx[ i ] ) - xj, ey = TF( cel.vy[ i ] ) - yj;
+            const TF xj = cel.x( j ), yj = cel.y( j );   // ABSOLU : les centres des gaussiennes le sont
+            const TF ex = TF( cel.lx[ i ] ) - TF( cel.lx[ j ] ), ey = TF( cel.ly[ i ] ) - TF( cel.ly[ j ] );
             const TF L = std::sqrt( ex * ex + ey * ey );
             if ( ! ( L > 0 ) ) continue;
             const TF ux = ex / L, uy = ey / L;           // la tangente, et la normale SORTANTE

@@ -11,22 +11,9 @@
 #include "accel/AaBsp.h"
 #include "cell/Contrat3D.h"
 #include "cell/Elagage3D.h"
+#include "cell/Plan.h"
 
 namespace sf::d3 {
-
-/// LE PLAN BISSECTEUR de `[ p0, pj ]`, oriente pour que `p0` soit DEDANS :
-///     |x - p0|^2 - w0 <= |x - pj|^2 - wj   <=>   d . x <= off ,
-///     d = pj - p0 ,  off = d . ( pj + p0 ) / 2 + ( w0 - wj ) / 2
-/// La forme `d . ( pj + p0 ) / 2` annule les termes dominants quand les deux germes sont proches.
-template<bool POIDS, class TK>
-inline void bissect3( TK xj, TK yj, TK zj, TK wj, TK x0, TK y0, TK z0, TK w0, SI32 id, Plan3<TK> &p ) {
-    p.dx = xj - x0;
-    p.dy = yj - y0;
-    p.dz = zj - z0;
-    p.off = TK( 0.5 ) * ( p.dx * ( xj + x0 ) + p.dy * ( yj + y0 ) + p.dz * ( zj + z0 ) );
-    if constexpr ( POIDS ) p.off += TK( 0.5 ) * ( w0 - wj );
-    p.id = id;
-}
 
 /// `MEMO` : LA MEMOIRE ( `main_memo.cpp`, la borne superieure de `--memo` en 3D ), sous deux formes.
 ///   A. `pre[ 0 .. npre )` : les RANGS des voisins de la cellule finale, connus d'une passe
@@ -64,7 +51,9 @@ struct FournisseurBsp3 {
     };
 
     const Arbre *arbre;
-    TK   x0, y0, z0, w0;
+    /// LE GERME COURANT EN DOUBLE : les plans se calculent depuis les donnees ( `cell/Plan.h` ).
+    TF   x0d, y0d, z0d, w0d;
+    TK   x0, y0, z0;                                     ///< les memes, pour le test d'elagage
     SI32 i0;
     const SI32          *pre = nullptr;                  ///< MEMO A : les rangs a proposer d'abord
     int                  npre = 0;
@@ -84,18 +73,25 @@ struct FournisseurBsp3 {
         return lo;
     }
 
-    FournisseurBsp3( const Arbre *arbre, TK x0, TK y0, TK z0, TK w0, SI32 i0 )
-        : arbre( arbre ), x0( x0 ), y0( y0 ), z0( z0 ), w0( w0 ), i0( i0 ) {}
+    FournisseurBsp3( const Arbre *arbre, TF x0, TF y0, TF z0, TF w0, SI32 i0 )
+        : arbre( arbre ), x0d( x0 ), y0d( y0 ), z0d( z0 ), w0d( w0 ),
+          x0( TK( x0 ) ), y0( TK( y0 ) ), z0( TK( z0 ) ), i0( i0 ) {}
 
+    /// LE REPERE DE LA CELLULE : le germe ( `cell/Contrat2D.h` )
+    void origine( TF &x, TF &y, TF &z ) const { x = x0d; y = y0d; z = z0d; }
+
+    /// boite et majorant TRANSLATES ICI, une fois par noeud ( cf. `FournisseurBsp2D.h` )
     template<class Etat>
     bool peut_couper( const typename Arbre::Node &nd, const Etat &e ) const {
         Boite3<TK> B;
-        for ( int d = 0; d < 3; ++d ) { B.lo[ d ] = TK( nd.lo[ d ] ); B.hi[ d ] = TK( nd.hi[ d ] ); }
+        const TF o[ 3 ] = { x0d, y0d, z0d };
+        for ( int d = 0; d < 3; ++d ) { B.lo[ d ] = TK( nd.lo[ d ] - o[ d ] ); B.hi[ d ] = TK( nd.hi[ d ] - o[ d ] ); }
         if constexpr ( POIDS ) {
-            for ( int d = 0; d < 3; ++d ) B.a[ d ] = TK( nd.wm.a[ d ] );
-            B.b = TK( nd.wm.b );
+            double ap = 0;
+            for ( int d = 0; d < 3; ++d ) { B.a[ d ] = TK( nd.wm.a[ d ] ); ap += double( nd.wm.a[ d ] ) * o[ d ]; }
+            B.cb = TK( w0d - nd.wm.b - ap );
         }
-        return peut_couper_boite3<POIDS,W>( e, x0, y0, z0, w0, B );
+        return peut_couper_boite3<POIDS,W>( e, B );
     }
 
     TK proximite( int n ) const {
@@ -121,9 +117,9 @@ struct FournisseurBsp3 {
             if ( l.ipre < npre ) {                       // A. par rang
                 const int k = pre[ l.ipre++ ];
                 ++l.nb_prop;
-                bissect3<POIDS>( TK( arbre->seed_c( k, 0 ) ), TK( arbre->seed_c( k, 1 ) ),
-                                 TK( arbre->seed_c( k, 2 ) ), POIDS ? TK( arbre->seed_w( k ) ) : TK( 0 ),
-                                 x0, y0, z0, w0, SI32( arbre->order[ k ] ), p );
+                bissect3<POIDS>( p, x0d, y0d, z0d, w0d,
+                                 arbre->seed_c( k, 0 ), arbre->seed_c( k, 1 ), arbre->seed_c( k, 2 ),
+                                 arbre->seed_w( k ), SI32( arbre->order[ k ] ) );
                 return true;
             }
             while ( l.fa < nf ) {                        // B. par feuille, les bits a 1
@@ -133,9 +129,9 @@ struct FournisseurBsp3 {
                 l.bits &= l.bits - 1;
                 const int k = fbeg[ l.fa ] + b;
                 ++l.nb_prop;
-                bissect3<POIDS>( TK( arbre->seed_c( k, 0 ) ), TK( arbre->seed_c( k, 1 ) ),
-                                 TK( arbre->seed_c( k, 2 ) ), POIDS ? TK( arbre->seed_w( k ) ) : TK( 0 ),
-                                 x0, y0, z0, w0, SI32( arbre->order[ k ] ), p );
+                bissect3<POIDS>( p, x0d, y0d, z0d, w0d,
+                                 arbre->seed_c( k, 0 ), arbre->seed_c( k, 1 ), arbre->seed_c( k, 2 ),
+                                 arbre->seed_w( k ), SI32( arbre->order[ k ] ) );
                 return true;
             }
             if ( ! parcours ) return false;
@@ -151,9 +147,9 @@ struct FournisseurBsp3 {
                     if ( ( l.saut >> ( k - l.kbeg ) ) & 1 ) continue;
                     ++l.nb_prop;
                 }
-                bissect3<POIDS>( TK( arbre->seed_c( k, 0 ) ), TK( arbre->seed_c( k, 1 ) ),
-                                 TK( arbre->seed_c( k, 2 ) ), POIDS ? TK( arbre->seed_w( k ) ) : TK( 0 ),
-                                 x0, y0, z0, w0, id, p );
+                bissect3<POIDS>( p, x0d, y0d, z0d, w0d,
+                                 arbre->seed_c( k, 0 ), arbre->seed_c( k, 1 ), arbre->seed_c( k, 2 ),
+                                 arbre->seed_w( k ), id );
                 return true;
             }
 

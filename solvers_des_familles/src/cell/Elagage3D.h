@@ -17,20 +17,21 @@ namespace sf::d3 {
 template<class TK>
 struct Boite3 {
     TK lo[ 3 ], hi[ 3 ];
-    TK a[ 3 ] = { 0, 0, 0 }, b = 0;                      ///< `w( q ) <= a . q + b`
+    TK a[ 3 ] = { 0, 0, 0 };                             ///< `w( q ) <= a . q + b`
+    TK cb = 0;                                           ///< `w0 - b`, CALCULE EN DOUBLE ( cf. `Elagage2D.h` )
 };
 
 /// `e` : `nb` sommets dans trois tableaux ALIGNES. Rend `true` s'il faut descendre dans la boite.
 template<bool POIDS, int W = 8, class TK, class Etat>
-inline bool peut_couper_boite3( const Etat &e, TK x0, TK y0, TK z0, TK w0, const Boite3<TK> &B ) {
+inline bool peut_couper_boite3( const Etat &e, const Boite3<TK> &B ) {
     using V = asimd::SimdVec<TK,W>;
 
     const V l0( B.lo[0] ), h0( B.hi[0] ), l1( B.lo[1] ), h1( B.hi[1] ), l2( B.lo[2] ), h2( B.hi[2] );
-    const V q0( x0 ), q1( y0 ), q2( z0 ), zero( TK( 0 ) );
+    const V zero( TK( 0 ) );                             // `p0` est a l'ORIGINE : repere du germe
     const V a0( POIDS ? B.a[0] : TK( 0 ) ), a1( POIDS ? B.a[1] : TK( 0 ) ), a2( POIDS ? B.a[2] : TK( 0 ) );
     const V m0( POIDS ? TK( 0.5 ) * B.a[0] : TK( 0 ) ), m1( POIDS ? TK( 0.5 ) * B.a[1] : TK( 0 ) ),
             m2( POIDS ? TK( 0.5 ) * B.a[2] : TK( 0 ) );
-    const V cb( POIDS ? w0 - B.b : TK( 0 ) );
+    const V cb( POIDS ? B.cb : TK( 0 ) );
 
     // `s = min_q ( |v - q|^2 - a . q ) - |v - p0|^2 - b + w0`, par axe, pour `W` sommets.
     auto bilan = [ & ]( const V &vx, const V &vy, const V &vz ) {
@@ -41,7 +42,7 @@ inline bool peut_couper_boite3( const Etat &e, TK x0, TK y0, TK z0, TK w0, const
         y2v = asimd::min( asimd::max( y2v, l2 ), h2 );
 
         const V g0 = y0v - vx, g1 = y1v - vy, g2 = y2v - vz;
-        const V f0 = vx - q0,  f1 = vy - q1,  f2 = vz - q2;
+        const V f0 = vx,       f1 = vy,       f2 = vz;
         V s = asimd::fma( g0, g0, asimd::fma( g1, g1, g2 * g2 ) )
             - asimd::fma( f0, f0, asimd::fma( f1, f1, f2 * f2 ) );
         if constexpr ( POIDS )

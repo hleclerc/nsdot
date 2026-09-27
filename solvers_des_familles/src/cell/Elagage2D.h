@@ -6,6 +6,11 @@
 //     un germe `q` de la boite `B`, de poids majore par `w( q ) <= a . q + b`, peut-il encore
 //     retrancher quelque chose a la cellule de `p0` ?
 //
+// TOUT EST DANS LE REPERE DU GERME ( `cell/Contrat2D.h` ), donc `p0` est a l'ORIGINE : le terme
+// `|v - p0|^2` devient `|v|^2` et les deux soustractions par sommet disparaissent. C'est le
+// fournisseur qui translate la boite et le majorant, une fois par noeud au lieu d'une fois par
+// sommet.
+//
 // Si `q` coupe la cellule, il en retranche au moins un SOMMET `v`, qui verifie alors
 // `|v - q|^2 - w( q ) < |v - p0|^2 - w0`. On rejette donc `B` des que TOUS les sommets ont
 //
@@ -29,18 +34,23 @@
 namespace sf::d2 {
 
 /// une boite de germes et le majorant affine de leurs poids, dans le flottant du noyau.
+///
+/// `cb` PORTE LA DIFFERENCE `w0 - b`, PAS `b`, et pour la meme raison que le plan bissecteur
+/// ( `cell/Plan.h` ) : les deux sont d'ordre `|w|` alors que leur difference decide a l'ordre
+/// `h^2`. Le fournisseur la calcule en double et n'arrondit qu'elle.
 template<class TK>
 struct Boite2 {
     TK lo[ 2 ], hi[ 2 ];
-    TK a[ 2 ] = { 0, 0 }, b = 0;                         ///< `w( q ) <= a . q + b`
+    TK a[ 2 ] = { 0, 0 };                                ///< `w( q ) <= a . q + b`
+    TK cb = 0;                                           ///< `w0 - b`, CALCULE EN DOUBLE
 };
 
 /// `POIDS` : Laguerre ( les termes en `a` et `b` ) ou Voronoi ( ils disparaissent a la compilation ).
 template<bool POIDS, class TK, class Etat>
-inline bool peut_couper_boite( const Etat &e, TK x0, TK y0, TK w0, const Boite2<TK> &B ) {
+inline bool peut_couper_boite( const Etat &e, const Boite2<TK> &B ) {
     const TK a0 = POIDS ? B.a[ 0 ] : TK( 0 );
     const TK a1 = POIDS ? B.a[ 1 ] : TK( 0 );
-    const TK cb = POIDS ? w0 - B.b : TK( 0 );
+    const TK cb = POIDS ? B.cb : TK( 0 );
 
     if constexpr ( requires { e.vx + e.vx; } ) {         // registres
         using V = std::decay_t<decltype( e.vx )>;
@@ -53,8 +63,8 @@ inline bool peut_couper_boite( const Etat &e, TK x0, TK y0, TK w0, const Boite2<
         y0v = asimd::min( asimd::max( y0v, V( B.lo[ 0 ] ) ), V( B.hi[ 0 ] ) );
         y1v = asimd::min( asimd::max( y1v, V( B.lo[ 1 ] ) ), V( B.hi[ 1 ] ) );
 
-        const V g0 = y0v - e.vx, f0 = e.vx - V( x0 );
-        const V g1 = y1v - e.vy, f1 = e.vy - V( y0 );
+        const V g0 = y0v - e.vx, f0 = e.vx;          // `p0` est a l'origine
+        const V g1 = y1v - e.vy, f1 = e.vy;
         V s = asimd::fma( g0, g0, g1 * g1 ) - asimd::fma( f0, f0, f1 * f1 );
         if constexpr ( POIDS )
             s = V( cb ) - asimd::fma( V( a0 ), y0v, V( a1 ) * y1v ) + s;
@@ -62,14 +72,13 @@ inline bool peut_couper_boite( const Etat &e, TK x0, TK y0, TK w0, const Boite2<
                  & ( ( 1u << Etat::nb ) - 1 ) ) != 0;
     } else {                                             // excursion : la cellule est en memoire
         const TK a[ 2 ] = { a0, a1 };
-        const TK p0[ 2 ] = { x0, y0 };
         for ( int i = 0; i < e.nb; ++i ) {
             const TK v[ 2 ] = { e.vx[ i ], e.vy[ i ] };
             TK s = POIDS ? cb : TK( 0 );
             for ( int d = 0; d < 2; ++d ) {
                 TK y = v[ d ] + ( POIDS ? TK( 0.5 ) * a[ d ] : TK( 0 ) );
                 y = y < B.lo[ d ] ? B.lo[ d ] : ( y > B.hi[ d ] ? B.hi[ d ] : y );
-                const TK u = y - v[ d ], f = v[ d ] - p0[ d ];
+                const TK u = y - v[ d ], f = v[ d ];
                 s += u * u - f * f;
                 if constexpr ( POIDS ) s -= a[ d ] * y;
             }

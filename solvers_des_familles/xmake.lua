@@ -10,12 +10,14 @@
 --   xmake run multiechelle --help    resoudre sur des representants, prolonger, resoudre en dessous
 --   xmake run densite --help         une somme de gaussiennes pour densite, la continuation en largeur
 --   xmake run image --help           une IMAGE pour densite, integree SUR LE BORD ( jamais de decoupage )
+--   xmake run fp32 --help            ce que la SIMPLE PRECISION coute a la geometrie, mesure
 --   xmake run memo                   la memoire en 3D : les voisins d'hier proposes d'abord, borne superieure
 --
 -- OU EST QUOI :
 --   src/util/      les types, l'horloge, les fils
 --   src/accel/     le BSP et le majorant affine des poids
---   src/cell/      L'ENGIN : la cellule qui dirige, 2D ( registres ) et 3D ( sommets ), les
+--   src/cell/      L'ENGIN : le PLAN bissecteur ( `Plan.h`, le seul endroit ou il se construit ),
+--                  la cellule qui dirige, 2D ( registres ) et 3D ( sommets ), les
 --                  fournisseurs BSP avec elagage, le balayage temoin -- a priori on n'y touche pas
 --   src/diagram/   `PowerDiagram<D,TK,MaxNv>` : ce que le solveur voit
 --   src/solver/    le laplacien de Laguerre, les solveurs lineaires, Newton amorti
@@ -49,12 +51,13 @@ local function reglages()
     set_warnings( "all" )
     if is_mode( "release" ) then
         -- `-march=native` est ASSUME : ces binaires ne quittent pas la machine.
-        -- PAS DE `-g` ICI, ET C'EST MESURE. Sur `main_image.cpp` -- une unite de traduction de
-        -- quatre mille lignes, templatee sur trois axes -- `-g` fait passer `cc1plus` de 3 a 7 Go
-        -- et la compilation de six a douze minutes ; le plafond memoire de `job` ( 8 Go pour un
-        -- travail generique ) le fait tuer une fois sur deux. `set_strip( "none" )` garde la table
-        -- des symboles, ce qui suffit a `perf` pour nommer les fonctions -- seules les LIGNES
-        -- manquent, et les chronos internes par poste les remplacent avantageusement.
+        -- PAS DE `-g` ICI, ET C'ETAIT MESURE. Sur `main_image.cpp`, `-g` faisait passer `cc1plus`
+        -- de 3 a 7 Go et la compilation de six a douze minutes ; le plafond memoire de `job`
+        -- ( 8 Go ) le tuait une fois sur deux. `set_strip( "none" )` garde la table des symboles,
+        -- ce qui suffit a `perf` pour nommer les fonctions -- seules les LIGNES manquent, et les
+        -- chronos internes par poste les remplacent avantageusement.
+        -- DEPUIS LE § 18 le pic est tombe a 1.1 Go et la compilation a 56 s : `-g` redeviendrait
+        -- tenable si on voulait les numeros de ligne. A remesurer avant d'y toucher.
         add_cxflags( "-O3", "-march=native", "-fno-math-errno", { force = true } )
         add_defines( "NDEBUG" )
     end
@@ -67,7 +70,7 @@ local function reglages()
     add_syslinks( "pthread" )
 end
 
-for _, nom in ipairs( { "check", "diagramme", "newton", "ecrasement", "glissement", "homotopie", "multiechelle", "densite", "image", "memo" } ) do
+for _, nom in ipairs( { "check", "diagramme", "newton", "ecrasement", "glissement", "homotopie", "multiechelle", "densite", "image", "memo", "fp32" } ) do
     target( nom )
         set_kind( "binary" )
         add_files( "src/mains/main_" .. nom .. ".cpp" )

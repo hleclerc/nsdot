@@ -50,8 +50,9 @@ void barycentres( const PD &pd, const Parallel &par, std::vector<TF> cx[ 2 ] ) {
         const SI i = pd.ids[ k ];
         TF a = 0, sx = 0, sy = 0;
         for ( int j = 0, l = cel.nb - 1; j < cel.nb; l = j++ ) {
-            const TF cr = TF( cel.vx[ l ] ) * TF( cel.vy[ j ] ) - TF( cel.vx[ j ] ) * TF( cel.vy[ l ] );
-            a += cr; sx += ( TF( cel.vx[ l ] ) + TF( cel.vx[ j ] ) ) * cr; sy += ( TF( cel.vy[ l ] ) + TF( cel.vy[ j ] ) ) * cr;
+            const TF xl = cel.x( l ), yl = cel.y( l ), xj = cel.x( j ), yj = cel.y( j );
+            const TF cr = xl * yj - xj * yl;
+            a += cr; sx += ( xl + xj ) * cr; sy += ( yl + yj ) * cr;
         }
         if ( a != 0 ) { cx[ 0 ][ i ] = sx / ( 3 * a ); cx[ 1 ][ i ] = sy / ( 3 * a ); }
     } );
@@ -69,9 +70,9 @@ void da_dp( const PD &pd, const TF *const *X, const std::vector<TF> dp[ 2 ], con
         for ( int j = 0, l = cel.nb - 1; j < cel.nb; l = j++ ) {  // l'arete [ v_l, v_j ] portee par cid[ l ]
             const SI id = cel.cid[ l ];
             if ( id < 0 ) continue;
-            const TF ex = TF( cel.vx[ j ] ) - TF( cel.vx[ l ] ), ey = TF( cel.vy[ j ] ) - TF( cel.vy[ l ] );
+            const TF ex = TF( cel.lx[ j ] ) - TF( cel.lx[ l ] ), ey = TF( cel.ly[ j ] ) - TF( cel.ly[ l ] );
             const TF lg = std::sqrt( ex * ex + ey * ey );
-            const TF mx = TF( 0.5 ) * ( TF( cel.vx[ j ] ) + TF( cel.vx[ l ] ) ), my = TF( 0.5 ) * ( TF( cel.vy[ j ] ) + TF( cel.vy[ l ] ) );
+            const TF mx = TF( 0.5 ) * ( cel.x( j ) + cel.x( l ) ), my = TF( 0.5 ) * ( cel.y( j ) + cel.y( l ) );
             const TF nx = X[ 0 ][ id ] - X[ 0 ][ i ], ny = X[ 1 ][ id ] - X[ 1 ][ i ];
             const TF nn = std::sqrt( nx * nx + ny * ny );
             if ( ! ( nn > 0 ) ) continue;

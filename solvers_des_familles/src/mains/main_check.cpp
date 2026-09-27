@@ -56,16 +56,20 @@ std::vector<int> voisins( const Cel &cel ) {
 template<class PD, bool POIDS>
 bool balaye( const PD &pd, SI k, int sens, Temoin<PD> &cel ) {
     using TK = typename PD::TKernel;
-    const TK w0 = POIDS ? pd.w[ k ] : TK( 0 );
+    // LES GERMES DE L'ARBRE, EN DOUBLE, et pas la copie en `TK` : le temoin construit ses plans
+    // par le meme `bissect2` / `bissect3` que le fournisseur, donc il doit recevoir les memes
+    // entrees. Le nourrir en `TK` le rendrait moins precis que ce qu'il teste ( `cell/Plan.h` ).
+    const auto &A = pd.arbre;
+    const TF w0 = POIDS ? A.seed_w( k ) : TF( 0 );
     if constexpr ( PD::dim == 2 ) {
-        Balayage2<TK,POIDS> f{ pd.c[ 0 ].data(), pd.c[ 1 ].data(), pd.w.data(), pd.ids.data(),
-                               int( pd.n ), 0, sens, pd.c[ 0 ][ k ], pd.c[ 1 ][ k ], w0, pd.ids[ k ] };
+        Balayage2<TK,POIDS> f{ A.p[ 0 ].data(), A.p[ 1 ].data(), A.pw.data(), pd.ids.data(),
+                               int( pd.n ), 0, sens, A.seed_c( k, 0 ), A.seed_c( k, 1 ), w0, pd.ids[ k ] };
         d2::moteur<TK>( &f, &cel );
         return cel.nb >= 0;
     } else {
-        Balayage3<TK,POIDS> f{ pd.c[ 0 ].data(), pd.c[ 1 ].data(), pd.c[ 2 ].data(), pd.w.data(),
+        Balayage3<TK,POIDS> f{ A.p[ 0 ].data(), A.p[ 1 ].data(), A.p[ 2 ].data(), A.pw.data(),
                                pd.ids.data(), int( pd.n ), 0, sens,
-                               pd.c[ 0 ][ k ], pd.c[ 1 ][ k ], pd.c[ 2 ][ k ], w0, pd.ids[ k ] };
+                               A.seed_c( k, 0 ), A.seed_c( k, 1 ), A.seed_c( k, 2 ), w0, pd.ids[ k ] };
         return d3::moteur( &f, &cel ) == 0;
     }
 }

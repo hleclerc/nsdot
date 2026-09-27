@@ -55,11 +55,24 @@
 // vite ( README § 12.6 ), parce qu'il ne deplace la densite que la ou elle est rugueuse au lieu de
 // la changer partout a chaque etape.
 //
-// = `TA`, LE FLOTTANT DE LA MESURE
+// = DEUX FLOTTANTS, ET C'EST LE RESULTAT DE L'ETUDE ( README § 19 )
 //
-// Tout le calcul de la marche se fait en `TA` ( les sommes prefixes comprises ). Le defaut est
-// `double` ; `ImageT<float>` existe pour pouvoir MESURER ce que la simple precision coute --
-// c'est la question ouverte du banc, et c'est sur le CPU qu'elle s'instrumente.
+//   `TA` LE STOCKAGE : l'image `v`, c'est-a-dire `W x H` valeurs. C'est LE gros tableau, celui
+//        dont la bande passante decide sur une carte, et il peut etre en `float` sans dommage --
+//        une densite de pixel est une donnee, pas une difference.
+//   `TW` LE CALCUL : la marche, les sommes prefixes, les accumulations. Il doit rester en
+//        `double`, et pour la meme raison que les poids du diagramme ( `cell/Plan.h` ) : les
+//        quantites y sont d'ordre 1 alors que ce qu'on en tire est d'ordre `h`.
+//
+// Le coupable precis est `S[ j ][ i ] - sref`. La somme prefixe court de 0 a ~1 sur une ligne ;
+// la difference entre deux pixels d'UNE MEME CELLULE vaut `h rho`. En `float` on perd donc
+// `log( 1 / h )` chiffres -- et `sref` n'y change rien, il est deja la : il ramene le terme de
+// `1` a `h`, mais l'erreur, elle, a ete faite au STOCKAGE. Le second est
+// `( xp + xc ) / 2 - i hx`, deux nombres d'ordre 1 pour une difference d'ordre `hx`.
+//
+// Mesure ( image 512^2, n = 2e4 ) : tout en `float` donne 1.1e-6 median et 1.5e-1 au pire sur une
+// facette ; le stockage seul en `float`, avec la marche en double, rend 2e-8 median.
+// `ImageT<float,float>` garde l'ancien comportement pour pouvoir le remesurer.
 //
 // 2D seulement.
 // =====================================================================================
@@ -74,28 +87,32 @@
 
 namespace sf {
 
-template<class TA = double>
+template<class TA = double, class TW = TF>
 struct ImageT {
+    using Stock = TA;             ///< le flottant du STOCKAGE ( `v` )
+    using Calc  = TW;             ///< le flottant du CALCUL ( la marche, les sommes prefixes )
+
     int W = 0, H = 0;
     std::vector<TA> v;            ///< la densite du pixel, `v[ j * W + i ]`, `j = 0` en bas
-    std::vector<TA> s;            ///< la somme prefixe de la ligne, `hx` compris ( `prepare()` )
-    TA  t = 1;                    ///< le contraste : `rho_t = ( 1 - t ) + t rho`
-    TA  hx = 0, hy = 0, ihx = 0, ihy = 0;
+    std::vector<TW> s;            ///< la somme prefixe de la ligne, `hx` compris ( `prepare()` )
+    TW  t = 1;                    ///< le contraste : `rho_t = ( 1 - t ) + t rho`
+    TW  hx = 0, hy = 0, ihx = 0, ihy = 0;
 
     static constexpr int borne( int i, int n ) { return i < 0 ? 0 : ( i >= n ? n - 1 : i ); }
-    int col( TA x ) const { return borne( int( x * ihx ), W ); }
-    int lig( TA y ) const { return borne( int( y * ihy ), H ); }
-    TA  pixel( int i, int j ) const { return v[ size_t( j ) * W + i ]; }
+    int col( TW x ) const { return borne( int( x * ihx ), W ); }
+    int lig( TW y ) const { return borne( int( y * ihy ), H ); }
+    TW  pixel( int i, int j ) const { return TW( v[ size_t( j ) * W + i ] ); }
 
-    /// les pas, les sommes prefixes. LES SOMMES SONT FAITES EN `double` puis arrondies a `TA` :
-    /// c'est une table, pas un calcul de cellule -- la question de la precision porte sur la marche.
+    /// les pas, les sommes prefixes. LA SOMME COURANTE EST EN `double` DANS TOUS LES CAS -- elle
+    /// parcourt toute la ligne, donc son erreur relative s'accumule sur `W` termes -- et elle est
+    /// RANGEE en `TW` : voir l'en-tete, c'est le stockage qui decidait.
     void prepare() {
-        hx = TA( 1 ) / W; hy = TA( 1 ) / H;
-        ihx = TA( W ); ihy = TA( H );
-        s.assign( v.size(), TA( 0 ) );
+        hx = TW( 1 ) / W; hy = TW( 1 ) / H;
+        ihx = TW( W ); ihy = TW( H );
+        s.assign( v.size(), TW( 0 ) );
         for ( int j = 0; j < H; ++j ) {
             double a = 0;
-            for ( int i = 0; i < W; ++i ) { s[ size_t( j ) * W + i ] = TA( a ); a += double( v[ size_t( j ) * W + i ] ) / W; }
+            for ( int i = 0; i < W; ++i ) { s[ size_t( j ) * W + i ] = TW( a ); a += double( v[ size_t( j ) * W + i ] ) / W; }
         }
     }
 
@@ -112,7 +129,7 @@ struct ImageT {
 
     // ------------------------------------------------------------------ ce que le solveur demande
     /// la densite en un point ( le contraste compris )
-    TF rho( TF x, TF y ) const { return TF( 1 - t ) + TF( t ) * TF( pixel( col( TA( x ) ), lig( TA( y ) ) ) ); }
+    TF rho( TF x, TF y ) const { return TF( 1 - t ) + TF( t ) * TF( pixel( col( TW( x ) ), lig( TW( y ) ) ) ); }
 
     /// la masse sur le carre unite : `1` a l'arrondi de la normalisation pres, pour tout `t`
     TF masse_carre() const {
@@ -139,27 +156,29 @@ struct ImageT {
         const int nb = cel.nb;
         if ( nb <= 0 ) { if ( dl ) *dl = 0; return 0; }
 
-        TA a2 = 0;                                       // l'aire signee, deux fois : l'ORIENTATION
-        for ( int i = 0, j = nb - 1; i < nb; j = i++ )
-            a2 += TA( cel.vx[ j ] ) * TA( cel.vy[ i ] ) - TA( cel.vx[ i ] ) * TA( cel.vy[ j ] );
-        const TA sgn = a2 >= 0 ? TA( 1 ) : TA( -1 );     // `+1` : le tour est direct, et alors la
-        const TA aire = TA( 0.5 ) * std::fabs( a2 );     // circulation rend `+ masse`
+        TW a2 = 0;                                       // l'aire signee, deux fois : l'ORIENTATION
+        for ( int i = 0, j = nb - 1; i < nb; j = i++ )   // en LOCAL : invariante, et sans annulation
+            a2 += TW( cel.lx[ j ] ) * TW( cel.ly[ i ] ) - TW( cel.lx[ i ] ) * TW( cel.ly[ j ] );
+        const TW sgn = a2 >= 0 ? TW( 1 ) : TW( -1 );     // `+1` : le tour est direct, et alors la
+        const TW aire = TW( 0.5 ) * std::fabs( a2 );     // circulation rend `+ masse`
 
-        // la reference retranchee a `G` : n'importe laquelle convient ( voir l'en-tete )
-        const TA sref = s[ size_t( lig( TA( cel.vy[ 0 ] ) ) ) * W + col( TA( cel.vx[ 0 ] ) ) ];
+        // LA MARCHE EST ABSOLUE -- c'est une grille de pixels, pas une forme. `cel.x( i )` fait
+        // la somme `origine + local` en double, donc le sommet arrive avec l'erreur `eps h` du
+        // repere local et non `eps |p|` ( `cell/Contrat2D.h` ).
+        const TW sref = s[ size_t( lig( TW( cel.y( 0 ) ) ) ) * W + col( TW( cel.x( 0 ) ) ) ];
 
-        TA acc = 0;                                      // `int_(bord) ( G - sref ) dy`, SIGNE
+        TW acc = 0;                                      // `int_(bord) ( G - sref ) dy`, SIGNE
         for ( int i = 0, j = nb - 1; i < nb; j = i++ ) { // l'arete [ v_j, v_i ], portee par `cid[ j ]`
-            TA mas = 0, lon = 0;
-            arete( TA( cel.vx[ j ] ), TA( cel.vy[ j ] ), TA( cel.vx[ i ] ), TA( cel.vy[ i ] ), sref, mas, lon );
+            TW mas = 0, lon = 0;
+            arete( TW( cel.x( j ) ), TW( cel.y( j ) ), TW( cel.x( i ) ), TW( cel.y( i ) ), sref, mas, lon );
             acc += mas;
             if ( cel.cid[ j ] >= 0 ) {
-                const TA dx = TA( cel.vx[ i ] ) - TA( cel.vx[ j ] ), dy = TA( cel.vy[ i ] ) - TA( cel.vy[ j ] );
-                const TA L = std::sqrt( dx * dx + dy * dy );
+                const TW dx = TW( cel.lx[ i ] ) - TW( cel.lx[ j ] ), dy = TW( cel.ly[ i ] ) - TW( cel.ly[ j ] );
+                const TW L = std::sqrt( dx * dx + dy * dy );
                 facette( cel.cid[ j ], TF( ( 1 - t ) * L + t * lon ) );
             }
         }
-        const TA masse_rho = sgn * acc;
+        const TW masse_rho = sgn * acc;
         if ( dl ) *dl = TF( masse_rho - aire );          // `d / d t` : `rho - 1`
         return TF( ( 1 - t ) * aire + t * masse_rho );
     }
@@ -169,34 +188,38 @@ struct ImageT {
     ///         de l'image nue ( signee : l'orientation est rendue par l'appelant ) ;
     ///   `lon` `int_arete rho ds`, c'est-a-dire LE COEFFICIENT DE HESSIENNE de l'image nue
     ///         ( `rho = 1` rend bien la longueur ).
-    void arete( TA x0, TA y0, TA x1, TA y1, TA sref, TA &mas, TA &lon ) const {
+    void arete( TW x0, TW y0, TW x1, TW y1, TW sref, TW &mas, TW &lon ) const {
         mas = 0; lon = 0;
-        const TA dx = x1 - x0, dy = y1 - y0;
-        const TA lg = std::sqrt( dx * dx + dy * dy );
+        const TW dx = x1 - x0, dy = y1 - y0;
+        const TW lg = std::sqrt( dx * dx + dy * dy );
         if ( ! ( lg > 0 ) ) return;
 
-        constexpr TA INF = std::numeric_limits<TA>::max();
+        constexpr TW INF = std::numeric_limits<TW>::max();
         int i = col( x0 ), j = lig( y0 );
         const int si = dx > 0 ? 1 : -1, sj = dy > 0 ? 1 : -1;
         // le `t` de la premiere frontiere verticale / horizontale, puis le pas entre deux frontieres
-        TA tx = dx == 0 ? INF : ( ( dx > 0 ? ( i + 1 ) * hx : i * hx ) - x0 ) / dx;
-        TA ty = dy == 0 ? INF : ( ( dy > 0 ? ( j + 1 ) * hy : j * hy ) - y0 ) / dy;
-        const TA ax = dx == 0 ? INF : std::fabs( hx / dx );
-        const TA ay = dy == 0 ? INF : std::fabs( hy / dy );
+        TW tx = dx == 0 ? INF : ( ( dx > 0 ? ( i + 1 ) * hx : i * hx ) - x0 ) / dx;
+        TW ty = dy == 0 ? INF : ( ( dy > 0 ? ( j + 1 ) * hy : j * hy ) - y0 ) / dy;
+        const TW ax = dx == 0 ? INF : std::fabs( hx / dx );
+        const TW ay = dy == 0 ? INF : std::fabs( hy / dy );
         tx = tx < 0 ? 0 : tx; ty = ty < 0 ? 0 : ty;      // depart pile sur une frontiere
 
-        TA tp = 0, xp = x0;
+        TW tp = 0, xp = x0;
         const int garde = W + H + 4;                     // un segment du carre n'en traverse pas plus
         for ( int g = 0; g < garde; ++g ) {
             const bool par_x = tx < ty;
-            TA tn = par_x ? tx : ty;
-            const bool der = ! ( tn < TA( 1 ) );
-            if ( der ) tn = TA( 1 );
-            const TA xc = x0 + dx * tn;
+            TW tn = par_x ? tx : ty;
+            const bool der = ! ( tn < TW( 1 ) );
+            if ( der ) tn = TW( 1 );
+            const TW xc = x0 + dx * tn;
             const size_t o = size_t( j ) * W + i;
-            const TA dt = tn - tp;
-            mas += dt * dy * ( s[ o ] - sref + v[ o ] * ( TA( 0.5 ) * ( xp + xc ) - i * hx ) );
-            lon += dt * lg * v[ o ];
+            const TW dt = tn - tp;
+            // `( xp + xc ) / 2 - i hx` : DEUX SOUSTRACTIONS et non une somme puis une soustraction.
+            // Les deux sommets sont d'ordre 1, leur ecart au bord du pixel d'ordre `hx` ; sous
+            // cette forme l'annulation a lieu terme a terme, au lieu de porter sur leur moyenne.
+            const TW bx = i * hx;
+            mas += dt * dy * ( s[ o ] - sref + TW( v[ o ] ) * TW( 0.5 ) * ( ( xp - bx ) + ( xc - bx ) ) );
+            lon += dt * lg * TW( v[ o ] );
             if ( der ) break;
             if ( par_x ) { i = borne( i + si, W ); tx += ax; } else { j = borne( j + sj, H ); ty += ay; }
             tp = tn; xp = xc;
@@ -247,8 +270,8 @@ inline void moyenne_glissante( const std::vector<double> &in, std::vector<double
 }
 
 /// `im.v <- brut * G_sigma`, renormalisee. `sigma` en fraction du cote du carre ; `0` rend `brut`.
-template<class TA>
-void convolue( const std::vector<double> &brut, ImageT<TA> &im, double sigma ) {
+template<class TA, class TW>
+void convolue( const std::vector<double> &brut, ImageT<TA,TW> &im, double sigma ) {
     const int W = im.W, H = im.H;
     const double sp = sigma * W;                         // l'ecart type, en pixels
     // `3 x boite( r )` a pour variance `r ( r + 1 ) / 2`
@@ -273,9 +296,9 @@ void convolue( const std::vector<double> &brut, ImageT<TA> &im, double sigma ) {
 /// un CARRE A ZERO. Les DISCONTINUITES et les zeros sont ce qui distingue une image d'une densite
 /// reguliere -- une methode qui les rate ne se voit pas sur un fond lisse. ( La meme que
 /// `gpu_des_familles`, plus le trou : sur le CPU on veut aussi voir ce qu'un zero fait au solveur. )
-template<class TA>
-ImageT<TA> image_synthese( int N, bool trou = true ) {
-    ImageT<TA> im;
+template<class TA, class TW = TF>
+ImageT<TA,TW> image_synthese( int N, bool trou = true ) {
+    ImageT<TA,TW> im;
     im.W = N; im.H = N;
     im.v.assign( size_t( N ) * N, TA( 0 ) );
     for ( int j = 0; j < N; ++j )
@@ -293,8 +316,8 @@ ImageT<TA> image_synthese( int N, bool trou = true ) {
 }
 
 /// un PGM ( P2 ascii ou P5 binaire ), la ligne du haut devenant `j = H - 1`
-template<class TA>
-bool lit_pgm( const char *chemin, ImageT<TA> &im ) {
+template<class TA, class TW>
+bool lit_pgm( const char *chemin, ImageT<TA,TW> &im ) {
     std::FILE *f = std::fopen( chemin, "rb" );
     if ( ! f ) return false;
     auto jeton = [ & ]( long &val ) {

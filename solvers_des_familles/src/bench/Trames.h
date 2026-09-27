@@ -52,7 +52,7 @@ struct Trames {
         for ( SI i = 0; i < n; ++i ) {
             std::fprintf( f, "%s[", i ? "," : "" );
             for ( int j = 0; j < cels[ i ].nb; ++j )
-                std::fprintf( f, "%s%.4f,%.4f", j ? "," : "", double( cels[ i ].vx[ j ] ), double( cels[ i ].vy[ j ] ) );
+                std::fprintf( f, "%s%.4f,%.4f", j ? "," : "", cels[ i ].x( j ), cels[ i ].y( j ) );
             std::fprintf( f, "]" );
         }
         std::fprintf( f, "]}\n" );

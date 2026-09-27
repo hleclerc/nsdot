@@ -19,9 +19,9 @@
 //              essai-limites` : la cellule pincee est relevee seule au lieu de raboter le pas
 //              global -- c'est ce qui manque au banc GPU ).
 //
-// Et partout `--acc float` : TOUTE la mesure ( marche, sommes prefixes, accumulations ) en simple
-// precision, pour lire ce que la fp32 coute. Croise avec `--kernel float` ( la geometrie ), ca
-// donne la chaine entiere en simple precision.
+// Et partout `--acc float` : L'IMAGE STOCKEE en simple precision -- le gros tableau, celui dont
+// la bande passante decide. La MARCHE, elle, reste en double, et le § 19 dit pourquoi : ses
+// quantites sont d'ordre 1 pour un resultat d'ordre `h`. `--check` mesure les deux separement.
 //
 //   xmake run image --check -n 20000 --image 512
 //   xmake run image --chrono -n 1000000 --image 512 --threads 8
@@ -265,7 +265,7 @@ double masse_pixels( const Im &im, const Cel &cel ) {
     const int nb = cel.nb;
     if ( nb < 3 ) return 0;
     double px[ NMX ], py[ NMX ];
-    for ( int q = 0; q < nb; ++q ) { px[ q ] = double( cel.vx[ q ] ); py[ q ] = double( cel.vy[ q ] ); }
+    for ( int q = 0; q < nb; ++q ) { px[ q ] = cel.x( q ); py[ q ] = cel.y( q ); }
     double x0 = px[ 0 ], x1 = px[ 0 ], y0 = py[ 0 ], y1 = py[ 0 ];
     for ( int i = 1; i < nb; ++i ) {
         x0 = std::min( x0, px[ i ] ); x1 = std::max( x1, px[ i ] );
@@ -375,8 +375,8 @@ void verifie( const PD &pd, const Nuage<2> &nu, const Im &im ) {
             const double tt = double( im.t );
             for ( int i = 0, j = cel.nb - 1; i < cel.nb; j = i++ ) {
                 if ( cel.cid[ j ] < 0 ) continue;
-                const double x0 = double( cel.vx[ j ] ), y0 = double( cel.vy[ j ] );
-                const double x1 = double( cel.vx[ i ] ), y1 = double( cel.vy[ i ] );
+                const double x0 = cel.x( j ), y0 = cel.y( j );
+                const double x1 = cel.x( i ), y1 = cel.y( i );
                 const double L = std::hypot( x1 - x0, y1 - y0 );
                 const double att = ( 1 - tt ) * L + tt * long_ponderee( im, x0, y0, x1, y1 );
                 if ( q < fv.size() && att > 0 ) ef.push_back( std::fabs( double( fv[ q ] ) - att ) / att );
@@ -429,8 +429,8 @@ void chrono( PD &pd, const Im &im, const Parallel &par, int reps ) {
                                          TF s = 0;                       // les facettes du decoupage : le temoin
                                          for ( int i = 0, j = cel.nb - 1; i < cel.nb; j = i++ )
                                              if ( cel.cid[ j ] >= 0 )
-                                                 fac( cel.cid[ j ], TF( long_ponderee( im, double( cel.vx[ j ] ), double( cel.vy[ j ] ),
-                                                                                           double( cel.vx[ i ] ), double( cel.vy[ i ] ) ) ) );
+                                                 fac( cel.cid[ j ], TF( long_ponderee( im, cel.x( j ), cel.y( j ),
+                                                                                           cel.x( i ), cel.y( i ) ) ) );
                                          s = TF( masse_pixels( im, cel ) );
                                          return s;
                                      } );
@@ -956,7 +956,7 @@ StatsAmas repare_amas( Newton<PD,Rho> &nw, const std::vector<TF> &w0, const std:
     struct Prep {
         std::vector<SI> ens, C;
         SI m = 0;
-        std::vector<TK> cx, cy;
+        std::vector<TF> cx, cy;
         std::vector<d2::SI32> cid;
     };
     std::vector<Prep> pr;
@@ -1025,8 +1025,8 @@ StatsAmas repare_amas( Newton<PD,Rho> &nw, const std::vector<TF> &w0, const std:
             const SI nc = SI( A.C.size() );
             A.cx.resize( nc ); A.cy.resize( nc ); A.cid.resize( nc );
             for ( SI q = 0; q < nc; ++q ) {
-                A.cx[ q ] = TK( nw.P[ 0 ][ A.C[ q ] ] );
-                A.cy[ q ] = TK( nw.P[ 1 ][ A.C[ q ] ] );
+                A.cx[ q ] = nw.P[ 0 ][ A.C[ q ] ];
+                A.cy[ q ] = nw.P[ 1 ][ A.C[ q ] ];
                 A.cid[ q ] = d2::SI32( A.C[ q ] );
             }
             st.nb_amas += 1;
@@ -1066,7 +1066,7 @@ StatsAmas repare_amas( Newton<PD,Rho> &nw, const std::vector<TF> &w0, const std:
 
     // ---- LE CHEMIN COMMUN : `s` de 0 a 1 ; a chaque sous-pas, chaque amas est re-resolu chez lui
     std::vector<TF> w( n );
-    std::vector<TK> cw;
+    std::vector<TF> cw;
     std::vector<TF> a_ref;                               ///< l'aire des cellules de `E` au pas pur
     std::vector<TF> a, dia, u, r, cc, t1, t2, rhs, d, pcg, Ap, zz, rr, jac, w_sauve;
     std::vector<SI> row, col;
@@ -1097,7 +1097,7 @@ StatsAmas repare_amas( Newton<PD,Rho> &nw, const std::vector<TF> &w0, const std:
         auto coupeur = [ & ]( SI id ) { return dans_C[ id ] != 0; };
         auto mesure = [ & ]( bool fac ) {
             const double t_dep = now();
-            for ( SI q = 0; q < nc; ++q ) cw[ q ] = TK( w[ A.C[ q ] ] );
+            for ( SI q = 0; q < nc; ++q ) cw[ q ] = w[ A.C[ q ] ];
             if ( fac ) { row.assign( M + 1, 0 ); col.clear(); cc.clear(); dia.assign( M, TF( 0 ) ); }
             // LA RECHERCHE LINEAIRE EN PARALLELE. Sans assemblage, la boucle n'ecrit QUE `a[ q ]` :
             // aucune dependance entre cellules, aucune structure partagee. C'est 76 % du temps de la
@@ -1111,7 +1111,7 @@ StatsAmas repare_amas( Newton<PD,Rho> &nw, const std::vector<TF> &w0, const std:
                     const SI id = A.ens[ q ];
                     typename PD::Cell cl;
                     Balayage2<TK,true> f{ A.cx.data(), A.cy.data(), cw.data(), A.cid.data(), int( nc ), 0, 1,
-                                          TK( nw.P[ 0 ][ id ] ), TK( nw.P[ 1 ][ id ] ), TK( w[ id ] ), d2::SI32( id ) };
+                                          nw.P[ 0 ][ id ], nw.P[ 1 ][ id ], w[ id ], d2::SI32( id ) };
                     d2::moteur<TK>( &f, &cl );
                     ++cel_loc;
                     a[ q ] = cl.nb < 0 ? TF( 0 ) : nw.rho->mesure( cl, []( int, TF ) {} );
@@ -1124,7 +1124,7 @@ StatsAmas repare_amas( Newton<PD,Rho> &nw, const std::vector<TF> &w0, const std:
             for ( SI q = 0; q < M; ++q ) {
                 const SI id = A.ens[ q ];
                 Balayage2<TK,true> f{ A.cx.data(), A.cy.data(), cw.data(), A.cid.data(), int( nc ), 0, 1,
-                                      TK( nw.P[ 0 ][ id ] ), TK( nw.P[ 1 ][ id ] ), TK( w[ id ] ), d2::SI32( id ) };
+                                      nw.P[ 0 ][ id ], nw.P[ 1 ][ id ], w[ id ], d2::SI32( id ) };
                 d2::moteur<TK>( &f, &cel );
                 ++st.nb_cel;
                 a[ q ] = 0;
@@ -1359,13 +1359,13 @@ StatsAmas repare_amas( Newton<PD,Rho> &nw, const std::vector<TF> &w0, const std:
     auto mesure_amas = [ & ]( const Prep &A, bool inconnues_seules = false ) {
         const SI M = inconnues_seules ? A.m : SI( A.ens.size() ), nc = SI( A.C.size() );
         cw.resize( nc );
-        for ( SI q = 0; q < nc; ++q ) cw[ q ] = TK( w[ A.C[ q ] ] );
+        for ( SI q = 0; q < nc; ++q ) cw[ q ] = w[ A.C[ q ] ];
         TF v = 1e300;
         typename PD::Cell cel;
         for ( SI q = 0; q < M; ++q ) {
             const SI id = A.ens[ q ];
             Balayage2<TK,true> f{ A.cx.data(), A.cy.data(), cw.data(), A.cid.data(), int( nc ), 0, 1,
-                                  TK( nw.P[ 0 ][ id ] ), TK( nw.P[ 1 ][ id ] ), TK( w[ id ] ), d2::SI32( id ) };
+                                  nw.P[ 0 ][ id ], nw.P[ 1 ][ id ], w[ id ], d2::SI32( id ) };
             d2::moteur<TK>( &f, &cel );
             ++st.nb_cel;
             const TF m = cel.nb < 0 ? TF( 0 ) : nw.rho->mesure( cel, []( int, TF ) {} );
@@ -1424,14 +1424,14 @@ StatsAmas repare_amas( Newton<PD,Rho> &nw, const std::vector<TF> &w0, const std:
         for ( SI q = 0; q < M; ++q ) {
             const SI id = A.ens[ q ];
             Balayage2<TK,true> f{ A.cx.data(), A.cy.data(), cw.data(), A.cid.data(), int( nc ), 0, 1,
-                                  TK( nw.P[ 0 ][ id ] ), TK( nw.P[ 1 ][ id ] ), TK( wv[ id ] ), d2::SI32( id ) };
+                                  nw.P[ 0 ][ id ], nw.P[ 1 ][ id ], wv[ id ], d2::SI32( id ) };
             d2::moteur<TK>( &f, &cel );
             ++st.nb_cel;
             if ( cel.nb <= 0 ) { if ( aa ) ( *aa )[ id ] = 0; continue; }
             if ( aa ) ( *aa )[ id ] = nw.rho->mesure( cel, []( int, TF ) {} );
             for ( int v = 0; v < cel.nb; ++v )
                 for ( int m = 0; m < KD; ++m ) {
-                    const TF pr_ = ux[ m ] * TF( cel.vx[ v ] ) + uy[ m ] * TF( cel.vy[ v ] );
+                    const TF pr_ = ux[ m ] * cel.x( v ) + uy[ m ] * cel.y( v );
                     lo[ m ] = std::min( lo[ m ], pr_ ); hi[ m ] = std::max( hi[ m ], pr_ );
                 }
         }
@@ -1464,14 +1464,14 @@ StatsAmas repare_amas( Newton<PD,Rho> &nw, const std::vector<TF> &w0, const std:
             for ( SI q = 0; q < nc; ++q ) {
                 const SI id = A.C[ q ];
                 Balayage2<TK,true> f{ A.cx.data(), A.cy.data(), cw.data(), A.cid.data(), int( nc ), 0, 1,
-                                      TK( nw.P[ 0 ][ id ] ), TK( nw.P[ 1 ][ id ] ), TK( wv[ id ] ),
+                                      nw.P[ 0 ][ id ], nw.P[ 1 ][ id ], wv[ id ],
                                       d2::SI32( id ) };
                 d2::moteur<TK>( &f, &cel );
                 Poly po; po.id = id;
                 po.rang = q < A.m ? 0 : ( q < M ? 1 : 2 );   // inconnue / couronne / coupeur
                 for ( int v = 0; v < std::max( cel.nb, 0 ); ++v ) {
-                    po.x.push_back( double( cel.vx[ v ] ) );
-                    po.y.push_back( double( cel.vy[ v ] ) );
+                    po.x.push_back( cel.x( v ) );
+                    po.y.push_back( cel.y( v ) );
                     if ( po.rang < 2 ) {
                         x0 = std::min( x0, po.x.back() ); x1 = std::max( x1, po.x.back() );
                         y0 = std::min( y0, po.y.back() ); y1 = std::max( y1, po.y.back() );
@@ -1636,17 +1636,17 @@ StatsAmas repare_amas( Newton<PD,Rho> &nw, const std::vector<TF> &w0, const std:
                 for ( SI q = 0; q < A.m; ++q ) {
                     const SI id = A.ens[ q ];
                     Balayage2<TK,true> f{ A.cx.data(), A.cy.data(), cw.data(), A.cid.data(), int( nc2 ), 0, 1,
-                                          TK( nw.P[ 0 ][ id ] ), TK( nw.P[ 1 ][ id ] ), TK( wF[ id ] ), d2::SI32( id ) };
+                                          nw.P[ 0 ][ id ], nw.P[ 1 ][ id ], wF[ id ], d2::SI32( id ) };
                     d2::moteur<TK>( &f, &cl );
                     ++st.nb_cel;
                     if ( cl.nb <= 0 ) continue;
                     TF a2_ = 0, cxx = 0, cyy = 0;        // aire signee et centroide du polygone
                     for ( int v = 0, nb = cl.nb; v < nb; ++v ) {
                         const int v2 = v + 1 == nb ? 0 : v + 1;
-                        const TF cr = TF( cl.vx[ v ] ) * TF( cl.vy[ v2 ] ) - TF( cl.vx[ v2 ] ) * TF( cl.vy[ v ] );
+                        const TF cr = cl.x( v ) * cl.y( v2 ) - cl.x( v2 ) * cl.y( v );
                         a2_ += cr;
-                        cxx += ( TF( cl.vx[ v ] ) + TF( cl.vx[ v2 ] ) ) * cr;
-                        cyy += ( TF( cl.vy[ v ] ) + TF( cl.vy[ v2 ] ) ) * cr;
+                        cxx += ( cl.x( v ) + cl.x( v2 ) ) * cr;
+                        cyy += ( cl.y( v ) + cl.y( v2 ) ) * cr;
                     }
                     if ( ! ( std::fabs( a2_ ) > 0 ) ) continue;
                     const TF ai = std::fabs( a2_ ) / 2;
@@ -1666,17 +1666,17 @@ StatsAmas repare_amas( Newton<PD,Rho> &nw, const std::vector<TF> &w0, const std:
                     for ( SI q = 0; q < A.m; ++q ) {
                         const SI id = A.ens[ q ];
                         Balayage2<TK,true> f{ A.cx.data(), A.cy.data(), cw.data(), A.cid.data(), int( nc2 ), 0, 1,
-                                              TK( nw.P[ 0 ][ id ] ), TK( nw.P[ 1 ][ id ] ), TK( w0[ id ] ), d2::SI32( id ) };
+                                              nw.P[ 0 ][ id ], nw.P[ 1 ][ id ], w0[ id ], d2::SI32( id ) };
                         d2::moteur<TK>( &f, &cl2 );
                         ++st.nb_cel;
                         if ( cl2.nb <= 0 ) continue;
                         TF a2b = 0, cxx = 0, cyy = 0;
                         for ( int v = 0, nb = cl2.nb; v < nb; ++v ) {
                             const int v2 = v + 1 == nb ? 0 : v + 1;
-                            const TF cr = TF( cl2.vx[ v ] ) * TF( cl2.vy[ v2 ] ) - TF( cl2.vx[ v2 ] ) * TF( cl2.vy[ v ] );
+                            const TF cr = cl2.x( v ) * cl2.y( v2 ) - cl2.x( v2 ) * cl2.y( v );
                             a2b += cr;
-                            cxx += ( TF( cl2.vx[ v ] ) + TF( cl2.vx[ v2 ] ) ) * cr;
-                            cyy += ( TF( cl2.vy[ v ] ) + TF( cl2.vy[ v2 ] ) ) * cr;
+                            cxx += ( cl2.x( v ) + cl2.x( v2 ) ) * cr;
+                            cyy += ( cl2.y( v ) + cl2.y( v2 ) ) * cr;
                         }
                         if ( ! ( std::fabs( a2b ) > 0 ) ) continue;
                         const TF ai = std::fabs( a2b ) / 2;
@@ -1812,7 +1812,7 @@ StatsAmas repare_amas( Newton<PD,Rho> &nw, const std::vector<TF> &w0, const std:
                 for ( SI q = 0; q < M; ++q ) {
                     const SI id = A.ens[ q ];
                     Balayage2<TK,true> f{ A.cx.data(), A.cy.data(), cw.data(), A.cid.data(), int( nc ), 0, 1,
-                                          TK( nw.P[ 0 ][ id ] ), TK( nw.P[ 1 ][ id ] ), TK( wF[ id ] ), d2::SI32( id ) };
+                                          nw.P[ 0 ][ id ], nw.P[ 1 ][ id ], wF[ id ], d2::SI32( id ) };
                     d2::moteur<TK>( &f, &cl );
                     const TF mm = cl.nb <= 0 ? TF( 0 ) : nw.rho->mesure( cl, []( int, TF ) {} );
                     if ( q < A.m ) mi = std::min( mi, mm / nw.nu[ id ] );
@@ -1854,13 +1854,13 @@ StatsAmas repare_amas( Newton<PD,Rho> &nw, const std::vector<TF> &w0, const std:
                                 + 2 * ( cx * px + cy * py ) + beta;
                     }
                     cw.resize( nc );
-                    for ( SI q = 0; q < nc; ++q ) cw[ q ] = TK( w[ A.C[ q ] ] );
+                    for ( SI q = 0; q < nc; ++q ) cw[ q ] = w[ A.C[ q ] ];
                     bool mort_int = false, mort_cour = false;
                     typename PD::Cell cl;
                     for ( SI q = 0; q < M; ++q ) {
                         const SI id = A.ens[ q ];
                         Balayage2<TK,true> f{ A.cx.data(), A.cy.data(), cw.data(), A.cid.data(), int( nc ), 0, 1,
-                                              TK( nw.P[ 0 ][ id ] ), TK( nw.P[ 1 ][ id ] ), TK( w[ id ] ),
+                                              nw.P[ 0 ][ id ], nw.P[ 1 ][ id ], w[ id ],
                                               d2::SI32( id ) };
                         d2::moteur<TK>( &f, &cl );
                         ++n_ev;
@@ -1922,13 +1922,13 @@ StatsAmas repare_amas( Newton<PD,Rho> &nw, const std::vector<TF> &w0, const std:
                                     + 2 * ( cx * px + cy * py ) + beta;
                         }
                         cw.resize( nc );
-                        for ( SI q = 0; q < nc; ++q ) cw[ q ] = TK( w[ A.C[ q ] ] );
+                        for ( SI q = 0; q < nc; ++q ) cw[ q ] = w[ A.C[ q ] ];
                         n_int = 0; n_cour = 0;
                         typename PD::Cell cl;
                         for ( SI q = 0; q < M; ++q ) {
                             const SI id = A.ens[ q ];
                             Balayage2<TK,true> f{ A.cx.data(), A.cy.data(), cw.data(), A.cid.data(), int( nc ), 0, 1,
-                                                  TK( nw.P[ 0 ][ id ] ), TK( nw.P[ 1 ][ id ] ), TK( w[ id ] ),
+                                                  nw.P[ 0 ][ id ], nw.P[ 1 ][ id ], w[ id ],
                                                   d2::SI32( id ) };
                             d2::moteur<TK>( &f, &cl );
                             const TF mm = cl.nb <= 0 ? TF( 0 ) : nw.rho->mesure( cl, []( int, TF ) {} );
@@ -1983,13 +1983,13 @@ StatsAmas repare_amas( Newton<PD,Rho> &nw, const std::vector<TF> &w0, const std:
                 ++st.nb_pas;
                 const SI M = SI( A.ens.size() ), nc = SI( A.C.size() );
                 cw.resize( nc );
-                for ( SI q = 0; q < nc; ++q ) cw[ q ] = TK( w[ A.C[ q ] ] );
+                for ( SI q = 0; q < nc; ++q ) cw[ q ] = w[ A.C[ q ] ];
                 TF mu = 1e300, mr = 1e300;
                 typename PD::Cell cel;
                 for ( SI q = 0; q < M; ++q ) {
                     const SI id = A.ens[ q ];
                     Balayage2<TK,true> f{ A.cx.data(), A.cy.data(), cw.data(), A.cid.data(), int( nc ), 0, 1,
-                                          TK( nw.P[ 0 ][ id ] ), TK( nw.P[ 1 ][ id ] ), TK( w[ id ] ),
+                                          nw.P[ 0 ][ id ], nw.P[ 1 ][ id ], w[ id ],
                                           d2::SI32( id ) };
                     d2::moteur<TK>( &f, &cel );
                     ++st.nb_cel;
@@ -2047,14 +2047,14 @@ StatsAmas repare_amas( Newton<PD,Rho> &nw, const std::vector<TF> &w0, const std:
                     const TF beta = ( whi - wlo ) * ( TF( k ) / 40 - TF( 1 ) / 2 );
                     for ( SI q = 0; q < A.m; ++q ) w[ A.ens[ q ] ] = harmF[ q ] + beta;
                     cw.resize( nc );
-                    for ( SI q = 0; q < nc; ++q ) cw[ q ] = TK( w[ A.C[ q ] ] );
+                    for ( SI q = 0; q < nc; ++q ) cw[ q ] = w[ A.C[ q ] ];
                     SI mi = 0, mr = 0;
                     TF ai = 1e300, ar = 1e300;
                     typename PD::Cell cel;
                     for ( SI q = 0; q < M; ++q ) {
                         const SI id = A.ens[ q ];
                         Balayage2<TK,true> f{ A.cx.data(), A.cy.data(), cw.data(), A.cid.data(), int( nc ), 0, 1,
-                                              TK( nw.P[ 0 ][ id ] ), TK( nw.P[ 1 ][ id ] ), TK( w[ id ] ),
+                                              nw.P[ 0 ][ id ], nw.P[ 1 ][ id ], w[ id ],
                                               d2::SI32( id ) };
                         d2::moteur<TK>( &f, &cel );
                         const TF mm = cel.nb <= 0 ? TF( 0 ) : nw.rho->mesure( cel, []( int, TF ) {} );
@@ -3132,28 +3132,44 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu, Lineaire &lin, Imag
         pd.set_weights( w0.data(), a.par );
         std::printf( "-- verification, t = %g\n", double( im.t ) );
         verifie( pd, nu, im );
-        if constexpr ( std::is_same_v<TA,double> ) {     // la MEME chose en simple precision
-            ImageT<float> imf;
-            imf.W = im.W; imf.H = im.H; imf.t = float( im.t );
-            imf.v.assign( im.v.begin(), im.v.end() );
-            imf.prepare();
-            std::printf( "-- la meme mesure en simple precision ( `--acc float` ), ecart a la double :\n" );
-            std::vector<double> em, ef;
-            double somme = 0;
+        if constexpr ( std::is_same_v<TA,double> ) {
+            // LA SIMPLE PRECISION, ET SES DEUX MOITIES SEPAREMENT ( § 19 ). `v` en `float` est le
+            // STOCKAGE -- le gros tableau, celui dont la bande passante decide sur une carte ; la
+            // marche en `float` est le CALCUL. Les mesurer ensemble, comme on le faisait, ne dit
+            // pas laquelle des deux coute.
+            ImageT<float,TF>    imS;                     // stockage float, marche double
+            ImageT<float,float> imT;                     // tout en float ( l'ancien `--acc float` )
+            imS.W = imT.W = im.W; imS.H = imT.H = im.H;
+            imS.t = TF( im.t ); imT.t = float( im.t );
+            imS.v.assign( im.v.begin(), im.v.end() );
+            imT.v.assign( im.v.begin(), im.v.end() );
+            imS.prepare(); imT.prepare();
             typename PD::Cell cel;
+            std::vector<double> emS, efS, emT, efT;
+            double somme = 0;
             for ( SI k = 0; k < n; ++k ) {
                 if ( ! pd.cellule( k, cel ) || cel.nb <= 0 ) continue;
-                std::vector<double> fd, ff;
-                const double md = double( im.mesure( cel, [ & ]( int, TF f ) { fd.push_back( double( f ) ); } ) );
-                const double mf = double( imf.mesure( cel, [ & ]( int, TF f ) { ff.push_back( double( f ) ); } ) );
-                em.push_back( std::fabs( mf - md ) );
+                std::vector<double> fd, fS, fT;
+                const double md = double( im .mesure( cel, [ & ]( int, TF f ) { fd.push_back( double( f ) ); } ) );
+                const double mS = double( imS.mesure( cel, [ & ]( int, TF f ) { fS.push_back( double( f ) ); } ) );
+                const double mT = double( imT.mesure( cel, [ & ]( int, TF f ) { fT.push_back( double( f ) ); } ) );
+                emS.push_back( std::fabs( mS - md ) );
+                emT.push_back( std::fabs( mT - md ) );
                 somme += md;
-                for ( size_t q = 0; q < fd.size() && q < ff.size(); ++q )
-                    if ( fd[ q ] > 0 ) ef.push_back( std::fabs( ff[ q ] - fd[ q ] ) / fd[ q ] );
+                for ( size_t q = 0; q < fd.size(); ++q ) {
+                    if ( ! ( fd[ q ] > 0 ) ) continue;
+                    if ( q < fS.size() ) efS.push_back( std::fabs( fS[ q ] - fd[ q ] ) / fd[ q ] );
+                    if ( q < fT.size() ) efT.push_back( std::fabs( fT[ q ] - fd[ q ] ) / fd[ q ] );
+                }
             }
-            for ( double &e : em ) e /= somme / n;
-            quantiles( em, "masse float - double ( / moyenne )" );
-            quantiles( ef, "facette float / facette double" );
+            for ( double &e : emS ) e /= somme / n;
+            for ( double &e : emT ) e /= somme / n;
+            std::printf( "-- TOUT en simple precision ( stockage ET marche ), ecart a la double :\n" );
+            quantiles( emT, "masse ( / moyenne )" );
+            quantiles( efT, "facette ( relatif )" );
+            std::printf( "-- l'IMAGE SEULE en simple precision, la marche en double ( `--acc float` ) :\n" );
+            quantiles( emS, "masse ( / moyenne )" );
+            quantiles( efS, "facette ( relatif )" );
         }
         return 0;
     }
@@ -3796,7 +3812,8 @@ int main( int argc, char **argv ) {
                 "  --max-etapes K  garde-fou sur le nombre total d'etapes                               (200)\n"
                 "  --ordre K       0 ( les poids precedents ) | 1 ( la tangente en t, GRATUITE )   (0)\n"
                 "  --diracs D      uniforme | rho ( germes tires selon l'image )              (uniforme)\n"
-                "  --acc A         double | float : le flottant de LA MESURE ( `--kernel` est celui de la geometrie )  (double)\n"
+                "  --acc A         double | float : le flottant du STOCKAGE de l'image ( la marche reste en double,\n"
+                "                  cf. § 19 ) ; `--kernel` est celui de la geometrie                        (double)\n"
                 "  --check         la masse contre le DECOUPAGE EN PIXELS, la hessienne contre des differences finies,\n"
                 "                  et la simple precision contre la double\n"
                 "  --amg-tol T     le residu RELATIF demande au solveur lineaire ( defaut 1e-10 -- une\n"

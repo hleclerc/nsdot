@@ -14,7 +14,9 @@ namespace sf::d3 {
 /// manque -- la cellule est alors restee INTACTE, donc trop grande : a compter a part.
 template<class Fourn, class Cel>
 int moteur( Fourn *f, Cel *c, Local<Fourn> *loc_out = nullptr ) {
-    c->init_cube();
+    TF ox = 0, oy = 0, oz = 0;
+    f->origine( ox, oy, oz );                            // le repere du germe ( `cell/Contrat2D.h` )
+    c->init_cube( ox, oy, oz );
     Local<Fourn> loc{};
     int r = 0;
     for ( ;; ) {

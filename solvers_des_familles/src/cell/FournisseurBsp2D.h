@@ -18,6 +18,7 @@
 #include "accel/AaBsp.h"
 #include "cell/Contrat2D.h"
 #include "cell/Elagage2D.h"
+#include "cell/Plan.h"
 
 namespace sf::d2 {
 
@@ -35,20 +36,32 @@ struct FournisseurBsp {
     };
 
     const Arbre *arbre;
-    TK   x0, y0, w0;                                     ///< le germe courant
+    /// LE GERME COURANT EN DOUBLE. Le noyau travaille en `TK`, mais les PLANS se calculent depuis
+    /// les donnees et ne s'arrondissent qu'une fois -- voir `cell/Plan.h`. Un germe par cellule :
+    /// ces trois doubles ne coutent rien, et ils valent quatre chiffres decimaux en `float`.
+    TF   x0d, y0d, w0d;
+    TK   x0, y0;                                         ///< les memes, pour le test d'elagage
     SI32 i0;                                             ///< son identifiant : on ne se coupe pas
 
-    FournisseurBsp( const Arbre *arbre, TK x0, TK y0, TK w0, SI32 i0 )
-        : arbre( arbre ), x0( x0 ), y0( y0 ), w0( w0 ), i0( i0 ) {}
+    FournisseurBsp( const Arbre *arbre, TF x0, TF y0, TF w0, SI32 i0 )
+        : arbre( arbre ), x0d( x0 ), y0d( y0 ), w0d( w0 ), x0( TK( x0 ) ), y0( TK( y0 ) ), i0( i0 ) {}
 
+    /// LE REPERE DE LA CELLULE : le germe ( `cell/Contrat2D.h` ). Le moteur le demande une fois.
+    void origine( TF &x, TF &y ) const { x = x0d; y = y0d; }
+
+    /// La boite et le majorant sont TRANSLATES ICI, une fois par noeud -- pas une fois par sommet.
+    /// `w( q ) <= a . q + b` devient `a . q_local + ( b + a . p0 )`, donc `cb = w0 - b - a . p0`,
+    /// le tout en double avant l'unique arrondi ( meme raison qu'au `cell/Plan.h` ).
     template<class Etat>
     bool peut_couper( const typename Arbre::Node &nd, const Etat &e ) const {
         Boite2<TK> B;
-        for ( int d = 0; d < 2; ++d ) { B.lo[ d ] = TK( nd.lo[ d ] ); B.hi[ d ] = TK( nd.hi[ d ] ); }
+        B.lo[ 0 ] = TK( nd.lo[ 0 ] - x0d ); B.hi[ 0 ] = TK( nd.hi[ 0 ] - x0d );
+        B.lo[ 1 ] = TK( nd.lo[ 1 ] - y0d ); B.hi[ 1 ] = TK( nd.hi[ 1 ] - y0d );
         if constexpr ( POIDS ) {
-            B.a[ 0 ] = TK( nd.wm.a[ 0 ] ); B.a[ 1 ] = TK( nd.wm.a[ 1 ] ); B.b = TK( nd.wm.b );
+            B.a[ 0 ] = TK( nd.wm.a[ 0 ] ); B.a[ 1 ] = TK( nd.wm.a[ 1 ] );
+            B.cb = TK( w0d - nd.wm.b - ( double( nd.wm.a[ 0 ] ) * x0d + double( nd.wm.a[ 1 ] ) * y0d ) );
         }
-        return peut_couper_boite<POIDS>( e, x0, y0, w0, B );
+        return peut_couper_boite<POIDS>( e, B );
     }
 
     /// le carre de la distance du germe a la boite du noeud : une clef d'ordre, pas un test.
@@ -74,12 +87,8 @@ struct FournisseurBsp {
                 const int k = l.k++;
                 const SI32 id = SI32( arbre->order[ k ] );
                 if ( id == i0 ) continue;
-                const TK xj = TK( arbre->seed_c( k, 0 ) ), yj = TK( arbre->seed_c( k, 1 ) );
-                p.dx  = xj - x0;
-                p.dy  = yj - y0;
-                p.off = TK( 0.5 ) * ( p.dx * ( xj + x0 ) + p.dy * ( yj + y0 ) );
-                if constexpr ( POIDS ) p.off += TK( 0.5 ) * ( w0 - TK( arbre->seed_w( k ) ) );
-                p.id  = id;
+                bissect2<POIDS>( p, x0d, y0d, w0d,
+                                 arbre->seed_c( k, 0 ), arbre->seed_c( k, 1 ), arbre->seed_w( k ), id );
                 return true;
             }
 

@@ -170,6 +170,11 @@ Le noyau `float` est donc **une question de solveur** — jusqu'où peut-on desc
 que faut-il calculer en `double` pour que le reste puisse rester en `float` — et pas un réglage.
 C'est pour pouvoir la poser que le paramètre existe.
 
+**→ Elle est posée et à moitié résolue au § 19.** Les deux échecs ci-dessus sont datés : celui du
+nuage de lignes a disparu (le solveur linéaire ne part plus), celui du 3D reste une stagnation. Ce
+qui les causait se nomme et se mesure — `eps·|w|·n^(2/D)` pour les poids, `eps·n^(1/D)` pour les
+positions — et le premier terme a été supprimé.
+
 ---
 
 # 5. AJOUTER UN SOLVEUR
@@ -1607,10 +1612,16 @@ départ de l'arête**, pas à celui du premier sommet de la cellule — ou bien 
 préfixes doit être stockée **par blocs**, avec une origine par bloc. C'est mesurable maintenant, et
 c'était le but du portage.
 
+**→ Réglé au § 19.7, et pas comme prévu.** Une référence par arête n'aurait rien changé : l'erreur
+est faite au **stockage**, pas à la soustraction. La marche reste en `double` et seule l'image est
+en `float` — le gros tableau, celui dont la bande passante décide. Médiane 1.1e−06 → **1.4e−09**,
+pire facette 1.5e−01 → **5.9e−08**.
+
 ## 12.8 Ce qui reste
 
-* La référence prise **par arête** plutôt que par cellule (§ 12.6) — le seul vrai obstacle à la
-  chaîne complète en `float`, et il est bon marché.
+* ~~La référence prise **par arête** plutôt que par cellule~~ — **fait autrement** : § 19.7. Le
+  diagnostic était juste, le remède non ; c'est le *stockage* de la table qui devait passer en
+  double, pas la référence qui devait bouger.
 * **Le plafond de rapport du chooseur** (64) borne le parcours facile plus souvent que le
   contrôleur lui-même (§ 12.6.2) : dans la phase où `amp` s'écroule, c'est lui et le refus qui
   décident, pas la prédiction. Le relever, ou proposer directement la cible dès que `amp` passe
@@ -3454,3 +3465,198 @@ mêmes résidus, au chiffre près.
 unités de traduction. Ça demanderait des instanciations explicites — fragiles — pour un fichier qui
 compile maintenant en moins d'une minute. Le pic mémoire ayant été divisé par 3,6, `-g` redevient
 d'ailleurs envisageable si on veut les numéros de ligne dans `perf`.
+
+
+---
+
+# 19. LA SIMPLE PRÉCISION : CE QUI CASSE, ET CE QUI SE RÉPARE (`fp32`)
+
+Le banc a trois flottants, et ils ne jouent pas le même rôle : `TK` celui de **la géométrie**
+(`--kernel`), `TA` celui de **la mesure image** (`--acc`), et `TF = double` partout ailleurs
+(l'arbre, les poids, la hessienne, le solveur). En `float`, le § 4 rapportait deux échecs francs et
+le § 12.7 une erreur de **15 % sur une facette**. On y revient pour répondre à une question
+précise : *qu'est-ce qui casse exactement, et est-ce réparable ?*
+
+La cible `fp32` construit **le même nuage, les mêmes poids, le même moteur, le même élagage, deux
+fois — seul `TK` change** — et compare cellule par cellule.
+
+## 19.1 Un seul mécanisme, trois fois
+
+Le plan qui sépare deux germes est rendu sous la forme `dx·x + dy·y = off`, avec
+`off = ½(|p_j|² − |p_0|²) + ½(w_0 − w_j)`, et le noyau l'évalue en chaque sommet :
+`s = dx·vx + dy·vy − off`. **Deux annulations s'y cachent, et elles n'ont pas la même cause.**
+
+* **Le poids.** `w_0 − w_j` est la différence de deux poids déjà arrondis : erreur `eps·|w|` sur
+  `off`, donc un plan déplacé de `eps·|w| / (2h)` le long de sa normale.
+* **La position.** `dx` vaut `h`, `vx` vaut `1`, donc `dx·vx` vaut `h` — alors que `s` doit valoir
+  `h²`. On perd `log(1/h)` chiffres à chaque coupe.
+
+Rapporté à la taille de cellule `h = n^(−1/D)` :
+
+```
+    erreur relative  ~  eps·|w| / h²  +  eps·|p| / h
+                     =  eps·|w|·n^(2/D)  +  eps·n^(1/D)
+```
+
+**Les deux croissent avec `n`, et la 2D est le cas dur à `n` fixé** — `h² = 1/n` contre `n^(−2/3)`.
+C'est l'intuition qu'il fallait vérifier ; le facteur entre les deux dimensions est `n^(1/D)`.
+
+Et c'est **le même mécanisme que `S[j][i] − sref` dans la mesure image** (§ 12.7) : partout où une
+quantité **grande dans l'absolu** sert à produire une quantité **à l'échelle `h`**, on perd
+`log(grand/petit)` chiffres. Le remède est toujours le même : **porter la différence, pas la
+valeur.**
+
+## 19.2 Le terme de position, vérifié sur Voronoï (où il n'y a pas de poids)
+
+Écart de masse médian `float` / `double`, rapporté à la masse **moyenne** `1/n` :
+
+| `n` | 2D mesuré | 2D modèle `eps·√n` | 3D mesuré | 3D modèle `eps·n^(1/3)` |
+|---|---|---|---|---|
+| 10³ | 1.09e−06 | 1.9e−06 | 4.07e−07 | 6.0e−07 |
+| 10⁴ | 3.49e−06 | 6.0e−06 | 8.66e−07 | 1.3e−06 |
+| 10⁵ | 1.13e−05 | 1.9e−05 | 1.89e−06 | 2.8e−06 |
+| 10⁶ | 3.54e−05 | 6.0e−05 | 4.09e−06 | 6.0e−06 |
+
+**×3.16 par décade en 2D (= `√n`), ×2.15 en 3D (= `n^(1/3)`)**, préfacteur constant 0.57 et 0.68.
+Le modèle n'est pas une analogie, c'est la loi. À `n = 10⁶`, **la 2D perd huit fois plus que la 3D**.
+
+## 19.3 Le terme de poids : quatre ordres de grandeur au point de fonctionnement
+
+Les poids aléatoires de `--weights W` valent `W·h²`, donc le terme de poids y vaut `eps·W` : on ne
+le voit pas tant que `W` est petit, et au-delà il **vide** les cellules au lieu de les fausser (la
+médiane tombe à zéro : la plupart sont vides des deux côtés). Le balayage en `W` ne répond donc pas
+à la question. **Il faut un point de fonctionnement réel** — les fichiers `cases/*_equal.txt`, dont
+les poids *résolvent* déjà les masses égales.
+
+`|w|max` y vaut **0.13 à 0.18** pour un `h²` de `10⁻⁵`. Quatre ordres de grandeur : c'est tout le
+problème, et c'est invisible sur un nuage de jouet.
+
+**Testé et éliminé : centrer les poids.** `w ← w − moyenne(w)` est une invariance *exacte* du
+diagramme de puissance, donc c'était le remède à un sou. Il ne change rien (2.01e−03 → 2.01e−03) :
+ces champs de poids sont déjà à moyenne quasi nulle, et ce n'est pas le niveau qui nuit, c'est
+l'amplitude.
+
+## 19.4 Ce qu'on a fait : deux réparations, le même principe
+
+**(a) Porter la différence des poids.** Les poids ne sont grands que *dans l'absolu*. Pour une
+paire qui partage vraiment une facette, le bissecteur tombe *dans* les deux cellules, donc
+`|w_0 − w_j| ≲ 2|d|·h ~ h²` : **la différence qui compte est du même ordre que le terme
+géométrique.** L'arbre range germes et poids en `double` de toute façon — il suffisait de ne pas
+arrondir avant de soustraire.
+
+`cell/Plan.h` est désormais **le seul endroit où un plan bissecteur se construit** (il y en avait
+quatre copies : les deux fournisseurs BSP, le balayage témoin, le fournisseur en alpha), et ses
+entrées sont en `TF` pour une sortie en `TK`. Le majorant affine de l'élagage suit : `Boite2::cb`
+porte `w_0 − b`, calculé en double, au lieu de `b`.
+
+**(b) La cellule vit dans le repère du germe.** `Atelier::lx / ly` et `Cellule3::vx / vy / vz` sont
+**relatifs au germe**, et l'offset du plan prend sa forme locale — qui est plus simple :
+
+```
+    off_local = off − d·p₀ = |d|²/2 + (w₀ − w_j)/2
+```
+
+Les deux membres de `s = d·v − off` sont alors d'ordre `h²`, l'ordre même du résultat. Trois
+bénéfices en prime : l'élagage n'a plus de `p₀` à soustraire (il est à l'origine, deux opérations
+SIMD de moins par sommet), l'aire par la formule du lacet cesse d'être une différence de termes
+d'ordre 1, et `Atelier::x(i)` rend l'absolu par une somme **en double**, donc avec l'erreur `eps·h`
+du repère local au lieu de `eps·|p|`.
+
+Un détail qui aurait faussé la suite : **le balayage témoin a reçu le même traitement**. Nourri en
+`TK`, il serait devenu quatre chiffres moins précis que ce qu'il teste, et `check --kernel float`
+aurait accusé l'élagage de ses propres arrondis.
+
+*Piège payé au passage* : déplacer les sommets sans déplacer le plan donne une somme des mesures de
+0.318 et 306 cellules fausses sur 5000. `check` l'a vu immédiatement — c'est exactement ce pour
+quoi il existe.
+
+## 19.5 Ce que ça donne
+
+Écart `float` / `double`, mêmes germes, mêmes poids, en trois temps :
+
+| cas | `n` | \|w\|max | | départ | + différence des poids | + repère local |
+|---|---|---|---|---|---|---|
+| lignes σ=0.005 (2D) | 10⁵ | 0.130 | masse médiane | 2.01e−03 | 1.37e−05 | **3.76e−06** |
+| | | | masse p99 | 2.19e−01 | 1.89e−04 | **4.87e−05** |
+| | | | arêtes en désaccord | 2978 | 39 | **6** |
+| lignes σ=0.1 (2D) | 10⁵ | 0.145 | masse médiane | 8.44e−04 | 1.08e−05 | **3.22e−06** |
+| lignes σ=0.005 (2D) | 2·10³ | 0.129 | masse médiane | 3.91e−05 | 1.89e−06 | **5.32e−07** |
+| plans σ=0.02 (3D) | 10⁵ | 0.181 | masse médiane | 3.49e−05 | 1.77e−06 | **4.80e−07** |
+
+**×530 sur la médiane et ×4500 sur le p99** dans le pire cas. La vérification qui compte, pour la
+première réparation : après elle, la valeur obtenue (1.37e−05 en 2D à `n = 10⁵`) est celle du
+**Voronoï au même `n`** (1.13e−05). Le terme de poids avait bien disparu, exactement comme prévu.
+
+### Dans la boucle de Newton, `n = 10⁵`, 2D
+
+| | avant | après |
+|---|---|---|
+| `double`, uniforme | CONVERGE 2.04e−09, 6 it, 8 diag | CONVERGE **2.58e−10**, 6 it, 8 diag |
+| `double`, lignes | STAGNATION 2.35e−06, 116 diag | STAGNATION 2.35e−06, 116 diag |
+| `float`, uniforme | STAGNATION 3.67e−03, 133 diag | STAGNATION **5.40e−04**, **91 diag** |
+| **`float`, lignes** | **SOLVEUR LINÉAIRE EN ÉCHEC** (résidu 1.65e+03, 20 119 itérations de CG) | STAGNATION **1.13e−03** |
+
+**L'échec franc du § 4 a disparu** — le solveur linéaire ne part plus. Et le `double` y gagne
+aussi, d'un facteur huit sur le résidu final à comptes de diagrammes identiques : le repère local
+n'est pas une affaire de `float`, c'est du conditionnement.
+
+### Et ça ne coûte presque rien
+
+`n = 10⁶`, uniforme, ns/germe :
+
+| | 2D `double` | 2D `float` | 3D `double` | 3D `float` |
+|---|---|---|---|---|
+| Voronoï avant / après | 137 / **145** | 142 / **150** | 1960 / **1946** | 1807 / **1818** |
+| Laguerre avant / après | 164 / **163** | 161 / **168** | 1964 / **1982** | 1786 / **1820** |
+
+**Entre 0 et +6 %**, et le +6 % est sur le cas le plus rapide (2D Voronoï, 137 ns/germe), là où un
+calcul de plan en double par candidat pèse le plus. En 3D c'est indiscernable de zéro.
+
+## 19.6 Ce qui reste, et on sait exactement quoi
+
+`float` **ne converge toujours pas** : Newton stagne à 5.4e−04 au lieu de 1e−06. Le plancher qui
+reste est le terme de position, et il **survit au repère local** — divisé par cinq, mais toujours
+en `n^(1/D)` :
+
+| `n` (2D, Voronoï) | 10³ | 10⁴ | 10⁵ | 10⁶ |
+|---|---|---|---|---|
+| départ du domaine | 2.34e−07 | 6.00e−07 | 2.37e−06 | 6.41e−06 |
+| départ d'un carré de demi-côté 0.05 | 6.05e−08 | 1.11e−07 | 3.30e−07 | **8.77e−07** |
+
+La seconde ligne est un **diagnostic** (`SF_R`, et il le dit sur `stderr` : les cellules qui
+dépassent ce carré sont fausses). Elle tranche : **le plancher est la mémoire des premières
+coupes.** Un sommet créé quand la cellule mesure encore `L` porte l'erreur `eps·L`, et la cellule
+part à la taille du **domaine**. Le repère du germe rend exactes les coupes *tardives*, pas les
+premières — d'où `eps·L/h`, avec `L = 1` par défaut. Partir d'un carré vingt fois plus petit
+divise l'erreur par 7.3 à `n = 10⁶`, et la loi reste la même avec un préfacteur vingt fois moindre.
+
+**Le chantier suivant est donc : démarrer d'une boîte qui a déjà la taille de la cellule.** Le BSP
+en offre une naturelle — la boîte de la feuille du germe, dilatée — mais il faut un filet : si la
+cellule s'en échappe, il faut le détecter et reprendre au domaine. Ce n'est plus de l'arithmétique,
+c'est de l'algorithmique, et c'est une autre session.
+
+## 19.7 La mesure image : le stockage peut être `float`, la marche non
+
+Troisième instance du même mécanisme. Le coupable nommé au § 12.7 était `S[j][i] − sref` : la somme
+préfixe court de 0 à ~1 sur une ligne, la différence entre deux pixels d'une même cellule vaut
+`h·ρ`. **`sref` n'y change rien** — il ramène le *terme* de 1 à `h`, mais l'erreur a été faite au
+**stockage**. Le second terme est `(x_p + x_c)/2 − i·h_x`, deux nombres d'ordre 1 pour une
+différence d'ordre `h_x` (il est maintenant écrit `½((x_p − i·h_x) + (x_c − i·h_x))`, deux
+soustractions au lieu d'une somme puis une soustraction).
+
+`ImageT` a donc **deux flottants** : `TA` le stockage (`v`, le tableau `W×H` — celui dont la bande
+passante décide sur une carte) et `TW` le calcul. Image 512², `n = 2·10⁴` :
+
+| | masse médiane | masse max | facette médiane | **facette max** |
+|---|---|---|---|---|
+| tout en `float` | 1.02e−06 | 7.84e−05 | 2.52e−06 | **1.51e−01** |
+| **image seule en `float`** | **1.41e−09** | **1.63e−07** | **1.13e−08** | **5.90e−08** |
+
+**Mille fois mieux sur la masse, deux millions et demi de fois sur la pire facette** — et surtout
+*la queue disparaît* : 5.90e−08 est l'epsilon du `float`, sans aucun événement rare. L'erreur
+résiduelle est exactement la quantisation de ρ, propagée linéairement.
+
+C'est le résultat utile pour la carte : **le gros tableau peut être en `float`** (moitié de bande
+passante, moitié de mémoire), les quelques scalaires de la marche non. `--acc float` désigne
+désormais le stockage ; `ImageT<float,float>` garde l'ancien comportement, et `image --check`
+imprime les deux pour qu'on ne les reconfonde pas.
