@@ -144,6 +144,60 @@ void compare( const Nuage<D> &nu, const Args &a, bool centre, const char *etiq )
     }
     const Quant qc = quantiles( ec );
 
+    // ---- LE DETECTEUR : LE DESACCORD DES DEUX VUES D'UNE FACETTE
+    //
+    // Chaque facette est mesuree DEUX FOIS, une par cellule, et on jetait la seconde. En double
+    // les deux vues coincident a 1e-16 ; en `float` leur ecart EST une estimation de l'erreur
+    // locale, gratuite et sans modele. On en fait un indicateur par cellule :
+    //
+    //      ind_i = max_j | c_ij - c_ji | / ( c_ij + c_ji )
+    //
+    // et on demande s'il separe : si l'on recalculait en double les cellules les plus suspectes,
+    // de combien tomberait le MAXIMUM de l'erreur -- celui qui fixe le plancher de Newton ?
+    std::vector<double> ind( n, 0.0 );
+    {
+        std::vector<Facette> fji = ff;                   // les memes, indexees par ( j, i )
+        std::sort( fji.begin(), fji.end(), []( const Facette &x, const Facette &y ) {
+            return x.j != y.j ? x.j < y.j : x.i < y.i; } );
+        for ( const Facette &e : ff ) {
+            const Facette cle{ e.j, e.i, 0 };
+            auto it = std::lower_bound( fji.begin(), fji.end(), cle, []( const Facette &x, const Facette &y ) {
+                return x.j != y.j ? x.j < y.j : x.i < y.i; } );
+            if ( it == fji.end() || it->j != e.i || it->i != e.j ) { ind[ e.i ] = 1; continue; }
+            const double a1 = double( e.c ), a2 = double( it->c ), so = a1 + a2;
+            if ( so > 0 ) ind[ e.i ] = std::max( ind[ e.i ], std::fabs( a1 - a2 ) / so );
+        }
+    }
+    // LA PLUS PETITE FACETTE de la cellule, rapportee a la plus grande : la configuration
+    // degeneree classique. Lue sur le diagramme en DOUBLE, donc disponible sans le float.
+    std::vector<double> pet( n, 1.0 );
+    {
+        std::vector<double> mx( n, 0.0 ), mn( n, 1e300 );
+        for ( const Facette &e : fd ) {
+            mx[ e.i ] = std::max( mx[ e.i ], double( e.c ) );
+            mn[ e.i ] = std::min( mn[ e.i ], double( e.c ) );
+        }
+        for ( SI i = 0; i < n; ++i ) pet[ i ] = mx[ i ] > 0 ? mn[ i ] / mx[ i ] : 1.0;
+    }
+
+    // ---- CE QUE CHAQUE CRITERE CAPTURE. `oracle` trie par l'erreur VRAIE : c'est le plafond de
+    // ce qu'un detecteur pourrait donner, et il dit si la queue est CONCENTREE ou pas.
+    auto table = [ & ]( const char *nom, auto clef ) {
+        std::vector<SI> ordre( n );
+        for ( SI i = 0; i < n; ++i ) ordre[ i ] = i;
+        std::sort( ordre.begin(), ordre.end(), [ & ]( SI x, SI y ) { return clef( x ) > clef( y ); } );
+        std::printf( "      %-22s", nom );
+        for ( double frac : { 0.0, 0.001, 0.01, 0.05, 0.2 } ) {
+            const SI k = SI( frac * n );
+            std::vector<double> reste;
+            reste.reserve( n - k );
+            for ( SI q = k; q < n; ++q ) reste.push_back( em[ ordre[ q ] ] );
+            std::sort( reste.begin(), reste.end() );
+            std::printf( "  %8.2e", reste.back() );
+        }
+        std::printf( "\n" );
+    };
+
     // ---- la prediction du modele
     const double eps = 6e-8, h = std::pow( double( n ), -1.0 / D );
     const double t_pos = eps / h, t_poi = eps * wmax / ( h * h );
@@ -153,6 +207,13 @@ void compare( const Nuage<D> &nu, const Args &a, bool centre, const char *etiq )
                  etiq, int( n ), wmax, h * h, qm.med, qm.p99, qm.max, qc.med, qc.p99, qc.max,
                  int( manque ), t_pos, t_poi );
     if ( bd || bf ) std::printf( "      ( debordements : double %d, float %d )\n", int( bd ), int( bf ) );
+    {
+        std::printf( "      LE MAX DE L'ERREUR QUI RESTE quand on recalcule en double les plus suspectes :\n" );
+        std::printf( "      %-22s  %8s  %8s  %8s  %8s  %8s\n", "critere", "0 %", "0.1 %", "1 %", "5 %", "20 %" );
+        table( "ORACLE ( erreur vraie )", [ & ]( SI i ) { return em[ i ]; } );
+        table( "desaccord c_ij / c_ji",   [ & ]( SI i ) { return ind[ i ]; } );
+        table( "plus petite facette",     [ & ]( SI i ) { return -pet[ i ]; } );
+    }
     if ( rep_d || rep_f )
         std::printf( "      ( reprises : %.2f %% en double, %.2f %% en float -- dont %.2f %% face touchee, %.2f %% VIDE )\n",
                      100.0 * rep_d / n, 100.0 * rep_f / n, 100.0 * r_face / n, 100.0 * r_vide / n );

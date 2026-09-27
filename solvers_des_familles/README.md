@@ -3803,7 +3803,8 @@ celui du témoin — souvent bien meilleur, l'itération `double` finale allant 
 ### Et donc, combien ?
 
 Le surcoût en **nombre** de diagrammes est de +8 à +25 %. Si `fp32` est `s` fois plus rapide par
-diagramme, la bascule vaut `N_f/s + N_d` contre `N₀` :
+diagramme, la bascule vaut `N_f/s + N_d` contre `N₀`, donc **le seuil de rentabilité est
+`s = N_f / (N₀ − N_d)`, soit 1,10 à 1,33 selon le cas** :
 
 | `s` | 2D `n = 10⁵` | 3D `n = 10⁵` | 2D `n = 5·10⁵` |
 |---|---|---|---|
@@ -3818,22 +3819,65 @@ diagramme, la bascule vaut `N_f/s + N_d` contre `N₀` :
 d'instructions SIMD et par les dépendances du découpage, pas par la bande passante, et l'AVX fait
 quatre `double` par cycle là où il ferait huit `float` — mais le découpage n'est pas ce qui sature.
 
-**Le seuil de rentabilité est `s ≈ 1,3`.** C'est une barre basse pour une carte, où `fp32` est au
-minimum deux fois le débit du `fp64` et où sur une puce grand public le rapport est de trente-deux.
+**Mesuré, `s` vaut 1,17 à 1,19 en 3D et 0,85 à 1,0 en 2D** (le 2D Laguerre paie les reprises de
+boîte). La 3D est donc *exactement au seuil* : −3 % à `n = 10⁵`, +9 % à `n = 5·10⁵`. Un match nul,
+et c'est le mieux que ce CPU puisse donner.
+
+En 3D la boîte de départ ne coûte rien à la bascule, contrairement à la 2D : à `n = 5·10⁵` la phase
+`float` prend 7,89 s de diagramme avec les boîtes contre 8,50 sans, et le partage 5/1 est le même
+des deux côtés. Le cube de départ plus petit élague davantage, ce qui paie les reprises.
+
 La conclusion transportable est donc : *le partage 5/1 tient, le surcoût est de un à deux
-diagrammes, et tout ce qui dépasse 1,3× de rapport `fp32`/`fp64` est du gain.*
+diagrammes, le seuil est à 1,2, et tout ce qui dépasse est du gain.* C'est une barre basse pour une
+carte, où `fp32` vaut au minimum deux fois le débit du `fp64` et trente-deux fois sur une puce
+grand public.
 
-### Ce qui reste, et la piste des « cellules à part »
+### Mettre les cellules problématiques de côté : mesuré, et ça ne peut pas marcher
 
-Le surcoût de un à deux diagrammes est irréductible (il faut bien remesurer une fois en `double`).
-Ce qui ne l'est pas, c'est le **plancher** lui-même : il est fixé par le **maximum** de l'erreur
-géométrique, et ce maximum vient d'une poignée de cellules mal conditionnées — celles dont une
-facette est sur le point d'apparaître, où `t = s₀/(s₀−s₁)` a un dénominateur qui s'annule (§ 19.8).
-Les mettre de côté pour une passe en `double` est la suite naturelle : elles sont **détectables**
-(une facette d'aire relative sous quelques `eps`), elles sont **rares** (la médiane est à 1,3·eps,
-le p99 à 4,6e−7, le max à 1,5e−6 : c'est le dernier pour cent qui décide), et les recalculer
-coûterait ce pour cent. Si ça descendait le plancher d'un ou deux ordres, la phase `float` gagnerait
-une ou deux itérations de plus — soit 7 ou 8 diagrammes sur 10 au lieu de 5 sur 6. Non mesuré.
+L'idée était naturelle : le plancher est fixé par le **maximum** de l'erreur géométrique ; si ce
+maximum vient d'une poignée de cellules mal conditionnées, les recalculer en `double` coûterait ce
+pour cent et rendrait des itérations à la phase `float`.
+
+**Un détecteur gratuit et sans modèle existe** : chaque facette est mesurée **deux fois**, une par
+cellule, et on jetait la seconde vue. En double les deux coïncident à `1e−16` ; en `float` leur
+écart *est* une estimation de l'erreur locale. L'indicateur est
+`ind_i = max_j |c_ij − c_ji| / (c_ij + c_ji)`, et il ne coûte rien.
+
+**Il ne sépare pas.** Le maximum de l'erreur qui reste après avoir recalculé les plus suspectes
+(uniforme 2D, `n = 10⁵`, poids `h²`) :
+
+| critère | 0 % | 0,1 % | 1 % | 5 % | 20 % |
+|---|---|---|---|---|---|
+| **ORACLE** (l'erreur vraie) | 2.38e−06 | 7.33e−07 | 4.65e−07 | 2.87e−07 | 1.35e−07 |
+| désaccord `c_ij` / `c_ji` | 2.38e−06 | 2.38e−06 | 2.38e−06 | 2.38e−06 | 2.38e−06 |
+| plus petite facette | 2.38e−06 | 2.38e−06 | 2.38e−06 | 2.38e−06 | 2.38e−06 |
+
+Aucun des deux critères ne bouge le maximum, même en recalculant une cellule sur cinq. Pour le
+désaccord des facettes la raison se voit : il mesure la **longueur** de la facette, alors que ce
+qui change l'aire d'une cellule est son déplacement **perpendiculaire** — les deux cellules
+s'accordent sur le plan (elles le calculent des mêmes données) et se distinguent sur les sommets,
+dont la longueur ne retient qu'une projection.
+
+**Mais la ligne ORACLE dit qu'il n'y a de toute façon rien à chercher.** Même un détecteur PARFAIT
+ne divise le maximum que par 3 en recalculant 0,1 % des cellules, par 5 à 1 %, par 18 à 20 %. La
+queue n'est pas une poignée de pathologies isolées, c'est **une distribution lisse** : il faudrait
+en recalculer une grande fraction pour gagner un ordre, ce qui ôte tout intérêt à la manœuvre.
+
+**Et surtout, le maximum n'est pas ce qui arrête Newton.** La recherche linéaire s'écrase sur le
+mérite `|r|_2`, qui est une norme `L2` sur `n` cellules : elle est portée par **le gros de la
+distribution**, chaque cellule à 1,3·eps, et un maximum à 70 fois la médiane ne pèse rien dedans
+sur 10⁵ termes. Baisser la queue ne rendrait donc aucune itération à la phase `float`.
+
+### Pourquoi le partage 5/1 est optimal, et non réglé
+
+Il est **structurel**. Newton double le nombre de chiffres justes à chaque itération ; `float` en
+porte sept, `double` seize. Les dernières itérations sont donc exactement celles qui demandent les
+chiffres que `float` n'a pas, et tout ce qui précède est gratuit. *On ne peut pas faire mieux que
+« toutes sauf la dernière »* — et c'est là qu'on est : cinq en `float`, une en `double`, dans les
+six cas mesurés, en 2D comme en 3D, de `n = 2·10⁴` à `5·10⁵`.
+
+Le seul levier restant est donc `s`, le rapport de vitesse par diagramme. Il ne se gagne pas en
+arithmétique : il se gagne sur une machine où `fp32` va vraiment plus vite.
 
 ## 19.11 La mesure image : le stockage peut être `float`, la marche non
 
