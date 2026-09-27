@@ -25,6 +25,7 @@
 // le volume `sum_f |( v_f - g ) . S_f| / 6`. Deux passes en `O( V + E )`.
 // =====================================================================================
 
+#include "cell/Boite.h"
 #include "cell/Contrat3D.h"
 #include <asimd/asimd.h>
 #include <cmath>
@@ -74,16 +75,19 @@ struct Cellule3 {
     TF y( int i ) const { return oy + TF( vy[ i ] ); }
     TF z( int i ) const { return oz + TF( vz[ i ] ); }
 
-    /// LE CUBE UNITE, DANS LE REPERE DU GERME. Coupes `0:x=0 1:x=1 2:y=0 3:y=1 4:z=0 5:z=1`,
-    /// identifiants `-1 .. -6`. Les huit coins sont translates en double puis arrondis.
-    void init_cube( TF gx = 0, TF gy = 0, TF gz = 0 ) {
+    /// LA BOITE DE DEPART, DANS LE REPERE DU GERME. Coupes `0:x=lo 1:x=hi 2:y=lo 3:y=hi
+    /// 4:z=lo 5:z=hi`, et `fid` dit l'identifiant de chacune ( du domaine, ou ARTIFICIEL :
+    /// `cell/Boite.h` ). Les huit coins sont translates en double puis arrondis.
+    void init_boite( const TF lo[ 3 ], const TF hi[ 3 ], TF gx, TF gy, TF gz, const SI32 fid[ 6 ] ) {
         ox = gx; oy = gy; oz = gz;
         nc = 6;
-        for ( int k = 0; k < 6; ++k ) cid[ k ] = -1 - k;
+        for ( int k = 0; k < 6; ++k ) cid[ k ] = fid[ k ];
         nv = 8;
         for ( int b = 0; b < 8; ++b ) {
             const int i = b & 1, j = ( b >> 1 ) & 1, k = ( b >> 2 ) & 1;
-            vx[ b ] = TK( i - gx ); vy[ b ] = TK( j - gy ); vz[ b ] = TK( k - gz );
+            vx[ b ] = TK( ( i ? hi[ 0 ] : lo[ 0 ] ) - gx );
+            vy[ b ] = TK( ( j ? hi[ 1 ] : lo[ 1 ] ) - gy );
+            vz[ b ] = TK( ( k ? hi[ 2 ] : lo[ 2 ] ) - gz );
             vk0[ b ] = i;
             vk1[ b ] = 2 + j;
             vk2[ b ] = 4 + k;                            // deja croissant
@@ -94,6 +98,15 @@ struct Cellule3 {
     }
 
     EtatCell3<TK> etat() const { return { nv, vx, vy, vz }; }
+
+    /// LA CELLULE TOUCHE-T-ELLE UNE FACE ARTIFICIELLE de sa boite de depart ? On regarde les faces
+    /// PORTEES PAR UN SOMMET, pas la liste `cid` : elle garde des coupes mortes non compactees.
+    bool touche_artificielle() const {
+        for ( int i = 0; i < nv; ++i )
+            if ( face_artificielle( cid[ vk0[ i ] ] ) || face_artificielle( cid[ vk1[ i ] ] )
+              || face_artificielle( cid[ vk2[ i ] ] ) ) return true;
+        return false;
+    }
 
     /// LA COUPE par `p.dx x + p.dy y + p.dz z <= p.off`. Rien n'est ecrit avant que les tailles
     /// finales soient connues : sur debordement la cellule reste INTACTE.

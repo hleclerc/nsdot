@@ -3612,30 +3612,126 @@ n'est pas une affaire de `float`, c'est du conditionnement.
 **Entre 0 et +6 %**, et le +6 % est sur le cas le plus rapide (2D Voronoï, 137 ns/germe), là où un
 calcul de plan en double par candidat pèse le plus. En 3D c'est indiscernable de zéro.
 
-## 19.6 Ce qui reste, et on sait exactement quoi
+## 19.6 Le dernier terme : la mémoire des premières coupes
 
-`float` **ne converge toujours pas** : Newton stagne à 5.4e−04 au lieu de 1e−06. Le plancher qui
-reste est le terme de position, et il **survit au repère local** — divisé par cinq, mais toujours
-en `n^(1/D)` :
+Le repère du germe rend exactes les coupes **tardives**, pas les premières. Un sommet créé quand la
+cellule mesure encore `L` porte l'erreur `eps·L` ; la cellule part à la taille du **domaine**, d'où
+un plancher `eps·L/h` qui vaut `eps·n^(1/D)` avec `L = 1`. Il survivait au repère local — divisé
+par cinq, mais avec la même loi.
 
-| `n` (2D, Voronoï) | 10³ | 10⁴ | 10⁵ | 10⁶ |
+Un diagnostic le prouve avant de le réparer (`SF_R`, qui annonce sur `stderr` que les cellules
+dépassant son carré sont fausses) : partir d'un carré de demi-côté 0.05 au lieu du domaine divise
+l'erreur par 7.3 à `n = 10⁶`, et la loi reste la même avec un préfacteur vingt fois moindre.
+
+## 19.7 Les boîtes : la feuille du BSP, et un filet
+
+`cell/Boite.h`. **La feuille du BSP est la boîte qu'on cherchait** : elle tient une poignée de
+germes, donc sa taille *est* l'espacement local — y compris là où les germes sont serrés, ce qu'un
+`h` global ne saurait pas faire. On part de la feuille du germe, dilatée, intersectée avec le
+domaine.
+
+**Le filet, parce que rien ne garantit qu'une cellule tienne dans sa boîte.** Les faces de la
+boîte qui ne sont pas des faces du domaine reçoivent un identifiant *artificiel* ; si l'une d'elles
+survit, la cellule touche la boîte et on recommence plus grand. C'est exact et pas seulement
+prudent : si `C ⊄ B`, alors soit `C ∩ B = ∅`, soit `C ∩ B` a une face portée par `∂B`. Le test est
+conservatif — on recommence parfois pour rien, jamais l'inverse.
+
+**Le cas (a) est le piège, et il a mordu.** On est tenté de raisonner « la cellule contient son
+germe, qui est dans la boîte, donc elle ne peut pas être vide » : **c'est faux en Laguerre.** Un
+poids assez bas met la cellule ailleurs que sur son germe, ou la supprime. `check` disait 0/5000 et
+Newton divergeait à la première itération — parce que `check` codait ses poids en dur à `0` et
+`h²`, deux échelles où chaque cellule reste posée sur son germe. **Le témoin ne pouvait pas voir ce
+défaut-là**, et il balaye maintenant trois échelles dont une (`ws = 100`) où les cellules quittent
+leurs germes.
+
+**La reprise agrandit, elle ne saute pas au domaine**, et ce n'est pas une économie de temps : une
+cellule reprise au domaine retrouve l'erreur `eps·1` qu'on vient d'enlever, et comme le plancher de
+Newton suit le **maximum** de l'erreur, quelques pour cent de cellules suffisent à le fixer. Mesuré
+à `n = 10⁵` : le saut au domaine laissait un max de 4.50e−05, l'agrandissement le met à 1.52e−06
+(×30) et le plancher de Newton passe de 1.13e−04 à 1.14e−05. Le facteur est **4** et non 2, parce
+que sur le nuage de **lignes** dix germes colinéaires font une feuille en lamelle alors que leurs
+cellules s'étendent *perpendiculairement* jusqu'à la ligne voisine : il faut plusieurs ordres de
+grandeur.
+
+### La loi en `n` disparaît
+
+Écart de masse médian `float` / `double`, uniforme Voronoï :
+
+| `n` | 10³ | 10⁴ | 10⁵ | 10⁶ |
 |---|---|---|---|---|
-| départ du domaine | 2.34e−07 | 6.00e−07 | 2.37e−06 | 6.41e−06 |
-| départ d'un carré de demi-côté 0.05 | 6.05e−08 | 1.11e−07 | 3.30e−07 | **8.77e−07** |
+| **2D** sans boîte | 2.34e−07 | 6.00e−07 | 2.37e−06 | 6.41e−06 |
+| **2D** avec | 7.51e−08 | 7.92e−08 | 6.88e−08 | **7.68e−08** |
+| **3D** sans boîte | 8.09e−08 | 1.40e−07 | 3.31e−07 | 6.25e−07 |
+| **3D** avec | 5.12e−08 | 5.54e−08 | 5.20e−08 | **5.53e−08** |
 
-La seconde ligne est un **diagnostic** (`SF_R`, et il le dit sur `stderr` : les cellules qui
-dépassent ce carré sont fausses). Elle tranche : **le plancher est la mémoire des premières
-coupes.** Un sommet créé quand la cellule mesure encore `L` porte l'erreur `eps·L`, et la cellule
-part à la taille du **domaine**. Le repère du germe rend exactes les coupes *tardives*, pas les
-premières — d'où `eps·L/h`, avec `L = 1` par défaut. Partir d'un carré vingt fois plus petit
-divise l'erreur par 7.3 à `n = 10⁶`, et la loi reste la même avec un préfacteur vingt fois moindre.
+**Plat.** 7.7e−08, c'est 1.3 fois l'epsilon du `float` : la cellule médiane est juste à l'arrondi
+près, et elle le reste quand `n` grandit. Au départ de cette étude, `n = 10⁶` en 2D donnait
+3.54e−05 : **×460**.
 
-**Le chantier suivant est donc : démarrer d'une boîte qui a déjà la taille de la cellule.** Le BSP
-en offre une naturelle — la boîte de la feuille du germe, dilatée — mais il faut un filet : si la
-cellule s'en échappe, il faut le détecter et reprendre au domaine. Ce n'est plus de l'arithmétique,
-c'est de l'algorithmique, et c'est une autre session.
+La dilatation est le paramètre, et l'erreur y est maintenant monotone — c'est bien le `L` du
+modèle. À `n = 10⁵`, 2D, poids `h²` :
 
-## 19.7 La mesure image : le stockage peut être `float`, la marche non
+| dilatation | médiane | p99 | max | reprises |
+|---|---|---|---|---|
+| 0 (domaine) | 6.78e−07 | 2.07e−05 | 6.69e−05 | — |
+| **1** (défaut) | **3.44e−08** | **4.59e−07** | **1.52e−06** | 142 %* |
+| 2 | 5.23e−08 | 7.35e−07 | 2.81e−06 | |
+| 4 | 8.45e−08 | 1.39e−06 | 4.57e−06 | 112 %* |
+| 8 | 1.40e−07 | 2.71e−06 | 7.94e−06 | |
+
+\* à `n = 10⁶`. **Le taux de reprise est le prix, et il dépend des poids** : 0.05 % en Voronoï,
+**142 % en Laguerre** même avec des poids d'ordre `h²`. C'est 1.4 agrandissement par cellule, donc
+à peu près deux fois le travail de découpe — le diagramme uniforme Laguerre passe de 169 à
+277 ns/germe en 2D. On l'accepte : la question de cette session est la précision, pas la vitesse.
+Mais c'est le fait qu'il faut retenir pour la carte, où une reprise par cellule est une divergence
+de warp : **avec des poids, presque toute cellule touche une boîte de rayon `3h`.**
+
+## 19.8 Est-ce que la chaîne passe en `fp32` ? En 3D oui, en 2D pas encore
+
+Newton sur l'uniforme, `--kernel float` contre `--kernel double`, tolérance `1e−06` :
+
+| | `double` | `float` |
+|---|---|---|
+| 2D `n = 2·10⁴` | CONVERGE 4.06e−07 — 5 it, 9 diag | STAGNATION 1.44e−05 — 10 it, 63 diag |
+| 2D `n = 10⁵` | CONVERGE 2.58e−10 — 6 it, 8 diag | STAGNATION 1.97e−05 — 15 it, 148 diag |
+| **3D `n = 2·10⁴`** | CONVERGE 2.78e−08 — 5 it, 7 diag | **CONVERGE 9.55e−07 — 5 it, 7 diag** |
+| 3D `n = 10⁵` | CONVERGE 1.66e−11 — 6 it, 9 diag | STAGNATION 2.28e−06 — 20 it, 165 diag |
+
+**En 3D à `n = 2·10⁴`, `float` converge par le même chemin que `double`** : cinq itérations, sept
+diagrammes, un recul — le compte est identique, ligne pour ligne. C'est la première fois que la
+chaîne géométrique passe entièrement en simple précision. À `n = 10⁵` elle manque de peu
+(2.28e−06 contre 1e−06) ; en 2D elle s'arrête quatorze à vingt fois trop haut.
+
+La trace dit exactement où ça s'arrête :
+
+```
+        double                          float
+it 3    |r|_2 4.425e-06                 4.426e-06
+it 4    |r|_2 1.661e-07                 1.662e-07
+it 5    |r|_2 4.456e-10   pas 1.00      2.757e-09   pas 3.05e-05   16 diag
+it 6    |r|_2 3.055e-15   CONVERGE      2.757e-09   pas 9.54e-07   21 diag
+```
+
+`float` suit `double` **chiffre pour chiffre pendant cinq itérations**, puis la recherche linéaire
+s'effondre : le pas est divisé jusqu'à 5.8e−11 sans jamais faire décroître `|r|_2`. Ce n'est pas
+une divergence, c'est un **plancher de bruit** — et le critère d'arrêt de Newton porte sur le
+`max` sur `n` cellules, donc sur la **queue** de l'erreur géométrique et non sur sa médiane. La
+médiane est à 1.3·eps ; le max est à 1.5e−06, et Newton s'arrête dix fois au-dessus.
+
+Les deux dimensions ne diffèrent plus par la loi — les deux sont plates en `n` — mais par ce max
+et par le nombre de cellules sur lequel on le prend. C'est ce qui reste de l'asymétrie 2D/3D du
+§ 19.1 : elle n'est plus dans l'exposant, elle est dans la queue.
+
+**Ce qui resterait à faire** pour la 2D : ce n'est plus un problème d'échelle — les trois
+mécanismes d'échelle sont réparés — mais de **conditionnement local**. Les cellules qui font la
+queue sont celles dont une facette est sur le point d'apparaître ou de disparaître : `t = s₀/(s₀−s₁)`
+y a un dénominateur qui s'annule, et aucune translation de repère n'y peut rien. La piste n'est
+donc plus arithmétique : elle serait d'accepter l'arrêt de Newton au plancher de bruit (un critère
+sur `|r|_2` plutôt que sur le `max`), ou de recalculer en `double` les quelques cellules mal
+conditionnées — qu'on sait détecter, ce sont celles dont une facette a une aire relative sous
+quelques `eps`.
+
+## 19.9 La mesure image : le stockage peut être `float`, la marche non
 
 Troisième instance du même mécanisme. Le coupable nommé au § 12.7 était `S[j][i] − sref` : la somme
 préfixe court de 0 à ~1 sur une ligne, la différence entre deux pixels d'une même cellule vaut

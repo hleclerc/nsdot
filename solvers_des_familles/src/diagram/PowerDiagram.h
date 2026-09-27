@@ -109,12 +109,12 @@ struct PowerDiagram {
     /// aussi : les majorants ne parlent que des autres ). Laguerre seulement.
     bool cellule_avec_poids( SI k, TF wk, Cell &cel ) const {
         if constexpr ( D == 2 ) {
-            d2::FournisseurBsp<TK,true> f( &arbre, arbre.seed_c( k, 0 ), arbre.seed_c( k, 1 ), wk, ids[ k ] );
+            d2::FournisseurBsp<TK,true> f( &arbre, arbre.seed_c( k, 0 ), arbre.seed_c( k, 1 ), wk, ids[ k ], k );
             d2::moteur<TK>( &f, &cel );
             return cel.nb >= 0;
         } else {
             d3::FournisseurBsp3<TK,true> f( &arbre, arbre.seed_c( k, 0 ), arbre.seed_c( k, 1 ),
-                                            arbre.seed_c( k, 2 ), wk, ids[ k ] );
+                                            arbre.seed_c( k, 2 ), wk, ids[ k ], k );
             return d3::moteur( &f, &cel ) == 0;
         }
     }
@@ -227,7 +227,7 @@ private:
         if constexpr ( D == 3 ) {
             using F = d3::FournisseurBsp3<TK,POIDS,8,true>;
             F f( &arbre, arbre.seed_c( k, 0 ), arbre.seed_c( k, 1 ), arbre.seed_c( k, 2 ),
-                 POIDS ? arbre.seed_w( k ) : TF( 0 ), ids[ k ] );
+                 POIDS ? arbre.seed_w( k ) : TF( 0 ), ids[ k ], k );
             f.pre = m.pre; f.npre = m.npre; f.saute = m.saute; f.parcours = m.parcours;
             f.fbeg = m.fbeg; f.fmask = m.fmask; f.nf = m.nf; f.tester = m.tester;
             f.front = m.front; f.nfront = m.nfront;
@@ -246,12 +246,12 @@ private:
     bool cellule_( SI k, Cell &cel ) const {
         const TF w0 = POIDS ? arbre.seed_w( k ) : TF( 0 );
         if constexpr ( D == 2 ) {
-            d2::FournisseurBsp<TK,POIDS> f( &arbre, arbre.seed_c( k, 0 ), arbre.seed_c( k, 1 ), w0, ids[ k ] );
+            d2::FournisseurBsp<TK,POIDS> f( &arbre, arbre.seed_c( k, 0 ), arbre.seed_c( k, 1 ), w0, ids[ k ], k );
             d2::moteur<TK>( &f, &cel );
             return cel.nb >= 0;
         } else {
             d3::FournisseurBsp3<TK,POIDS> f( &arbre, arbre.seed_c( k, 0 ), arbre.seed_c( k, 1 ),
-                                             arbre.seed_c( k, 2 ), w0, ids[ k ] );
+                                             arbre.seed_c( k, 2 ), w0, ids[ k ], k );
             return d3::moteur( &f, &cel ) == 0;
         }
     }

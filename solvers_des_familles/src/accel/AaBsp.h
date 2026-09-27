@@ -37,6 +37,10 @@ struct AaBspT {
 
     std::vector<Node> nodes;    ///< en PREORDRE
     std::vector<SI>   order;    ///< rang dans l'arbre -> identifiant du germe
+    /// rang -> l'indice du noeud FEUILLE qui le contient. Sert a proposer au moteur une boite de
+    /// depart a l'echelle LOCALE des germes ( `cell/Noyau2D.h` ) : partir du domaine fait porter
+    /// aux premiers sommets une erreur `eps x taille du domaine`.
+    std::vector<SI>   feuille_de;
     std::vector<TF>   p[ D ];   ///< les positions PERMUTEES
     std::vector<TF>   pw;       ///< les poids permutes ( vide = cas euclidien )
     SI                leaf_size = 10;
@@ -52,6 +56,7 @@ struct AaBspT {
     void build( const TF *const *P, const TF *W, SI n, SI leaf ) {
         leaf_size = leaf;
         order.resize( n );
+        feuille_de.assign( n, 0 );
         for ( SI i = 0; i < n; ++i )
             order[ i ] = i;
         for ( int d = 0; d < D; ++d )
@@ -124,6 +129,8 @@ private:
         // `span <= 0` : tous les germes au meme endroit, aucune coupe ne les separerait.
         if ( end - beg <= leaf_size || ! ( span > 0 ) ) {
             nodes[ me ].right = -1;
+            for ( SI k = beg; k < end; ++k )
+                feuille_de[ k ] = me;
             return me;
         }
 

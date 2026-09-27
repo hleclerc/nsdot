@@ -26,13 +26,19 @@
 //      erreur relative ~ eps |p| / h  +  eps |w| / h^2
 //
 // avec `h = n^( -1/D )`. LE SECOND TERME EST EN `n^( 2/D )` : a `n` fixe, la 2D est le cas dur --
-// `h^2 = 1/n` contre `n^( -2/3 )`. C'est ce qu'on vient verifier, et le sort des deux termes est
-// different : le premier se repare en travaillant dans le REPERE DU GERME, le second en portant
-// la DIFFERENCE des poids au lieu de leurs valeurs.
+// `h^2 = 1/n` contre `n^( -2/3 )`.
 //
-// `--centre` teste la moitie bon marche de la seconde reparation : retrancher la moyenne des
-// poids AVANT de les arrondir. C'est une invariance EXACTE du diagramme de puissance, donc tout
-// ecart mesure est du flottant et rien d'autre.
+// LES DEUX TERMES SONT MAINTENANT REPARES ( README § 19 ), par trois moyens qui sont le meme :
+// porter la DIFFERENCE et non la valeur. Le poids par `cell/Plan.h`, la position par le REPERE DU
+// GERME ( `cell/Contrat2D.h` ), et la memoire des premieres coupes par la BOITE DE DEPART
+// ( `cell/Boite.h` ). Ce qui reste est plat en `n`, a 1.3 fois l'epsilon du `float`.
+//
+// `SF_DIL=0` rend le comportement d'avant les boites -- c'est comme ca que les tables du § 19.7
+// se refont.
+//
+// `--centre` teste une reparation bon marche du terme de poids : retrancher leur moyenne AVANT de
+// les arrondir. C'est une invariance EXACTE du diagramme de puissance, donc tout ecart mesure est
+// du flottant et rien d'autre -- et ca ne change RIEN, ces champs etant deja a moyenne nulle.
 //
 //   fp32 --2d                       le balayage en n, uniforme, poids ~ h^2
 //   fp32 --2d --weights 100         des poids cent fois plus gros
@@ -42,6 +48,7 @@
 
 #include "bench/Args.h"
 #include "bench/Nuages.h"
+#include "cell/Boite.h"
 #include "diagram/PowerDiagram.h"
 #include "solver/Laplacien.h"
 #include <algorithm>
@@ -105,8 +112,11 @@ void compare( const Nuage<D> &nu, const Args &a, bool centre, const char *etiq )
     std::vector<TF> ad, af;
     std::vector<Facette> fd, ff;
     SI bd = 0, bf = 0;
+    nb_reprises.store( 0 );
     diagramme<PowerDiagram<D,double,NV>>( nu, W, a.par, ad, fd, bd, a.leaf );
+    const long long rep_d = nb_reprises.exchange( 0 );
     diagramme<PowerDiagram<D,float ,NV>>( nu, W, a.par, af, ff, bf, a.leaf );
+    const long long rep_f = nb_reprises.load();
 
     // ---- la mesure, rapportee a la mesure MOYENNE ( `1 / n` sur le cube unite )
     std::vector<double> em;
@@ -141,6 +151,9 @@ void compare( const Nuage<D> &nu, const Args &a, bool centre, const char *etiq )
                  etiq, int( n ), wmax, h * h, qm.med, qm.p99, qm.max, qc.med, qc.p99, qc.max,
                  int( manque ), t_pos, t_poi );
     if ( bd || bf ) std::printf( "      ( debordements : double %d, float %d )\n", int( bd ), int( bf ) );
+    if ( rep_d || rep_f )
+        std::printf( "      ( cellules reprises depuis le domaine : %.2f %% en double, %.2f %% en float )\n",
+                     100.0 * rep_d / n, 100.0 * rep_f / n );
 }
 
 template<int D>

@@ -29,6 +29,8 @@
 // parametre du type, donc `SimdVec<double,8>` est le meme code sur deux registres.
 // =====================================================================================
 
+#include "cell/Boite.h"
+#include <cmath>
 #include "cell/Contrat2D.h"
 #include <asimd/asimd.h>
 #include <cstdio>
@@ -173,37 +175,28 @@ inline int excursion( asimd::SimdVec<TK,8> &vx, asimd::SimdVec<TK,8> &vy,
 
 } // namespace etats
 
-/// LE MOTEUR : depuis le carre unite ( cotes `-1 .. -4` ), une boucle, un `switch`, et la cellule
-/// en locales. A la sortie l'atelier porte la cellule : `nb` sommets, ou 0, ou -1.
+/// LE MOTEUR, DEPUIS UNE BOITE DONNEE ( en absolu ). `fid` porte l'identifiant de chacun des
+/// quatre cotes : celui du domaine si le cote EST une face du domaine, un artificiel sinon --
+/// voir `cell/Boite.h`. A la sortie l'atelier porte la cellule : `nb` sommets, ou 0, ou -1.
 template<class TK, class Fourn, class Atl>
-void moteur( Fourn *f, Atl *a ) {
+void moteur_depuis( Fourn *f, Atl *a, const TF lo[ 2 ], const TF hi[ 2 ], const SI32 fid[ 4 ] ) {
     using namespace etats;
     using V  = asimd::SimdVec<TK,8>;
     using VI = asimd::SimdVec<SI32,8>;
 
-    // LE CARRE UNITE DANS LE REPERE DU GERME. Les quatre coins sont translates EN DOUBLE puis
-    // arrondis : `0 - ox` porte alors l'erreur relative de sa propre valeur, pas celle de `1`.
+    // LA BOITE DANS LE REPERE DU GERME. Les quatre coins sont translates EN DOUBLE puis arrondis :
+    // `lo - ox` porte alors l'erreur relative de sa propre valeur, pas celle du domaine.
     TF ox = 0, oy = 0;
     f->origine( ox, oy );
+    const double ux[ 4 ] = { lo[ 0 ], hi[ 0 ], hi[ 0 ], lo[ 0 ] };
+    const double uy[ 4 ] = { lo[ 1 ], lo[ 1 ], hi[ 1 ], hi[ 1 ] };
     alignas( 64 ) TK cx[ 8 ] = {}, cy[ 8 ] = {};
-    static const double ux[ 4 ] = { 0, 1, 1, 0 }, uy[ 4 ] = { 0, 0, 1, 1 };
-    // DIAGNOSTIC, PAS UN REGLAGE ( `SF_R` ) : demarrer d'un carre de demi-cote `R` AUTOUR DU GERME
-    // au lieu du domaine. Ca ne rend une cellule juste que si elle y tient -- l'uniforme a `R >> h`
-    // -- et ca sert a repondre a une seule question : le plancher `eps n^( 1/D )` qui reste apres
-    // le repere local vient-il des PREMIERES coupes, celles qui s'appliquent a une cellule encore
-    // grande comme le domaine ? Un sommet cree quand la cellule mesure `L` porte `eps L`.
-    static const double R = []{
-        const char *e = std::getenv( "SF_R" );
-        if ( ! e ) return 0.0;
-        std::fprintf( stderr, "  SF_R = %s : DIAGNOSTIC -- les cellules qui depassent ce carre sont FAUSSES\n", e );
-        return std::atof( e );
-    }();
-    if ( R > 0 ) {
-        const double bx[ 4 ] = { -R, R, R, -R }, by[ 4 ] = { -R, -R, R, R };
-        for ( int q = 0; q < 4; ++q ) { cx[ q ] = TK( bx[ q ] ); cy[ q ] = TK( by[ q ] ); }
-    } else
-    for ( int q = 0; q < 4; ++q ) { cx[ q ] = TK( ux[ q ] - ox ); cy[ q ] = TK( uy[ q ] - oy ); }
-    alignas( 64 ) static const SI32 ci[ 8 ] = { -1, -2, -3, -4, 0, 0, 0, 0 };
+    alignas( 64 ) SI32 ci[ 8 ] = {};
+    for ( int q = 0; q < 4; ++q ) {
+        cx[ q ] = TK( ux[ q ] - ox );
+        cy[ q ] = TK( uy[ q ] - oy );
+        ci[ q ] = fid[ q ];
+    }
     V  vx  = V::load_aligned( cx ), vy = V::load_aligned( cy );
     VI cid = VI::load_aligned( ci );
     a->ox = ox; a->oy = oy;
@@ -239,6 +232,40 @@ void moteur( Fourn *f, Atl *a ) {
         }
         nb = r;
     }
+}
+
+/// LE MOTEUR. Si le fournisseur propose une boite de depart a l'echelle locale, on l'essaie ; si
+/// la cellule la TOUCHE, on recommence depuis le domaine. Voir `cell/Boite.h` : le test est
+/// conservatif, donc le resultat est celui du domaine, toujours.
+template<class TK, class Fourn, class Atl>
+void moteur( Fourn *f, Atl *a ) {
+    static const TF dlo[ 2 ] = { 0, 0 }, dhi[ 2 ] = { 1, 1 };
+    static const SI32 dfid[ 4 ] = { -1, -2, -3, -4 };
+
+    if constexpr ( requires ( Fourn *g, TF *b ) { g->boite_depart( b, b, 1.0 ); } ) {
+        double facteur = 1;                              // `CROISSANCE^essai`, sans appel a `pow`
+        for ( int essai = 0; essai < MAX_REPRISES; ++essai, facteur *= CROISSANCE ) {
+            TF lo[ 2 ], hi[ 2 ];
+            if ( ! f->boite_depart( lo, hi, facteur ) )
+                break;                                   // la boite couvre deja le domaine
+            // cote `q` = [ coin q, coin q+1 ] : bas ( y = lo1 ), droite ( x = hi0 ), haut, gauche
+            const SI32 fid[ 4 ] = { lo[ 1 ] > 0 ? SI32( FACE_ARTIF - 1 ) : SI32( -1 ),   // bas
+                                    hi[ 0 ] < 1 ? SI32( FACE_ARTIF - 2 ) : SI32( -2 ),   // droite
+                                    hi[ 1 ] < 1 ? SI32( FACE_ARTIF - 3 ) : SI32( -3 ),   // haut
+                                    lo[ 0 ] > 0 ? SI32( FACE_ARTIF - 4 ) : SI32( -4 ) }; // gauche
+            moteur_depuis<TK>( f, a, lo, hi, fid );
+            // VIDE OU DEBORDE COMPTE COMME UNE SORTIE : une cellule de Laguerre ne contient pas
+            // forcement son germe, donc « rien dans la boite » ne veut pas dire « rien ». Voir
+            // `cell/Boite.h`, cas ( a ) -- le piege que `check` a poids nuls ne montre pas.
+            bool touche = a->nb <= 0;
+            for ( int i = 0; i < a->nb; ++i )
+                touche |= face_artificielle( a->cid[ i ] );
+            if ( ! touche )
+                return;
+            nb_reprises.fetch_add( 1, std::memory_order_relaxed );
+        }
+    }
+    moteur_depuis<TK>( f, a, dlo, dhi, dfid );
 }
 
 } // namespace sf::d2

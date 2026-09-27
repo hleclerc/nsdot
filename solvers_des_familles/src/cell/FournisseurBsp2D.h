@@ -17,6 +17,7 @@
 
 #include "accel/AaBsp.h"
 #include "cell/Contrat2D.h"
+#include "cell/Boite.h"
 #include "cell/Elagage2D.h"
 #include "cell/Plan.h"
 
@@ -42,12 +43,21 @@ struct FournisseurBsp {
     TF   x0d, y0d, w0d;
     TK   x0, y0;                                         ///< les memes, pour le test d'elagage
     SI32 i0;                                             ///< son identifiant : on ne se coupe pas
+    SI   rang;                                           ///< son rang dans l'arbre ( `-1` : inconnu )
 
-    FournisseurBsp( const Arbre *arbre, TF x0, TF y0, TF w0, SI32 i0 )
-        : arbre( arbre ), x0d( x0 ), y0d( y0 ), w0d( w0 ), x0( TK( x0 ) ), y0( TK( y0 ) ), i0( i0 ) {}
+    FournisseurBsp( const Arbre *arbre, TF x0, TF y0, TF w0, SI32 i0, SI rang = -1 )
+        : arbre( arbre ), x0d( x0 ), y0d( y0 ), w0d( w0 ), x0( TK( x0 ) ), y0( TK( y0 ) ),
+          i0( i0 ), rang( rang ) {}
 
     /// LE REPERE DE LA CELLULE : le germe ( `cell/Contrat2D.h` ). Le moteur le demande une fois.
     void origine( TF &x, TF &y ) const { x = x0d; y = y0d; }
+
+    /// LA BOITE DE DEPART : la feuille du germe, dilatee ( `cell/Boite.h` ). Le moteur verifie
+    /// lui-meme que la cellule y tient et recommence sinon -- on a le droit de se tromper ici.
+    bool boite_depart( TF lo[ 2 ], TF hi[ 2 ], double facteur ) const {
+        const TF p0[ 2 ] = { x0d, y0d };
+        return boite_de_feuille<2>( *arbre, rang, p0, lo, hi, facteur );
+    }
 
     /// La boite et le majorant sont TRANSLATES ICI, une fois par noeud -- pas une fois par sommet.
     /// `w( q ) <= a . q + b` devient `a . q_local + ( b + a . p0 )`, donc `cb = w0 - b - a . p0`,

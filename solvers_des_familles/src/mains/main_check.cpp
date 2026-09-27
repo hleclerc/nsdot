@@ -155,7 +155,14 @@ int deroule( const Args &a, const std::vector<SI> &seules ) {
         }
         return bad;
     }
-    for ( double ws : { 0.0, 1.0 } ) {
+    // TROIS ECHELLES DE POIDS, et la troisieme n'est pas decorative. A `ws <= 1` les poids valent
+    // `h^2`, donc chaque cellule reste posee sur son germe -- et un DEFAUT QUI SUPPOSE CA passe au
+    // travers. C'est arrive : la boite de depart locale ( `cell/Boite.h` ) traitait « vide dans la
+    // boite » comme « vide », ce qui n'est vrai que si la cellule contient son germe. `check`
+    // disait 0/5000 et Newton divergeait a la premiere iteration. A `ws = 100` le bissecteur se
+    // deplace de `100 h`, les cellules quittent leurs germes, et le defaut se voit.
+    const double liste[ 3 ] = { 0.0, 1.0, a.wscale > 0 ? a.wscale : 100.0 };
+    for ( double ws : liste ) {
         const Nuage<D> nu = nuage_uniforme<D>( a.n, a.graine, ws );
         bad += dispatch<D>( a, [ & ]( auto tag ) {
             return verifie<typename decltype( tag )::type>( a, nu );

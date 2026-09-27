@@ -10,6 +10,7 @@
 
 #include "accel/AaBsp.h"
 #include "cell/Contrat3D.h"
+#include "cell/Boite.h"
 #include "cell/Elagage3D.h"
 #include "cell/Plan.h"
 
@@ -73,12 +74,20 @@ struct FournisseurBsp3 {
         return lo;
     }
 
-    FournisseurBsp3( const Arbre *arbre, TF x0, TF y0, TF z0, TF w0, SI32 i0 )
+    SI   rang = -1;                                      ///< son rang dans l'arbre ( `-1` : inconnu )
+
+    FournisseurBsp3( const Arbre *arbre, TF x0, TF y0, TF z0, TF w0, SI32 i0, SI rang = -1 )
         : arbre( arbre ), x0d( x0 ), y0d( y0 ), z0d( z0 ), w0d( w0 ),
-          x0( TK( x0 ) ), y0( TK( y0 ) ), z0( TK( z0 ) ), i0( i0 ) {}
+          x0( TK( x0 ) ), y0( TK( y0 ) ), z0( TK( z0 ) ), i0( i0 ), rang( rang ) {}
 
     /// LE REPERE DE LA CELLULE : le germe ( `cell/Contrat2D.h` )
     void origine( TF &x, TF &y, TF &z ) const { x = x0d; y = y0d; z = z0d; }
+
+    /// LA BOITE DE DEPART : la feuille du germe, dilatee ( `cell/Boite.h` )
+    bool boite_depart( TF lo[ 3 ], TF hi[ 3 ], double facteur ) const {
+        const TF p0[ 3 ] = { x0d, y0d, z0d };
+        return boite_de_feuille<3>( *arbre, rang, p0, lo, hi, facteur );
+    }
 
     /// boite et majorant TRANSLATES ICI, une fois par noeud ( cf. `FournisseurBsp2D.h` )
     template<class Etat>
