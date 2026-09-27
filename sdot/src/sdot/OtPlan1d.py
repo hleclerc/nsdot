@@ -177,7 +177,7 @@ class OtPlan1d( Aggregate ):
                                 f"        return ( 2 * ( ( gs + sg - 1 ) / sg ) + 1 ) * 256;" ),
         )
         driver.call(
-            FfiCode( # `scratch( group_index )` yields this work-GROUP's shared rank-1 row (`scratch( k )`
+            FfiCode.per_item( # `scratch( group_index )` yields this work-GROUP's shared rank-1 row (`scratch( k )`
                 # inside, cooperatively). `plan( batch_index )` still picks the angle. The backward
                 # RE-SORTS into its OWN fresh scratch, so it needs all of them -- they are no longer
                 # residuals (per-group, their forward content is transient). `local_index`/`local_size`/
@@ -188,7 +188,7 @@ class OtPlan1d( Aggregate ):
                             "group_scan( group_index ), "
                             "local_index, local_size, group, local_scratch, sub_group );" ),
                 **geometrie_cooperative ),
-            FfiCode( code = ( "plan( batch_index ).update_outputs_bwd( grad_for_plan( batch_index ), sorted_indices( group_index ), radix_tmp( group_index ), sorted_pos( group_index ), "
+            FfiCode.per_item( code = ( "plan( batch_index ).update_outputs_bwd( grad_for_plan( batch_index ), sorted_indices( group_index ), radix_tmp( group_index ), sorted_pos( group_index ), "
                             "group_scan( group_index ), "
                             "local_index, local_size, group, local_scratch, sub_group );" ),
                     prologue = "plan.src_dist.zero_position_grad( queue, grad_for_plan.src_dist );",
@@ -291,12 +291,12 @@ class OtPlan1d( Aggregate ):
             local_mem_elems = "return 0;",
         )
         driver.call(
-            FfiCode( code = ( "plan( batch_index ).update_outputs_presorted( sorted_indices( group_index ), sorted_pos( group_index ), "
+            FfiCode.per_item( code = ( "plan( batch_index ).update_outputs_presorted( sorted_indices( group_index ), sorted_pos( group_index ), "
                             "group_scan( group_index ), "
                             "local_index, local_size, group );" ),
                 **geometrie_presortee,
             ),
-            FfiCode( code = ( "plan( batch_index ).update_outputs_bwd_presorted( grad_for_plan( batch_index ), sorted_indices( group_index ), sorted_pos( group_index ), "
+            FfiCode.per_item( code = ( "plan( batch_index ).update_outputs_bwd_presorted( grad_for_plan( batch_index ), sorted_indices( group_index ), sorted_pos( group_index ), "
                             "group_scan( group_index ), "
                             "local_index, local_size, group );" ),
                     prologue = "plan.src_dist.zero_position_grad( queue, grad_for_plan.src_dist );",

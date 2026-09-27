@@ -157,7 +157,7 @@ class Cell( Aggregate ):
         cap = self.dim + 1
         scratch, sc_kwargs = self._call_scratch( "scratch", cap )
         driver.call(
-            FfiCode( code = "cell( batch_index ).init_as_unbounded( scratch( batch_index ) );" ),
+            FfiCode.per_item( code = "cell( batch_index ).init_as_unbounded( scratch( batch_index ) );" ),
             name = "init_as_unbounded",
             **merge_call( dict(
                 output_capacities = { "cell.nb_vertices": cap, "cell.nb_cuts": cap },
@@ -179,7 +179,7 @@ class Cell( Aggregate ):
         cap = self.init_capacity()
         scratch, sc_kwargs = self._call_scratch( "scratch", cap )
         driver.call(
-            FfiCode( code = "cell( batch_index ).init_as_hypercube( scratch( batch_index ), origin, axes, cut_id );" ),
+            FfiCode.per_item( code = "cell( batch_index ).init_as_hypercube( scratch( batch_index ), origin, axes, cut_id );" ),
             name = "init_as_hypercube",
             **merge_call( dict(
                 output_capacities = { "cell.nb_vertices": cap, "cell.nb_cuts": cap },
@@ -206,7 +206,7 @@ class Cell( Aggregate ):
         res = self._empty_like_me()
         scratch, sc_kwargs = self._call_scratch( "scratch", max( cap_v, cap_c ) )
         driver.call(
-            FfiCode( code = "cell( batch_index ).cut( res( batch_index ), scratch( batch_index ), direction, offset, cut_id );" ),
+            FfiCode.per_item( code = "cell( batch_index ).cut( res( batch_index ), scratch( batch_index ), direction, offset, cut_id );" ),
             name = "cut",
             **merge_call( dict(
                 output_capacities = { "res.nb_vertices": cap_v, "res.nb_cuts": cap_c },
@@ -239,9 +239,9 @@ class Cell( Aggregate ):
         res = RealTensor[ tuple( self.batch_axes ) ]()
         scratch, sc_kwargs = self._call_scratch( "scratch", max( self._cap_v(), self._cap_c() ) )
         driver.call(
-            FfiCode( code = "cell( batch_index ).measure( res( batch_index ), scratch( batch_index ) );",
+            FfiCode.per_item( code = "cell( batch_index ).measure( res( batch_index ), scratch( batch_index ) );",
                 ),
-            FfiCode( "cell( batch_index ).measure_bwd( res( batch_index ), grad_for_res( batch_index ), "
+            FfiCode.per_item( "cell( batch_index ).measure_bwd( res( batch_index ), grad_for_res( batch_index ), "
                            "grad_for_cell( batch_index ).vertex_positions, scratch( batch_index ) );" ),
             name = "measure",
             **merge_call( dict( output_attributes = [ "res" ] ), sc_kwargs ),

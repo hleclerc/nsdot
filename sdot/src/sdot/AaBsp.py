@@ -274,7 +274,7 @@ class AaBsp( SpatialAccelerator ):
         # une trace ils peuvent être des traceurs d'une trace close ( voir `OtPlan` ). Seules les
         # tranches entrent.
         driver.call(
-            FfiCode( includes = [ "sdot/bsp_build_level.h" ],
+            FfiCode.per_item( includes = [ "sdot/bsp_build_level.h" ],
                 code = "bsp_refresh_majorant( cloud, node_begin( batch_index ), node_end( batch_index ), "
                            "maj.wa( batch_index ), maj.wb( batch_index ) );" ),
             name = "bsp_refresh_majorants",
@@ -506,7 +506,7 @@ def _build_in_kernel( pos, w, leaf_size ):
         no_weights = [] if w is not None else [ "dst.weights", "lvl.wa", "lvl.wb" ]
 
         driver.call(
-            FfiCode( includes = [ "sdot/bsp_build_level.h" ],
+            FfiCode.per_item( includes = [ "sdot/bsp_build_level.h" ],
                 code = "bsp_build_level( src, dst, perm, "
                            "lvl.begin( batch_index ), lvl.end( batch_index ), "
                            "lvl.box( batch_index ), "

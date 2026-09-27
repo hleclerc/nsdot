@@ -260,12 +260,12 @@ class PowerDiagram( Aggregate ):
         memo_expr, memo_kwargs, memo_produced = self._memo_for_call()
 
         driver.call(
-            FfiCode( code = "power_diagram.measures( res, dom_cell, scratch( batch_index ), "
+            FfiCode.per_item( code = "power_diagram.measures( res, dom_cell, scratch( batch_index ), "
                            f"{ dist_expr }, { memo_expr }, thread_index, nb_threads );",
                 # les gradients sur les germes sont PARTAGÉS par tous les items : chaque work-item y
                 # accumule ( `atomic_add` côté C++ ), et la plateforme les met à zéro avant le corps
                 ),
-            FfiCode( "power_diagram.measures_bwd( res, dom_cell, grad_for_res, "
+            FfiCode.per_item( "power_diagram.measures_bwd( res, dom_cell, grad_for_res, "
                            f"{ self._grad_seeds_expr() }, "
                            f"scratch( batch_index ), { dist_expr }, { grad_dist_expr }, "
                            "thread_index, nb_threads );" ),
@@ -301,7 +301,7 @@ class PowerDiagram( Aggregate ):
         dist_expr, _, dist_kwargs = self._dist_for()
 
         driver.call(
-            FfiCode( code = "power_diagram.moments( mass, first, second, dom_cell, scratch( batch_index ), "
+            FfiCode.per_item( code = "power_diagram.moments( mass, first, second, dom_cell, scratch( batch_index ), "
                            f"{ dist_expr }, thread_index, nb_threads );" ),
             name = "power_diagram_moments",
             **merge_call( dict( output_attributes = [ "mass", "first", "second" ] ), sc_kwargs ),
@@ -335,7 +335,7 @@ class PowerDiagram( Aggregate ):
         dist_expr, _, dist_kwargs = self._dist_for()
 
         driver.call(
-            FfiCode( code = "power_diagram.hessian_row( SI( ranks( batch_index ) ), dom_cell, nbrs( batch_index ), "
+            FfiCode.per_item( code = "power_diagram.hessian_row( SI( ranks( batch_index ) ), dom_cell, nbrs( batch_index ), "
                            f"scratch, thread_index, { dist_expr } );",
                 max_nb_threads = "return scratch.words.shape( 0 );" ),
             name = "power_diagram_hessian_rows",
@@ -376,7 +376,7 @@ class PowerDiagram( Aggregate ):
         scratch, sc_kwargs = CellScratch.for_call( "scratch", nb_words, dom.kernel_dtype, nb_threads = nt )
 
         driver.call(
-            FfiCode( code = "power_diagram.build_cell( SI( ranks( batch_index ) ), dom_cell, cells( batch_index ), "
+            FfiCode.per_item( code = "power_diagram.build_cell( SI( ranks( batch_index ) ), dom_cell, cells( batch_index ), "
                            "scratch, thread_index );",
                 max_nb_threads = "return scratch.words.shape( 0 );" ),
             name = "power_diagram_cells",

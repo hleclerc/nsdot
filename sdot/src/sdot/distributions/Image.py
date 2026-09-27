@@ -126,9 +126,9 @@ class Image( Distribution ):
     def _update_current_mass( self ):
         # res = RealTensor[ tuple( self.batch_axes ) ]()
         driver.call(
-            FfiCode( code = "image.current_mass( batch_index ) = image( batch_index ).measure();",
+            FfiCode.per_item( code = "image.current_mass( batch_index ) = image( batch_index ).measure();",
                 ),
-            FfiCode( "image( batch_index ).measure_bwd( grad_for_image( batch_index ).values, "
+            FfiCode.per_item( "image( batch_index ).measure_bwd( grad_for_image( batch_index ).values, "
                            "grad_for_image( batch_index ).current_mass );" ),
             name = "mass",
             output_attributes = [ "image.current_mass" ],
@@ -194,7 +194,7 @@ class Image( Distribution ):
         cell_cum_mass = RealTensor[ *self.batch_axes, cum_axis ]()
 
         driver.call(
-            FfiCode( code = "image( batch_index ).fill_cell_cum_mass( cell_cum_mass( batch_index ) );",
+            FfiCode.per_item( code = "image( batch_index ).fill_cell_cum_mass( cell_cum_mass( batch_index ) );",
             ),
             name = "cell_cum_mass",
             output_attributes = [ "cell_cum_mass" ],
