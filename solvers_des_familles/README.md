@@ -3813,19 +3813,24 @@ diagramme, la bascule vaut `N_f/s + N_d` contre `N₀`, donc **le seuil de renta
 | **2** | **−31 %** | **−33 %** | **−37 %** |
 | 4 | −45 % | −50 % | −52 % |
 
-**Sur ce CPU, `s ≈ 1` et il n'y a rien à gagner** — mesuré sur le diagramme seul à `n = 10⁶` :
-2D Voronoï 143 → 146 ns/germe, 2D Laguerre 166 → 193 (les reprises de boîte), 3D Voronoï
-1883 → **1653**, 3D Laguerre 1914 → 1864. Entre −12 % et +16 %. L'engin est limité par le débit
-d'instructions SIMD et par les dépendances du découpage, pas par la bande passante, et l'AVX fait
-quatre `double` par cycle là où il ferait huit `float` — mais le découpage n'est pas ce qui sature.
+**Sur ce CPU, `s ≈ 1` et il n'y a rien à gagner.** Diagramme isolé, `n = 10⁶`, mêmes germes et
+mêmes poids des deux côtés, avec les défauts de la § 19.11 :
 
-**Mesuré, `s` vaut 1,17 à 1,19 en 3D et 0,85 à 1,0 en 2D** (le 2D Laguerre paie les reprises de
-boîte). La 3D est donc *exactement au seuil* : −3 % à `n = 10⁵`, +9 % à `n = 5·10⁵`. Un match nul,
-et c'est le mieux que ce CPU puisse donner.
+| | `double` | `float` | `s` |
+|---|---|---|---|
+| 2D Voronoï | 146 | 160 ns/germe | 0,91 |
+| 2D Laguerre | 167 | 179 | 0,93 |
+| 3D Voronoï | 1880 | 1912 | 0,98 |
+| 3D Laguerre | 1921 | 1887 | 1,02 |
 
-En 3D la boîte de départ ne coûte rien à la bascule, contrairement à la 2D : à `n = 5·10⁵` la phase
-`float` prend 7,89 s de diagramme avec les boîtes contre 8,50 sans, et le partage 5/1 est le même
-des deux côtés. Le cube de départ plus petit élague davantage, ce qui paie les reprises.
+L'engin est limité par le débit d'instructions SIMD et par les dépendances du découpage, pas par
+la bande passante : l'AVX ferait huit `float` par cycle contre quatre `double`, mais le découpage
+n'est pas ce qui sature. **La bascule y perd donc exactement son surcoût de un à deux diagrammes,
+en 2D comme en 3D.**
+
+*(Une mesure antérieure donnait `s = 1,17` en 3D. Elle comparait les temps des PHASES de la
+bascule — des diagrammes pris à des points différents du chemin de Newton, donc sur des cellules
+différentes. Ce n'est pas une comparaison propre, et le tableau ci-dessus la remplace.)*
 
 La conclusion transportable est donc : *le partage 5/1 tient, le surcoût est de un à deux
 diagrammes, le seuil est à 1,2, et tout ce qui dépasse est du gain.* C'est une barre basse pour une
@@ -3879,7 +3884,58 @@ six cas mesurés, en 2D comme en 3D, de `n = 2·10⁴` à `5·10⁵`.
 Le seul levier restant est donc `s`, le rapport de vitesse par diagramme. Il ne se gagne pas en
 arithmétique : il se gagne sur une machine où `fp32` va vraiment plus vite.
 
-## 19.11 La mesure image : le stockage peut être `float`, la marche non
+---
+
+## 19.11 LES SOMMETS RÉSOLUS DEPUIS LEURS PLANS — les boîtes deviennent inutiles
+
+Les boîtes de départ (§ 19.7) achetaient la précision au prix d'une **reprise par cellule** :
+acceptable sur CPU, mauvais sur carte, où une reprise est une divergence de warp. Or elles
+combattaient une erreur bien particulière — l'erreur **portée** : le noyau construit ses sommets
+par interpolations successives, si bien qu'un sommet né quand la cellule mesurait `L` garde `eps·L`.
+
+**Mais un sommet d'un convexe ne dépend pas de l'histoire des coupes.** Il est l'intersection de
+`D` plans, et de rien d'autre. Une fois la cellule finie, on peut donc le **résoudre** depuis les
+deux (2D) ou trois (3D) coupes qui le portent — un Cramer, en `double`, dans le repère du germe.
+Plus d'histoire, donc plus de `L`, et **aucune branche** : sur carte, pas de divergence.
+
+L'information nécessaire était déjà là : en 3D `Cellule3::vk0/vk1/vk2` stocke précisément les trois
+coupes de chaque sommet ; en 2D `cid[i−1]` et `cid[i]` donnent les deux. Il ne manquait que de
+relire le plan depuis l'identifiant de la coupe, ce que l'arbre sait faire.
+
+`n = 10⁶`, uniforme Laguerre, écart de masse `float` / `double` :
+
+| | médiane | p99 | max | 2D, ns/germe |
+|---|---|---|---|---|
+| ni l'un ni l'autre | 1.71e−06 | 6.49e−05 | 2.52e−04 | |
+| boîtes | 3.82e−08 | 5.10e−07 | 1.20e−05 | 219 |
+| **sommets résolus** | **6.24e−09** | **1.09e−07** | **3.39e−07** | **175** |
+| les deux | 6.24e−09 | 1.09e−07 | 3.39e−07 | |
+
+**En 2D le raffinement rend la boîte strictement inutile** : six fois meilleur sur la médiane,
+trente-cinq fois sur le maximum, vingt pour cent plus rapide, et les reprises en moins. Les deux
+ensemble ne donnent rien de plus, au chiffre près. 6,24e−09, c'est **un dixième de l'epsilon du
+`float`** — le sommet est calculé en `double` et ne subit qu'un seul arrondi.
+
+**En 3D il gagne sur le gros et perd sur la queue** (max 4,15e−06 contre 2,00e−06 avec les boîtes ;
+3,87e−07 avec les deux), pour le même temps. La raison se lit dans le compte d'arêtes en
+désaccord : **9 sans boîte contre 2 avec**. La boîte ne sert pas qu'aux coordonnées, elle fiabilise
+les **décisions** — un sommet mal placé peut se tromper de côté d'un plan, et aucun raffinement
+postérieur ne rattrape une topologie déjà fausse. (Le seuil de conditionnement du Cramer n'y est
+pour rien : le balayer de `1e−3` à zéro ne change pas un chiffre.)
+
+**Le défaut est donc : sommets résolus, pas de boîtes** — `SF_DIL` reste pour qui veut la queue en
+3D. Le maximum ne pilote rien (§ 19.10 : Newton s'arrête sur `|r|_2`, portée par le gros), et la
+bascule le confirme : **partage 5/1 et comptes de diagrammes identiques** dans les quatre
+configurations mesurées, avec ou sans boîtes.
+
+Sur ce qui inquiétait — la divergence : à `n = 10⁶` en 2D avec des poids dix fois `h²`, **zéro
+reprise, et un écart de masse médian de 0.00e+00** — plus de la moitié des cellules sont identiques
+au bit près entre `float` et `double`, p99 2,5e−07, max 7,9e−07.
+
+Le raffinement est actif **en simple précision seulement** : en `double` l'erreur portée vaut
+`1e−16·L` et il n'y a rien à réparer. `SF_RAFF=0` l'éteint.
+
+## 19.12 La mesure image : le stockage peut être `float`, la marche non
 
 Troisième instance du même mécanisme. Le coupable nommé au § 12.7 était `S[j][i] − sref` : la somme
 préfixe court de 0 à ~1 sur une ligne, la différence entre deux pixels d'une même cellule vaut

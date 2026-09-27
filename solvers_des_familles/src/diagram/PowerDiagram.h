@@ -34,6 +34,7 @@
 #include "util/parallel.h"
 
 #include <atomic>
+#include <cstdlib>
 #include <cmath>
 #include <type_traits>
 #include <vector>
@@ -63,6 +64,15 @@ struct PowerDiagram {
     mutable std::vector<std::vector<unsigned char>> memo_saute;   ///< par fil : « deja propose »
     mutable SI            memo_coupees = 0;                         ///< coupes effectives, en tout, au dernier diagramme
 
+    /// LE RAFFINEMENT DES SOMMETS ( `raffine` ), actif par defaut EN SIMPLE PRECISION SEULEMENT --
+    /// en `double` l'erreur portee vaut `1e-16 L`, il n'y a rien a reparer. `SF_RAFF=0` l'eteint.
+    bool raffiner = []{ const char *e = std::getenv( "SF_RAFF" ); return ! e || std::atoi( e ); }();
+    /// sous ce determinant RELATIF, on garde le sommet du noyau. `SF_DET`.
+    static TF seuil_det() {
+        static const TF v = []{ const char *e = std::getenv( "SF_DET" ); return e ? TF( std::atof( e ) ) : TF( 1e-6 ); }();
+        return v;
+    }
+
     /// les paires ( identifiant, identifiant ) des facettes d'un diagramme deviennent la memoire
     void memorise( const d2::SI32 *ii, const d2::SI32 *jj, SI nb ) {
         if ( SI( rang.size() ) != n ) { rang.resize( n ); for ( SI k = 0; k < n; ++k ) rang[ ids[ k ] ] = k; }
@@ -86,6 +96,8 @@ struct PowerDiagram {
             for ( int d = 0; d < D; ++d ) c[ d ][ k ] = TK( arbre.seed_c( k, d ) );
             ids[ k ] = d2::SI32( arbre.seed_id( k ) );
         }
+        rang.resize( n );                                // identifiant -> rang : `raffine` en a besoin
+        for ( SI k = 0; k < n; ++k ) rang[ ids[ k ] ] = k;
         w.clear();
         if ( W )
             copie_poids();
@@ -211,9 +223,103 @@ struct PowerDiagram {
             Cell cel;
             const d2::SI32 i = ids[ k ];
             if ( ! cellule( k, cel ) ) { ++deborde; return; }
+            if constexpr ( sizeof( TK ) < 8 ) if ( raffiner ) raffine( k, cel );
             res[ i ] = mes( cel, [ & ]( d2::SI32 j, TF m ) { facette( t, i, j, m ); }, SI( i ) );
         } );
         return deborde.load();
+    }
+
+    // ------------------------------------------------------------------ LES SOMMETS RAFFINES
+    /// LE PLAN de la coupe `id`, vu par le germe de rang `k`, EN DOUBLE et dans le repere du germe.
+    /// Rend `false` si l'identifiant ne se relit pas ( face artificielle d'une boite de depart ).
+    bool plan_local( SI k, d2::SI32 id, TF nrm[ D ], TF &off ) const {
+        if ( id >= 0 ) {                                 // un germe : le bissecteur, comme `Plan.h`
+            const SI r = rang[ id ];
+            TF dd = 0;
+            for ( int d = 0; d < D; ++d ) {
+                nrm[ d ] = arbre.seed_c( r, d ) - arbre.seed_c( k, d );
+                dd += nrm[ d ] * nrm[ d ];
+            }
+            off = TF( 0.5 ) * dd;
+            if ( laguerre() ) off += TF( 0.5 ) * ( arbre.seed_w( k ) - arbre.seed_w( r ) );
+            return true;
+        }
+        const int f = -1 - id;
+        if ( f >= 2 * D ) return false;                  // `FACE_ARTIF` : on ne sait pas la relire
+        for ( int d = 0; d < D; ++d ) nrm[ d ] = 0;
+        // LES FACES DU DOMAINE, dans l'ordre que posent `Noyau2D.h` et `Cellule3D.h` -- et ce
+        // n'est PAS le meme : en 2D bas / droite / haut / gauche, en 3D x- / x+ / y- / y+ / z- / z+
+        int ax; bool haut;
+        if constexpr ( D == 2 ) { const int t[ 4 ] = { 1, 0, 1, 0 }; ax = t[ f ]; haut = f == 1 || f == 2; }
+        else                    { ax = f / 2; haut = f & 1; }
+        nrm[ ax ] = haut ? TF( 1 ) : TF( -1 );
+        const TF o = arbre.seed_c( k, ax );
+        off = haut ? TF( 1 ) - o : o;
+        return true;
+    }
+
+    /// CHAQUE SOMMET RESOLU DEPUIS LES COUPES QUI LE PORTENT -- deux en 2D, trois en 3D.
+    ///
+    /// Un sommet d'un convexe ne depend PAS de l'histoire des coupes : il est l'intersection de
+    /// `D` plans, et rien d'autre. Le noyau, lui, le construit par interpolations successives, si
+    /// bien qu'il porte l'erreur de la cellule TELLE QU'ELLE ETAIT quand il est ne -- `eps L` pour
+    /// une cellule large de `L`. C'est cette erreur PORTEE que les boites de depart combattaient,
+    /// au prix de reprises. La resoudre a la source coute une elimination de Gauss par sommet et
+    /// ne branche pas : sur une carte, pas de divergence.
+    ///
+    /// Le systeme mal conditionne ( plans presque paralleles ) est LAISSE tel quel : le sommet du
+    /// noyau y est au moins aussi bon, et on ne veut pas remplacer une erreur portee par un
+    /// quotient qui explose.
+    void raffine( SI k, Cell &cel ) const {
+        if constexpr ( D == 2 ) {
+            const int nb = cel.nb;
+            if ( nb < 3 ) return;
+            TF pn[ MaxNv ][ 2 ], po[ MaxNv ];
+            bool ok[ MaxNv ];
+            for ( int j = 0; j < nb; ++j ) ok[ j ] = plan_local( k, cel.cid[ j ], pn[ j ], po[ j ] );
+            TF nx[ MaxNv ], ny[ MaxNv ];
+            for ( int i = 0; i < nb; ++i ) {
+                const int j = i ? i - 1 : nb - 1;         // l'arete qui ARRIVE en `i`
+                nx[ i ] = TF( cel.lx[ i ] ); ny[ i ] = TF( cel.ly[ i ] );
+                if ( ! ok[ j ] || ! ok[ i ] ) continue;
+                const TF det = pn[ j ][ 0 ] * pn[ i ][ 1 ] - pn[ j ][ 1 ] * pn[ i ][ 0 ];
+                const TF e1 = pn[ j ][ 0 ] * pn[ j ][ 0 ] + pn[ j ][ 1 ] * pn[ j ][ 1 ];
+                const TF e2 = pn[ i ][ 0 ] * pn[ i ][ 0 ] + pn[ i ][ 1 ] * pn[ i ][ 1 ];
+                if ( ! ( det * det > seuil_det() * seuil_det() * e1 * e2 ) ) continue;
+                nx[ i ] = ( po[ j ] * pn[ i ][ 1 ] - po[ i ] * pn[ j ][ 1 ] ) / det;
+                ny[ i ] = ( pn[ j ][ 0 ] * po[ i ] - pn[ i ][ 0 ] * po[ j ] ) / det;
+            }
+            for ( int i = 0; i < nb; ++i ) { cel.lx[ i ] = TK( nx[ i ] ); cel.ly[ i ] = TK( ny[ i ] ); }
+        } else {
+            const int nv = cel.nv, nc = cel.nc;
+            if ( nv < 4 ) return;
+            std::vector<TF> pn( size_t( nc ) * 3 ), po( nc );
+            std::vector<char> ok( nc );
+            for ( int j = 0; j < nc; ++j ) ok[ j ] = plan_local( k, cel.cid[ j ], &pn[ size_t( j ) * 3 ], po[ j ] );
+            for ( int i = 0; i < nv; ++i ) {
+                const int q[ 3 ] = { cel.vk0[ i ], cel.vk1[ i ], cel.vk2[ i ] };
+                if ( ! ok[ q[ 0 ] ] || ! ok[ q[ 1 ] ] || ! ok[ q[ 2 ] ] ) continue;
+                const TF *A0 = &pn[ size_t( q[ 0 ] ) * 3 ], *A1 = &pn[ size_t( q[ 1 ] ) * 3 ], *A2 = &pn[ size_t( q[ 2 ] ) * 3 ];
+                const TF c0 = A1[ 1 ] * A2[ 2 ] - A1[ 2 ] * A2[ 1 ];
+                const TF c1 = A1[ 2 ] * A2[ 0 ] - A1[ 0 ] * A2[ 2 ];
+                const TF c2 = A1[ 0 ] * A2[ 1 ] - A1[ 1 ] * A2[ 0 ];
+                const TF det = A0[ 0 ] * c0 + A0[ 1 ] * c1 + A0[ 2 ] * c2;
+                TF ech = 1;
+                for ( const TF *A : { A0, A1, A2 } ) ech *= std::sqrt( A[0]*A[0] + A[1]*A[1] + A[2]*A[2] );
+                if ( ! ( std::fabs( det ) > seuil_det() * ech ) ) continue;
+                const TF b[ 3 ] = { po[ q[ 0 ] ], po[ q[ 1 ] ], po[ q[ 2 ] ] };
+                // Cramer : on remplace une colonne a la fois
+                auto d3 = [ ]( const TF *u, const TF *v, const TF *w ) {
+                    return u[0]*(v[1]*w[2]-v[2]*w[1]) - u[1]*(v[0]*w[2]-v[2]*w[0]) + u[2]*(v[0]*w[1]-v[1]*w[0]);
+                };
+                const TF L0[ 3 ] = { b[0], A0[1], A0[2] }, L1[ 3 ] = { b[1], A1[1], A1[2] }, L2[ 3 ] = { b[2], A2[1], A2[2] };
+                const TF M0[ 3 ] = { A0[0], b[0], A0[2] }, M1[ 3 ] = { A1[0], b[1], A1[2] }, M2[ 3 ] = { A2[0], b[2], A2[2] };
+                const TF N0[ 3 ] = { A0[0], A0[1], b[0] }, N1[ 3 ] = { A1[0], A1[1], b[1] }, N2[ 3 ] = { A2[0], A2[1], b[2] };
+                cel.vx[ i ] = TK( d3( L0, L1, L2 ) / det );
+                cel.vy[ i ] = TK( d3( M0, M1, M2 ) / det );
+                cel.vz[ i ] = TK( d3( N0, N1, N2 ) / det );
+            }
+        }
     }
 
 private:

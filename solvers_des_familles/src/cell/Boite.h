@@ -92,7 +92,27 @@ inline constexpr int    MAX_REPRISES = 12;
 /// LA DILATATION de la boite de feuille, en nombre de fois sa plus grande arete. `0` eteint tout
 /// et rend le domaine -- le comportement d'avant, garde pour pouvoir remesurer ( `SF_DIL=0` ).
 ///
-/// UN, ET C'EST MESURE. Depuis que la reprise DOUBLE au lieu de sauter au domaine, l'erreur est
+/// ZERO PAR DEFAUT DEPUIS LE RAFFINEMENT DES SOMMETS ( `PowerDiagram::raffine` ). La boite
+/// combattait l'erreur PORTEE -- un sommet cree quand la cellule mesurait `L` garde `eps L` ; mais
+/// resoudre chaque sommet depuis ses plans a la fin la supprime a la source, sans reprise et sans
+/// branche. Mesure a `n = 1e6`, uniforme Laguerre, ecart de masse float / double :
+///
+///                             mediane      p99        max      temps 2D
+///      ni l'un ni l'autre     1.71e-06   6.49e-05   2.52e-04
+///      boites                 3.82e-08   5.10e-07   1.20e-05   219 ns/germe
+///      RAFFINEMENT            6.24e-09   1.09e-07   3.39e-07   175 ns/germe
+///      les deux               6.24e-09   1.09e-07   3.39e-07
+///
+/// En 2D le raffinement rend la boite STRICTEMENT inutile -- meilleur et plus rapide, les reprises
+/// en moins. En 3D il gagne sur la mediane mais laisse le maximum a 4.15e-06 contre 3.87e-06 avec
+/// les deux, parce que la boite ne sert pas qu'aux coordonnees : elle fiabilise les DECISIONS
+/// ( 9 aretes en desaccord contre 2 ), et un sommet mal place peut se tromper de cote d'un plan,
+/// ce qu'aucun raffinement posterieur ne rattrape. Le maximum ne pilotant rien -- Newton s'arrete
+/// sur `|r|_2`, portee par le gros de la distribution -- le defaut est ZERO, et `SF_DIL` reste
+/// pour qui veut la queue.
+///
+/// UN, SI ON LES RALLUME, ET C'EST MESURE. Depuis que la reprise DOUBLE au lieu de sauter au
+/// domaine, l'erreur est
 /// monotone en dilatation -- plus la boite est petite, mieux c'est -- et le seul frein est le
 /// nombre de reprises. A `n = 1e5`, 2D, poids `h^2`, ecart float / double sur la masse :
 ///
@@ -109,7 +129,7 @@ inline constexpr int    MAX_REPRISES = 12;
 inline double dilatation() {
     static const double d = []{
         if ( const char *e = std::getenv( "SF_DIL" ) ) return std::atof( e );
-        return 1.0;
+        return 0.0;
     }();
     return d;
 }
