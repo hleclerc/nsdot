@@ -2,11 +2,19 @@
 
 // =====================================================================================
 // LES SOLVEURS LINEAIRES : `L d = b` sur le systeme reduit, la jauge `d_0 = 0` etant a leur
-// charge. Tous ont la meme surface :
+// charge. Tous derivent de `Lineaire` et n'offrent que ca :
 //
 //     bool resout( const Laplacien &L, const std::vector<TF> &b, std::vector<TF> &d );
 //     const char *nom() const;
 //     StatsLin st;        // le temps par poste, et ce que le solveur a fait
+//
+// L'INTERFACE EST VIRTUELLE, ET C'EST UN CHOIX DE COMPILATION. Elle etait un parametre de
+// template, ce qui multipliait par trois -- un par solveur -- tout ce qui vit sous `Newton` :
+// `main_image.cpp` s'instanciait quarante-huit fois ( 2 noyaux x 4 capacites x 2 mesures x
+// 3 solveurs ) et mettait huit minutes et quatre gigaoctets a compiler. Le prix d'un appel
+// virtuel se paie UNE FOIS PAR RESOLUTION d'un systeme a `n` inconnues : il est sous le bruit,
+// et il n'y a rien a inliner dans un appel qui dure des millisecondes. Les REGLAGES, eux,
+// restent sur le type concret -- ils se posent dans `main` avant que le template ne commence.
 //
 // Le solveur lineaire n'est pas l'objet de l'etude et il ne faut pas qu'il le devienne : on prend
 // des bibliotheques en-tetes seuls.
@@ -61,8 +69,26 @@ struct StatsLin {
     double total() const { return t_forme + t_hier + t_res; }
 };
 
+/// CE QU'UN SOLVEUR LINEAIRE DOIT SAVOIR FAIRE, et rien de plus.
+struct Lineaire {
+    StatsLin st;                   ///< cumule sur toutes les resolutions
+
+    virtual ~Lineaire() = default;
+    virtual const char *nom() const = 0;
+    virtual bool resout( const Laplacien &L, const std::vector<TF> &b, std::vector<TF> &d ) = 0;
+
+    /// UNE RESOLUTION DE PLUS sur la derniere hierarchie / factorisation, pour qui reutilise un
+    /// laplacien fige ( `PremierOrdre.h` ). `sait_encore()` dit si ca a un sens maintenant.
+    virtual bool sait_encore() const { return false; }
+    virtual void resout_encore( const std::vector<TF> &b, std::vector<TF> &d ) { (void) b; (void) d; }
+
+    /// l'ordre de l'arbre ( `pd.ids` ), que seul le multigrille maison utilise : son agregation
+    /// est la tranche de rangs, donc elle est GRATUITE -- mais encore faut-il lui donner les rangs.
+    virtual void ordre( const std::int32_t *ids, SI nb ) { (void) ids; (void) nb; }
+};
+
 #ifdef SF_AMGCL
-struct Amg {
+struct Amg : Lineaire {
     enum Variante : int { SA_SPAI0 = 0, SA_GS = 1, RS_GS = 2 };
     int      variante = SA_SPAI0;
     TF       tol      = 1e-10;     ///< residu RELATIF
@@ -83,7 +109,6 @@ struct Amg {
     // du CG et celle du preconditionneur ne paie donc que si on peut rafraichir le niveau fin,
     // c'est-a-dire si on possede le solveur. Defaut : 1, et l'option reste pour qui veut verifier.
     int      refaire  = 1;         ///< la hierarchie refaite toutes les `refaire` resolutions
-    StatsLin st;
     /// la derniere hierarchie, gardee pour `resout_encore` ( le type du solveur depend de la variante )
     std::function<std::tuple<int,double>( const std::vector<double> &, std::vector<double> & )> encore;
     /// ... et la meme, mais avec UNE AUTRE MATRICE : c'est elle qui sert a `refaire`
@@ -92,14 +117,15 @@ struct Amg {
     int      depuis   = 0;         ///< resolutions depuis la derniere montee
     SI       n_prec   = 0;         ///< la taille de la derniere hierarchie
 
-    const char *nom() const {
+    const char *nom() const override {
         return variante == RS_GS ? "AMGCL Ruge-Stuben+GS"
              : variante == SA_GS ? "AMGCL agregation+GS" : "AMGCL agregation+spai0";
     }
 
     /// UNE RESOLUTION DE PLUS sur la derniere hierarchie : la matrice a change, pas ses voisinages,
     /// et c'est la hierarchie qui coute -- pour qui reutilise un laplacien fige ( `PremierOrdre.h` ).
-    void resout_encore( const std::vector<TF> &b, std::vector<TF> &d ) {
+    bool sait_encore() const override { return bool( encore ); }
+    void resout_encore( const std::vector<TF> &b, std::vector<TF> &d ) override {
         const SI n = SI( b.size() ), m = n - 1;
         const double t0 = now();
         std::vector<double> rb( m ), sol( m, 0.0 );
@@ -112,7 +138,7 @@ struct Amg {
         st.t_res += now() - t0;
     }
 
-    bool resout( const Laplacien &L, const std::vector<TF> &b, std::vector<TF> &d ) {
+    bool resout( const Laplacien &L, const std::vector<TF> &b, std::vector<TF> &d ) override {
         const SI n = L.n, m = n - 1;
         const double t0 = now();
         std::vector<int> ptr, col;
@@ -178,16 +204,16 @@ struct Amg {
 #endif
 
 #ifdef SF_EIGEN
-struct Cholesky {
+struct Cholesky : Lineaire {
     using SpM = Eigen::SparseMatrix<double>;
     Eigen::SimplicialLDLT<SpM, Eigen::Lower, Eigen::AMDOrdering<int>> so;
     std::vector<SI> motif;         ///< le motif de la derniere analyse symbolique
-    StatsLin st;
 
-    const char *nom() const { return "Cholesky creux ( Eigen LDLT, AMD )"; }
+    const char *nom() const override { return "Cholesky creux ( Eigen LDLT, AMD )"; }
 
     /// UNE DESCENTE DE PLUS sur la derniere factorisation : pour qui a plusieurs seconds membres.
-    void resout_encore( const std::vector<TF> &b, std::vector<TF> &d ) {
+    bool sait_encore() const override { return ! motif.empty(); }
+    void resout_encore( const std::vector<TF> &b, std::vector<TF> &d ) override {
         const SI n = SI( b.size() ), m = n - 1;
         const double t0 = now();
         Eigen::VectorXd rb( m );
@@ -201,7 +227,7 @@ struct Cholesky {
     /// LE MOTIF NE BOUGE PRESQUE PAS : quelques aretes par iteration au debut, zero a la fin, alors
     /// que la renumerotation et l'analyse symbolique coutent le tiers de la factorisation. On les
     /// refait SEULEMENT quand le motif a change -- compare tel quel, une passe lineaire.
-    bool resout( const Laplacien &L, const std::vector<TF> &b, std::vector<TF> &d ) {
+    bool resout( const Laplacien &L, const std::vector<TF> &b, std::vector<TF> &d ) override {
         const SI n = L.n, m = n - 1;
         const double t0 = now();
         std::vector<Eigen::Triplet<double>> tri;

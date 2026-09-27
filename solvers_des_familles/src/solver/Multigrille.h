@@ -242,7 +242,7 @@ struct CsrMg {
     bool            vrai() const { return ! row.empty(); }
 };
 
-struct Mg {
+struct Mg : Lineaire {
     // ---- LES REGLAGES. Les valeurs viennent de la mesure sur CPU ( README § 17 ), pas de la carte.
     int      agreg   = 8;          ///< germes par paquet -- UNE PUISSANCE DE DEUX ( 4, 8, 16, ... )
     // CHEBYSHEV PAR DEFAUT, ET SUR LE TEMPS C'EST UN MATCH NUL. A `n = 1e5` : 90.19 s contre
@@ -278,13 +278,10 @@ struct Mg {
     TF       tol     = TF( 1e-6 ); ///< residu RELATIF
     int      maxit   = 20000;
 
-    StatsLin st;
-
     /// `ids[ k ]` : l'identifiant du germe de rang `k` dans l'arbre. C'est `pd.ids`, et c'est la
     /// SEULE chose que ce solveur demande de plus qu'un autre. Sans lui, l'ordre des identifiants
     /// fait l'affaire -- et l'agregation ne vaut alors que ce que vaut cet ordre.
-    template<class TI>
-    void ordre( const TI *ids, SI nb ) {
+    void ordre( const std::int32_t *ids, SI nb ) override {
         ord.resize( nb );
         rg.resize( nb );
         for ( SI k = 0; k < nb; ++k ) { ord[ k ] = SI( ids[ k ] ); rg[ ord[ k ] ] = k; }
@@ -293,7 +290,7 @@ struct Mg {
     }
     bool a_l_ordre() const { return ! ord.empty(); }
 
-    const char *nom() const {
+    const char *nom() const override {
         return lisse ? "multigrille maison ( agregation par l'arbre, prolongation LISSEE )"
                      : "multigrille maison ( agregation par l'arbre, prolongation constante )";
     }
@@ -304,13 +301,14 @@ struct Mg {
     const std::vector<NiveauMg> &niveaux() const { return niv; }
 
     /// UNE RESOLUTION DE PLUS sur la derniere hierarchie. Meme surface que `Amg` et `Cholesky`.
-    void resout_encore( const std::vector<TF> &b, std::vector<TF> &d ) {
+    bool sait_encore() const override { return ! niv.empty(); }
+    void resout_encore( const std::vector<TF> &b, std::vector<TF> &d ) override {
         const double t0 = now();
         cg( b, d );
         st.t_res += now() - t0;
     }
 
-    bool resout( const Laplacien &L, const std::vector<TF> &b, std::vector<TF> &d ) {
+    bool resout( const Laplacien &L, const std::vector<TF> &b, std::vector<TF> &d ) override {
         const double t0 = now();
         // LA HIERARCHIE PEUT RESSERVIR : entre deux iterations de Newton le graphe bouge a peine,
         // et un preconditionneur n'a pas besoin d'etre exact. On ne rafraichit alors que le

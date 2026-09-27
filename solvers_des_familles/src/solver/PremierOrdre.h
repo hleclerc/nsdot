@@ -116,13 +116,13 @@ struct PremierOrdreStats {
 /// Le solveur du premier ordre, sur le `Newton` qui porte le diagramme, la cible, la densite et les
 /// compteurs ( `nw.st.nb_diag`, `nw.st.t_diag` continuent de compter ; `nw.w`, `nw.a`, `nw.fa` sont
 /// l'etat courant, comme apres Newton ).
-template<class PD, class Lin>
+template<class PD, class Rho = Densite>
 struct PremierOrdre {
-    Newton<PD,Lin>     &nw;
+    Newton<PD,Rho>     &nw;
     PremierOrdreOptions o;
     PremierOrdreStats   st;
 
-    PremierOrdre( Newton<PD,Lin> &nw, PremierOrdreOptions o = {} ) : nw( nw ), o( o ) {}
+    PremierOrdre( Newton<PD,Rho> &nw, PremierOrdreOptions o = {} ) : nw( nw ), o( o ) {}
 
     static TF dot( const std::vector<TF> &x, const std::vector<TF> &y ) {
         TF s = 0;
@@ -175,11 +175,8 @@ struct PremierOrdre {
         auto applique_L0 = [ & ]( bool refaire, const std::vector<TF> &b, std::vector<TF> &x ) {
             const double t0 = now();
             bool ok = true;
-            if constexpr ( requires { nw.lin.resout_encore( b, x ); } ) {
-                if ( refaire ) ok = nw.lin.resout( L, b, x );
-                else nw.lin.resout_encore( b, x );
-            } else
-                ok = nw.lin.resout( L, b, x );
+            if ( refaire || ! nw.lin.sait_encore() ) ok = nw.lin.resout( L, b, x );
+            else                                      nw.lin.resout_encore( b, x );
             nw.st.t_lin += now() - t0;
             return ok;
         };

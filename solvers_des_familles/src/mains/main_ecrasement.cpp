@@ -61,8 +61,8 @@ struct Opts {
 TF norme2( const std::vector<TF> &v ) { TF s = 0; for ( TF x : v ) s += x * x; return std::sqrt( s ); }
 
 /// LA DIRECTION DE NEWTON a l'iteration `K`, telle que `Newton.h` la calcule.
-template<class PD, class Lin>
-bool extrait( const Args &a, const Opts &o, const Nuage<2> &nu, Lin &lin, Direction<2> &dir ) {
+template<class PD>
+bool extrait( const Args &a, const Opts &o, const Nuage<2> &nu, Lineaire &lin, Direction<2> &dir ) {
     const SI n = nu.n;
     PD pd;
     pd.build( nu.P, nullptr, n, a.leaf );
@@ -71,7 +71,7 @@ bool extrait( const Args &a, const Opts &o, const Nuage<2> &nu, Lin &lin, Direct
 #endif
     NewtonOptions no;
     no.extraire = o.it;
-    Newton<PD,Lin> nw( pd, lin, nu.P, a.par, no );
+    Newton<PD> nw( pd, lin, nu.P, a.par, no );
     nw.nu.assign( n, TF( 1 ) / n );
     nw.resout( std::vector<TF>( n, TF( 0 ) ) );
     if ( std::string( nw.st.fin ) != "DIRECTION EXTRAITE" ) {

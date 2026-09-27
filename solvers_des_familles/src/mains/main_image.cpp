@@ -587,8 +587,8 @@ struct Bilan {
     SI   taille = 0;         ///< inconnues du systeme
 };
 
-template<class PD, class Lin, class Rho>
-Bilan balaye( Newton<PD,Lin,Rho> &nw, const std::vector<TF> &w0, const std::vector<TF> &d,
+template<class PD, class Rho>
+Bilan balaye( Newton<PD,Rho> &nw, const std::vector<TF> &w0, const std::vector<TF> &d,
               const std::vector<SI> &vise, TF eps, const std::string &nom, int cg, SI taille,
               FILE *csv, const char *cas, std::vector<TF> *w_alpha = nullptr ) {
     const SI n = SI( w0.size() );
@@ -688,8 +688,8 @@ inline TF bar_gp( TF x ) { x = std::max( x, TF( 1e-9 ) ); return 1 + 1 / ( x * x
 /// pincees, on prend `N` anneaux autour, on fixe le bord et on minimise `Phi` a l'interieur.
 /// C'est le coeur reutilisable -- l'etude du § 14 et la boucle de Newton du § 15 l'appellent tous
 /// les deux.
-template<class PD, class Lin, class Rho>
-BilanLocal repare_local( Newton<PD,Lin,Rho> &nw, const std::vector<SI> &rang, const std::vector<TF> &w_try,
+template<class PD, class Rho>
+BilanLocal repare_local( Newton<PD,Rho> &nw, const std::vector<SI> &rang, const std::vector<TF> &w_try,
                          const std::vector<TF> &a_try, const std::vector<Facette> &fa_try, int N,
                          const Opts &o, std::vector<TF> &w_out ) {
     PD &pd = nw.pd;
@@ -917,8 +917,8 @@ struct StatsAmas {
     TF ball_fin = 1e300;
 };
 
-template<class PD, class Lin, class Rho>
-StatsAmas repare_amas( Newton<PD,Lin,Rho> &nw, const std::vector<TF> &w0, const std::vector<TF> &dn,
+template<class PD, class Rho>
+StatsAmas repare_amas( Newton<PD,Rho> &nw, const std::vector<TF> &w0, const std::vector<TF> &dn,
                        const std::vector<TF> &a_cible, const std::vector<Facette> &fa_cible,
                        TF F, int N, const Opts &o, std::vector<TF> &w_out, TF seuil_abs = 0,
                        std::vector<char> *zone = nullptr, const std::vector<Facette> *fa0 = nullptr ) {
@@ -2116,8 +2116,8 @@ StatsAmas repare_amas( Newton<PD,Lin,Rho> &nw, const std::vector<TF> &w0, const 
 // Le cout reste en cellules calculees, sur une zone qui ne depend que de `N`.
 // =====================================================================================
 
-template<class PD, class Lin, class Rho>
-BilanLocal repare_continuation( Newton<PD,Lin,Rho> &nw, const std::vector<SI> &rang, const std::vector<TF> &w0,
+template<class PD, class Rho>
+BilanLocal repare_continuation( Newton<PD,Rho> &nw, const std::vector<SI> &rang, const std::vector<TF> &w0,
                                 const std::vector<TF> &dn, TF F, int N, const Opts &o,
                                 std::vector<TF> &w_out ) {
     PD &pd = nw.pd;
@@ -2389,8 +2389,8 @@ BilanLocal repare_continuation( Newton<PD,Lin,Rho> &nw, const std::vector<SI> &r
 
 /// L'ETUDE DU § 14 : le pas `w0 + F d`, puis la reparation. Mesure en plus la sante du bord AU
 /// DEPART, qui est ce qu'on annonce « par construction ».
-template<class PD, class Lin, class Rho>
-BilanLocal local_barriere( Newton<PD,Lin,Rho> &nw, const std::vector<TF> &w0, const std::vector<TF> &dn,
+template<class PD, class Rho>
+BilanLocal local_barriere( Newton<PD,Rho> &nw, const std::vector<TF> &w0, const std::vector<TF> &dn,
                            const std::vector<SI> &rang, int N, TF F, const Opts &o,
                            std::vector<TF> &w_out ) {
     const SI n = nw.pd.n;
@@ -2453,8 +2453,8 @@ struct StatsReleve {
     const char *fin = "?";
 };
 
-template<class PD, class Lin, class Rho>
-bool resout_releve( Newton<PD,Lin,Rho> &nw, Lin &lin, std::vector<TF> &w, const Opts &o, StatsReleve &st ) {
+template<class PD, class Rho>
+bool resout_releve( Newton<PD,Rho> &nw, Lineaire &lin, std::vector<TF> &w, const Opts &o, StatsReleve &st ) {
     const SI n = nw.pd.n;
     std::vector<SI> rang( n );
     for ( SI k = 0; k < n; ++k ) rang[ nw.pd.ids[ k ] ] = k;
@@ -2828,8 +2828,8 @@ bool resout_releve( Newton<PD,Lin,Rho> &nw, Lin &lin, std::vector<TF> &w, const 
 }
 
 /// L'ETUDE, au point `w0` sous la densite DEJA reglee sur la cible ( `nw.a`, `nw.fa` mesures la ).
-template<class PD, class Lin, class Rho>
-void etude_relevement( Newton<PD,Lin,Rho> &nw, Lin &lin, const std::vector<TF> &w0, const Opts &o ) {
+template<class PD, class Rho>
+void etude_relevement( Newton<PD,Rho> &nw, Lineaire &lin, const std::vector<TF> &w0, const Opts &o ) {
     const SI n = SI( w0.size() );
     Laplacien L;
     L.assemble( n, nw.fa );
@@ -3111,8 +3111,8 @@ void etude_relevement( Newton<PD,Lin,Rho> &nw, Lin &lin, const std::vector<TF> &
                  double( r2_0 ), double( amin / nw.nu[ 0 ] ) );
 }
 
-template<class PD, class Lin, class TA>
-int lance( const Args &a, const Opts &o, const Nuage<2> &nu, Lin &lin, ImageT<TA> &im ) {
+template<class PD, class TA>
+int lance( const Args &a, const Opts &o, const Nuage<2> &nu, Lineaire &lin, ImageT<TA> &im ) {
     const SI n = nu.n;
     double t0 = now();
     PD pd;
@@ -3122,8 +3122,7 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu, Lin &lin, ImageT<TA
     // -- des rangs consecutifs sont voisins dans le plan, l'arbre etant une courbe remplissante --
     // et c'est tout ce qu'il demande de plus qu'un solveur ordinaire. Les germes ne bougent pas,
     // donc cet ordre est pose UNE FOIS.
-    if constexpr ( requires { lin.ordre( pd.ids.data(), n ); } )
-        lin.ordre( pd.ids.data(), n );
+    lin.ordre( pd.ids.data(), n );
 #ifdef _OPENMP
     omp_set_num_threads( a.par.threads );
 #endif
@@ -3223,7 +3222,7 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu, Lin &lin, ImageT<TA
     while ( ! liste.empty() && liste.back() <= lam_fin ) liste.pop_back();
     liste.push_back( lam_fin );
 
-    Newton<PD,Lin,ImageT<TA>> nw( pd, lin, nu.P, a.par, o.newton );
+    Newton<PD,ImageT<TA>> nw( pd, lin, nu.P, a.par, o.newton );
     nw.rho = &im;
     nw.derivee = o.ordre > 0 && ! conv;                  // `d a / d sigma` n'est pas en forme close
 

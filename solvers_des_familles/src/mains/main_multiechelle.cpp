@@ -87,7 +87,7 @@ int depuis_solution( const Args &a, const Opts &o, const Nuage<PD::dim> &nu0 ) {
                      o.corr.c_str(), faites, int( releves ), int( reste ), double( pire ) );
     }
     Cholesky lin;
-    Newton<PD,Cholesky> nw( pd, lin, nu0.P, a.par, o.newton );
+    Newton<PD> nw( pd, lin, nu0.P, a.par, o.newton );
     nw.nu = nu;
     const double t0 = now();
     nw.resout( w );
@@ -192,7 +192,7 @@ int lance( const Args &a, const Opts &o, const Nuage<PD::dim> &nu0 ) {
         NewtonOptions no = o.newton;
         no.tol = l ? o.tolg : o.newton.tol;
         Cholesky lin;
-        Newton<PD,Cholesky> nw( pd, lin, L.P, a.par, no );
+        Newton<PD> nw( pd, lin, L.P, a.par, no );
         nw.nu = L.nu;
         t0 = now();
         nw.resout( w0 );
@@ -219,7 +219,7 @@ int lance( const Args &a, const Opts &o, const Nuage<PD::dim> &nu0 ) {
         Cholesky lin;
         NewtonOptions no = o.newton;
         no.trace = false;
-        Newton<PD,Cholesky> nw( pd, lin, niv[ 0 ].P, a.par, no );
+        Newton<PD> nw( pd, lin, niv[ 0 ].P, a.par, no );
         nw.nu = niv[ 0 ].nu;
         nw.resout( std::vector<TF>( niv[ 0 ].n, TF( 0 ) ) );
         std::printf( "  REFERENCE depuis w = 0 : %s, %d iterations, %d diagrammes, TOTAL %.3f s\n",

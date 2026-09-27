@@ -174,8 +174,8 @@ void verifie( const PD &pd, const Nuage<2> &nu, Densite rho, const Parallel &par
 TF var_de( const Opts &o, TF lam ) { return o.variable == "s2" ? lam * lam : lam; }
 TF lam_de( const Opts &o, TF v )   { return o.variable == "s2" ? std::sqrt( std::max( v, TF( 0 ) ) ) : v; }
 
-template<class PD, class Lin>
-int lance( const Args &a, const Opts &o, const Nuage<2> &nu, Lin &lin ) {
+template<class PD>
+int lance( const Args &a, const Opts &o, const Nuage<2> &nu, Lineaire &lin ) {
     const SI n = nu.n;
     Densite rho = densite_de( o );
     const bool melange = o.chemin == "melange";
@@ -209,10 +209,10 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu, Lin &lin ) {
     // le parametre du chemin : `s` ( la convolution ) ou `t` ( le melange )
     auto regle = [ & ]( TF lam ) { if ( melange ) rho.t = lam; else rho.s = lam; };
 
-    Newton<PD,Lin> nw( pd, lin, nu.P, a.par, o.newton );
+    Newton<PD> nw( pd, lin, nu.P, a.par, o.newton );
     nw.rho = &rho;
     nw.derivee = o.ordre > 0;
-    PremierOrdre<PD,Lin> po( nw, o.po );
+    PremierOrdre<PD> po( nw, o.po );
     Trames trames;                                       // une trame par etape, le diagramme converge
     const bool dump = ! o.dump.empty() && trames.ouvre( o.dump );
     FILE *courbe = o.courbe.empty() ? nullptr : std::fopen( o.courbe.c_str(), "a" );

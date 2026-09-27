@@ -66,8 +66,8 @@ struct Opts {
     std::string   courbe;          ///< CSV : le residu apres chaque pas, contre les diagrammes et le temps
 };
 
-template<class PD, class Lin>
-int lance( const Args &a, const Opts &o, const Nuage<PD::dim> &nu, Lin &lin ) {
+template<class PD>
+int lance( const Args &a, const Opts &o, const Nuage<PD::dim> &nu, Lineaire &lin ) {
     constexpr int D = PD::dim;
     const SI n = nu.n;
 
@@ -77,8 +77,7 @@ int lance( const Args &a, const Opts &o, const Nuage<PD::dim> &nu, Lin &lin ) {
     pd.build( nu.P, nullptr, n, a.leaf );
     const double t_arbre = now() - t0;
     // L'ORDRE DE L'ARBRE, pour qui sait s'en servir : c'est l'agregation du multigrille maison.
-    if constexpr ( requires { lin.ordre( pd.ids.data(), n ); } )
-        lin.ordre( pd.ids.data(), n );
+    lin.ordre( pd.ids.data(), n );
 
 #ifdef _OPENMP
     // AMGCL est parallelise en OpenMP, le diagramme en `std::thread` : sans ca les deux moities
@@ -86,7 +85,7 @@ int lance( const Args &a, const Opts &o, const Nuage<PD::dim> &nu, Lin &lin ) {
     omp_set_num_threads( a.par.threads );
 #endif
 
-    Newton<PD,Lin> nw( pd, lin, nu.P, a.par, o.newton );
+    Newton<PD> nw( pd, lin, nu.P, a.par, o.newton );
     nw.nu.assign( n, TF( 1 ) / n );
     Trames trames;
     const bool dump = ! o.dump.empty() && trames.ouvre( o.dump );
@@ -101,7 +100,7 @@ int lance( const Args &a, const Opts &o, const Nuage<PD::dim> &nu, Lin &lin ) {
             std::fprintf( courbe, "%s;%s;%dD;%d;%d;%.3f;%.6e;%.6e\n", etiquette.c_str(), nu.nom.c_str(), D, it + 1, nw.st.nb_diag, now() - t0, double( p ), double( nw.merite( nw.a ) ) );
         }
     };
-    PremierOrdre<PD,Lin> po( nw, o.po );
+    PremierOrdre<PD> po( nw, o.po );
     const bool ok = o.methode == "newton" ? nw.resout( std::vector<TF>( n, TF( 0 ) ) ) : po.resout( std::vector<TF>( n, TF( 0 ) ) );
     const double total = now() - t0 + t_arbre;
     if ( courbe ) std::fclose( courbe );

@@ -3366,3 +3366,91 @@ où l'ordre de traitement la fait aujourd'hui dépendre de l'amas précédent.
 Un dernier détail mesuré au passage : `perf` comptait **10 % des cycles dans `libgomp`**, les fils qui
 attendent sur les barrières de boucles OpenMP portant sur trente cellules. Une clause `if( M >= 256 )`
 sur la recherche linéaire locale rend la boucle séquentielle quand elle est courte.
+
+---
+
+# 18. LE TEMPS DE COMPILATION : CE N'ÉTAIT PAS LA TAILLE DU FICHIER
+
+`main_image.cpp` mettait **476 s et 4,0 Go** à compiler — au point que `-g` le faisait tuer par le
+plafond mémoire de `job`, et qu'on avait renoncé aux numéros de ligne dans `perf` pour ça (§ 17).
+Le réflexe est d'accuser les 3 891 lignes et de les éclater en plusieurs fichiers. **C'est le
+mauvais coupable** : `main_ecrasement.cpp` fait 787 lignes et mettait 86 s, soit à peu près le même
+temps par ligne. Ce qui coûte, c'est le nombre de fois que ces lignes sont **instanciées**.
+
+Elles l'étaient **quarante-huit fois** :
+
+| axe | valeurs | qui décide |
+|---|---|---|
+| flottant du noyau `TK` | `float`, `double` | `--kernel`, à l'exécution |
+| capacité de cellule `MaxNv` | 64, 128, 256, 512 | `--maxnv`, à l'exécution |
+| flottant de la mesure `TA` | `float`, `double` | `--acc`, à l'exécution |
+| solveur linéaire `Lin` | `Cholesky`, `Mg`, `Amg` | `--solver`, à l'exécution |
+
+**Les quatre sont choisis à l'exécution, et les trois quarts des combinaisons ne servent jamais.**
+Deux d'entre elles n'avaient aucune raison d'être des paramètres de template.
+
+## 18.1 Le solveur linéaire : une interface virtuelle (÷3)
+
+`Lin` était un paramètre de template *par habitude*. Or un solveur linéaire est appelé **une fois
+par itération de Newton**, sur un système à `n` inconnues : l'appel dure des millisecondes et il n'y
+a rien à y inliner. `solver/Lineaire.h` déclare maintenant
+
+```cpp
+struct Lineaire {
+    StatsLin st;
+    virtual const char *nom() const = 0;
+    virtual bool resout( const Laplacien &L, const std::vector<TF> &b, std::vector<TF> &d ) = 0;
+    virtual bool sait_encore() const { return false; }
+    virtual void resout_encore( const std::vector<TF> &b, std::vector<TF> &d ) {}
+    virtual void ordre( const std::int32_t *ids, SI nb ) {}
+};
+```
+
+et `Amg`, `Cholesky`, `Mg` en dérivent. Les **réglages** restent sur le type concret — ils se posent
+dans `main` avant que le template ne commence, donc ils n'ont jamais eu besoin d'être visibles
+dedans. Deux `if constexpr ( requires { ... } )` disparaissent au passage : `sait_encore()` dit à
+l'exécution ce que le `requires` devinait à la compilation, et le dit mieux (Cholesky *a* une
+factorisation, mais seulement après la première résolution).
+
+## 18.2 La capacité de cellule : une seule compilée (÷4 en 2D)
+
+`MaxNv` est la taille d'un tableau dans la frame : il ne peut pas cesser d'être un paramètre de
+template. Mais rien n'oblige à compiler toute l'échelle. Par défaut, `bench/Dispatch.h` en compile
+**une seule en 2D (64)** et **deux en 3D (128 et 256)** — l'asymétrie n'est pas un compromis, elle
+est mesurée : une cellule de Laguerre plane a six voisins en moyenne et le banc n'a jamais vu de
+débordement, alors qu'en 3D le débordement arrive dès `n = 2·10⁴` sur l'uniforme et que le banc
+lui-même répond « relancer avec `--maxnv 256` ». Retirer 256 rendrait son propre conseil
+inapplicable.
+
+`-DSF_NV_TOUS` rend l'échelle entière. Et demander une capacité non compilée **le dit** au lieu de
+retomber en silence sur une cellule plus petite — ce qui ferait déborder les cellules sans autre
+trace qu'un compteur qu'on ne regarde pas toujours.
+
+## 18.3 Ce que ça donne
+
+Les deux axes restants sont `--kernel` et `--acc`, c'est-à-dire **exactement les deux flottants de
+l'étude de simple précision** : ils doivent vivre dans le même binaire pour qu'on puisse les
+comparer sur les mêmes cellules. `-DSF_TK_UN` n'en garde qu'un pour qui n'en a pas besoin.
+
+| cible | avant | après | mémoire |
+|---|---|---|---|
+| **image** | **476,1 s** | **56,4 s** | 4 003 → 1 117 Mo |
+| newton | 117,7 | 29,5 | 1 528 → 861 |
+| ecrasement | 86,1 | 27,2 | 1 584 → 895 |
+| densite | 81,4 | 24,2 | 1 338 → 859 |
+| homotopie | 58,1 | 20,2 | 1 249 → 843 |
+| glissement | 56,6 | 19,9 | 1 173 → 840 |
+| multiechelle | 45,0 | 20,6 | 1 356 → 1 100 |
+| check | 17,4 | 10,2 | 545 → 513 |
+| diagramme | 12,8 | 7,1 | 502 → 480 |
+| memo | 8,3 | 6,0 | 522 → 460 |
+| **total séquentiel** | **959 s** | **221 s** | |
+
+Build complet en parallèle : **62 s**. Résultats **identiques** — `check`, `image --check`, et les
+solves de `newton` 2D/3D et `image` rendent les mêmes comptes d'itérations, de diagrammes et les
+mêmes résidus, au chiffre près.
+
+**Ce qui reste sur la table**, et qui n'est plus le levier : éclater `main_image.cpp` en plusieurs
+unités de traduction. Ça demanderait des instanciations explicites — fragiles — pour un fichier qui
+compile maintenant en moins d'une minute. Le pic mémoire ayant été divisé par 3,6, `-g` redevient
+d'ailleurs envisageable si on veut les numéros de ligne dans `perf`.

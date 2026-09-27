@@ -33,8 +33,8 @@ struct Opts {
     NewtonOptions newton;
 };
 
-template<class PD, class Lin>
-int lance( const Args &a, const Opts &o, const Nuage<2> &nu, Lin &lin ) {
+template<class PD>
+int lance( const Args &a, const Opts &o, const Nuage<2> &nu, Lineaire &lin ) {
     const SI n = nu.n;
     const TF nuv = TF( 1 ) / n;
 #ifdef _OPENMP
@@ -103,7 +103,7 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu, Lin &lin ) {
         }
         NewtonOptions no = o.newton;
         no.tol = s2 < 1 ? o.tol_inter : o.newton.tol;
-        Newton<PD,Lin> nw( pd, lin, nu.P, a.par, no );
+        Newton<PD> nw( pd, lin, nu.P, a.par, no );
         nw.nu.resize( n );
         for ( SI i = 0; i < n; ++i ) nw.nu[ i ] = a0[ i ] + s2 * ( nuv - a0[ i ] );
         std::vector<TF> nuf( n, nuv );

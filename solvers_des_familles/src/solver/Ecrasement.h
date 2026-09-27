@@ -43,6 +43,7 @@
 #include "cell/FournisseurAlpha2D.h"
 #include "diagram/PowerDiagram.h"
 #include "solver/Laplacien.h"
+#include "solver/Lineaire.h"
 #include "util/parallel.h"
 #include <algorithm>
 #include <atomic>
@@ -583,7 +584,6 @@ void limites( const PD &pd, const TF *const *P, const std::vector<TF> &w, const 
 /// partielle `a + theta ( nu - a )`, par Newton SUR LE MODELE ( jacobien = laplacien aux longueurs
 /// signees, meme motif que `L`, refactorise ), amorti sur le residu du modele. Rend le residu
 /// relatif atteint ; `delta` part de `theta d`.
-template<class Lin>
 struct PasTensoriel {
     int    max_it = 8;
     TF     tol    = 1e-6;
@@ -591,7 +591,7 @@ struct PasTensoriel {
     double t      = 0;
 
     TF resout( const std::vector<ModeleCellule> &mod, const std::vector<TF> &a, const std::vector<TF> &nu,
-               const std::vector<TF> &d, TF theta, const Parallel &par, Lin &lin, std::vector<TF> &delta ) {
+               const std::vector<TF> &d, TF theta, const Parallel &par, Lineaire &lin, std::vector<TF> &delta ) {
         const SI n = SI( mod.size() );
         const double t0 = now();
         std::vector<TF> b( n ), am( n ), r( n ), corr, essai( n ), am2( n );

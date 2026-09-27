@@ -92,13 +92,17 @@ struct NewtonStats {
     SI     nb_cell_mauvaises = 0; ///< ESSAI_LIMITES : cellules trouvees sous `eps` par les essais, en tout
     int    nb_tours_essai = 0;    ///< ESSAI_LIMITES : essais corriges par des limites locales
     int    nb_lim_refus = 0;   ///< pas proposes par les limites et refuses par le diagramme
+    TF     amp_d0 = 0;         ///< `| d |inf` de la PREMIERE direction resolue. Une continuation qui
+                               ///< enchaine des Newton s'en sert pour choisir son pas ( README
+                               ///< § 12.6.1 ) : c'est la correction de poids que l'etape a reclamee,
+                               ///< et elle est deja calculee -- la relire ne coute rien.
     double t_maj = 0, t_diag = 0, t_asm = 0, t_lin = 0, t_lim = 0, t_memo = 0;
 };
 
-template<class PD, class Lin>
+template<class PD, class Rho = Densite>
 struct Newton {
     PD             &pd;
-    Lin            &lin;
+    Lineaire       &lin;
     const TF *const *P;        ///< les positions, dans l'ordre des identifiants
     Parallel        par;
     NewtonOptions   o;
@@ -112,11 +116,13 @@ struct Newton {
 
     /// UNE DENSITE au lieu de Lebesgue ( 2D ) : la mesure d'une cellule est sa masse. Le pas par les
     /// limites ( ESSAI_LIMITES ) passe alors par `limites_masse` : la bissection, pas le polynome.
-    const Densite  *rho = nullptr;
-    bool            derivee = false; ///< avec `rho` : calculer aussi `da = d a / d s` a chaque diagramme
-    std::vector<TF> da;        ///< `d a_i / d s` pour `w` ( la largeur de convolution de `rho` )
+    /// `Rho` n'a qu'a offrir `mesure( cel, facette, dl )` -- `Densite.h` ( gaussiennes ) et
+    /// `Image.h` ( une grille de pixels ) le font, et Newton ne distingue pas les deux.
+    const Rho      *rho = nullptr;
+    bool            derivee = false; ///< avec `rho` : calculer aussi `da = d a / d lambda` a chaque diagramme
+    std::vector<TF> da;        ///< `d a_i / d lambda` pour `w` ( le parametre du chemin de `rho` )
 
-    Newton( PD &pd, Lin &lin, const TF *const *P, Parallel par, NewtonOptions o = {} )
+    Newton( PD &pd, Lineaire &lin, const TF *const *P, Parallel par, NewtonOptions o = {} )
         : pd( pd ), lin( lin ), P( P ), par( par ), o( o ) {}
 
     /// LES MESURES ET LES FACETTES pour les poids `W` : un diagramme, et la conversion
@@ -271,6 +277,11 @@ struct Newton {
                 st.fin = "SOLVEUR LINEAIRE EN ECHEC";
                 return false;
             }
+            if ( it == 0 ) {                             // ce que l'etape a reclame, pour qui enchaine
+                TF m = 0;
+                for ( SI i = 0; i < n; ++i ) m = std::max( m, std::fabs( d[ i ] ) );
+                st.amp_d0 = m;
+            }
             if ( it == o.extraire ) {                    // la direction est ce qu'on venait chercher
                 st.fin = "DIRECTION EXTRAITE";
                 return false;
@@ -310,7 +321,7 @@ struct Newton {
                             pd.cellule( k, cel );
                             mod[ pd.ids[ k ] ].depuis( cel, pd.ids[ k ], P, w.data() );
                         } );
-                        PasTensoriel<Lin> pt;
+                        PasTensoriel pt;
                         std::vector<TF> delta;
                         const TF rm = pt.resout( mod, a, nu, d, theta, par, lin, delta );
                         st.t_tenseur += pt.t;

@@ -96,8 +96,8 @@ void voisinages( const PD &pd, const Parallel &par, std::vector<std::vector<SI>>
     } );
 }
 
-template<class PD, class Lin>
-int lance( const Args &a, const Opts &o, const Nuage<2> &nu, Lin &lin ) {
+template<class PD>
+int lance( const Args &a, const Opts &o, const Nuage<2> &nu, Lineaire &lin ) {
     const SI n = nu.n;
     const Parallel &par = a.par;
     const TF nuv = TF( 1 ) / n;
@@ -133,7 +133,7 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu, Lin &lin ) {
     {
         PD pd0;
         pd0.build( XP, nullptr, n, a.leaf );
-        Newton<PD,Lin> nw( pd0, lin, XP, par, o.newton );
+        Newton<PD> nw( pd0, lin, XP, par, o.newton );
         nw.nu.assign( n, nuv );
         const bool ok = nw.resout( std::vector<TF>( n, TF( 0 ) ) );
         std::printf( "  tau = 0 ( barycentres ), depuis Voronoi : %s, %d iterations, %d diagrammes ( %d reculs )\n",
@@ -198,7 +198,7 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu, Lin &lin ) {
         const TF *XnP[ 2 ] = { Xn[ 0 ].data(), Xn[ 1 ].data() };
         PD pdn;
         pdn.build( XnP, nullptr, n, a.leaf );
-        Newton<PD,Lin> nw( pdn, lin, XnP, par, o.newton );
+        Newton<PD> nw( pdn, lin, XnP, par, o.newton );
         nw.nu.assign( n, nuv );
         const bool ok = nw.resout( w_pred );
         it_total += nw.st.nb_iter; diag_total += nw.st.nb_diag;
