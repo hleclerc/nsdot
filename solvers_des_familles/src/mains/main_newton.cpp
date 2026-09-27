@@ -24,6 +24,7 @@
 #include <omp.h>
 #endif
 #include <cstdio>
+#include <memory>
 #include <string>
 
 using namespace sf;
@@ -64,7 +65,67 @@ struct Opts {
     std::string   methode = "newton"; ///< newton | lbfgs | cg ( `PremierOrdre.h` )
     PremierOrdreOptions po;
     std::string   courbe;          ///< CSV : le residu apres chaque pas, contre les diagrammes et le temps
+    // LE PLANCHER DE BRUIT EST LE BON CRITERE, et les deux autres sont des filets. On a essaye :
+    //   * LE PROGRES ( `mixte_progres` ) se trompe -- les premieres iterations gagnent
+    //     legitimement ~50 % sur `|r|_2` ( 1.364e-3 -> 6.604e-4 -> 3.341e-4 en 3D ), donc un
+    //     seuil a 0.5 coupe la phase `float` des la deuxieme ;
+    //   * LE PAS ( `mixte_tmin` a 0.25 ) se trompe aussi, dans l'autre sens : la PREMIERE
+    //     iteration demande legitimement un petit pas, et a `n = 2e4` en 2D elle rendait la main
+    //     tout de suite, quatre diagrammes gaspilles.
+    // Les deux sont REACTIFS : ils constatent apres coup. Le plancher, lui, se POSE d'avance.
+    double        mixte_tmin = 1e-3;  ///< `--kernel mixte` : le pas sous lequel la phase `float` passe la main
+    double        mixte_progres = 0;  ///< ... ou le gain minimal sur `|r|_2` par iteration ( 0 : eteint )
+    double        mixte_kappa = 30;   ///< ... et le plancher de bruit vise : `kappa eps / sqrt( n )`
 };
+
+/// LE SOLVEUR LINEAIRE demande par les options, construit UNE FOIS et hors du dispatch : depuis
+/// qu'il est une interface ( § 18 ), son type ne depend plus de celui du diagramme. C'est ce qui
+/// permet a la bascule `--kernel mixte` d'en garder UN SEUL a travers les deux phases -- donc de
+/// garder aussi sa hierarchie et son sous-espace recycle.
+template<int D>
+std::unique_ptr<Lineaire> fabrique( const Opts &o ) {
+    const std::string sol = o.solver == "auto" ? ( D == 3 ? "mg" : "amg" ) : o.solver;
+#ifdef SF_EIGEN
+    if ( sol == "chol" )
+        return std::make_unique<Cholesky>();
+#endif
+    if ( sol == "mg" ) {
+        auto p = std::make_unique<Mg>();
+        p->tol = o.lintol;
+        p->maxit = o.linmax;
+        if ( o.mg_agreg > 0 ) p->agreg = o.mg_agreg;
+        // UN SEUL LISSAGE EN 3D, ET C'EST LA MESURE QUI LE DIT. Les defauts de `Multigrille.h`
+        // viennent du 2D sous une densite image, ou `nu` est PLAT entre 1 et 3 ( 88.6 / 88.0 /
+        // 89.6 s a `n = 1e5`, sous le bruit de +/- 8 % ). En 3D il ne l'est pas du tout -- partie
+        // lineaire a `n = 5e5`, paquets de 8 :
+        //
+        //      nu 1 :  165 it,  4.81 s        nu 2 :  120 it,  5.30 s
+        //      nu 3 :  ( 156 it a paquet 16 ), 7.16 s      AMGCL : 129 it, 7.32 s
+        //
+        // Le graphe 3D a 15.1 non-nuls par ligne contre 6.0 en 2D : un seul passage de Jacobi y
+        // propage deja l'information bien plus loin, donc le deuxieme et le troisieme ne font
+        // plus qu'ajouter de la bande passante. Passer de `nu 3` a `nu 1` fait +69 %
+        // d'iterations en 2D mais seulement +32 % en 3D.
+        if      ( o.mg_nu > 0 ) p->nu = o.mg_nu;
+        else if ( D == 3 )      p->nu = 1;
+        if ( o.mg_lisseur >= 0 ) p->lisseur = o.mg_lisseur;
+        if ( o.mg_recycle >= 0 ) p->recycle = o.mg_recycle;
+        if ( o.mg_cheb    > 0 )  p->cheb    = TF( o.mg_cheb );
+        if ( o.mg_tronque >= 0 ) p->tronque = TF( o.mg_tronque );
+        p->trace = o.mg_trace;
+        return p;
+    }
+#ifdef SF_AMGCL
+    auto p = std::make_unique<Amg>();
+    p->variante = o.amgvar;
+    p->tol = o.lintol;
+    p->maxit = o.linmax;
+    return p;
+#else
+    std::printf( "  AMGCL absent : on retombe sur Cholesky\n" );
+    return std::make_unique<Cholesky>();
+#endif
+}
 
 template<class PD>
 int lance( const Args &a, const Opts &o, const Nuage<PD::dim> &nu, Lineaire &lin ) {
@@ -166,6 +227,97 @@ int lance( const Args &a, const Opts &o, const Nuage<PD::dim> &nu, Lineaire &lin
     return ok && st.nb_deborde == 0 ? 0 : 1;
 }
 
+/// LA BASCULE `--kernel mixte` : resoudre en SIMPLE PRECISION tant que ca avance, FINIR en
+/// double. C'est la forme utile du fp32, parce que la mesure du § 19.8 est celle-ci : `float`
+/// suit `double` chiffre pour chiffre pendant les premieres iterations, puis la recherche
+/// lineaire s'effondre sur un plancher de bruit. Il n'y a donc rien a deviner -- on laisse la
+/// phase `float` stagner, ce QU'ELLE SIGNALE, et on reprend en double a partir de ses poids.
+///
+/// Les deux phases partagent LE MEME solveur lineaire : il est une interface depuis le § 18,
+/// donc il ne sait pas dans quel flottant le diagramme a ete calcule, et il garde sa hierarchie
+/// et son sous-espace recycle a travers la bascule.
+///
+/// L'arbre est bati DEUX FOIS ( un par type de diagramme ) : c'est quelques pour cent du total et
+/// ca evite de rendre `PowerDiagram` polymorphe pour une etude.
+///
+/// ON NE LAISSE PAS LA PHASE `float` STAGNER JUSQU'AU BOUT. Descendre le pas de 1 a `t_min = 1e-10`
+/// coute 34 diagrammes, et Newton le fait plusieurs fois avant de declarer la stagnation : sur
+/// l'uniforme 2D a `n = 1e5`, 35 des 41 diagrammes de la phase `float` sont des reculs. On lui
+/// donne donc un `t_min` genereux ( `--mixte-tmin`, defaut 1e-3, dix demi-pas ) : des qu'elle ne
+/// peut plus avancer d'un pas franc, elle passe la main au lieu d'insister.
+template<int D>
+int lance_mixte( const Args &a, const Opts &o, const Nuage<D> &nu, Lineaire &lin ) {
+    constexpr int NV = D == 2 ? 64 : 128;
+    const SI n = nu.n;
+    const std::vector<TF> zero( n, TF( 0 ) );
+    NewtonOptions of = o.newton;
+    of.t_min = TF( o.mixte_tmin );
+    of.progres_min = TF( o.mixte_progres );
+    // LE PLANCHER DE BRUIT, POSE D'AVANCE. `|bruit|_2 = kappa eps / sqrt( n )` avec l'epsilon du
+    // `float` : c'est la seule facon de rendre la main AU BON MOMENT. Les criteres reactifs -- pas
+    // trop petit, progres trop faible -- se declenchent tous APRES coup, donc apres avoir paye.
+    of.plancher = TF( o.mixte_kappa * 6e-8 / std::sqrt( double( n ) ) );
+
+#ifdef _OPENMP
+    omp_set_num_threads( a.par.threads );
+#endif
+    const double t0 = now();
+
+    // ---- phase 1 : `float`
+    PowerDiagram<D,float,NV> pdf;
+    pdf.build( nu.P, nullptr, n, a.leaf );
+    lin.ordre( pdf.ids.data(), n );
+    Newton<PowerDiagram<D,float,NV>> n1( pdf, lin, nu.P, a.par, of );
+    n1.nu.assign( n, TF( 1 ) / n );
+    const StatsLin l0 = lin.st;
+    n1.resout( zero );
+    const double t1 = now();
+    const NewtonStats s1 = n1.st;
+    const StatsLin l1 = lin.st;
+
+    // ---- phase 2 : `double`, depuis les poids de la phase 1
+    PowerDiagram<D,double,NV> pdd;
+    pdd.build( nu.P, nullptr, n, a.leaf );
+    lin.ordre( pdd.ids.data(), n );
+    Newton<PowerDiagram<D,double,NV>> n2( pdd, lin, nu.P, a.par, o.newton );
+    n2.nu.assign( n, TF( 1 ) / n );
+    const bool ok = n2.resout( n1.w );
+    const double t2 = now();
+    const NewtonStats s2 = n2.st;
+    const StatsLin l2 = lin.st;
+
+    // ---- et le TEMOIN : tout en double, depuis zero
+    PowerDiagram<D,double,NV> pdt;
+    pdt.build( nu.P, nullptr, n, a.leaf );
+    lin.ordre( pdt.ids.data(), n );
+    Newton<PowerDiagram<D,double,NV>> n3( pdt, lin, nu.P, a.par, o.newton );
+    n3.nu.assign( n, TF( 1 ) / n );
+    n3.resout( zero );
+    const double t3 = now();
+    const NewtonStats s3 = n3.st;
+    const StatsLin l3 = lin.st;
+
+    std::printf( "  MIXTE %s ( max|a-nu|/nu = %.2e ) : %dD n=%d threads=%d\n", s2.fin, double( s2.reste ), D, int( n ), a.par.threads );
+    std::printf( "        phase float  : %2d it, %4d diag ( %3d reculs ), reste %.2e, %7.3f s"
+                 "   [ diag %6.3f  lineaire %7.3f / %6d it ]  %s\n",
+                 s1.nb_iter, s1.nb_diag, s1.nb_recul, double( s1.reste ), t1 - t0,
+                 s1.t_diag, l1.total() - l0.total(), l1.nb_iter - l0.nb_iter, s1.fin );
+    std::printf( "        phase double : %2d it, %4d diag ( %3d reculs ), reste %.2e, %7.3f s"
+                 "   [ diag %6.3f  lineaire %7.3f / %6d it ]\n",
+                 s2.nb_iter, s2.nb_diag, s2.nb_recul, double( s2.reste ), t2 - t1,
+                 s2.t_diag, l2.total() - l1.total(), l2.nb_iter - l1.nb_iter );
+    std::printf( "        TOTAL MIXTE  : %2d iterations, %4d diagrammes, %.3f s   ( diagramme seul %.3f s )\n",
+                 s1.nb_iter + s2.nb_iter, s1.nb_diag + s2.nb_diag, t2 - t0, s1.t_diag + s2.t_diag );
+    std::printf( "        TEMOIN double: %2d it, %4d diag ( %3d reculs ), reste %.2e, %7.3f s"
+                 "   [ diag %6.3f  lineaire %7.3f / %6d it ]  %s\n",
+                 s3.nb_iter, s3.nb_diag, s3.nb_recul, double( s3.reste ), t3 - t2,
+                 s3.t_diag, l3.total() - l2.total(), l3.nb_iter - l2.nb_iter, s3.fin );
+    const double g = t3 - t2 > 0 ? 100.0 * ( 1 - ( t2 - t0 ) / ( t3 - t2 ) ) : 0;
+    const double gd = s3.t_diag > 0 ? 100.0 * ( 1 - ( s1.t_diag + s2.t_diag ) / s3.t_diag ) : 0;
+    std::printf( "        BILAN : %+.1f %% sur le total, %+.1f %% sur le diagramme seul\n", g, gd );
+    return ok ? 0 : 1;
+}
+
 template<int D>
 int deroule( const Args &a, const Opts &o ) {
     int bad = 0;
@@ -177,52 +329,13 @@ int deroule( const Args &a, const Opts &o ) {
             continue;
         }
         std::printf( "-- %s\n", nu.nom.c_str() );
-        const std::string sol = o.solver == "auto" ? ( D == 3 ? "mg" : "amg" ) : o.solver;
+        auto lin = fabrique<D>( o );
+        if ( a.kernel == "mixte" ) {
+            bad += lance_mixte<D>( a, o, nu, *lin );
+            continue;
+        }
         bad += dispatch<D>( a, [ & ]( auto tag ) {
-            using PD = typename decltype( tag )::type;
-#ifdef SF_EIGEN
-            if ( sol == "chol" ) {
-                Cholesky lin;
-                return lance<PD>( a, o, nu, lin );
-            }
-#endif
-            if ( sol == "mg" ) {
-                Mg lin;
-                lin.tol = o.lintol;
-                lin.maxit = o.linmax;
-                if ( o.mg_agreg   > 0 ) lin.agreg   = o.mg_agreg;
-                // UN SEUL LISSAGE EN 3D, ET C'EST LA MESURE QUI LE DIT. Les defauts de
-                // `Multigrille.h` viennent du 2D sous une densite image, ou `nu` est PLAT entre 1
-                // et 3 ( 88.6 / 88.0 / 89.6 s a `n = 1e5`, sous le bruit de +/- 8 % ). En 3D il ne
-                // l'est pas du tout -- partie lineaire a `n = 5e5`, paquets de 8 :
-                //
-                //      nu 1 :  165 it,  4.81 s        nu 2 :  120 it,  5.30 s
-                //      nu 3 :  ( 156 it a paquet 16 ), 7.16 s      AMGCL : 129 it, 7.32 s
-                //
-                // Le graphe 3D a 15.1 non-nuls par ligne contre 6.0 en 2D : un seul passage de
-                // Jacobi y propage deja l'information bien plus loin, donc le deuxieme et le
-                // troisieme ne font plus qu'ajouter de la bande passante. Passer de `nu 3` a
-                // `nu 1` fait +69 % d'iterations en 2D mais seulement +32 % en 3D.
-                if      ( o.mg_nu > 0 ) lin.nu = o.mg_nu;
-                else if ( D == 3 )      lin.nu = 1;
-                if ( o.mg_lisseur >= 0 ) lin.lisseur = o.mg_lisseur;
-                if ( o.mg_recycle >= 0 ) lin.recycle = o.mg_recycle;
-                if ( o.mg_cheb    > 0 ) lin.cheb    = TF( o.mg_cheb );
-                if ( o.mg_tronque >= 0 ) lin.tronque = TF( o.mg_tronque );
-                lin.trace = o.mg_trace;
-                return lance<PD>( a, o, nu, lin );
-            }
-#ifdef SF_AMGCL
-            Amg lin;
-            lin.variante = o.amgvar;
-            lin.tol = o.lintol;
-            lin.maxit = o.linmax;
-            return lance<PD>( a, o, nu, lin );
-#else
-            std::printf( "  AMGCL absent : on retombe sur Cholesky\n" );
-            Cholesky lin;
-            return lance<PD>( a, o, nu, lin );
-#endif
+            return lance<typename decltype( tag )::type>( a, o, nu, *lin );
         } );
     }
     return bad;
@@ -278,6 +391,9 @@ int main( int argc, char **argv ) {
         else if ( s == "--bascule" )    o.po.bascule = std::atof( val() );
         else if ( s == "--bascule-it" ) o.po.bascule_it = std::atoi( val() );
         else if ( s == "--courbe" )     o.courbe = val();
+        else if ( s == "--mixte-tmin" ) o.mixte_tmin = std::atof( val() );
+        else if ( s == "--mixte-progres" ) o.mixte_progres = std::atof( val() );
+        else if ( s == "--mixte-kappa" ) o.mixte_kappa = std::atof( val() );
         else if ( s == "--memo" )       o.newton.memo = true;
         else if ( s == "--lim-tol" )    o.newton.lim.tol = std::atof( val() );
         else if ( s == "--lim-coeff" )  o.newton.lim.coeff = std::atof( val() );
@@ -299,6 +415,9 @@ int main( int argc, char **argv ) {
                 "  --lin-tol T     arret du solveur lineaire, relatif       (1e-10)\n"
                 "  --lin-max K     iterations du solveur lineaire au plus   (20000)\n"
                 "  --ecrire FILE   ecrire les poids trouves au format de cases/ ( le dernier nuage deroule )\n"
+                "  --mixte-tmin T  --kernel mixte : le pas sous lequel la phase float passe la main au double  (1e-3)\n"
+                "  --mixte-progres F  ... ou le gain minimal sur |r|_2 par iteration ( 0 : eteint )              (0)\n"
+                "  --mixte-kappa K    ... et le PLANCHER DE BRUIT vise, en unites de eps_float / sqrt( n )  (30)\n"
                 "  --quiet         pas de trace par iteration\n"
                 "  --pas P         essais ( KMT, defaut ) | dyadique | facteur | tenseur | essai-limites ( 2D )\n"
                 "  --beta0 B       essai-limites : le premier essai                          (0.25)\n"

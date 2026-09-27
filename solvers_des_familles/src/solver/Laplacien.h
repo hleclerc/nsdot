@@ -9,10 +9,23 @@
 // 3D, et c'est la cellule qui livre la mesure de la facette. Son noyau est exactement les
 // CONSTANTES -- ajouter la meme constante a tous les poids ne change aucune cellule.
 //
-// SANS UN SEUL TRI. Chaque facette est vue DEUX fois, une par cellule, et les deux mesures ne
-// different qu'a l'arrondi ; on garde celle de la ligne, donc un comptage et une somme prefixe
-// placent tout le monde -- et chaque ligne somme EXACTEMENT a zero. Apparier les deux mesures par
-// un tri coutait plus que le diagramme lui-meme ( 4.2 s contre 3.9 a n=1e6 ).
+// SANS UN SEUL TRI, ET SYMETRIQUE. Chaque facette est vue DEUX fois, une par cellule. On ne garde
+// que la vue `i < j` et on la MIROITE dans les deux lignes : un comptage et une somme prefixe
+// placent tout le monde, chaque ligne somme EXACTEMENT a zero, et `L` est symetrique AU BIT PRES.
+// Apparier les deux mesures par un tri coutait plus que le diagramme lui-meme ( 4.2 s contre 3.9
+// a n=1e6 ) ; miroiter ne coute rien.
+//
+// POURQUOI LA SYMETRIE EXACTE EST OBLIGATOIRE, ET PAS SEULEMENT ELEGANTE. On gardait avant la
+// mesure DE LA LIGNE, donc `L_ij` venait de la cellule `i` et `L_ji` de la cellule `j`. En double
+// les deux vues d'une meme facette different de 1e-16 et le gradient conjugue ne s'en apercoit
+// pas. EN SIMPLE PRECISION ELLES DIFFERENT DE 100 % sur les facettes presque degenerees -- et le
+// CG, qui suppose un operateur symetrique, cesse de converger : 100 000 iterations au lieu de 155
+// sur l'uniforme 3D a `n = 2e4`, soit 44.7 s de solveur contre 0.10. Le diagramme en `float`
+// etait juste ; c'est l'assemblage qui ne l'etait pas ( README § 19.10 ).
+//
+// LE CAS D'UNE FACETTE VUE D'UN SEUL COTE : elle n'est gardee que si `i < j`. Sur les millions
+// d'aretes d'un diagramme a `n = 1e6`, `fp32` en compte entre zero et cinq -- et une arete que
+// l'une des deux cellules ne voit meme pas est microscopique.
 //
 // LA JAUGE `w_0 = 0` : le systeme reduit raye la ligne et la colonne 0, et devient defini positif.
 // `crs_reduit` le livre ainsi, colonnes triees, pour un solveur qui veut du CRS.
@@ -38,8 +51,8 @@ struct Laplacien {
     void assemble( SI nb, const std::vector<Facette> &fa ) {
         n = nb;
         row.assign( n + 1, 0 );
-        for ( const Facette &e : fa )
-            ++row[ e.i + 1 ];
+        for ( const Facette &e : fa )                    // la vue `i < j`, comptee DES DEUX COTES
+            if ( e.i < e.j ) { ++row[ e.i + 1 ]; ++row[ e.j + 1 ]; }
         for ( SI i = 0; i < n; ++i )
             row[ i + 1 ] += row[ i ];
 
@@ -48,10 +61,10 @@ struct Laplacien {
         dia.assign( n, TF( 0 ) );
         std::vector<SI> at( row.begin(), row.end() - 1 );
         for ( const Facette &e : fa ) {
-            const SI p = at[ e.i ]++;
-            col[ p ] = e.j;
-            c[ p ] = e.c;
-            dia[ e.i ] += e.c;
+            if ( e.i >= e.j ) continue;                  // l'autre vue de la meme facette
+            const SI p = at[ e.i ]++, q = at[ e.j ]++;
+            col[ p ] = e.j; c[ p ] = e.c; dia[ e.i ] += e.c;
+            col[ q ] = e.i; c[ q ] = e.c; dia[ e.j ] += e.c;
         }
         // une cellule sans voisin ne peut pas arriver tant qu'aucune n'est vide, mais une ligne
         // nulle rendrait le systeme singulier SANS LE DIRE : on la neutralise.

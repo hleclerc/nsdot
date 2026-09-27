@@ -40,7 +40,9 @@ int moteur( Fourn *f, Cel *c, Local<Fourn> *loc_out = nullptr ) {
     static const TF dlo[ 3 ] = { 0, 0, 0 }, dhi[ 3 ] = { 1, 1, 1 };
     static const SI32 dfid[ 6 ] = { -1, -2, -3, -4, -5, -6 };
 
-    if constexpr ( requires ( Fourn *g, TF *b ) { g->boite_depart( b, b, 1.0 ); } ) {
+    // LES BOITES NE SERVENT QU'EN SIMPLE PRECISION -- voir `cell/Noyau2D.h`.
+    if constexpr ( sizeof( typename Cel::TKernel ) < 8
+                && requires ( Fourn *g, TF *b ) { g->boite_depart( b, b, 1.0 ); } ) {
         double facteur = 1;                              // `CROISSANCE^essai`, sans appel a `pow`
         for ( int essai = 0; essai < MAX_REPRISES; ++essai, facteur *= CROISSANCE ) {
             TF lo[ 3 ], hi[ 3 ];
@@ -54,10 +56,17 @@ int moteur( Fourn *f, Cel *c, Local<Fourn> *loc_out = nullptr ) {
                                     hi[ 2 ] < 1 ? SI32( FACE_ARTIF - 6 ) : SI32( -6 ) };
             const int r = moteur_depuis( f, c, lo, hi, fid, loc_out );
             // VIDE compte comme une sortie ( `cell/Boite.h`, cas ( a ) ) : en Laguerre une
-            // cellule ne contient pas forcement son germe.
-            if ( r == 0 && c->nv > 0 && ! c->touche_artificielle() )
+            // cellule ne contient pas forcement son germe. Mais elle n'agrandit pas -- elle
+            // saute au domaine, parce que le plus souvent elle est vraiment vide.
+            if ( r == 0 && c->nv <= 0 ) {
+                nb_reprises.fetch_add( 1, std::memory_order_relaxed );
+                nb_rep_vide.fetch_add( 1, std::memory_order_relaxed );
+                break;
+            }
+            if ( r == 0 && ! c->touche_artificielle() )
                 return r;
             nb_reprises.fetch_add( 1, std::memory_order_relaxed );
+            nb_rep_face.fetch_add( 1, std::memory_order_relaxed );
         }
     }
     return moteur_depuis( f, c, dlo, dhi, dfid, loc_out );

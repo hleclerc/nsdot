@@ -3731,7 +3731,111 @@ sur `|r|_2` plutôt que sur le `max`), ou de recalculer en `double` les quelques
 conditionnées — qu'on sait détecter, ce sont celles dont une facette a une aire relative sous
 quelques `eps`.
 
-## 19.9 La mesure image : le stockage peut être `float`, la marche non
+## 19.9 L'assemblage doit être SYMÉTRIQUE, ou le CG n'avance plus
+
+En cherchant combien la simple précision ferait gagner, on est tombé sur un défaut qui n'a rien
+d'un arrondi : en 3D, `n = 2·10⁴`, la phase `float` passait **44,7 s dans le solveur linéaire pour
+100 000 itérations de CG** — contre 0,10 s et 155 itérations en `double`. Le diagramme, lui,
+prenait 0,32 s des deux côtés.
+
+`Laplacien.h` assemblait la hessienne **sans un seul tri**, en gardant pour chaque ligne la mesure
+de *sa* cellule : `L_ij` venait de la cellule `i`, `L_ji` de la cellule `j`. Les deux vues d'une
+même facette diffèrent de `1e−16` en double et le gradient conjugué ne s'en aperçoit pas. **En
+simple précision elles diffèrent de 100 %** sur les facettes presque dégénérées — et le CG, qui
+suppose un opérateur symétrique, cesse de converger.
+
+Le remède ne coûte rien et ne demande toujours aucun tri : ne garder que la vue `i < j` et la
+**miroiter** dans les deux lignes. Le comptage compte les deux côtés, la somme préfixe place tout
+le monde, chaque ligne somme toujours exactement à zéro, et `L` est symétrique **au bit près**.
+Une facette vue d'un seul côté n'est gardée que si `i < j` — sur les millions d'arêtes d'un
+diagramme à `n = 10⁶`, `fp32` en compte entre zéro et cinq, et une arête qu'une des deux cellules
+ne voit même pas est microscopique.
+
+**100 000 itérations → 186. 44,7 s → 0,12 s.** Le `double` est inchangé au bit près.
+
+C'est le genre de défaut qu'on ne voit qu'en `float` : la double précision le masquait depuis le
+début, et il attendait qu'on descende la précision pour se manifester.
+
+## 19.10 Ce que la bascule `fp32 → fp64` ferait gagner (`--kernel mixte`)
+
+La forme utile de la simple précision n'est pas « tout en `float` » : c'est **commencer en `float`
+et finir en `double`**, puisque `float` suit `double` chiffre pour chiffre pendant les premières
+itérations avant de s'écraser sur son plancher de bruit. `--kernel mixte` fait exactement ça, et
+imprime les deux phases plus un témoin tout-double.
+
+### Rendre la main au bon moment : trois critères, un seul marche
+
+Les deux critères **réactifs** se trompent, chacun dans son sens :
+
+* **le progrès** (`--mixte-progres`) : les premières itérations gagnent légitimement ~50 % sur
+  `|r|_2` (1.364e−3 → 6.604e−4 → 3.341e−4 en 3D), donc un seuil à 0,5 coupe la phase `float` dès
+  la deuxième ;
+* **le pas** (`--mixte-tmin` à 0,25) : la *première* itération demande légitimement un petit pas,
+  et à `n = 2·10⁴` en 2D elle rendait la main tout de suite, quatre diagrammes gaspillés.
+
+Le bon critère se **pose d'avance**. L'écart de mesure d'une cellule vaut `κ·eps·ν_i`, donc le
+plancher du mérite vaut `‖bruit‖₂ = κ·eps/√n`. À `n = 10⁵` en `float` ça prédit **1.9e−10** — et la
+trace montre Newton bloqué à **2.0e−10**. `--mixte-kappa` (défaut 30) le pose, et il se déclenche
+proprement dans les six cas mesurés.
+
+Sans lui, le coût est spectaculaire : sur l'uniforme 3D à `n = 10⁵`, les six premières itérations
+`float` sont identiques à celles du `double` et coûtent **neuf diagrammes** ; les quatorze
+suivantes en coûtent **cent quarante-cinq** pour faire passer `|r|_2` de 4.3e−10 à 2.0e−10.
+
+### Le partage, qui est la quantité qui se transporte
+
+Avec le plancher, la bascule tombe **toujours au même endroit : cinq itérations en `float`, une en
+`double`**.
+
+| uniforme | diag. `float` | diag. `double` | total | témoin tout-`double` |
+|---|---|---|---|---|
+| 2D `n = 2·10⁴` | 9 | 2 | 11 | 9 |
+| 2D `n = 10⁵` | 7 | 2 | 9 | 8 |
+| 2D `n = 5·10⁵` | 11 | 2 | 13 | 12 |
+| 3D `n = 2·10⁴` | 7 | 2 | 9 | 7 |
+| 3D `n = 10⁵` | 8 | 2 | 10 | 9 |
+| 3D `n = 5·10⁵` | 8 | 2 | 10 | 8 |
+
+**70 à 85 % des diagrammes passent en `fp32`, pour un surcoût de un à deux diagrammes** (le
+diagramme de reprise et l'itération de finition). Le résidu final est le même ou meilleur que
+celui du témoin — souvent bien meilleur, l'itération `double` finale allant plus loin.
+
+### Et donc, combien ?
+
+Le surcoût en **nombre** de diagrammes est de +8 à +25 %. Si `fp32` est `s` fois plus rapide par
+diagramme, la bascule vaut `N_f/s + N_d` contre `N₀` :
+
+| `s` | 2D `n = 10⁵` | 3D `n = 10⁵` | 2D `n = 5·10⁵` |
+|---|---|---|---|
+| 1 (ce CPU) | +12 % | +11 % | +8 % |
+| 1,5 | −7 % | −11 % | −17 % |
+| **2** | **−31 %** | **−33 %** | **−37 %** |
+| 4 | −45 % | −50 % | −52 % |
+
+**Sur ce CPU, `s ≈ 1` et il n'y a rien à gagner** — mesuré sur le diagramme seul à `n = 10⁶` :
+2D Voronoï 143 → 146 ns/germe, 2D Laguerre 166 → 193 (les reprises de boîte), 3D Voronoï
+1883 → **1653**, 3D Laguerre 1914 → 1864. Entre −12 % et +16 %. L'engin est limité par le débit
+d'instructions SIMD et par les dépendances du découpage, pas par la bande passante, et l'AVX fait
+quatre `double` par cycle là où il ferait huit `float` — mais le découpage n'est pas ce qui sature.
+
+**Le seuil de rentabilité est `s ≈ 1,3`.** C'est une barre basse pour une carte, où `fp32` est au
+minimum deux fois le débit du `fp64` et où sur une puce grand public le rapport est de trente-deux.
+La conclusion transportable est donc : *le partage 5/1 tient, le surcoût est de un à deux
+diagrammes, et tout ce qui dépasse 1,3× de rapport `fp32`/`fp64` est du gain.*
+
+### Ce qui reste, et la piste des « cellules à part »
+
+Le surcoût de un à deux diagrammes est irréductible (il faut bien remesurer une fois en `double`).
+Ce qui ne l'est pas, c'est le **plancher** lui-même : il est fixé par le **maximum** de l'erreur
+géométrique, et ce maximum vient d'une poignée de cellules mal conditionnées — celles dont une
+facette est sur le point d'apparaître, où `t = s₀/(s₀−s₁)` a un dénominateur qui s'annule (§ 19.8).
+Les mettre de côté pour une passe en `double` est la suite naturelle : elles sont **détectables**
+(une facette d'aire relative sous quelques `eps`), elles sont **rares** (la médiane est à 1,3·eps,
+le p99 à 4,6e−7, le max à 1,5e−6 : c'est le dernier pour cent qui décide), et les recalculer
+coûterait ce pour cent. Si ça descendait le plancher d'un ou deux ordres, la phase `float` gagnerait
+une ou deux itérations de plus — soit 7 ou 8 diagrammes sur 10 au lieu de 5 sur 6. Non mesuré.
+
+## 19.11 La mesure image : le stockage peut être `float`, la marche non
 
 Troisième instance du même mécanisme. Le coupable nommé au § 12.7 était `S[j][i] − sref` : la somme
 préfixe court de 0 à ~1 sur une ligne, la différence entre deux pixels d'une même cellule vaut

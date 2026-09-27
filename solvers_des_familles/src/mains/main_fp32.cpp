@@ -112,11 +112,13 @@ void compare( const Nuage<D> &nu, const Args &a, bool centre, const char *etiq )
     std::vector<TF> ad, af;
     std::vector<Facette> fd, ff;
     SI bd = 0, bf = 0;
-    nb_reprises.store( 0 );
+    nb_reprises.store( 0 ); nb_rep_face.store( 0 ); nb_rep_vide.store( 0 );
     diagramme<PowerDiagram<D,double,NV>>( nu, W, a.par, ad, fd, bd, a.leaf );
     const long long rep_d = nb_reprises.exchange( 0 );
+    nb_rep_face.store( 0 ); nb_rep_vide.store( 0 );
     diagramme<PowerDiagram<D,float ,NV>>( nu, W, a.par, af, ff, bf, a.leaf );
     const long long rep_f = nb_reprises.load();
+    const long long r_face = nb_rep_face.load(), r_vide = nb_rep_vide.load();
 
     // ---- la mesure, rapportee a la mesure MOYENNE ( `1 / n` sur le cube unite )
     std::vector<double> em;
@@ -152,8 +154,8 @@ void compare( const Nuage<D> &nu, const Args &a, bool centre, const char *etiq )
                  int( manque ), t_pos, t_poi );
     if ( bd || bf ) std::printf( "      ( debordements : double %d, float %d )\n", int( bd ), int( bf ) );
     if ( rep_d || rep_f )
-        std::printf( "      ( cellules reprises depuis le domaine : %.2f %% en double, %.2f %% en float )\n",
-                     100.0 * rep_d / n, 100.0 * rep_f / n );
+        std::printf( "      ( reprises : %.2f %% en double, %.2f %% en float -- dont %.2f %% face touchee, %.2f %% VIDE )\n",
+                     100.0 * rep_d / n, 100.0 * rep_f / n, 100.0 * r_face / n, 100.0 * r_vide / n );
 }
 
 template<int D>

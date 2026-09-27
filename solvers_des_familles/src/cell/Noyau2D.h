@@ -242,7 +242,10 @@ void moteur( Fourn *f, Atl *a ) {
     static const TF dlo[ 2 ] = { 0, 0 }, dhi[ 2 ] = { 1, 1 };
     static const SI32 dfid[ 4 ] = { -1, -2, -3, -4 };
 
-    if constexpr ( requires ( Fourn *g, TF *b ) { g->boite_depart( b, b, 1.0 ); } ) {
+    // LES BOITES NE SERVENT QU'EN SIMPLE PRECISION. En `double` le depart au domaine laisse
+    // `eps n^( 1/D )` = 1e-13 a `n = 1e6`, dix mille fois sous tout ce qui compte : la boite n'y
+    // acheterait rien et ses reprises se paieraient. Le choix est a la COMPILATION.
+    if constexpr ( sizeof( TK ) < 8 && requires ( Fourn *g, TF *b ) { g->boite_depart( b, b, 1.0 ); } ) {
         double facteur = 1;                              // `CROISSANCE^essai`, sans appel a `pow`
         for ( int essai = 0; essai < MAX_REPRISES; ++essai, facteur *= CROISSANCE ) {
             TF lo[ 2 ], hi[ 2 ];
@@ -257,12 +260,19 @@ void moteur( Fourn *f, Atl *a ) {
             // VIDE OU DEBORDE COMPTE COMME UNE SORTIE : une cellule de Laguerre ne contient pas
             // forcement son germe, donc « rien dans la boite » ne veut pas dire « rien ». Voir
             // `cell/Boite.h`, cas ( a ) -- le piege que `check` a poids nuls ne montre pas.
-            bool touche = a->nb <= 0;
+            nb_reprises.fetch_add( 1, std::memory_order_relaxed );
+            if ( a->nb <= 0 ) {                          // VIDE : on ne sait pas quelle taille il
+                nb_rep_vide.fetch_add( 1, std::memory_order_relaxed );   // faudrait, et le plus
+                break;                                   // souvent elle est vraiment vide
+            }
+            bool touche = false;
             for ( int i = 0; i < a->nb; ++i )
                 touche |= face_artificielle( a->cid[ i ] );
-            if ( ! touche )
+            if ( ! touche ) {
+                nb_reprises.fetch_sub( 1, std::memory_order_relaxed );
                 return;
-            nb_reprises.fetch_add( 1, std::memory_order_relaxed );
+            }
+            nb_rep_face.fetch_add( 1, std::memory_order_relaxed );
         }
     }
     moteur_depuis<TK>( f, a, dlo, dhi, dfid );

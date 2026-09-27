@@ -57,6 +57,25 @@ struct NewtonOptions {
     int  max_reculs = 60;      ///< divisions par deux du pas, au plus, par iteration
     TF   t_min      = 1e-10;   ///< en dessous, on declare la STAGNATION ( 34 diagrammes pour y
                                ///< descendre depuis 1 : `1e-3` en coute 10 )
+    /// LE PROGRES MINIMAL PAR ITERATION, en fraction de `|r|_2`. `0` : eteint.
+    ///
+    /// `t_min` ne suffit pas a arreter une agonie, parce qu'une iteration mourante ACCEPTE son
+    /// pas -- elle gagne un pour cent sur le residu pour huit diagrammes. Mesure sur l'uniforme
+    /// 3D a `n = 1e5` en `--kernel float` : les six premieres iterations sont identiques a celles
+    /// du `double` et coutent NEUF diagrammes ; les quatorze suivantes en coutent CENT QUARANTE
+    /// CINQ pour faire passer `|r|_2` de 4.3e-10 a 2.0e-10. En simple precision c'est le regime
+    /// normal de fin de course -- le residu a atteint le bruit de la mesure -- donc il faut un
+    /// critere qui le voie : une iteration qui gagne moins que `progres_min` est la derniere.
+    TF   progres_min = 0;
+    /// LE PLANCHER DE BRUIT DE LA MESURE, en unites de `|r|_2`. `0` : eteint.
+    ///
+    /// Il est PREVISIBLE et ne coute rien a poser : l'ecart de mesure d'une cellule vaut
+    /// `kappa eps nu_i`, donc `|bruit|_2 = kappa eps sqrt( n ) nu = kappa eps / sqrt( n )`. A
+    /// `n = 1e5` en `float` ca donne 1.9e-10 -- et la trace montre Newton bloque a 2.0e-10.
+    /// S'arreter LA, plutot que d'y descendre a coups de demi-pas, est ce qui rend la bascule
+    /// `--kernel mixte` rentable : c'est la difference entre rendre la main apres SIX diagrammes
+    /// inutiles et apres CENT QUARANTE CINQ.
+    TF   plancher = 0;
     bool trace      = true;
     int  extraire   = -1;      ///< >= 0 : s'arreter des que la DIRECTION de cette iteration est
                                ///< calculee ( `w` et `d` sont alors ceux du pas propose )
@@ -211,6 +230,7 @@ struct Newton {
     /// l'appelant les a calcules en choisissant son depart, on ne refait pas ce diagramme.
     bool resout( const std::vector<TF> &w_init, bool deja_mesure = false ) {
         const SI n = pd.n;
+        TF nr_prec = 0;                                  // `|r|_2` de l'iteration precedente
         std::vector<TF> a2, b, w2, da2;
         std::vector<Facette> fa2;
         std::vector<LimiteCellule> lim;
@@ -253,6 +273,17 @@ struct Newton {
                 eps = TF( 0.5 ) * std::min( nm, am );
             }
             const TF nr = merite( a );
+            if ( o.plancher > 0 && nr < o.plancher ) {
+                st.fin = "PLANCHER DE BRUIT";            // la mesure ne sait plus rien dire
+                st.reste = pire;
+                return false;
+            }
+            if ( o.progres_min > 0 && it > 0 && nr > ( 1 - o.progres_min ) * nr_prec ) {
+                st.fin = "PROGRES INSUFFISANT";          // le bruit de la mesure, pas un echec
+                st.reste = pire;
+                return false;
+            }
+            nr_prec = nr;
             st.reste = pire;
             if ( it == 0 ) st.reste0 = pire;
 

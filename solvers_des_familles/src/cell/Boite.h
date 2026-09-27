@@ -29,7 +29,7 @@
 //   ( a ) `C inter B` est VIDE -- on ne voit aucune face, et c'est le piege ;
 //   ( b ) `C inter B` n'est pas vide, donc `C` a des points des deux cotes de `dB`, donc
 //         `C inter B` a une face portee par `dB` : on la voit.
-// D'ou le test complet : **une cellule VIDE compte comme une sortie**. On serait tente de
+// D'ou le test complet : une cellule VIDE compte comme une sortie. On serait tente de
 // raisonner « la cellule contient son germe, qui est dans la boite, donc ( a ) n'arrive pas » --
 // C'EST FAUX EN LAGUERRE : un poids assez bas met la cellule ailleurs que sur son germe, ou la
 // supprime. Le banc l'a paye : `check` passait ( ses poids valent zero par defaut, `--weights 0`,
@@ -38,6 +38,13 @@
 // La reciproque reste fausse -- une cellule peut effleurer `dB` sans en sortir, une cellule peut
 // etre vraiment vide -- donc on recommence parfois pour rien. Le test est CONSERVATIF, jamais
 // permissif, et c'est le seul sens qui compte.
+//
+// ET LES DEUX CAS NE SE REPRENNENT PAS PAREIL. Une face touchee veut dire « presque assez grand » :
+// on agrandit. Une cellule VIDE ne dit rien du tout sur la taille qu'il faudrait, et le cas le
+// plus frequent est qu'elle soit VRAIMENT vide -- des `|w| <= h^2` l'ecart de poids entre voisins
+// depasse `d^2`, donc des cellules disparaissent. La faire gravir toute l'echelle pour rien
+// coutait 58 % de reprises sur l'uniforme a `n = 1e6` ; elle saute maintenant directement au
+// domaine, ce qui la tranche en UN passage.
 //
 // = LA REPRISE AGRANDIT LA BOITE, ELLE NE SAUTE PAS AU DOMAINE
 //
@@ -74,6 +81,8 @@ inline constexpr bool face_artificielle( std::int32_t id ) { return id <= FACE_A
 /// LE COMPTEUR DE REPRISES, global et atomique. C'est un INSTRUMENT d'etude, pas un rouage : il
 /// n'est touche que lorsqu'une cellule sort de sa boite, donc jamais dans le cas courant.
 inline std::atomic<long long> nb_reprises{ 0 };
+/// et POURQUOI : une face artificielle survit, ou la cellule est vide dans la boite
+inline std::atomic<long long> nb_rep_face{ 0 }, nb_rep_vide{ 0 };
 
 /// le facteur d'agrandissement a chaque essai, et combien d'essais : `4^12 = 1.7e7`, de quoi
 /// passer de la plus fine lamelle au domaine entier sans jamais buter sur le compteur.

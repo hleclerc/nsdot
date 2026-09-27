@@ -36,7 +36,7 @@ void Args::usage() {
         "  --load FILE     UN nuage, au lieu de la suite ( avec --2d ou --3d ) ; 'uniforme' : le seul cas uniforme\n"
         "  --2d / --3d     ne derouler QUE cette dimension        (les deux)\n"
         "  --cases DIR     le repertoire des nuages durs          (../2d_des_familles/cases)\n"
-        "  --kernel K      le flottant du noyau : double | float  (double)\n"
+        "  --kernel K      le flottant du noyau : double | float | mixte ( newton : float puis double )  (double)\n"
         "  --maxnv M       sommets max par cellule : 64 | 128 en 2D, 128 | 256 en 3D\n" );
 }
 
