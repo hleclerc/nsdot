@@ -4286,7 +4286,208 @@ C'est un fait utile en soi et il vaut au-delà d'ici : **`U` sert à choisir un 
 un minorant utilisable — mais ne sert pas à classer les cellules une par une.** Sa conservativité,
 que le § 15.14 avait trouvée « accidentellement bonne », est de deux ordres de grandeur.
 
-## 20.5 Ce qui reste ouvert
+## 20.5 L'équilibrage : rendre la masse à côté, et ce que ça révèle
+
+La compensation du § 20.3 reprend la masse **au prorata de `ν` sur tout le dehors**. C'est un
+**monopôle** : `δ` a une partie positive ponctuelle et une partie négative étalée, donc `L⁺δ` porte
+en 2D un potentiel logarithmique — la correction de direction traîne sur tout le diagramme. Rendre
+la masse **à côté** (somme nulle localement) rend le champ dipolaire, donc amorti. Deux règles
+(`--cible-repris`), contre `global` :
+
+* **`anneau`** : les cellules malades qui se touchent sont agrégées en **amas** (union-find sur le
+  graphe du laplacien), et chaque amas prend à **sa propre couronne** (`--cible-ep`), au prorata
+  de `ν`. Somme nulle par amas ;
+* **`mangeurs`** : chaque victime prend à **ses mangeurs**, au prorata du flux qu'ils lui volent.
+  Somme nulle par cellule — le dipôle le plus court qui existe, et celui que la résistance
+  effective désigne comme le plus efficace (`c_ij R_eff( i, j ) ≤ 1`, l'égalité pour le voisin
+  direct).
+
+`FUITE` = la part de l'énergie de `d~ − d` (jauge ôtée) qui vit **hors du cœur et de son anneau**.
+
+| itération 0 | `U*` | masse | `‖δb‖/‖b‖` | **FUITE** | `α*` accepté |
+|---|---|---|---|---|---|
+| Newton (témoin) | 3.08e−05 | — | — | — | **3.81e−03** |
+| `global` | ×2.04 | 0.04 % | 2.7e−03 | **99.0 %** | 1.70e−03 |
+| `anneau` | ×2.08 | 0.04 % | 3.1e−03 | **50.9 %** | 3.65e−04 |
+| `mangeurs` | ×2.09 | **0.02 %** | 1.9e−03 | **58.6 %** | 2.84e−04 |
+
+**Le diagnostic était bon** : avec la reprise globale, **99 % de la correction est ailleurs**. La
+reprise locale divise la fuite par deux, et elle fait mieux sur tous ses propres indicateurs — sur
+les itérations suivantes `mangeurs` monte à ×2.7, ×2.9, ×4.1, ×9.7, ×10.0 sur `U*`, guérit la
+victime à chaque fois (`malades 1 → 0`) et coûte **quatre fois moins de masse** que la reprise
+globale.
+
+**Et c'est exactement ce qui la condamne.** Sur un solve complet :
+
+| | itér. | **diagrammes** | gain moyen sur `U*` |
+|---|---|---|---|
+| `essai-limites` (témoin) | 19 | **64** | — |
+| `global` `F = 8` | 20 | 66 | ×1.13 |
+| `global` `F = 2` | 23 | 77 | ×1.50 |
+| `mangeurs` `F = 8` | 25 | 76 | ×3.53 |
+| `anneau` `F = 8` | 32 | 90 | ×3.75 |
+| `anneau` `F = 2` | 44 | 115 | ×2.83 |
+| **`mangeurs` `F = 2`** | **100, NE CONVERGE PAS** | **201** | **×6.23** |
+
+**L'anti-corrélation est parfaite : plus la déformation réussit sur son critère, pire est le
+solve.** À `mangeurs F = 2`, `U*` gagne un facteur six, le résidu ne bouge plus (`max|a−ν|/ν` reste
+à 1.5e+03 après cent itérations, contre 2.35e−06 pour le témoin) et il n'y a **aucun recul** : tous
+les pas sont acceptés, ils sont simplement microscopiques.
+
+Deux mécanismes, et ils tirent dans le même sens :
+
+* **le dipôle court achète `U*` en fabriquant un gradient de poids concentré.** `‖δb‖/‖b‖` vaut
+  2e−03, mais il est porté par deux ou trois cellules voisines : c'est un **écart de poids à travers
+  une facette**, donc précisément ce qui tue une cellule — et `U`, linéarisation en `t = 0`, ne le
+  voit pas. Le pas réel mesuré par le diagramme tombe de `3.81e−03` à `2.84e−04` pendant que `U*`
+  double. On a échangé un facteur treize réel contre un facteur deux sur le papier ;
+* **la direction déformée cesse d'être une direction de descente pour le vrai résidu.** À l'ordre un
+  le résidu devient `( 1 − t ) r − t δ` : la décroissance garantie est `( 1 − ‖δ‖/‖r‖ ) t / 2`, et
+  quand `δ` est local et `t` minuscule le test `n2r < nr` passe par un cheveu à chaque itération.
+  Newton accepte cent pas de rien du tout.
+
+**Ce que l'équilibrage local apprend vraiment** est donc un fait sur le critère, pas sur la
+méthode : **optimiser `U*` fort le rend d'autant plus mauvais comme proxy.** La conservativité de
+`U` que le § 15.14 avait trouvée « accidentellement bonne » ne survit pas à ce qu'on l'optimise —
+c'est la loi de Goodhart, mesurée.
+
+## 20.6 Le bon prédicteur : l'aire à combinatoire figée, pas les flux d'arêtes
+
+Tout ce qui précède est jugé par `U`, qui n'est pas un prédicteur d'extinction mais une
+**linéarisation des flux en `t = 0`** (§ 15.13). Le prédicteur, c'est le **polynôme d'aire à
+combinatoire figée** du § 7 — mesuré *exact* à l'itération 0 de ce nuage même.
+
+**Et il ne coûte pas ce qu'on croit.** `ModeleCellule` (§ 7.3) porte les droites de la cellule ;
+l'aire s'en déduit pour un déplacement de poids **quelconque**, par pure arithmétique. On construit
+donc la géométrie **une fois**, et tout le balayage — toutes les directions `d~( κ )`, tous les `α` —
+se lit dessus sans un seul calcul de cellule. Mieux : `κ` entre **linéairement** dans le second
+membre (le cœur et les donneurs n'en dépendent pas), donc `d~( κ ) = d + κ e` avec `L e = δ( 1 )` :
+**une** résolution pour tout le balayage, au lieu d'une par essai. `--cible-juge polynome`.
+
+### La calibration, qui vaut pour elle-même
+
+| it | `U*` (flux) | **polynôme** | pas accepté | `U` trop petit de |
+|---|---|---|---|---|
+| 0 | 3.08e−05 | 5.49e−03 | 3.81e−03 | **×178** |
+| 1 | 1.24e−04 | 1.89e−02 | 1.35e−02 | ×152 |
+| 2 | 2.69e−04 | 5.36e−02 | 5.96e−02 | ×200 |
+| 3 | 2.28e−04 | 1.56e−01 | 1.30e−01 | ×681 |
+| 4 | 4.29e−04 | 3.06e−01 | 1.44e−01 | ×714 |
+| 9 | 4.64e−03 | 5.66e−01 | 5.00e−01 | ×122 |
+| 10 | 8.50e−03 | 6.16e−01 | 6.48e−01 | ×72 |
+
+**`U` est pessimiste de deux à trois ordres de grandeur ; le polynôme tombe à moins d'un facteur
+deux du pas réellement pris** (et légèrement optimiste, comme le § 7 l'annonçait). Le chiffre est à
+retenir au-delà d'ici : `U` sert à *choisir* un pas — son minimum est un minorant — et à rien d'autre.
+
+### Ce que ça change quand il juge ET désigne
+
+Le cœur est alors `{ i : α_polynôme( i ) < F }` — les cellules dont le bon prédicteur dit qu'elles
+s'éteignent avant la cible — et non plus celles que `U` accusait. Solve complet :
+
+| | itér. | **diag.** | déformations retenues | coût de la passe |
+|---|---|---|---|---|
+| `essai-limites` (témoin) | 19 | **63** | — | — |
+| polynôme, `mangeurs` `F = 8` | 19 | **64** | **0 sur 19** | 3.18 s |
+| polynôme, `mangeurs` `F = 2` | 19 | **64** | 1 sur 19 | 2.80 s |
+| polynôme, `anneau` `F = 2` | 20 | 64 | 5 sur 20 | 2.70 s |
+| polynôme, `anneau` `F = 8` | 20 | 64 | 3 sur 20 | 3.16 s |
+| polynôme, `global` `F = 8` | 21 | 91 | 5 sur 21 | 3.13 s |
+
+**Avec le bon juge, le doseur refuse presque toujours de déformer** — `κ = 0` à chaque itération ou
+presque — et quand il accepte, il ne gagne rien. Les ×2 à ×10 des § 20.3 et § 20.5 étaient
+**entièrement un artefact de `U`** : ils achetaient une quantité fausse d'un facteur cent.
+
+Un cas est instructif : à l'itération 0, **une seule** cellule est à nourrir, `κ = 0.25` fait passer
+la limite du polynôme de 5.49e−03 à 1.95e−02 (**×3.55**) — et le pas accepté ne bouge pas d'un
+chiffre (3.81e−03). La colonne `manques` dit pourquoi : 41 773 cellules non modélisées ont un `U`
+sous la limite trouvée, donc le ×3.55 est lu sur un jeu de modèles incomplet. Aux itérations
+suivantes, où `manques` tombe à zéro, `κ` tombe à zéro aussi.
+
+**Le prix du bon juge.** Le crible est `U_i < α_polynôme`, et comme `U` est cent fois pessimiste il
+attrape 95 000 à 99 000 cellules sur 100 000 : **0.26 s par itération**, soit l'équivalent d'environ
+un diagramme, 35 % du solve. C'est exactement ce que `essai-limites` évite en ne calculant de
+limites que pour les cellules qu'un diagramme d'essai a trouvées mauvaises. Le bon prédicteur n'est
+pas cher **par cellule** ; c'est de savoir *quelles* cellules modéliser qui coûte.
+
+## 20.7 Le doseur branché sur `seules` (`--cible seules`)
+
+Le § 20.6 se termine sur un constat de coût : le bon prédicteur n'est pas cher **par cellule**,
+c'est de savoir **lesquelles** modéliser qui coûte — un crible en `U` en attrape 99 %. Or la liste
+existe déjà, et elle ne soupçonne pas : `essai-limites` prend un diagramme d'essai en `t = β` et en
+sort les cellules qu'il a **vues** passer sous `ε`. Elle est courte, elle est vraie, et elle est
+gratuite. On s'y branche.
+
+Le schéma, dans la boucle de `essai-limites` : au lieu de diviser `t` quand des cellules meurent,
+
+* on modélise ces cellules-là (`ModeleCellule`, une cellule chacune, `pd` remis en `w`) ;
+* on les nourrit au rythme `S_i`, la masse reprise à côté (§ 20.5) ;
+* `κ` entrant linéairement, `d~( κ ) = d + κ e` avec **une** résolution, et tout le balayage se lit
+  sur les polynômes — zéro géométrie par essai ;
+* on vise `max( 1.5, F ) × ` la limite **courante** — viser `β` serait un facteur soixante sur six
+  mille cellules, et le doseur a raison de refuser ;
+* si une dose y arrive, on **re-essaye un pas plus long** avec la direction corrigée, et un vrai
+  diagramme tranche.
+
+**Le polynôme sur la bonne liste retrouve la réponse de `limites`.** À l'itération 0 : 4.234e−03
+contre 4.234e−03 ; à la 1 : 1.494e−02 contre 1.494e−02 ; ensuite 5.361e−02 / 6.619e−02, 1.329e−01 /
+1.443e−01, 1.928e−01 / 1.970e−01. Pour 0.02 à 0.035 s contre 0.014 à 0.021 s — comparable, et il
+rend le polynôme entier (utilisable pour **toute** direction) au lieu d'un seul nombre.
+
+**Deux gardes, chacune payée par une mesure fausse.** (i) Une cellule dont l'aire du modèle est déjà
+au plancher donne `a_av = 0`, donc une cible nulle que **tout** `κ` « atteint » : le doseur
+déclarait victoire en imposant un pas nul. (ii) Si le polynôme donne la cellule vivante **au-delà**
+de `t`, alors qu'un diagramme vient de l'y voir morte, c'est qu'un voisin **nouveau** l'a mangée
+(§ 7, invisible depuis la cellule seule) : on ne dose pas sur une prédiction qu'on sait fausse. Sans
+elles, deux déformations sur dix-neuf étaient retenues sur des chiffres qui ne voulaient rien dire.
+
+### Le compromis, balayé — parce qu'il n'y a pas de raison de viser ×2
+
+Un premier essai fixait une **cible** (« atteindre deux fois la limite, ou ne rien faire »). C'est
+un mauvais protocole : il ne teste pas le compromis, il teste une consigne arbitraire. Le vrai
+réglage est un **budget de déformation** `‖δb‖/‖b‖` (`--cible-budget`) : pas de cible, on prend la
+meilleure limite achetable dedans. Le budget se traduit exactement en plafond sur `κ` — `δ` lui
+étant proportionnel — donc aucun essai n'est perdu.
+
+**Un filet est indispensable avant de comparer quoi que ce soit.** Une cible déformée peut allonger
+le pas *et* ne plus faire descendre le résidu : l'amortissement échoue alors et Newton sort en
+STAGNATION — à un résidu qui n'a presque pas bougé. Sans filet, un réglage affichait **11 itérations
+et 60 diagrammes contre 64** ; il n'avait simplement **pas convergé** (`max|a−ν|/ν = 1.6e+03` contre
+`2.4e−06`). L'amortissement se fait donc en **deux passes** : si la direction déformée ne rend rien,
+on revient à la direction de Newton et au pas que les limites lui avaient donné (gardés pour ça),
+et on recommence. Toutes les lignes ci-dessous convergent au même résidu.
+
+| budget `‖δb‖/‖b‖` | déformations prises | **diag. `anneau`** | **diag. `mangeurs`** |
+|---|---|---|---|
+| — (témoin) | 0 | **64** | **64** |
+| 3e−04 | 0 | 64 | 64 |
+| 1e−03 | 0 | 64 | 64 |
+| 2e−03 | 2 – 4 | 65 | 69 |
+| 3e−03 | 3 – 5 | 79 | 67 |
+| 5e−03 | 15 | 133 | 132 |
+| 1e−02 | 12 – 21 | 177 | 123 |
+| sans plafond | 29 | 198 | — |
+
+**La courbe est monotone dans le mauvais sens et n'a pas d'optimum intérieur.** Tant que le budget
+est trop petit pour qu'une déformation soit retenue, on retrouve le témoin exactement ; dès qu'une
+seule est prise, le compte de diagrammes monte, et il ne redescend jamais. L'optimum du compromis
+est **zéro**. Ça vaut pour les deux règles de reprise, pour une ou deux rondes de réparation par
+itération, sur deux décades de budget.
+
+### Pourquoi, en une ligne
+
+Le supplément de cible dont une cellule a besoin pour tenir jusqu'à `F` vaut son **débit sortant**
+`S_i`, c'est-à-dire `a_i / U_i` : il explose comme l'inverse du pas qu'on cherche à allonger. Là où
+le pas est étranglé, la dose est inabordable — nourrir les six mille cellules de la première
+itération au rythme `S_i` coûte **66 % de la masse totale**, pour 1 % de déplacement de direction et
+un gain nul. Là où elle est abordable, le pas ne posait plus problème, et la direction déformée —
+qui n'est plus celle de Newton — ralentit la descente.
+
+Ce qui reste acquis et réutilisable : la calibration du § 20.6 (`U` pessimiste de ×72 à ×714), le
+fait que `ModeleCellule` donne la limite de **n'importe quelle** direction sans géométrie nouvelle,
+et le filet à deux passes de l'amortissement — qui servira à toute idée qui déforme la direction.
+
+## 20.8 Ce qui reste ouvert
 
 L'étude ferme la porte et dit pourquoi : le second membre ne contrôle que la divergence, l'extinction
 est un fait de gradient, et le plafond harmonique — la meilleure chose qu'un second membre puisse

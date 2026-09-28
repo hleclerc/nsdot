@@ -23,6 +23,7 @@
 #ifdef _OPENMP
 #include <omp.h>
 #endif
+#include <cmath>
 #include <cstdio>
 #include <memory>
 #include <string>
@@ -189,6 +190,12 @@ int lance( const Args &a, const Opts &o, const Nuage<PD::dim> &nu, Lineaire &lin
                      int( st.nb_cell_lim ), double( st.nb_cell_lim ) / n / std::max( st.nb_iter, 1 ), st.nb_lim_refus );
     if ( st.nb_tours_essai )
         std::printf( "         essai-limites : %d essais corriges, %d cellules sous eps en tout\n", st.nb_tours_essai, int( st.nb_cell_mauvaises ) );
+    if ( st.nb_cible_res )
+        std::printf( "         cible : %d resolutions de plus ( %.3f s ), %d directions deformees retenues,"
+                     " gain geometrique moyen sur la limite x%.2f, %d rejetees par l'amortissement\n",
+                     st.nb_cible_res, st.t_cible, st.nb_cible_pris,
+                     st.nb_cible_pris ? std::exp( double( st.cible_gain ) / st.nb_cible_pris ) : 1.0,
+                     st.nb_cible_refus );
     if ( st.nb_tenseur )
         std::printf( "         tenseur : %d pas tensoriels, %.3f s ( compris dans limites )\n", st.nb_tenseur, st.t_tenseur );
     std::printf( "         soit %.0f %% de diagramme, %.3f s par diagramme, %.1f us/germe en tout\n",
@@ -395,6 +402,28 @@ int main( int argc, char **argv ) {
         else if ( s == "--mixte-progres" ) o.mixte_progres = std::atof( val() );
         else if ( s == "--mixte-kappa" ) o.mixte_kappa = std::atof( val() );
         else if ( s == "--memo" )       o.newton.memo = true;
+        else if ( s == "--cible" ) {
+            const std::string v = val();
+            o.newton.cible.mode = v == "plafond" ? OptionsCible::PLAFOND : v == "gel" ? OptionsCible::GEL
+                                : v == "seules" ? OptionsCible::SEULES : OptionsCible::NON;
+        }
+        else if ( s == "--cible-anneaux" ) o.newton.cible.anneaux = std::atoi( val() );
+        else if ( s == "--cible-f" )      o.newton.cible.facteur = std::atof( val() );
+        else if ( s == "--cible-essais" ) o.newton.cible.essais = std::atoi( val() );
+        else if ( s == "--cible-seuil" )  o.newton.cible.seuil = std::atof( val() );
+        else if ( s == "--cible-repris" ) {
+            const std::string v = val();
+            o.newton.cible.repris = v == "anneau" ? OptionsCible::ANNEAU
+                                  : v == "mangeurs" ? OptionsCible::MANGEURS : OptionsCible::GLOBAL;
+        }
+        else if ( s == "--cible-ep" ) o.newton.cible.ep_anneau = std::atoi( val() );
+        else if ( s == "--cible-juge" ) o.newton.cible.juge =
+            std::string( val() ) == "polynome" ? OptionsCible::POLYNOME : OptionsCible::FLUX;
+        else if ( s == "--cible-filtre" ) o.newton.cible.filtre = std::atof( val() );
+        else if ( s == "--cible-max-seules" ) o.newton.cible.max_seules = std::atoi( val() );
+        else if ( s == "--cible-budget" ) o.newton.cible.budget = std::atof( val() );
+        else if ( s == "--cible-critere" ) o.newton.cible.critere =
+            std::string( val() ) == "pop" ? OptionsCible::POPULATION : OptionsCible::MIN;
         else if ( s == "--lim-tol" )    o.newton.lim.tol = std::atof( val() );
         else if ( s == "--lim-coeff" )  o.newton.lim.coeff = std::atof( val() );
         else if ( s == "--t-min" )      o.newton.t_min = std::atof( val() );
@@ -425,6 +454,20 @@ int main( int argc, char **argv ) {
                 "  --confiance C   essai-limites : apres un pas corrige, au moins C * t       (0 = beta inchange)\n"
                 "  --theta-mult M  tenseur : cible partielle theta = M * alpha*        (5)\n"
                 "  --facteur F     t = F * alpha* en mode facteur                (0.9)\n"
+                "  --cible M       non ( defaut ) | plafond ( mesure seulement ) | gel : deformer nu pour\n"
+                "                  allonger le pas admissible, sans refaire le diagramme ( Cible.h )\n"
+                "                  | seules ( le doseur sur la liste de essai-limites, le bon predicteur )\n"
+                "  --cible-max-seules K  seules : au-dela de K mauvaises on renonce      (0 = pas de limite)\n"
+                "  --cible-budget B   seules : deformation autorisee, en |db|/|b| -- LE compromis  (0 = sans plafond)\n"
+                "  --cible-anneaux N  epaisseur du patch autour des cellules qui bornent      (2)\n"
+                "  --cible-f F     le pas vise, en multiples du pas lu sur les flux         (2)\n"
+                "  --cible-essais K   bissections sur lambda ( = resolutions de plus )      (5)\n"
+                "  --cible-seuil S    au-dessus de ce U*, on ne touche a rien               (0.5)\n"
+                "  --cible-critere C  min ( le pas de la pire ) | pop ( le nombre de malades )  (min)\n"
+                "  --cible-repris R   ou la masse est reprise : global | anneau ( par amas ) | mangeurs  (global)\n"
+                "  --cible-ep N       anneau : epaisseur de la couronne donneuse                (1)\n"
+                "  --cible-juge J     flux ( U, § 15.13 ) | polynome ( l'aire a combinatoire figee, § 7 )  (flux)\n"
+                "  --cible-filtre F   polynome : on modelise les cellules dont U < F * vise      (8)\n"
                 "  --lim-tol T     precision relative des limites               (1e-2)\n"
                 "  --lim-coeff C   ou verifier la prediction                    (0.99)\n"
                 "  --t-min T       sous ce pas, STAGNATION                      (1e-10)\n"
