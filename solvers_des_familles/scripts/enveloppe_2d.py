@@ -47,20 +47,43 @@ def pas_sommets( P, z ):
     return pas_sommets_de( P, enveloppe_inferieure( P, z ) )
 
 
-def hauteur_enveloppe( P, psi, eq, sx, qui, k ):
-    """`H( p_i ) = max_F plan_F( p_i )` pour les germes `qui`, sur leurs `k` facettes les plus proches.
-    `H` est CONVEXE, donc egale au max de ses morceaux affines ; tronquer le max le SOUS-estime, ce qui
-    remonte trop -- d'ou un `k` large, et la boucle de `projette` qui verifie."""
+def barycentriques( P, sx, t, Q ):
+    """les coordonnees barycentriques de `Q[i]` dans le triangle `sx[ t[i] ]`."""
+    V = P[ sx[ t ] ]                                           # ( m, 3, 2 )
+    M = np.stack( [ V[ :, 1 ] - V[ :, 0 ], V[ :, 2 ] - V[ :, 0 ] ], axis = 2 )
+    l12 = np.linalg.solve( M, ( Q - V[ :, 0 ] )[ :, :, None ] )[ :, :, 0 ]
+    return np.column_stack( [ 1 - l12.sum( axis = 1 ), l12 ] )
+
+
+def hauteur_enveloppe( P, psi, sx, nb, qui, pas_max = 200, tol = -1e-12 ):
+    """`H( p_i )` EXACTEMENT, par LOCALISATION dans la triangulation projetee de l'enveloppe.
+
+    L'ancienne version prenait le max des plans des `k` facettes les plus proches. `H` etant convexe,
+    elle vaut le max de TOUS ses morceaux affines : tronquer le max la SOUS-estime, donc remonte TROP,
+    donc une cellule remontee peut en avaler une voisine -- c'est exactement le defaut que le compte de
+    vides non monotone trahissait ( 21846 -> 67 -> 85 -> ... a `eps = 0.3` ).
+
+    Ici on cherche la facette qui CONTIENT `p_i`, par une marche de visibilite : partir de la facette
+    de centre le plus proche, et tant qu'une coordonnee barycentrique est negative, passer a la facette
+    voisine par l'arete opposee. La marche se termine dans une triangulation d'un convexe, et un germe
+    qui n'est pas sommet est strictement a l'interieur de l'enveloppe projetee.
+
+    Rend `H` et le nombre de germes pour lesquels la marche n'a pas conclu ( 0 attendu )."""
+    Q = P[ qui ]
     cen = P[ sx ].mean( axis = 1 )
-    arbre = cKDTree( cen )
-    a, b, c, d = eq[ :, 0 ], eq[ :, 1 ], eq[ :, 2 ], eq[ :, 3 ]
-    H = np.empty( len( qui ) )
-    for s in range( 0, len( qui ), 4096 ):                     # par paquets : `k` est grand
-        q = qui[ s : s + 4096 ]
-        _, cand = arbre.query( P[ q ], k = min( k, len( cen ) ) )
-        pl = -( a[ cand ] * P[ q, 0 ][ :, None ] + b[ cand ] * P[ q, 1 ][ :, None ] + d[ cand ] ) / c[ cand ]
-        H[ s : s + 4096 ] = pl.max( axis = 1 )
-    return H
+    _, t = cKDTree( cen ).query( Q, k = 1 )
+    for _ in range( pas_max ):
+        lam = barycentriques( P, sx, t, Q )
+        j = lam.argmin( axis = 1 )
+        dehors = lam[ np.arange( len( t ) ), j ] < tol
+        if not dehors.any(): break
+        idx = np.nonzero( dehors )[ 0 ]
+        v = nb[ t[ idx ], j[ idx ] ]                           # la facette d'en face
+        bouge = v >= 0                                         # -1 : voisine du dessus, on s'arrete
+        if not bouge.any(): break
+        t[ idx[ bouge ] ] = v[ bouge ]
+    lam = barycentriques( P, sx, t, Q )
+    return np.einsum( "mv,mv->m", lam, psi[ sx[ t ] ] ), int( ( lam.min( axis = 1 ) < tol ).sum() )
 
 
 def miroirs( P, bande ):
@@ -78,11 +101,16 @@ def miroirs( P, bande ):
     return np.concatenate( img ), np.concatenate( src )
 
 
-def projette( P, w, eps, passes = 6, k = 2000, bande = 0.0 ):
+def projette( P, w, eps, passes = 6, bande = 0.0 ):
     """`w <- ( 1 - eps )|p|^2 - H( p )`. Les germes qui sont DEJA sommets de l'enveloppe ont `H = psi`
-    exactement et ne bougent pas ; seuls les autres demandent une evaluation. La projection est exacte
-    en UN coup ( verifie : 21817 -> 0 ) ; on boucle parce qu'un `k` tronque peut remonter trop, et parce
-    qu'avec les miroirs le poids d'une image SUIT son original, donc l'enveloppe change."""
+    exactement et ne bougent pas ; seuls les autres demandent une evaluation. Avec `H` exacte la
+    projection converge en UNE passe ( 21846 -> 0 a `eps = 0.3` ) ; on boucle quand meme, parce
+    qu'avec les miroirs le poids d'une image SUIT son original, donc l'enveloppe change.
+
+    ATTENTION a ce que ca vaut : la projection est CORRECTE, et les departs qu'elle produit sont PIRES
+    pour Newton que ceux de la version fausse ( README § 8.7.4 ). Le relevement exactement minimal fait
+    naitre chaque cellule a l'aire la plus petite possible ; ce que Newton veut est une AIRE, que `eps`
+    ne controle pas. A essayer : `+ delta h_i^2` sur les germes remontes."""
     n = len( P )
     if bande > 0:
         Q, src = miroirs( P, bande )
@@ -104,11 +132,17 @@ def projette( P, w, eps, passes = 6, k = 2000, bande = 0.0 ):
         psi = ( 1 - eps ) * a2 - wa
         h = ConvexHull( np.column_stack( [ A, psi ] ) )
         bas = h.equations[ :, 2 ] < 0
-        sx, eq = h.simplices[ bas ], h.equations[ bas ]
+        sx = h.simplices[ bas ]
+        # les voisines, RENUMEROTEES sur les seules facettes du dessous ( -1 = voisine du dessus )
+        ren = np.full( len( h.simplices ), -1, dtype = int )
+        ren[ np.nonzero( bas )[ 0 ] ] = np.arange( len( sx ) )
+        nb = np.where( h.neighbors[ bas ] >= 0, ren[ h.neighbors[ bas ] ], -1 )
         au_dessus = pas_sommets_de( A, sx )
         au_dessus = au_dessus[ au_dessus < n ]
         if len( au_dessus ) == 0: break
-        H = np.minimum( hauteur_enveloppe( A, psi, eq, sx, au_dessus, k ), psi[ au_dessus ] )
+        H, perdus = hauteur_enveloppe( A, psi, sx, nb, au_dessus )
+        if perdus: print( "  ( %d germes dont la marche n'a pas conclu )" % perdus )
+        H = np.minimum( H, psi[ au_dessus ] )
         w[ au_dessus ] = ( 1 - eps ) * a2[ au_dessus ] - H
     return w, bilan, len( A )
 
@@ -118,17 +152,16 @@ def main():
     ap.add_argument( "--depart", required = True )
     ap.add_argument( "--eps", type = float, default = 1e-3 )
     ap.add_argument( "--passes", type = int, default = 6 )
-    ap.add_argument( "--k", type = int, default = 2000 )
     ap.add_argument( "--bande", type = float, default = 0.0, help = "miroirs : largeur de la bande le long des parois ( 0 : pas de miroir )" )
     ap.add_argument( "--out", required = True )
     o = ap.parse_args()
 
     P, w = lit_cas( o.depart )
-    w1, bilan, nf = projette( P, w, o.eps, o.passes, o.k, o.bande )
+    w1, bilan, nf = projette( P, w, o.eps, o.passes, o.bande )
     d = w1 - w
     remontes = int( ( d > 0 ).sum() )
-    print( "n = %d ( %d avec les miroirs ) ; eps = %g, k = %d : cellules VIDES dans R^2 par passe : %s"
-           % ( len( P ), nf, o.eps, o.k, " -> ".join( str( b ) for b in bilan ) ) )
+    print( "n = %d ( %d avec les miroirs ) ; eps = %g : cellules VIDES dans R^2 par passe : %s"
+           % ( len( P ), nf, o.eps, " -> ".join( str( b ) for b in bilan ) ) )
     print( "  %d germes remontes ( %.2f %% ), hausse mediane %.2e, max %.2e"
            % ( remontes, 100 * remontes / len( P ), np.median( d[ d > 0 ] ) if remontes else 0, d.max() ) )
     ecrit_cas( o.out, P, w1,

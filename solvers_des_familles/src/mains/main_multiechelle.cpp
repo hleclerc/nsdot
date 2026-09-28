@@ -100,8 +100,8 @@ int depuis_solution( const Args &a, const Opts &o, const Nuage<PD::dim> &nu0 ) {
     nw.nu = nu;
     const double t0 = now();
     nw.resout( w );
-    std::printf( "  newton depuis la solution lissee : %s, %d iterations, %d diagrammes, %.3f s\n",
-                 nw.st.fin, nw.st.nb_iter, nw.st.nb_diag, now() - t0 );
+    std::printf( "  newton depuis la solution lissee : %s, %d iterations, %d diagrammes, reste %.2e, %.3f s\n",
+                 nw.st.fin, nw.st.nb_iter, nw.st.nb_diag, double( nw.st.reste ), now() - t0 );
     return 0;
 }
 

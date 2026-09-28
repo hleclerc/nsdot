@@ -998,29 +998,69 @@ de cette paroi son bissecteur exact, donc contient la cellule dans le demi-espac
 Jamais zéro : les derniers sont bien des sommets de l'enveloppe, mais d'aire sous la résolution de
 l'arithmétique — la non-dégénérescence ne borne pas l'aire par le bas.
 
-### 8.7.4 Le cas dur converge, et il bat Voronoï
+**Et `ε` ne peut pas monter librement**, ce qui ferme la fenêtre par le haut. L'ensemble des germes
+touchés est `{ marge < ε }` : `ε` dit jusqu'où la projection mord dans la population SAINE. Mesuré
+(21 846 cellules réellement vides au départ) :
 
-Avec le plancher corrigé, une poignée de vides n'est plus fatale. Sur le cas dur, contre la référence
-(**18 it, 30 diagrammes**) :
+| `ε` | germes remontés | part du nuage | passes, `H` tronqué | passes, `H` exact |
+|---|---|---|---|---|
+| 1e-3 | 21 879 | 21.9 % | 1 | 6 |
+| 0.03 | 22 637 | 22.6 % | 1 | 1 |
+| 0.1 | 25 366 | 25.4 % | 2 | 1 |
+| 0.3 | 39 780 | **39.8 %** | 4, NON MONOTONE (67 → 85) | **1** |
+| 0.6 | 68 355 | **68.4 %** | **jamais** (oscille 11 → 23 → 13) | **2** |
 
-| départ (solution lissée 1 balayage, puis) | vides | Newton |
-|---|---|---|
-| bissection seule, 40 passes | 3 | STAGNATION, 1 it |
-| enveloppe `ε = 1e-3` | 78 | STAGNATION, 1 it |
-| enveloppe `ε = 1e-3` + miroirs complets | 26 | STAGNATION, 1 it |
-| enveloppe `ε = 0.03` + miroirs | 7 | STAGNATION, 1 it |
-| enveloppe `ε = 0.1` + miroirs | 7 | **CONVERGE, 19 it, 31 diag** |
-| **enveloppe `ε = 0.3` + miroirs** | **3** | **CONVERGE, 16 it, 27 diag** |
+À `ε = 1e-3` la projection touche exactement les malades ; à `ε = 0.6` elle en touche 68 %, donc
+18 000 à 46 000 cellules saines forcées de grossir, leurs voisines rétrécissant d'autant. Le § 8.4
+l'avait énoncé en 1D : garder `ε` sous la plus petite compression de la solution (ici `~1e-3`).
 
-**Première fois que `σ = 0.005` donne quelque chose** — le § 8.5 le déclarait hors de portée — et le
-départ réparé bat Voronoï de 11 % en itérations et 10 % en diagrammes. Le seuil n'est pas le seul
-nombre de vides (7 échoue à `ε = 0.03`, passe à `ε = 0.1`) : la taille des cellules survivantes compte
-aussi.
+**`H` DOIT ÊTRE ÉVALUÉE EXACTEMENT.** Une première version prenait le max des plans des `k = 2000`
+facettes les plus proches. `H` étant convexe vaut le max de TOUS ses morceaux affines : tronquer le
+max la SOUS-estime, donc **remonte trop**, donc une cellule remontée en avale une voisine — et c'est
+la non-monotonie de la colonne « `H` tronqué » ci-dessus. La bonne évaluation est une **localisation**
+du germe dans la triangulation projetée de l'enveloppe, par marche de visibilité (partir de la facette
+la plus proche, passer à la voisine tant qu'une barycentrique est négative). Sans paramètre, et le
+défaut disparaît : `ε = 0.3` passe de quatre passes non monotones à **une**, `ε = 0.6` de « jamais »
+à deux.
+
+### 8.7.4 Le cas dur peut converger — mais pas de façon fiable, et pas mieux que Voronoï
+
+Avec le plancher corrigé, une poignée de vides n'est plus fatale, et `σ = 0.005` donne quelque chose
+pour la première fois (le § 8.5 le déclarait hors de portée). Mais **il faut lire le `reste`, pas le
+mot `CONVERGE`** : sur ce cas la sortie est souvent STAGNATION, qui peut signifier « fini » comme
+« mort » selon le résidu atteint. Contre la référence (**18 it, 30 diagrammes, reste 4.9e-08**) :
+
+| départ (solution lissée 1 balayage, puis) | cassées | `H` tronqué | `H` exact |
+|---|---|---|---|
+| bissection seule, 40 passes | 3 | mort, reste 2.2e+02 | — |
+| enveloppe `ε = 1e-3` + miroirs | 35 | mort | mort, reste 1.0e+02 |
+| enveloppe `ε = 0.15` + miroirs | 7 | — | mort, reste 8.3e+01 |
+| enveloppe `ε = 0.2` + miroirs | 6 | — | **CONVERGE, 18 it, 29 diag** |
+| enveloppe `ε = 0.3` + miroirs | 3 | **CONVERGE, 16 it, 27 diag** | mort, reste 5.2e+01 |
+| enveloppe `ε = 0.45` + miroirs | 3 | — | mort, reste 4.8e+01 |
+| enveloppe `ε = 0.6` + miroirs | 3 | mort | mort, reste 1.0e+00 |
+
+**Le verdict est la FRAGILITÉ.** Une réussite sur six valeurs de `ε`, sans ordre : 0.15 meurt, 0.2
+passe, 0.3 meurt, 0.45 meurt. Et la meilleure réussite avec la projection CORRECTE est 18 it / 29 diag
+— une **égalité** avec Voronoï, pas un gain. Le 16 / 27 de la colonne « `H` tronqué » a été obtenu
+avec l'évaluation FAUSSE de `H`, et il ne survit pas à sa correction.
+
+**Le diagnostic, et il est instructif.** Le max tronqué sous-estimait `H`, donc **sur-remontait** — et
+c'est ce qui aidait. Le relèvement exactement MINIMAL fait naître chaque cellule à l'aire la plus
+petite possible, ce qui est précisément le défaut que le § 8.5 nomme (« les cellules nées minuscules »,
+et c'est le pire résidu qui étrangle l'amortissement). **Minimal au sens de la convexité n'est pas ce
+que Newton veut ; ce qu'il veut est une AIRE.** `ε` ne contrôle pas l'aire de la cellule qui naît, il
+contrôle la stricte convexité du relevé — deux choses différentes, et c'est pour ça que la fenêtre en
+`ε` est erratique.
+
+Ce qui suit de là, et qui reste à essayer : remonter au minimum **plus une marge d'aire**,
+`w_i ← (1−ε)|p_i|² − H(p_i) + δ h_i²`, ce qui achète une aire `~δ h_i²` à la cellule qui naît. C'est
+l'idée de `rattrape` (§ 8), mais posée sur le relèvement MINIMAL au lieu de `−ψ(p_i)` — qui, lui,
+était bien trop fort et cascadait.
 
 **À lire avec la bonne réserve.** Ce départ dérive de la SOLUTION (lissée d'un balayage), c'est-à-dire
-la *borne* du § 8.2 et non une vraie prolongation. Ce qui est mesuré, c'est donc que **la borne est
-redevenue utilisable** : elle était inadmissible et sans recours, elle converge maintenant et gagne
-10 %. C'est un majorant de ce qu'une prolongation peut acheter, pas un gain acquis.
+la *borne* du § 8.2 et non une vraie prolongation. Ce qui est mesuré est donc un majorant de ce qu'une
+prolongation pourrait acheter — et ce majorant, correctement calculé, vaut aujourd'hui **zéro**.
 
 ### 8.7.5 Ce qui bloque le multi-échelle pour de bon
 
