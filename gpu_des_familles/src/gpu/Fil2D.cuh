@@ -116,7 +116,7 @@ __device__ int cellule2_fil( const Arbre<TK,2> &ar, int k, TK *vx, TK *vy, int *
             continue;
         if ( nd.right < 0 ) {                            // une feuille : ses germes, dans l'ordre
             for ( int q = nd.beg; q < nd.end; ++q ) {
-                if ( ar.ids[ q ] == i0 ) continue;
+                if ( q == k ) continue;
                 const Plan2<TK> p = bissect2<POIDS>( ar, q, p0[ 0 ], p0[ 1 ], w0 );
                 nb = coupe2<MaxNb>( vx, vy, cid, nb, p, s );
                 if ( nb <= 0 ) { area = 0; return nb; }

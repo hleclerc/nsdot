@@ -44,6 +44,14 @@ namespace sf::gpu {
 #define CUDA_OK( x ) do { cudaError_t e_ = ( x ); if ( e_ != cudaSuccess ) { \
     std::fprintf( stderr, "CUDA : %s ( %s:%d )\n", cudaGetErrorString( e_ ), __FILE__, __LINE__ ); std::exit( 2 ); } } while ( 0 )
 
+/// LE RAFFINEMENT DES SOMMETS ( `Arbre.cuh` ), actif par defaut EN `float` SEULEMENT : en
+/// `double` l'erreur portee vaut `1e-16 L`, il n'y a rien a reparer. `SF_RAFF=0` l'eteint, ce
+/// qui sert a le mesurer.
+static bool raffine_actif() {
+    static const bool v = []{ const char *e = std::getenv( "SF_RAFF" ); return ! e || std::atoi( e ); }();
+    return v;
+}
+
 template<int D, class TK>
 struct DiagrammeGpu<D,TK>::Impl {
     Noeud<TK,D> *nodes = nullptr;
@@ -51,6 +59,7 @@ struct DiagrammeGpu<D,TK>::Impl {
     int         *u[ D ] = {};                        ///< les memes en virgule fixe 32 bits
     long long   *u64[ D ] = {};                      ///< et en virgule fixe 64 bits
     TK          *w = nullptr;
+    double      *w64 = nullptr;                      ///< les memes poids en `double` ( le plan )
     int         *ids = nullptr;
     double      *res = nullptr;
     int         *deb = nullptr, *deb2 = nullptr;
@@ -124,7 +133,7 @@ struct DiagrammeGpu<D,TK>::Impl {
         Arbre<TK,D> a;
         a.nodes = nodes;
         for ( int d = 0; d < D; ++d ) { a.c[ d ] = c[ d ]; a.u[ d ] = u[ d ]; a.u64[ d ] = u64[ d ]; }
-        a.w = w; a.ids = ids; a.n = n;
+        a.w = w; a.w64 = w64; a.ids = ids; a.n = n;
         return a;
     }
 };
@@ -168,9 +177,12 @@ DiagrammeGpu<D,TK>::DiagrammeGpu( const AaBspT<D> &arbre ) : impl( new Impl ) {
         CUDA_OK( cudaMemcpy( m.u64[ d ], fix64.data(), m.n * sizeof( long long ), cudaMemcpyHostToDevice ) );
     }
     if ( m.poids ) {
-        for ( int k = 0; k < m.n; ++k ) tmp[ k ] = TK( arbre.seed_w( k ) );
+        std::vector<double> t64( m.n );
+        for ( int k = 0; k < m.n; ++k ) { t64[ k ] = arbre.seed_w( k ); tmp[ k ] = TK( t64[ k ] ); }
         CUDA_OK( cudaMalloc( &m.w, m.n * sizeof( TK ) ) );
         CUDA_OK( cudaMemcpy( m.w, tmp.data(), m.n * sizeof( TK ), cudaMemcpyHostToDevice ) );
+        CUDA_OK( cudaMalloc( &m.w64, m.n * sizeof( double ) ) );
+        CUDA_OK( cudaMemcpy( m.w64, t64.data(), m.n * sizeof( double ), cudaMemcpyHostToDevice ) );
     }
     CUDA_OK( cudaMalloc( &m.ids, m.n * sizeof( int ) ) );
     CUDA_OK( cudaMemcpy( m.ids, arbre.order.data(), m.n * sizeof( int ), cudaMemcpyHostToDevice ) );
@@ -197,7 +209,7 @@ DiagrammeGpu<D,TK>::DiagrammeGpu( const double *const *P, const double *W, int n
     if constexpr ( D == 2 ) {
         SortieBsp<TK> s;
         construit2_dev<TK>( P[ 0 ], P[ 1 ], W, n, leaf, s, ms, pour_newton );
-        m.nodes = s.nodes; m.nn = s.nn; m.ids = s.ids; m.w = s.w;
+        m.nodes = s.nodes; m.nn = s.nn; m.ids = s.ids; m.w = s.w; m.w64 = s.w64;
         for ( int d = 0; d < 2; ++d ) { m.c[ d ] = s.c[ d ]; m.u[ d ] = s.u[ d ]; m.u64[ d ] = s.u64[ d ]; }
         m.sortie = new SortieBsp<TK>( s );
         nn_pub = s.nn;
@@ -220,7 +232,7 @@ DiagrammeGpu<D,TK>::~DiagrammeGpu() {
     Impl &m = *impl;
     cudaFree( m.nodes );
     for ( int d = 0; d < D; ++d ) { cudaFree( m.c[ d ] ); cudaFree( m.u[ d ] ); cudaFree( m.u64[ d ] ); }
-    cudaFree( m.w ); cudaFree( m.ids ); cudaFree( m.res ); cudaFree( m.deb ); cudaFree( m.deb2 ); cudaFree( m.liste ); cudaFree( m.stats ); cudaFree( m.cptr );
+    cudaFree( m.w ); cudaFree( m.w64 ); cudaFree( m.ids ); cudaFree( m.res ); cudaFree( m.deb ); cudaFree( m.deb2 ); cudaFree( m.liste ); cudaFree( m.stats ); cudaFree( m.cptr );
     cudaFree( m.fac_j ); cudaFree( m.fac_l );
     cudaFree( m.img ); cudaFree( m.cond ); cudaFree( m.ncond ); cudaFree( m.res0 ); cudaFree( m.hist );
     cudaFree( m.dep_x ); cudaFree( m.dep_y ); cudaFree( m.dep_nb ); cudaFree( m.dep_id );
@@ -474,12 +486,14 @@ Chrono lance2( const Impl &m, Variante v, int reps, std::vector<double> &res ) {
             constexpr int BSM = decltype( mm )::value;
             constexpr bool CENTRE = decltype( gg )::value;
             constexpr int FIXE = decltype( ff )::value;
+            // LE RAFFINEMENT DES SOMMETS, la ou il a un sens : `float` et repere du germe
+            const bool raff = sizeof( TK ) == 4 && ( CENTRE || FIXE ) && raffine_actif();
             Chrono ch = chrono<2,TK>( m, reps, res, [ & ]() {
-                noyau2_filmsk<POIDS,BSM,CENTRE,FIXE><<<grid, bloc>>>( ar, m.res, m.deb, m.liste );
+                noyau2_filmsk<POIDS,BSM,CENTRE,FIXE,DENS_AUCUNE,TK><<<grid, bloc>>>( ar, m.res, m.deb, m.liste, nullptr, nullptr, 0, raff );
                 int nd = 0;
                 CUDA_OK( cudaMemcpy( &nd, m.deb, sizeof( int ), cudaMemcpyDeviceToHost ) );
                 if ( nd == 0 ) return m.deb;
-                noyau2_filmix<POIDS,64,8,true><<<( nd + bloc - 1 ) / bloc, bloc>>>( ar, m.res, m.deb2, m.liste, nd );
+                noyau2_filmix<POIDS,64,8,true,CENTRE,FIXE,TK><<<( nd + bloc - 1 ) / bloc, bloc>>>( ar, m.res, m.deb2, m.liste, nd, nullptr, nullptr, 0, nullptr, raff );
                 return m.deb2;
             } );
             infos( ch, noyau2_filmsk<POIDS,BSM,CENTRE,FIXE,DENS_AUCUNE,TK>, bloc );
@@ -660,6 +674,7 @@ double DiagrammeGpu<D,TK>::assemble( Hessienne &H ) {
         CUDA_OK( cudaMemcpyAsync( m.hat, m.hrow, size_t( m.n ) * sizeof( int ), cudaMemcpyDeviceToDevice ) );
         k_hess_remplit<TK><<<gr, BL>>>( m.fac_j, m.fac_l, m.pid[ 0 ], m.pid[ 1 ], m.hat, m.n, NF,
                                         m.hcol, m.hval );
+        k_hess_trie<<<gr, BL>>>( m.hrow, m.hcol, m.hval, m.n );   // l'ordre canonique : reproductible
         k_hess_dia<<<gr, BL>>>( m.hrow, m.hval, m.hdia, m.n );
         CUDA_OK( cudaEventRecord( e1 ) );
         CUDA_OK( cudaEventSynchronize( e1 ) );
@@ -1293,6 +1308,7 @@ static int *cellules_2d( typename DiagrammeGpu<2,TK>::Impl &m, const Arbre<TK,2>
     const int bloc = 128;
     const Image2 im = m.image();
     const Densite d = m.mode();
+    const bool raff = sizeof( TK ) == 4 && FIX != 0 && raffine_actif();
     CUDA_OK( cudaMemsetAsync( m.deb, 0, sizeof( int ) ) );
     CUDA_OK( cudaMemsetAsync( m.deb2, 0, sizeof( int ) ) );
 
@@ -1301,23 +1317,23 @@ static int *cellules_2d( typename DiagrammeGpu<2,TK>::Impl &m, const Arbre<TK,2>
         for ( int k0 = 0; k0 < m.n; k0 += m.dep_cap ) {
             const int nk = std::min( m.dep_cap, m.n - k0 );
             noyau2_filmsk<POIDS,1,true,FIX,DENS_DEPOT><<<( nk + bloc - 1 ) / bloc, bloc>>>(
-                ar, m.res, m.deb, m.liste, dj, dl, NF, im, m.dep_x, m.dep_y, m.dep_nb, m.dep_id, m.dep_cap, k0, nk );
+                ar, m.res, m.deb, m.liste, dj, dl, NF, raff, im, m.dep_x, m.dep_y, m.dep_nb, m.dep_id, m.dep_cap, k0, nk );
             if ( d == Densite::DEPOT )
                 k_dens_cel<TK><<<( nk + bloc - 1 ) / bloc, bloc>>>( im, m.dep_x, m.dep_y, m.dep_nb, m.dep_id, m.dep_cap, nk, m.n, m.res, dl );
             else
                 k_dens_arete<TK,8><<<( nk * 8 + bloc - 1 ) / bloc, bloc>>>( im, m.dep_x, m.dep_y, m.dep_nb, m.dep_id, m.dep_cap, nk, m.n, m.res, dl );
         }
     } else if ( d == Densite::AUCUNE ) {
-        noyau2_filmsk<POIDS,1,true,FIX,DENS_AUCUNE><<<( m.n + bloc - 1 ) / bloc, bloc>>>( ar, m.res, m.deb, m.liste, dj, dl, NF );
+        noyau2_filmsk<POIDS,1,true,FIX,DENS_AUCUNE><<<( m.n + bloc - 1 ) / bloc, bloc>>>( ar, m.res, m.deb, m.liste, dj, dl, NF, raff );
     } else {
-        noyau2_filmsk<POIDS,1,true,FIX,DENS_DIRECTE><<<( m.n + bloc - 1 ) / bloc, bloc>>>( ar, m.res, m.deb, m.liste, dj, dl, NF, im );
+        noyau2_filmsk<POIDS,1,true,FIX,DENS_DIRECTE><<<( m.n + bloc - 1 ) / bloc, bloc>>>( ar, m.res, m.deb, m.liste, dj, dl, NF, raff, im );
     }
 
     int nd = 0;
     CUDA_OK( cudaMemcpy( &nd, m.deb, sizeof( int ), cudaMemcpyDeviceToHost ) );
     if ( nd == 0 ) return m.deb;
     // la seconde passe finit les cellules trop grosses pour les registres, densite comprise
-    noyau2_filmix<POIDS,64,8,true><<<( nd + bloc - 1 ) / bloc, bloc>>>( ar, m.res, m.deb2, m.liste, nd, dj, dl, NF, m.cptr, im );
+    noyau2_filmix<POIDS,64,8,true,true,FIX><<<( nd + bloc - 1 ) / bloc, bloc>>>( ar, m.res, m.deb2, m.liste, nd, dj, dl, NF, m.cptr, raff, im );
     return m.deb2;
 }
 
@@ -1380,13 +1396,13 @@ double DiagrammeGpu<D,TK>::tour_newton( const double *W ) {
             CUDA_OK( cudaMalloc( &m.fac_l, size_t( NF ) * m.n * sizeof( TK ) ) );
         }
         const Arbre<TK,2> ar = m.arbre();
-        constexpr int FIX = sizeof( TK ) == 4 ? 32 : 0;
+        constexpr int FIX = sizeof( TK ) == 4 ? 64 : 0;  // voir `facettes`
         cudaEvent_t e0, e1;
         CUDA_OK( cudaEventCreate( &e0 ) ); CUDA_OK( cudaEventCreate( &e1 ) );
         CUDA_OK( cudaEventRecord( e0 ) );
         if ( W ) {
             SortieBsp<TK> *s = ( SortieBsp<TK> * ) m.sortie;
-            m.poids = true; m.w = s->w;
+            m.poids = true; m.w = s->w; m.w64 = s->w64;
             rafraichit_poids_dev<TK>( *s, W );
         }
         CUDA_OK( cudaMemsetAsync( m.deb, 0, sizeof( int ) ) );
@@ -1423,9 +1439,22 @@ Chrono DiagrammeGpu<D,TK>::facettes( int reps, std::vector<double> &res, std::ve
     }
     int *dj = mm.fac_j;
     TK  *dl = mm.fac_l;
-    // la virgule fixe 32 bits est RESERVEE AU `float` : en `double` elle detruit la precision
-    // ( 31 bits contre 53 ) -- voir `doc/04-echelle.md`
-    constexpr int FIX = sizeof( TK ) == 4 ? 32 : 0;
+    // LA VIRGULE FIXE EST RESERVEE AU `float` : en `double` elle detruirait la precision
+    // ( 31 ou 53 bits contre 53 ) -- voir `doc/04-echelle.md`.
+    //
+    // ET C'EST 64 BITS, PAS 32, SUR LE CHEMIN DE NEWTON. Le pas de 9.3e-10 de la virgule fixe
+    // 32 bits est UNIFORME, donc il suffit tant que les germes sont espaces comme `1/sqrt( n )` ;
+    // sur un nuage GROUPE il ne suffit plus. Mesure sur `lines5_n100000_s0.005_equal` ( cinq
+    // lignes, poids resolus, ecart max de mesure contre le moteur CPU ) :
+    //
+    //      filmsk8g   repere du germe, positions en `float`     2.6e+00
+    //      filmsk8f   + virgule fixe 32 bits                    1.0e+00
+    //      filmsk8h   + virgule fixe 64 bits                    5.1e-06
+    //
+    // Le prix est de quatre octets par coordonnee et +2 % sur l'uniforme ( +11 % sur les lignes,
+    // ou le parcours est plus lourd ). La variante 32 bits reste mesurable par `--variante
+    // filmsk8f`.
+    constexpr int FIX = sizeof( TK ) == 4 ? 64 : 0;
     auto tour = [ & ]( auto pp ) {
         constexpr bool POIDS = decltype( pp )::value;
         // la seconde passe rend AUSSI ses facettes : elle finit 13 % des cellules en uniforme

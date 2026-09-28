@@ -37,16 +37,26 @@ __device__ __forceinline__ T selR( const T ( &a )[ R ], int i ) {
 /// `im` : la densite image, si elle est active. Ce noyau finit les cellules que la premiere passe
 /// a fait deborder -- une poignee -- donc la densite s'y traite TOUJOURS sur place, et le choix
 /// n'est qu'un test a l'execution : y mettre un parametre de template ne paierait rien.
-template<bool POIDS, int MaxNb, int R, bool CIDREG, class TK>
+/// `CENTRE` et `FIXE` : les memes que `noyau2_filmsk`, et pour la meme raison. CE NOYAU FINIT
+/// 13 % DES CELLULES en uniforme -- celles qui debordent les registres de la premiere passe --
+/// donc le laisser en repere ABSOLU pendant que `filmsk` travaille dans le repere du germe
+/// revient a laisser une cellule sur huit avec l'erreur qu'on vient d'enlever aux autres ; et
+/// comme le maximum de l'erreur suit la pire cellule, ce sont elles qui le fixent.
+template<bool POIDS, int MaxNb, int R, bool CIDREG, bool CENTRE = false, int FIXE = 0, class TK = float>
 __global__ void __launch_bounds__( 128 ) noyau2_filmix( Arbre<TK,2> ar, double *res, int *deborde, const int *liste = nullptr, int nl = 0,
                                                         int *fac_j = nullptr, TK *fac_l = nullptr, int NF = 0, int *fac_deb = nullptr,
-                                                        Image2 im = Image2{} ) {
+                                                        bool raff = false, Image2 im = Image2{} ) {
     static_assert( MaxNb <= 64 && R <= MaxNb && R >= 4, "les masques sont sur 64 bits, le carre tient dans les registres" );
+    static_assert( FIXE == 0 || CENTRE, "la virgule fixe n'a de sens que dans le repere du germe" );
     const int ti = blockIdx.x * blockDim.x + threadIdx.x;
     const int k = liste ? ( ti < nl ? liste[ ti ] : ar.n ) : ti;
     if ( k >= ar.n ) return;
-    const TK p0[ 2 ] = { ar.c[ 0 ][ k ], ar.c[ 1 ][ k ] };
+    const int u0[ 2 ] = { FIXE == 32 ? ar.u[ 0 ][ k ] : 0, FIXE == 32 ? ar.u[ 1 ][ k ] : 0 };
+    const long long g0[ 2 ] = { FIXE == 64 ? ar.u64[ 0 ][ k ] : 0, FIXE == 64 ? ar.u64[ 1 ][ k ] : 0 };
+    const TK p0[ 2 ] = { FIXE == 32 ? TK( u0[ 0 ] ) * TK( INV_FIXE ) : FIXE == 64 ? TK( double( g0[ 0 ] ) * INV_F64 ) : ar.c[ 0 ][ k ],
+                         FIXE == 32 ? TK( u0[ 1 ] ) * TK( INV_FIXE ) : FIXE == 64 ? TK( double( g0[ 1 ] ) * INV_F64 ) : ar.c[ 1 ][ k ] };
     const TK w0 = POIDS ? ar.w[ k ] : TK( 0 );
+    const double w0d = POIDS ? ar.w64[ k ] : 0.0;
     const int i0 = ar.ids[ k ];
 
     // ---- les registres, puis la queue
@@ -55,7 +65,15 @@ __global__ void __launch_bounds__( 128 ) noyau2_filmix( Arbre<TK,2> ar, double *
     TK  lx[ MaxNb ], ly[ MaxNb ], ls[ MaxNb ];          // la queue ( entrees `>= R` ), et `s` de la queue
     int lc[ MaxNb ];                                     // les cid : tous si `! CIDREG`, la queue sinon
 #pragma unroll
-    for ( int i = 0; i < R; ++i ) { x[ i ] = TK( i == 1 || i == 2 ); y[ i ] = TK( i == 2 || i == 3 ); cr[ i ] = i < 4 ? -1 - i : 0; }
+    for ( int i = 0; i < R; ++i ) {
+        x[ i ] = FIXE == 32 ? TK( ( i == 1 || i == 2 ? ECH_FIXE : 0 ) - u0[ 0 ] ) * TK( INV_FIXE )
+               : FIXE == 64 ? TK( ( i == 1 || i == 2 ? ECH_F64 : 0ll ) - g0[ 0 ] ) * TK( INV_F64 )
+                            : TK( i == 1 || i == 2 ) - ( CENTRE ? p0[ 0 ] : TK( 0 ) );
+        y[ i ] = FIXE == 32 ? TK( ( i == 2 || i == 3 ? ECH_FIXE : 0 ) - u0[ 1 ] ) * TK( INV_FIXE )
+               : FIXE == 64 ? TK( ( i == 2 || i == 3 ? ECH_F64 : 0ll ) - g0[ 1 ] ) * TK( INV_F64 )
+                            : TK( i == 2 || i == 3 ) - ( CENTRE ? p0[ 1 ] : TK( 0 ) );
+        cr[ i ] = i < 4 ? -1 - i : 0;
+    }
     lc[ 0 ] = -1; lc[ 1 ] = -2; lc[ 2 ] = -3; lc[ 3 ] = -4;
     int nb = 4;
 
@@ -75,11 +93,11 @@ __global__ void __launch_bounds__( 128 ) noyau2_filmix( Arbre<TK,2> ar, double *
 #pragma unroll
         for ( int i = 0; i < R; ++i ) {
             const TK v[ 2 ] = { x[ i ], y[ i ] };
-            peut |= i < nb && bilan_sommet<POIDS>( nd, v, p0, w0 ) <= TK( 0 );
+            peut |= i < nb && ( CENTRE ? bilan_sommet_c<POIDS>( nd, v, p0, w0 ) : bilan_sommet<POIDS>( nd, v, p0, w0 ) ) <= TK( 0 );
         }
         for ( int i = R; i < nb && ! peut; ++i ) {
             const TK v[ 2 ] = { lx[ i ], ly[ i ] };
-            peut |= bilan_sommet<POIDS>( nd, v, p0, w0 ) <= TK( 0 );
+            peut |= ( CENTRE ? bilan_sommet_c<POIDS>( nd, v, p0, w0 ) : bilan_sommet<POIDS>( nd, v, p0, w0 ) ) <= TK( 0 );
         }
         if ( ! peut )
             continue;
@@ -93,8 +111,11 @@ __global__ void __launch_bounds__( 128 ) noyau2_filmix( Arbre<TK,2> ar, double *
         }
 
         for ( int q = nd.beg; q < nd.end; ++q ) {
-            if ( ar.ids[ q ] == i0 ) continue;
-            const Plan2<TK> p = bissect2<POIDS>( ar, q, p0[ 0 ], p0[ 1 ], w0 );
+            if ( q == k ) continue;
+            const Plan2<TK> p = FIXE == 32 ? bissect2f<POIDS>( ar, q, u0[ 0 ], u0[ 1 ], w0d )
+                              : FIXE == 64 ? bissect2g<POIDS>( ar, q, g0[ 0 ], g0[ 1 ], w0d )
+                              : CENTRE     ? bissect2c<POIDS>( ar, q, p0[ 0 ], p0[ 1 ], w0d )
+                                           : bissect2<POIDS>( ar, q, p0[ 0 ], p0[ 1 ], w0 );
 
             // LE TEST, QUI EST DEJA LA COUPE : le masque de signe sur 64 bits
             TK s[ R ];
@@ -160,16 +181,43 @@ __global__ void __launch_bounds__( 128 ) noyau2_filmix( Arbre<TK,2> ar, double *
     }
 
 fin:
+    // ---- LES SOMMETS RESOLUS DEPUIS LEURS PLANS, comme `filmsk` -- et il le faut d'autant plus
+    //      ici que ce noyau prend les GROSSES cellules, celles dont l'histoire de coupes est la
+    //      plus longue, donc l'erreur portee la plus grande.
+    if constexpr ( sizeof( TK ) < 8 && ( CENTRE || FIXE ) ) {
+        if ( raff && nb >= 3 ) {
+            double ax, ay, ao;
+            plan_relu<POIDS,FIXE>( ar, get_c( nb - 1 ), u0, g0, p0, w0d, ax, ay, ao );
+            for ( int i = 0; i < nb; ++i ) {
+                double bx, by, bo, vx, vy;
+                plan_relu<POIDS,FIXE>( ar, get_c( i ), u0, g0, p0, w0d, bx, by, bo );
+                if ( croise2( ax, ay, ao, bx, by, bo, vx, vy ) ) {
+                    if ( i < R ) {
+#pragma unroll
+                        for ( int o = 0; o < R; ++o ) { x[ o ] = o == i ? TK( vx ) : x[ o ]; y[ o ] = o == i ? TK( vy ) : y[ o ]; }
+                    } else { lx[ i ] = TK( vx ); ly[ i ] = TK( vy ); }
+                }
+                ax = bx; ay = by; ao = bo;
+            }
+        }
+    }
+
+    // l'origine du repere des sommets : le germe si `CENTRE`, sinon rien. La densite, elle, vit
+    // dans le carre unite -- c'est le seul endroit ou le repere du germe doit etre defait.
+    const double ox = CENTRE || FIXE ? double( p0[ 0 ] ) : 0.0;
+    const double oy = CENTRE || FIXE ? double( p0[ 1 ] ) : 0.0;
+
     // ---- LA DENSITE IMAGE : une marche par arete, qui rend la masse ET `integrale rho ds`
     if ( im.active() ) {
         double mas = 0;
-        const double sref = nb > 0 ? im.ref( double( get_x( 0 ) ), double( get_y( 0 ) ) ) : 0.0;
+        const double sref = nb > 0 ? im.ref( double( get_x( 0 ) ) + ox, double( get_y( 0 ) ) + oy ) : 0.0;
         for ( int e = 0; e < nb; ++e ) {              // les aretes : la masse ne depend pas de `NF`
             const int ee = e + 1 < nb ? e + 1 : 0;
             double mm, ll;
-            arete_image( im, double( get_x( e ) ), double( get_y( e ) ), double( get_x( ee ) ), double( get_y( ee ) ), sref, mm, ll );
+            arete_image( im, double( get_x( e ) ) + ox, double( get_y( e ) ) + oy,
+                             double( get_x( ee ) ) + ox, double( get_y( ee ) ) + oy, sref, mm, ll );
             mas += mm;
-            if ( fac_j && e < NF ) { fac_j[ size_t( e ) * ar.n + i0 ] = get_c( e ); fac_l[ size_t( e ) * ar.n + i0 ] = TK( ll ); }
+            if ( fac_j && e < NF ) { fac_j[ size_t( e ) * ar.n + i0 ] = id_de( ar, get_c( e ) ); fac_l[ size_t( e ) * ar.n + i0 ] = TK( ll ); }
         }
         if ( fac_j )
             for ( int e = nb > 0 ? nb : 0; e < NF; ++e ) { fac_j[ size_t( e ) * ar.n + i0 ] = -1000000; fac_l[ size_t( e ) * ar.n + i0 ] = 0; }
@@ -188,7 +236,7 @@ fin:
             if ( k < nb ) {
                 const int kk = k + 1 < nb ? k + 1 : 0;
                 const TK dx = get_x( kk ) - get_x( k ), dy = get_y( kk ) - get_y( k );
-                j = get_c( k );
+                j = id_de( ar, get_c( k ) );
                 l = sqrt( dx * dx + dy * dy );
             }
             fac_j[ size_t( k ) * ar.n + i0 ] = j;

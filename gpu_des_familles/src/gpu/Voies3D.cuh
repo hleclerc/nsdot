@@ -430,7 +430,7 @@ __global__ void __launch_bounds__( BLOC3, 4 ) noyau3_voies( Arbre<TK,3> ar, doub
             continue;
         if ( nd.right < 0 ) {
             for ( int q = nd.beg; q < nd.end; ++q ) {
-                if ( ar.ids[ q ] == i0 ) continue;
+                if ( q == k ) continue;
                 const Plan3<TK> p = bissect3<POIDS>( ar, q, p0[ 0 ], p0[ 1 ], p0[ 2 ], w0 );
                 r = c.coupe( p, viv[ wp ] );
                 if ( r == VIDE || r == DEBORDE ) { haut = 0; break; }

@@ -256,7 +256,7 @@ __global__ void noyau3_fil( Arbre<TK,3> ar, double *res, int *deborde ) {
             continue;
         if ( nd.right < 0 ) {
             for ( int q = nd.beg; q < nd.end; ++q ) {
-                if ( ar.ids[ q ] == i0 ) continue;
+                if ( q == k ) continue;
                 const Plan3<TK> p = bissect3<POIDS>( ar, q, p0[ 0 ], p0[ 1 ], p0[ 2 ], w0 );
                 r = c.coupe( p );
                 if ( r == VIDE || r == DEBORDE ) { haut = 0; break; }

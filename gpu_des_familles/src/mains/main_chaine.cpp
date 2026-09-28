@@ -374,6 +374,12 @@ int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu, bool arbre_gp
         ecart_m = std::max( ecart_m, std::fabs( res[ i ] - cpu[ i ] ) / std::max( double( cpu[ i ] ), moyenne ) );
     }
     if ( std::getenv( "CHAINE_DEBUG" ) ) {
+        // LES CELLULES MORTES : une ligne sans voisin rend la hessienne singuliere, et la jauge
+        // « moyenne nulle » du CG ne vaut plus, puisque le vecteur constant n'est plus dans son
+        // noyau. C'est ce que `| L . 1 | = 1` signale.
+        long long z_cpu = 0, z_gpu = 0;
+        for ( SI i = 0; i < nu.n; ++i ) { z_cpu += double( cpu[ i ] ) <= 0; z_gpu += res[ i ] <= 0; }
+        std::printf( "        debug : cellules de mesure NULLE : %lld au CPU, %lld au GPU\n", z_cpu, z_gpu );
         const size_t uc = size_t( std::unique( fcpu.begin(), fcpu.end(), []( const Fa &x, const Fa &y ){ return x.i == y.i && x.j == y.j; } ) - fcpu.begin() );
         std::vector<Fa> c2( fcpu );                       // `unique` a deplace : on recharge
         std::printf( "        debug : %zu facettes CPU dont %zu paires ( i, j ) distinctes ; GPU %lld cotes de boite, %lld cases vides ( soit %.2f aretes par cellule )\n", fcpu.size(), uc, cotes, vides, double( gpu::DiagrammeGpu<D,TK>::NF * nu.n - vides ) / nu.n );
@@ -487,7 +493,15 @@ int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu, bool arbre_gp
             ecart = std::max( ecart, std::fabs( yg[ i ] - yc[ i ] ) );
             noyau = std::max( noyau, std::fabs( y1[ i ] ) / std::max( lap.dia[ i ], 1e-300 ) );
         }
-        const bool hok = H.nnz == int( lap.row[ nu.n ] ) && ecart < 1e-9 * ech && noyau < 1e-12;
+        // LE SEUIL DEPEND DU FLOTTANT DU NOYAU, comme celui des facettes : en `float` le
+        // diagramme lui-meme ne vaut pas mieux que ~1e-4 relatif sur le nuage le plus dur, et
+        // exiger 1e-9 reviendrait a juger la hessienne sur l'erreur du diagramme. Le nombre de
+        // coefficients, lui, doit tomber pile -- a ceci pres qu'en `float` les deux moteurs ne
+        // voient pas exactement les memes aretes microscopiques.
+        const double tolh = sizeof( TK ) == 4 ? 1e-3 : 1e-9;
+        const int dnnz = std::abs( H.nnz - int( lap.row[ nu.n ] ) );
+        const bool hok = ( sizeof( TK ) == 4 ? dnnz < int( nu.n ) / 1000 + 1 : dnnz == 0 )
+                      && ecart < tolh * ech && noyau < 1e-12;
         std::printf( "      HESSIENNE %6.2f ms sur GPU contre %6.0f ms au CPU ( assemblage seul )   x%.0f   %d coefficients contre %d\n",
                      t_h, t_lc * 1e3, t_lc * 1e3 / t_h, H.nnz, int( lap.row[ nu.n ] ) );
         std::printf( "                | L x |_max %.3e, ecart au CPU %.1e ( soit %.1e relatif ), | L . 1 | %.1e%s\n",
@@ -512,8 +526,15 @@ int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu, bool arbre_gp
         const double ta0 = now();
         g.monte_amg( H );                                // la hierarchie du multigrille
         const double t_amg = now() - ta0;
+        // LA TOLERANCE DU CG DEPEND DU FLOTTANT DU NOYAU. En `float`, les `c_ij` que le noyau
+        // livre portent ~1e-4 d'erreur relative sur le nuage le plus dur : demander 1e-10 du
+        // SOLVEUR, c'est demander dix chiffres justes d'une matrice qui n'en a que quatre. Et le
+        // CG y tourne alors des milliers d'iterations autour de son plancher `kappa eps`
+        // ( ~1.5e-10 mesure sur `lignes / aires egales` ), qu'il franchit ou non selon le
+        // lancement. 1e-9 est deja bien au-dela de ce que la hessienne vaut.
+        const double tolc = sizeof( TK ) == 4 ? 1e-9 : 1e-10;
         double ms_cg = 0, r_cg = 0;
-        const int its = g.resout( H, db, dd, 1e-10, 20000, &ms_cg, &r_cg );
+        const int its = g.resout( H, db, dd, tolc, 20000, &ms_cg, &r_cg );
         std::vector<double> dg( nu.n );
         cudaMemcpy( dg.data(), dd, nu.n * sizeof( double ), cudaMemcpyDeviceToHost );
         cudaFree( db ); cudaFree( dd );
@@ -568,7 +589,7 @@ int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu, bool arbre_gp
         double ech_d = 0, ec_d = 0;
         for ( SI i = 0; i < nu.n; ++i ) ech_d = std::max( ech_d, std::fabs( dc[ i ] ) );
         for ( SI i = 0; i < nu.n; ++i ) ec_d = std::max( ec_d, std::fabs( dg[ i ] - dc[ i ] ) );
-        const bool cok = its > 0 && r_cg < 1e-9 && ( rapide || ec_d < 1e-6 * ech_d );
+        const bool cok = its > 0 && r_cg < 10 * tolc && ( rapide || ec_d < 1e-6 * ech_d );
         std::printf( "      AMG       hierarchie montee en %6.0f ms\n", t_amg * 1e3 );
 #ifdef SF_AMGCL
         if ( ! rapide )

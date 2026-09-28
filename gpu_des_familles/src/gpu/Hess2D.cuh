@@ -39,10 +39,20 @@
 //   * LA DIAGONALE est sommee A PART, depuis le CSR fini et dans SON ordre : `L . 1` vaut alors
 //     zero AU BIT PRES, et pas seulement a 1e-16 pres ( `k_hess_mul` somme dans le meme ordre ).
 //
-// LES COLONNES NE SONT PAS TRIEES : un gradient conjugue n'en a pas besoin. Le CPU les trie pour
-// `crs_reduit`, qui sert a un solveur direct. L'ordre des entrees d'une ligne depend ici de
-// l'ordonnancement des atomiques, donc d'un lancement a l'autre ; la MATRICE, elle, ne change
-// pas, et sa symetrie est exacte dans tous les cas.
+// LES COLONNES SONT TRIEES. Un gradient conjugue n'en a pas besoin -- le CPU les trie pour
+// `crs_reduit`, qui sert a un solveur direct. Ici c'est la REPRODUCTIBILITE : le placement passe
+// par des atomiques, donc l'ordre des entrees d'une ligne change d'un lancement a l'autre, et
+// avec lui l'ordre des sommes du produit matrice-vecteur. Un tri par insertion sur les sept
+// entrees d'une ligne remet l'ordre canonique pour ~0.1 ms a `n = 1e6`, et le CSR redevient
+// identique AU BIT PRES d'un lancement a l'autre -- verifie.
+//
+// ( Le CSR canonique ne suffit pas a lui seul : tant qu'on demandait 1e-10 au CG sur une
+//   hessienne assemblee en `float`, il broyait contre son plancher `kappa eps` -- ~1.5e-10 sur
+//   `lignes / aires egales` -- et rendait 262 iterations ou 20 000 selon le lancement, a matrice
+//   et second membre identiques au bit pres. La variation est en aval, dans le multigrille
+//   ( voir l'anomalie laissee ouverte dans `doc/06-ce-qui-reste.md` ) et ne se voit que la. A
+//   tolerance ATTEIGNABLE -- 1e-9, ce que vaut la hessienne en `float` -- les trois lancements
+//   rendent exactement les memes comptes. )
 //
 // LE NOYAU DU LAPLACIEN est les constantes. Une ligne sans voisin -- qui ne peut arriver que si
 // une cellule est vide -- rendrait le systeme singulier SANS LE DIRE : on la neutralise a un,
@@ -85,6 +95,22 @@ __global__ void k_hess_remplit( const int *fj, const TK *fl, const double *px, c
         const int p = atomicAdd( at + i, 1 ), q = atomicAdd( at + j, 1 );
         col[ p ] = j; val[ p ] = c;                      // LE MEME `double` des deux cotes
         col[ q ] = i; val[ q ] = c;
+    }
+}
+
+/// LES COLONNES TRIEES, PAR LIGNE : le CSR devient canonique, donc identique au bit pres d'un
+/// lancement a l'autre malgre les atomiques du remplissage. Un tri par insertion sur sept
+/// entrees, ~0.1 ms a `n = 1e6`.
+__global__ void k_hess_trie( const int *row, int *col, double *val, int n ) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if ( i >= n ) return;
+    const int b = row[ i ], e = row[ i + 1 ];
+    for ( int p = b + 1; p < e; ++p ) {
+        const int    c = col[ p ];
+        const double v = val[ p ];
+        int q = p;
+        for ( ; q > b && col[ q - 1 ] > c; --q ) { col[ q ] = col[ q - 1 ]; val[ q ] = val[ q - 1 ]; }
+        col[ q ] = c; val[ q ] = v;
     }
 }
 

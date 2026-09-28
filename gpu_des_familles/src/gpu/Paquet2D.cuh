@@ -100,7 +100,7 @@ __global__ void __launch_bounds__( 128 ) noyau2_paquet( Arbre<TK,2> ar, double *
         p.dy  = yj - y0[ S ];
         p.off = TK( 0.5 ) * ( p.dx * ( xj + x0[ S ] ) + p.dy * ( yj + y0[ S ] ) );
         if constexpr ( POIDS ) p.off += TK( 0.5 ) * ( w0[ S ] - ar.w[ q ] );
-        p.id  = ar.ids[ q ];
+        p.id  = q;
 
         const int n0 = nb[ S ];
         const TK  s  = p.dx * vx[ S ] + p.dy * vy[ S ] - p.off;

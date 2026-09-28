@@ -236,19 +236,124 @@ l'arbre, quitte à la vérifier) au lieu du carré unité ; ou **calculer chaque
 plans qui le définissent** (un système 2×2 dont tous les coefficients sont à l'échelle de la
 cellule) au lieu de l'interpoler.
 
-Deux réserves qui comptent.
+Deux réserves qui comptaient **et que la suite lève** :
 
 * **La virgule fixe 31 bits est réservée au `float`.** En `double` elle *détruit* la précision
-  (1.2e-4 au lieu de 2.1e-10 : 31 bits contre 53) — mesuré, `filmsk8f` en `double` est faux. Pour
-  le `double` il faudrait une virgule fixe 64 bits, donc huit octets.
+  (1.2e-4 au lieu de 2.1e-10 : 31 bits contre 53) — mesuré, `filmsk8f` en `double` est faux. Cela
+  reste vrai : la virgule fixe n'est allumée qu'en `float`.
 * **Le Laguerre à poids forts reste hors-jeu en `float`** : médiane 5.4e-4 dès 10⁵ et p99 à 12 %,
-  même avec la virgule fixe. Or c'est exactement le cas du transport optimal.
+  même avec la virgule fixe. Or c'est exactement le cas du transport optimal. **Ce point-là n'est
+  plus vrai** — voir la section suivante : la médiane y tombe à 7.7e-7.
 
-**Conséquence pour le choix de carte.** Pour du Voronoï ou du Laguerre à poids faibles, le `float`
-devient défendable à 10⁹ et la **RTX PRO 6000** reprend l'avantage (1.65 contre 3.5 ns/germe
-projetés, 96 Go, et un L2 qui tiendrait l'arbre). Pour du Laguerre à poids forts — le transport
-optimal — le `double` reste obligatoire et c'est **H100 / A100**. Le choix de carte est donc en
-réalité un choix sur le *type de problème*, pas sur le noyau.
+## LES TROIS RÉPARATIONS DU `float`, portées du banc CPU
+
+`solvers_des_familles` a passé une session entière à démonter ce qui casse en `fp32` (son
+README § 19). Le modèle qui en sort est en une ligne :
+
+> **erreur relative ~ eps · |w| · n^(2/D) + eps · n^(1/D)**
+
+et le remède est toujours le même : **porter la différence, pas la valeur**. Partout où une
+quantité *grande dans l'absolu* sert à fabriquer une quantité *à l'échelle `h`*, on perd
+`log( grand / petit )` chiffres, et il suffit de ne jamais former la grande. Les trois termes se
+lisent directement dans ce qui précède : le repère du germe tue `eps n^(1/D)` sur les positions,
+la virgule fixe tue ce qu'il en reste au stockage, et le terme en `|w|` n'avait jamais été
+attaqué ici.
+
+Ce qui est arrivé sur la carte, dans l'ordre :
+
+**1. La différence des poids, en `double`.** Le plan bissecteur porte `( w0 - wj ) / 2`. Arrondir
+CHAQUE poids avant la soustraction coûte `eps |w|`, ce qui déplace le plan de `eps |w| / ( 2 |d| )`
+le long de sa normale, soit `eps |w| / h²` rapporté à la taille d'une cellule. Or les poids ne
+sont grands que *dans l'absolu* : pour deux germes qui partagent vraiment une facette,
+`| w0 - wj | <~ h²`, du même ordre que le terme géométrique. Un tableau `double` de plus
+(`Arbre::w64`), la différence calculée en `double`, un seul arrondi à la fin.
+
+**2. Le repère du germe pour la SECONDE PASSE aussi.** `filmsk` travaillait dans le repère du
+germe, `filmix` — le noyau qui finit les cellules trop grosses pour les registres, soit 13 % en
+uniforme — était resté en repère absolu. Une cellule sur huit gardait donc l'erreur qu'on venait
+d'enlever aux autres, et comme le maximum suit la pire cellule, ce sont elles qui le fixaient.
+
+**3. Les sommets résolus depuis leurs plans.** C'est la seconde des deux idées laissées ouvertes
+ci-dessus, et elle bat la première (la boîte serrée) : même sur CPU, où les deux ont été écrites,
+la boîte est devenue inutile. Un sommet d'un convexe est l'intersection de `D` plans et ne dépend
+PAS de l'histoire des coupes ; le noyau, lui, l'interpole, donc il porte l'erreur de la cellule
+telle qu'elle était **quand le sommet est né**. On le résout donc à la fin, en `double`, depuis
+les deux coupes qui le portent — elles sont déjà là, l'arête `i` va du sommet `i` au sommet
+`i + 1`. Ce qu'il fallait pour cela : que `Plan2::id` porte le **rang** du germe dans l'arbre et
+non son identifiant d'appelant, sans quoi le plan ne se relit pas. Au passage cela supprime une
+lecture dispersée par germe testé dans la boucle la plus chaude, et ne la laisse que sur les six
+arêtes du polygone fini.
+
+Sur une carte, ce qui compte autant que le chiffre : **ça ne branche pas**. Une élimination de
+Gauss par sommet, la même suite d'instructions pour tous les threads du warp, pas de reprise, pas
+de file de rattrapage. C'est ce qui disqualifiait la boîte de départ, dont le rattrapage
+divergeait — une boîte mal dimensionnée fait recommencer la cellule, donc son warp entier.
+
+### Ce que ça donne, contre le témoin `double` (`--temoin-double`)
+
+**Uniforme, `n = 10⁶`, Voronoï**, écart relatif par cellule :
+
+| | moyenne | médiane | p99 | p99.99 | max | ns/germe |
+|---|---|---|---|---|---|---|
+| `filnrm8` (repère absolu) | 4.3e-05 | 3.2e-05 | 1.8e-04 | 7.6e-04 | 4.8e-03 | 7.5 |
+| `filmsk8f` (germe + fixe 32) | 1.0e-05 | 5.6e-06 | 5.7e-05 | 1.2e-04 | 1.9e-04 | 9.0 |
+| `filmsk8f` + sommets résolus | 3.0e-07 | 2.1e-07 | 1.6e-06 | 1.5e-05 | 1.2e-04 | 9.4 |
+| `filmsk8h` (germe + fixe 64) | 1.0e-05 | 5.7e-06 | 5.8e-05 | 1.2e-04 | 2.2e-04 | 9.5 |
+| **`filmsk8h` + sommets résolus** | **1.4e-08** | **1.1e-08** | **4.9e-08** | **8.4e-08** | **1.4e-07** | **9.9** |
+
+**1.1e-08 de médiane, c'est un dixième de l'epsilon du `float`** : la cellule ordinaire est exacte
+à l'arrondi près, et il n'y a plus rien à gagner sans changer de flottant. Le prix est **+5 %**
+sur `filmsk8f` et **+32 %** sur `filnrm8`.
+
+**LA VIRGULE FIXE 64 BITS CHANGE DE STATUT.** La section précédente concluait qu'elle « ne
+rapporte RIEN de plus », et c'était juste : à 32 bits la quantification (9.3e-10) était déjà
+passée **sous le plancher de la géométrie en `float`**. Le raffinement supprime ce plancher — et
+la quantification devient alors le terme dominant. Facteur **19 sur la médiane, 850 sur le max**.
+Les deux réparations ne valent QUE prises ensemble ; c'est pour cela que le chemin de Newton
+(`chaine`) est passé à `FIX = 64`, pour +2 % et quatre octets de plus par coordonnée.
+
+**Lignes / Voronoï, `n = 10⁵`** (nuage groupé, sans poids) :
+
+| | médiane | p99 | max |
+|---|---|---|---|
+| `filnrm8` | 3.4e-06 | 3.0e-05 | 2.4e-03 |
+| `filmsk8f` | 7.0e-07 | 8.2e-06 | 4.2e-05 |
+| `filmsk8f` + résolus | 2.4e-08 | 3.5e-07 | 1.0e-05 |
+| **`filmsk8h` + résolus** | **1.2e-09** | **2.9e-08** | **4.2e-07** |
+
+**Lignes / aires égales, `n = 10⁵`** — le Laguerre à poids résolus, `|w|max = 0.13`, celui qui
+était déclaré hors-jeu :
+
+| | médiane | p99 | max |
+|---|---|---|---|
+| `filnrm8` | 2.0e-03 | 2.2e-01 | 2.7e+00 |
+| `filmsk8f` | 4.6e-05 | 3.2e-03 | 1.0e+00 |
+| `filmsk8f` + résolus | 4.5e-05 | 3.2e-03 | 1.0e+00 |
+| `filmsk8h` + résolus, poids arrondis avant la différence | 4.6e-04 | 1.2e-01 | 2.3e+00 |
+| **`filmsk8h` + résolus, différence des poids en `double`** | **7.7e-07** | **1.2e-05** | **7.1e-05** |
+
+Trois choses à lire dans ce tableau. **(a)** Le raffinement ne rapporte RIEN tant que la virgule
+fixe est à 32 bits : sur un nuage groupé, l'espacement local est bien plus fin que le pas de
+9.3e-10, donc le PLAN lui-même est faux, et résoudre un sommet depuis un plan faux ne gagne rien.
+**(b)** La différence des poids en `double` vaut à elle seule **×600 sur la médiane et ×32000 sur
+le max** — exactement le terme `eps |w| n^(2/D)` du modèle, et il domine tout le reste sur ce
+nuage. **(c)** Les trois réparations ensemble font **×2600 sur la médiane et ×38000 sur le max**
+contre le noyau de référence.
+
+Sur l'uniforme à poids `h²` (`--weights 1`, `n = 10⁶`), le terme des poids est en revanche presque
+invisible — médiane 8.2e-09 contre 4.7e-09, max 1.0e-06 contre 2.0e-07 — et c'est ce que le
+modèle prédit : `|w| ~ h²` y rend `eps |w| / h²` égal à `eps`.
+
+### Conséquence pour le choix de carte
+
+Elle est renversée. **Le `float` n'est plus disqualifié par le Laguerre à poids forts** : la
+médiane y passe de 5.4e-4 à 7.7e-7 et le max de 2.3 à 7.1e-5. Reste à savoir si `7.7e-7` suffit
+au transport optimal — sur le chemin de Newton mesuré ici, oui : le Newton `float` suit le Newton
+`double` pas pour pas et s'arrête à 6.4e-08 de résidu ([§ ce qui reste](06-ce-qui-reste.md)).
+Le verdict « `double` obligatoire, donc H100 / A100 » ne tient donc plus tel quel, et la **RTX PRO
+6000** redevient candidate pour le transport optimal aussi. Ce qui n'a pas changé : l'arbre, la
+mémoire, et le fait que le `float` seul ne descend pas sous ~1e-7 de résidu — la dernière
+itération de Newton, elle, restera en `double`.
 
 ---
 

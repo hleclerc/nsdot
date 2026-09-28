@@ -94,7 +94,7 @@ __global__ void __launch_bounds__( BLOC2 ) noyau2_voies( Arbre<TK,2> ar, double 
 
         // ---- UNE FEUILLE : ses germes, dans l'ordre
         for ( int q = nd.beg; q < nd.end; ++q ) {
-            if ( ar.ids[ q ] == i0 ) continue;
+            if ( q == k ) continue;
             const Plan2<TK> p = bissect2<POIDS>( ar, q, p0[ 0 ], p0[ 1 ], w0 );
             ++n_plans;
 

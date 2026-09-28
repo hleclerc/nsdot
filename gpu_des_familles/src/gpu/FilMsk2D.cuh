@@ -158,7 +158,7 @@ enum { DENS_AUCUNE = 0, DENS_DIRECTE = 1, DENS_DEPOT = 2 };
 template<bool POIDS, int BSM, bool CENTRE, int FIXE, int DENS = DENS_AUCUNE, class TK = float>
 __global__ void __launch_bounds__( 128, BSM ) noyau2_filmsk( Arbre<TK,2> ar, double *res, int *deborde, int *liste_deb,
                                                             int *fac_j = nullptr, TK *fac_l = nullptr, int NF = 0,
-                                                            Image2 im = Image2{}, TK *dep_x = nullptr, TK *dep_y = nullptr,
+                                                            bool raff = false, Image2 im = Image2{}, TK *dep_x = nullptr, TK *dep_y = nullptr,
                                                             int *dep_nb = nullptr, int *dep_id = nullptr,
                                                             int cap = 0, int k0 = 0, int nk = 0 ) {
     constexpr int R = 8, SUR = 3;
@@ -170,6 +170,7 @@ __global__ void __launch_bounds__( 128, BSM ) noyau2_filmsk( Arbre<TK,2> ar, dou
     const TK p0[ 2 ] = { FIXE == 32 ? TK( u0[ 0 ] ) * TK( INV_FIXE ) : FIXE == 64 ? TK( double( g0[ 0 ] ) * INV_F64 ) : ar.c[ 0 ][ k ],
                          FIXE == 32 ? TK( u0[ 1 ] ) * TK( INV_FIXE ) : FIXE == 64 ? TK( double( g0[ 1 ] ) * INV_F64 ) : ar.c[ 1 ][ k ] };
     const TK w0 = POIDS ? ar.w[ k ] : TK( 0 );
+    const double w0d = POIDS ? ar.w64[ k ] : 0.0;        // le plan porte LA DIFFERENCE des poids
     const int i0 = ar.ids[ k ];
 
     TK  x[ R ], y[ R ];
@@ -214,9 +215,9 @@ __global__ void __launch_bounds__( 128, BSM ) noyau2_filmsk( Arbre<TK,2> ar, dou
         }
 
         for ( int q = nd.beg; q < nd.end; ++q ) {
-            const Plan2<TK> p = FIXE == 32 ? bissect2f<POIDS>( ar, q, u0[ 0 ], u0[ 1 ], w0 )
-                              : FIXE == 64 ? bissect2g<POIDS>( ar, q, g0[ 0 ], g0[ 1 ], w0 )
-                              : CENTRE     ? bissect2c<POIDS>( ar, q, p0[ 0 ], p0[ 1 ], w0 )
+            const Plan2<TK> p = FIXE == 32 ? bissect2f<POIDS>( ar, q, u0[ 0 ], u0[ 1 ], w0d )
+                              : FIXE == 64 ? bissect2g<POIDS>( ar, q, g0[ 0 ], g0[ 1 ], w0d )
+                              : CENTRE     ? bissect2c<POIDS>( ar, q, p0[ 0 ], p0[ 1 ], w0d )
                                            : bissect2<POIDS>( ar, q, p0[ 0 ], p0[ 1 ], w0 );
             nb = coupe_msk( p, nb, x, y, c );
             if ( IMPROBABLE( nb <= 0 ) ) goto fin;
@@ -224,6 +225,24 @@ __global__ void __launch_bounds__( 128, BSM ) noyau2_filmsk( Arbre<TK,2> ar, dou
     }
 
 fin:
+    // ---- LES SOMMETS RESOLUS DEPUIS LEURS PLANS ( `Arbre.cuh` ). Le sommet `i` est porte par
+    //      l'arete qui y ARRIVE ( `c[ i - 1 ]` ) et par celle qui en part ( `c[ i ]` ) ; on
+    //      remonte donc les plans un par un, chacun servant deux fois.
+    if constexpr ( sizeof( TK ) < 8 && ( CENTRE || FIXE ) ) {
+        if ( raff && nb >= 3 ) {
+            double ax, ay, ao;
+            plan_relu<POIDS,FIXE>( ar, selR( c, nb - 1 ), u0, g0, p0, w0d, ax, ay, ao );
+#pragma unroll
+            for ( int i = 0; i < R; ++i ) {
+                if ( i >= SUR && i >= nb ) break;
+                double bx, by, bo, vx, vy;
+                plan_relu<POIDS,FIXE>( ar, c[ i ], u0, g0, p0, w0d, bx, by, bo );
+                if ( croise2( ax, ay, ao, bx, by, bo, vx, vy ) ) { x[ i ] = TK( vx ); y[ i ] = TK( vy ); }
+                ax = bx; ay = by; ao = bo;
+            }
+        }
+    }
+
     // l'origine du repere des sommets : le germe si `CENTRE`, sinon rien. La densite, elle, vit
     // dans le carre unite -- c'est le seul endroit ou le repere centre doit etre defait.
     const double ox = CENTRE || FIXE ? double( p0[ 0 ] ) : 0.0;
@@ -244,7 +263,7 @@ fin:
                 arete_image( im, double( x[ e ] ) + ox, double( y[ e ] ) + oy,
                                  double( selR( x, ee ) ) + ox, double( selR( y, ee ) ) + oy, sref, mm, ll );
                 mes += mm;
-                j = c[ e ];
+                j = id_de( ar, c[ e ] );
                 l = TK( ll );
             }
             if ( fac_j ) { fac_j[ size_t( e ) * ar.n + i0 ] = j; fac_l[ size_t( e ) * ar.n + i0 ] = l; }
@@ -259,7 +278,7 @@ fin:
                 int j = -1000000;                        // case vide ( au-dela de `nb` )
                 TK  l = 0;
                 if ( e < nb ) {
-                    j = c[ e ];
+                    j = id_de( ar, c[ e ] );
                     if constexpr ( DENS != DENS_DEPOT ) {
                         const int ee = e + 1 < nb ? e + 1 : 0;
                         const TK dx = selR( x, ee ) - x[ e ], dy = selR( y, ee ) - y[ e ];

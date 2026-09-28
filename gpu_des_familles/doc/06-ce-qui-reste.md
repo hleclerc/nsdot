@@ -161,10 +161,35 @@ scanner, remplir** — les trois passes d'un CSR, **sans un tri**.
 * **compter** — une ligne par thread, `NF` lectures espacées de `n`, donc des voies consécutives
   lisent des adresses consécutives : tout est coalescé ;
 * **scanner** — une somme préfixe exclusive (CUB) donne `row` ;
-* **remplir** — la même boucle écrit `col`, `val`, et accumule la diagonale au passage.
+* **remplir** — la même boucle écrit `col` et `val` ;
+* **la diagonale** est sommée à part, depuis le CSR fini et **dans son ordre**, si bien que
+  `L · 1` vaut zéro au bit près et pas seulement à 1e-16 près.
 
-Les colonnes ne sont pas triées : un gradient conjugué n'en a pas besoin (le CPU les trie pour un
-solveur direct). Une ligne sans voisin est neutralisée à un, comme au CPU.
+Les colonnes **sont** triées — un gradient conjugué n'en a pas besoin (le CPU les trie pour un
+solveur direct), mais le placement passe par des atomiques et un tri par insertion sur sept
+entrées (~0.1 ms à 10⁶) rend le CSR **identique au bit près d'un lancement à l'autre**. Une ligne
+sans voisin est neutralisée à un, comme au CPU.
+
+#### ELLE EST SYMÉTRIQUE AU BIT PRÈS, ET CE N'ÉTAIT PAS UN LUXE
+
+Chaque facette est vue **deux fois**, une par cellule, et les deux cellules n'en mesurent pas
+exactement la même longueur. On gardait la mesure **de la ligne** : `L_ij` venait de la cellule
+`i` et `L_ji` de la cellule `j`. En `double` les deux vues diffèrent de 1e-16 et le gradient
+conjugué ne s'en aperçoit pas. **En `float` elles diffèrent de 100 %** sur les facettes presque
+dégénérées — et le CG, qui suppose un opérateur symétrique, cesse de converger.
+
+| uniforme 2D `n = 2·10⁵`, noyau `float` | avant | après |
+|---|---|---|
+| CG | 20 000 it., **56 420 ms** | 71 it., **197 ms** |
+| assemblage | 0.73 ms | 1.26 ms |
+
+Le même bug avait été trouvé et réparé sur CPU (`solvers_des_familles` README § 19.10) avec le
+même facteur : le diagramme en `float` était juste, c'est l'assemblage qui ne l'était pas. La
+réparation est celle du CPU mot pour mot — **on ne garde que la vue `i < j` et on la miroite dans
+les deux lignes**, la même valeur `double` des deux côtés. Sur une carte cela veut dire que la
+ligne `j` reçoit une entrée qu'elle n'a pas produite : le compte et le placement passent par des
+atomiques, d'où les +0.5 ms. En `double` rien ne bouge (71 itérations aussi) et le nombre de
+coefficients tombe **pile** sur celui du CPU.
 
 | `double` | GPU | CPU 8 fils | | coefficients |
 |---|---|---|---|---|
@@ -175,7 +200,26 @@ solveur direct). Une ligne sans voisin est neutralisée à un, comme au CPU.
 **La vérification** est un produit `y = L x` sur un vecteur quelconque — un seul nombre exerce
 toute la matrice — plus la propriété de noyau `L · 1 = 0`, ligne par ligne. Écart au CPU :
 **7.0e-14 relatif** sur l'uniforme, 1.5e-13 et 1.4e-15 sur les lignes ; `| L · 1 |` à 5e-16
-partout. `NF` est passé de 16 à 32 : à 16 il restait 44 et 244 cellules à plus d'arêtes sur les
+partout. En `float`, une fois les trois réparations de
+[§ échelle](04-echelle.md) en place : **2.6e-07** sur l'uniforme 10⁶, 5.0e-06 et 1.1e-04 sur les
+lignes, et la chaîne entière passe ses contrôles.
+
+**Une limite connue, et qui n'est pas de précision.** Dès qu'un poids tue des cellules — 2272 sur
+2·10⁵ avec `--weights 0.1` — la hessienne a des **lignes isolées** (`dia = 1`, aucun voisin), son
+noyau n'est plus le vecteur constant global, et la jauge « moyenne nulle » du CG ne vaut plus :
+il ne converge pas. Le diagramme, lui, est exact (1.7e-13 en `double`) et l'assemblage aussi.
+C'est visible sur `| L · 1 | = 1`. Le cas ne se produit pas sur un chemin de Newton, dont la
+recherche linéaire refuse tout pas qui vide une cellule, mais il faudra une jauge par composante
+connexe le jour où on voudra assembler un état arbitraire.
+
+**Et une tolérance à ajuster, pas un défaut.** En `float`, les `c_ij` portent ~1e-4 d'erreur
+relative sur le nuage le plus dur : demander 1e-10 du *solveur* revient à demander dix chiffres
+justes d'une matrice qui n'en a que quatre. Le CG y tournait alors des milliers d'itérations
+autour de son plancher `κ·eps` (~1.5e-10 mesuré), qu'il franchissait ou non **selon le
+lancement** — à matrice et second membre identiques au bit près, 262 itérations ou 20 000. La
+variation est en aval, dans le multigrille (cf. l'anomalie laissée ouverte plus bas). À tolérance
+atteignable — `1e-9` en `float`, `1e-10` en `double` — les comptes sont rendus **à l'identique
+trois lancements de suite** : 74, 74, 108 sur les trois nuages. `NF` est passé de 16 à 32 : à 16 il restait 44 et 244 cellules à plus d'arêtes sur les
 nuages de lignes, et elles perdaient leurs facettes. **Il n'en reste aucune.**
 
 ### Le tour de Newton complet
@@ -643,6 +687,42 @@ plus petite cellule remonte de 0.7 % de la cible à exactement 1.00. Sur les nua
 résidu **plafonne à 1e-8** : c'est le plancher de précision de la hessienne sur cette géométrie
 (ses `c_ij` y ont un écart max de 3e-9, § plus haut) — bien au-delà de ce qu'une application
 demande, mais c'est la limite, et elle est géométrique, pas algorithmique.
+
+#### LE MÊME NEWTON, ENTIÈREMENT EN `float`
+
+Une fois les trois réparations en place ([§ échelle](04-echelle.md)) et la hessienne rendue
+symétrique, la boucle entière tourne en `fp32`. Uniforme `n = 10⁶`, même binaire, même nuage,
+seul le flottant du noyau change :
+
+| | `double` | `float` |
+|---|---|---|
+| itérations de Newton | 7 | **7** |
+| les pas | 0.125, 0.25, 0.5, 1, 1, 1, 1 | **les mêmes** |
+| résidus intermédiaires | 4.674e-1 … 2.537e-7 | 4.674e-1 … 2.620e-7 |
+| CG | 162 it., 1.42 s | 167 it., 1.46 s |
+| 18 diagrammes | 2.69 s | **1.30 s** |
+| **total** | 4.29 s | **2.87 s** |
+| résidu final | 3.70e-12 | **6.41e-08** |
+
+**Le chemin est le même, pas pour pas**, jusqu'à ce que le `float` touche son plancher — c'est
+exactement le comportement décrit sur CPU (README § 19 de `solvers_des_familles`) : Newton double
+le nombre de chiffres justes à chaque itération, donc le partage `fp32` / `fp64` est
+**structurel** et tombe toujours au même endroit, aux deux ou trois dernières itérations.
+
+Ce qui change par rapport au CPU, c'est le **rapport de vitesse par diagramme**. Sur le CPU il
+vaut `s ≈ 1` et la stratégie mixte y perd exactement le surcoût de ses diagrammes
+supplémentaires. Ici, à `n = 10⁶` :
+
+| diagramme + facettes, ns/germe | `double` | `float` | `s` |
+|---|---|---|---|
+| isolé (uniforme, Voronoï) | 97.2 | 39.1 | **2.49** |
+| dans la boucle de Newton (18 diagrammes) | 149 | 72 | **2.07** |
+
+C'est le facteur 1/32 du FP64 de Turing qui parle, atténué par le fait que le noyau n'est pas
+borné par l'arithmétique seule. **Sur cette carte la bascule `fp32 → fp64` rapporte**, là où sur
+le CPU elle ne rapportait rien : le résidu final `6.4e-08` est déjà sous la tolérance par défaut
+(1e-7), et les deux dernières itérations en `double` coûteraient ~0.8 s de plus, pour un total
+sous les 4 s contre 4.29.
 
 ### La prolongation lissée avec `cusparseSpGEMM` : écrite, mesurée, et elle PERD
 

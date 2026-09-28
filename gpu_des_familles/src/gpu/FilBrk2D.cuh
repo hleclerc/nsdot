@@ -67,7 +67,7 @@ __global__ void __launch_bounds__( 128 ) noyau2_filbrk( Arbre<TK,2> ar, double *
         }
 
         for ( int q = nd.beg; q < nd.end; ++q ) {
-            if ( OPT ? IMPROBABLE( ar.ids[ q ] == i0 ) : ar.ids[ q ] == i0 ) continue;
+            if ( OPT ? IMPROBABLE( q == k ) : q == k ) continue;
             const Plan2<TK> p = bissect2<POIDS>( ar, q, p0[ 0 ], p0[ 1 ], w0 );
 
             TK s[ R ];

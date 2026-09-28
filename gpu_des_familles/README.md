@@ -31,7 +31,7 @@ dans le bac à sable) et **tout chronométrage passe par `job -b`**.
 | [1. Où est quoi](doc/01-organisation.md) | les fichiers, ce que chacun tient |
 | [2. Les mappages](doc/02-mappages.md) | une cellule par thread, par groupe de voies, par warp ; les phases |
 | [3. Les chiffres](doc/03-chiffres.md) | le tableau des variantes, `float` et `double`, 2D et 3D |
-| [4. L'échelle et la précision](doc/04-echelle.md) | jusqu'à 3·10⁷, ce que 10⁹ demanderait, le repère centré, la virgule fixe, **quelle carte** |
+| [4. L'échelle et la précision](doc/04-echelle.md) | jusqu'à 3·10⁷, ce que 10⁹ demanderait, le repère centré, la virgule fixe, **les trois réparations du `float`**, **quelle carte** |
 | [5. Ce que le profil dit](doc/05-profils.md) | `ncu` : où va le temps, le bilan d'occupation, les idées mesurées et perdues |
 | [6. Ce qui reste](doc/06-ce-qui-reste.md) | l'état des lieux et les chantiers ouverts |
 | [7. Comment les chiffres sont pris](doc/07-methode.md) | `job -b`, la chauffe, le témoin, le plancher de bruit |
@@ -41,5 +41,14 @@ dans le bac à sable) et **tout chronométrage passe par `job -b`**.
 8 fils) et `filmsk8f` **8.2** avec 25 % de registres en moins, une occupation atteinte de 88 % et
 une erreur divisée par 4 à 5 ; en 2D `double`, `filmsk8g` fait **96.7** ; en 3D `voies` fait
 **229** (×8). Le temps par germe est **plat de 10⁶ à 3·10⁷**. Ce qui casse avant le noyau à 10⁹,
-c'est la mémoire, la construction de l'arbre (sur CPU) et la précision du `float` —
-[§ échelle](doc/04-echelle.md).
+c'est la mémoire et la construction de l'arbre (sur CPU) — [§ échelle](doc/04-echelle.md).
+
+**Et le `float` ne casse plus.** Trois réparations portées du banc CPU — la **différence des poids
+portée en `double`**, le **repère du germe jusque dans la seconde passe**, et **chaque sommet
+résolu depuis les deux plans qui le portent** au lieu d'être interpolé — ramènent l'écart au
+témoin `double` de 3.2e-05 à **1.1e-08 de médiane** sur l'uniforme à 10⁶ (un dixième de l'epsilon
+du `float`) et de 2.0e-03 à **7.7e-07** sur le Laguerre à poids forts, qui était déclaré hors-jeu.
+Avec la **hessienne rendue symétrique au bit près** — un bug d'une ligne qui faisait passer le CG
+de 71 à 20 000 itérations en `fp32` — **la boucle de Newton entière tourne en `float`** : le même
+chemin pas pour pas qu'en `double`, 2.87 s contre 4.29 à 10⁶, et un résidu final de 6.4e-08.
+[§ échelle](doc/04-echelle.md), [§ ce qui reste](doc/06-ce-qui-reste.md).

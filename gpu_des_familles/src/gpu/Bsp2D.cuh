@@ -352,6 +352,10 @@ struct SortieBsp {
     int         *ids = nullptr;                          ///< rang -> identifiant
     TK          *c[ 2 ] = {};                            ///< positions permutees
     TK          *w = nullptr;                            ///< poids permutes ( `nullptr` : Voronoi )
+    /// LES MEMES EN `double` -- le plan bissecteur porte `( w0 - wj ) / 2` et veut la DIFFERENCE,
+    /// pas la valeur arrondie ( `Arbre.cuh` ). C'est le meme tableau que `at.tw`, qui existait
+    /// deja pour les majorants : on ne le rend plus a la fin.
+    double      *w64 = nullptr;
     int         *u[ 2 ] = {};                            ///< virgule fixe 32 bits
     long long   *u64[ 2 ] = {};                          ///< virgule fixe 64 bits
     int          n = 0, nn = 0;
@@ -484,12 +488,13 @@ void construit2_dev( const double *px_h, const double *py_h, const double *w_h, 
     cudaFree( clef ); cudaFree( clef2 );
     cudaFree( taille ); cudaFree( pre );
     cudaFree( compteur ); cudaFree( tmp );
+    s.w64 = tw;                                          // les poids en `double`, pour le plan
     if ( garde ) {                                       // le regime de Newton : on garde tout
         s.at.cru = cru; s.at.place = place; s.at.parent = parent; s.at.feuille = feuille;
         s.at.maj = maj; s.at.tx = tx; s.at.ty = ty; s.at.tw = tw; s.at.dpw = dpw;
         s.at.n = n; s.at.nn = total;
     } else {
-        cudaFree( dpw ); cudaFree( tx ); cudaFree( ty ); cudaFree( tw );
+        cudaFree( dpw ); cudaFree( tx ); cudaFree( ty );  // `tw` reste : c'est `s.w64`
         cudaFree( feuille ); cudaFree( cru ); cudaFree( maj );
         cudaFree( place ); cudaFree( parent );
     }
@@ -531,7 +536,8 @@ double rafraichit_poids_dev( SortieBsp<TK> &s, const double *w_h ) {
 template<class TK>
 void libere_atelier( SortieBsp<TK> &s ) {
     cudaFree( s.at.cru ); cudaFree( s.at.place ); cudaFree( s.at.parent ); cudaFree( s.at.feuille );
-    cudaFree( s.at.maj ); cudaFree( s.at.tx ); cudaFree( s.at.ty ); cudaFree( s.at.tw ); cudaFree( s.at.dpw );
+    cudaFree( s.at.maj ); cudaFree( s.at.tx ); cudaFree( s.at.ty ); cudaFree( s.at.dpw );
+    s.at.tw = nullptr;                                   // c'est `s.w64` : au diagramme de le rendre
     s.at = AtelierBsp{};
 }
 
