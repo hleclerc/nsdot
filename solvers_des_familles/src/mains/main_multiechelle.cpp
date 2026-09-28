@@ -43,6 +43,7 @@ struct Opts {
     int           passes = 6;             ///< rattrape / releve : passes au plus
     TF            marge  = 0.1;           ///< rattrape : l'air donne a la cellule relevee, en h_i^2
     bool          reference = false;
+    std::string   ecrire;                 ///< prefixe : ecrire chaque niveau resolu ( n, puis `x.. w nu` par germe )
 };
 
 template<int D>
@@ -199,6 +200,18 @@ int lance( const Args &a, const Opts &o, const Nuage<PD::dim> &nu0 ) {
         L.t_newton = now() - t0;
         L.it = nw.st.nb_iter; L.diag = nw.st.nb_diag; L.fin = nw.st.fin;
         L.w = nw.w;
+        if ( ! o.ecrire.empty() ) {                      // le niveau resolu, pour l'etude hors ligne ( scripts/cstar_2d.py )
+            const std::string chemin = o.ecrire + "_niveau" + std::to_string( l ) + ".txt";
+            if ( std::FILE *f = std::fopen( chemin.c_str(), "w" ) ) {
+                std::fprintf( f, "%d %d\n", int( L.n ), D );
+                for ( SI i = 0; i < L.n; ++i ) {
+                    for ( int d = 0; d < D; ++d ) std::fprintf( f, "%.17g ", double( L.P[ d ][ i ] ) );
+                    std::fprintf( f, "%.17g %.17g\n", double( L.w[ i ] ), double( L.nu[ i ] ) );
+                }
+                std::fclose( f );
+                std::printf( "    -> %s\n", chemin.c_str() );
+            }
+        }
         std::printf( "  niveau %d  n=%-7d %s : %d iterations, %d diagrammes ( reste %.2e ) -- prolongation %.3f | essais %d ( %.3f s ) | newton %.3f s\n",
                      l, int( L.n ), nw.st.fin, L.it, L.diag, double( nw.st.reste ), L.t_prol, L.essais, L.t_test, L.t_newton );
         if ( l > 0 ) {                                   // les graphes dont la prolongation aura besoin
@@ -251,6 +264,7 @@ int main( int argc, char **argv ) {
         else if ( s == "--passes" )     o.passes = std::atoi( val() );
         else if ( s == "--marge" )      o.marge = std::atof( val() );
         else if ( s == "--reference" )  o.reference = true;
+        else if ( s == "--ecrire-niveaux" ) o.ecrire = val();
         else if ( s == "--lisse-solution" ) o.lisse_solution = std::atoi( val() );
         else if ( s == "--mls-anneaux" ) o.mls_anneaux = std::atoi( val() );
         else if ( s == "--mls-largeur" ) o.mls_largeur = std::atof( val() );
@@ -278,6 +292,7 @@ int main( int argc, char **argv ) {
                 "  --tol-grossier  tolerance de Newton aux niveaux grossiers         (1e-3)\n"
                 "  --essais K      divisions de t au plus                            (12)\n"
                 "  --reference     Newton depuis w = 0 sur le niveau fin, a options egales\n"
+                "  --ecrire-niveaux PREFIX   ecrire chaque niveau resolu : PREFIX_niveauL.txt ( n, puis x.. w nu )\n"
                 "  --pas P         essais | essai-limites                            (essai-limites)\n"
                 "  --newton-tol T  --newton-max K  --t-min T  --quiet\n" );
             return s == "--help" || s == "-h" ? 0 : 1;

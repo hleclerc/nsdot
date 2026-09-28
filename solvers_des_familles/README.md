@@ -684,6 +684,213 @@ milliers, leurs naissances interfèrent, et le relèvement cascade. Le relèveme
 re-mesurer que le voisinage de ce qu'il relève, et les niveaux grossiers s'arrêter plus tôt
 (`--n-min`) : à faire si la piste est retenue.
 
+## 8.6 Prolonger la GÉOMÉTRIE et non le potentiel : une garantie, et pourquoi elle ne sert pas
+
+Les § 8.1–8.5 disent que le lissage ne peut pas rendre une prolongation admissible (`w'' < 2` est une
+borne à sens unique) et que le seul remède mesuré est l'enveloppe. Restait une famille d'idées
+entièrement différente, jamais essayée : ne pas prolonger `w`, mais **prolonger l'objet géométrique**
+— les frontières, ou la triangulation. Elle est explorée ici jusqu'au bout. Réponse courte : elle
+donne une **garantie non triviale** d'admissibilité, calculable sur le niveau grossier seul, et cette
+garantie est **inutilisable en 2D** pour une raison de valeur extrême. Les trois scripts qui portent
+la mesure : `scripts/frontieres_1d.py`, `scripts/triangulation_1d.py`, `scripts/cstar_2d.py`
+(ce dernier lit les niveaux écrits par `multiechelle --ecrire-niveaux PREFIX`).
+
+### 8.6.1 En 1D, se donner les frontières : spectaculaire, et c'est le pas de Newton déguisé
+
+En 1D on peut se donner les frontières `b` entre cellules fines et en **déduire** les poids, exactement,
+
+    w_{i+1} = w_i + ( p_i + p_{i+1} − 2 b_i )( p_{i+1} − p_i )
+
+et l'admissibilité est *gratuite* dès que `b` est croissante. Deux façons de se donner `b` depuis le
+niveau grossier : `sousdiv` — garder les frontières grossières et couper chaque cellule grossière en
+parts égales entre ses enfants ; `barycentres` — un linspace entre les barycentres des cellules
+grossières, les bords du domaine en ancres. Mesuré (`n = 400`, `σ = 0.005`, `R = 8` ; résidu ℓ²
+`|a−ν|/|ν|`, Voronoï à 1.42) :
+
+| prolongation | vides | résidu max | ℓ² |
+|---|---|---|---|
+| harmonique | 79 | 6.88 | 1.99 |
+| spline | 7 | 2.89 | 0.70 |
+| spline + enveloppe (§ 8.4, le meilleur connu) | 0 | 2.89 | 0.70 |
+| **frontières, barycentres** | **0** | **0.14** | **0.017** |
+| **frontières, sous-division** | **0** | **0.00** | **0.000** |
+
+Quatre-vingts fois mieux que Voronoï, admissible par construction. **Et c'est un accident de
+dimension**, vérifié à 9e-11. Projeter une tessellation prescrite sur les `w` réalisables, au sens des
+moindres carrés sur les arêtes,
+
+    min_w Σ_ij ω_ij ( w_i − w_j − c_ij )²,   ω_ij = |f_ij| / 2 d_ij,   c_ij = 2 d_ij s_ij
+
+(`s_ij` le déplacement voulu de la facette entre `i` et `j`), donne les équations normales
+`L w = div c` avec
+
+    ( div c )_i = Σ_j ω_ij c_ij = Σ_j |f_ij| s_ij = LA VARIATION D'AIRE VOULUE
+
+— c'est-à-dire **un pas de Newton, et rien d'autre** : la projection ne retient de la tessellation que
+sa *divergence*. En 1D il y a `n−1` arêtes pour `n−1` inconnues de jauge, donc résidu des moindres
+carrés **nul** (la tessellation est réalisée exactement) et le pas de Newton est exact (§ 8.3) : **les
+deux moitiés du miracle 1D sont le même fait.** En 2D il y a ~3n arêtes pour n inconnues, en 3D ~15n :
+les 2n (ou 14n) autres contraintes sont jetées, et ce qui survit est la contrainte de *masse*, qu'on
+connaissait déjà. Prescrire la tessellation n'apporte **aucune information nouvelle en nD** — c'est
+l'obstruction de réalisabilité des figures réciproques, lue en comptage de degrés de liberté.
+
+Corollaire qui explique tout le § 8 d'un coup : **les données du problème (`ν`) sont déjà au niveau
+fin.** Le niveau grossier ne peut apporter que la partie *lisse* du potentiel, et l'admissibilité vit
+dans la composante à l'échelle de la cellule, sur laquelle il n'a aucune information.
+
+### 8.6.2 Une hypothèse fausse : le pas diagonal ne reconstruit pas la compression
+
+L'identité 1D `m_i = a_i/|Vor_i|` suggère que la composante à l'échelle de la cellule vaut
+`( S_i − 1 ) h̄²` avec `S_i = ν_i/|Vor_i|` — une quantité **lisible au niveau fin sans rien résoudre**.
+L'hypothèse était qu'un pas de Jacobi sur le **résidu** (`w_i += ω ( ν_i − a_i ) / ( da_i/dw_i )`, à ne
+pas confondre avec `lisse_jacobi`, qui est un pas sur le système *homogène* et enlève la haute
+fréquence au lieu de l'injecter) la reconstruit. **Elle est fausse** : la marge obtenue est
+*anti*-corrélée à `S` (−0.77), parce que le pas déplace aussi les voisins, donc la corde à laquelle la
+marge se mesure.
+
+Ce que le pas diagonal fait vraiment, mesuré, et son défaut : il baisse le résidu ℓ² et le résidu max,
+mais **il crée des vides sur les prolongations**. Après enveloppe, à `ω = 1/2`, un balayage : la spline
+passe de 0 vide / 2.89 à **7 vides** / 2.27 (ℓ² 0.698 → 0.529) ; l'harmonique de 0 à 97. Seule la
+*solution* fine lissée d'un balayage puis projetée reste admissible : 0 vide, `max|a−ν|/ν` **2.23 →
+1.05**, ℓ² 0.539 → 0.260. Comme le § 8.5 montre que c'est le *pire* résidu qui étrangle
+l'amortissement après un relèvement, la piste garde un intérêt — mais elle demande une seconde passe
+de relèvement derrière, donc un `relève → diag → relève`, non mesuré.
+
+### 8.6.3 La cellule grossière ne peut pas être l'unité : ce que le relevé dit du couplage
+
+L'idée naturelle est de **résoudre exactement dans chaque cellule grossière** : le sous-problème est
+équilibré en masse par construction, donc admissible à l'intérieur. Le relevé dit exactement ce que ça
+coûte. Ajouter une constante aux poids d'un agrégat **translate verticalement le nuage relevé de cet
+agrégat**, et rien d'autre. Donc :
+
+* la propriété locale « aucune cellule vide dans l'intersection avec sa cellule grossière » est
+  **invariante de jauge** : c'est ce qui rend l'idée bien posée ;
+* la condition globale (tout point relevé sommet de l'enveloppe inférieure) ne l'est pas, et elle
+  s'écrit comme un jeu d'inégalités **linéaires** en les constantes : le couplage entre agrégats est
+  exactement **un scalaire par agrégat**, soit une faisabilité linéaire à `n/R` inconnues, non `n`.
+
+Mais une translation verticale ne corrige pas un nuage dont la *forme* est globalement non convexe, et
+la résolution locale fixe la forme. Surtout, **l'emboîtement exact `Cell_i ⊂ K_q` est géométriquement
+impossible en nD** : une facette entre `i ∈ q` et `j ∈ r` a pour normale `p_i − p_j`, jamais parallèle à
+`P_q − P_r`, donc **la frontière grossière ne peut pas être une face du diagramme fin**. Les cellules
+fines du bord la traversent quelles que soient les `w`. En 1D toutes les normales sont parallèles —
+encore la même dégénérescence.
+
+### 8.6.4 La triangulation régulière est le bon objet, et elle donne une garantie
+
+La contrainte qui tue une cellule est une inégalité à `D+1` points : `u_i = |p_i|² − w_i` doit être sous
+l'interpolé affine des autres sur un simplexe contenant `p_i`. **Le bon objet local du niveau grossier
+est donc sa triangulation régulière** (le dual du diagramme de puissance grossier), pas ses cellules —
+et les deux sont duales, donc on ne peut pas avoir les deux : la *cellule* est l'unité de la **masse**
+(équilibrée par construction), le *simplexe* est l'unité de l'**admissibilité**. Résoudre « dans les
+triangles » n'a pas de sens comme sous-problème d'OT : le nombre de germes fins d'un triangle et son
+aire n'ont aucune raison de correspondre. Le simplexe est une unité de **certificat**.
+
+Avec `Uh` l'enveloppe convexe inférieure du relevé grossier (affine par simplexe), `Q` l'interpolé
+affine de `|P|²` sur la **même** triangulation et `g = Q − |p|² ≥ 0` l'écart au paraboloïde :
+
+    u = Uh − c g        soit        w = ( 1 − c )( |p|² − Uh ) + c · w̃
+
+où `w̃` est l'interpolation barycentrique des poids grossiers (`c = 1`). Deux faits, démontrés :
+
+* **dans** chaque simplexe, `u = affine + c |p|²` est *strictement convexe* dès que `c > 0` : tous les
+  germes fins d'un même simplexe grossier sont automatiquement des sommets, **sans rien résoudre**.
+  Toute cellule vide vient donc d'une *facette* ;
+* à une facette, le pli de `u` vaut `pli( Uh ) − c · pli( Q )`, avec `pli( Uh ) ≥ 0` puisque `Uh` est
+  convexe. D'où **zéro cellule vide, garanti**, pour tout
+
+      0 < c ≤ c* = min sur les facettes où pli( Q ) > 0 de  pli( Uh ) / pli( Q )
+
+  une borne **calculable sur le niveau grossier seul**, sans relèvement, sans bissection, sans cascade.
+
+En 1D (`n = 400`, `σ = 0.005`, `R = 8`) la garantie tient, la borne est serrée, et la marge minimale
+vaut exactement `c` :
+
+| `c` | vides | marge min | ℓ² |
+|---|---|---|---|
+| 0.1 c\* | 0 | +0.03 | 2.57 |
+| **c\* = 0.2814** | **0** | **+0.28** | 2.07 |
+| 1.05 c\* | 0 | +0.24 | 2.05 |
+| 1.5 c\* | 3 | −0.26 | 1.94 |
+| 3 c\* | 68 | −73 | 1.97 |
+| 1 (barycentrique nu) | 81 | −106 | 1.99 |
+
+Et une identité, sur quatre cas (`σ` 0.002 à 0.1, `R` 4 à 16) : **`c*` = la compression grossière
+minimale** (0.2814 contre 0.281 ; 0.3389 contre 0.339 ; 0.2008 contre 0.201). La localisation des
+morts confirme le théorème : **la marge vaut exactement 1 partout sauf aux germes grossiers** (min −106
+là, 53 des 81 vides à un germe près d'un représentant). C'est aussi le mécanisme exact de l'échec de
+`--prol harmonique` (§ 8.1) : interpoler les *poids* grossiers impose un pli à l'échelle `H` là où les
+germes sont espacés de `h`, donc une marge `1 − O( H/h ) = 1 − O( R^{1/D} )`.
+
+**Mauvaise nouvelle dès la 1D :** à `c = c*` le départ garanti a un résidu **pire que Voronoï** (2.07
+contre 1.42) dans les quatre cas. Acheter une marge `c` tire `w` d'une fraction `1 − c` vers l'objet
+dégénéré `|p|² − Uh`.
+
+### 8.6.5 Le test décisif en 2D : `c*` vaut 1e-3 à 4e-5, et décroît en 1/n
+
+`multiechelle --ecrire-niveaux PREFIX` écrit chaque niveau résolu (`n`, `D`, puis `x.. w ν`) ;
+`scripts/cstar_2d.py` en calcule `c*` par l'enveloppe inférieure des points relevés. Sur
+`lines5_n100000`, `R = 8`. Le banc déclare admissible « toute aire `≥ 0.5 × min( ν_i, aire min de
+Voronoï )` » : une marge `c*` ne franchit ce plancher que si `c* ≳ 0.5`.
+
+| σ | n du niveau | `c*` | compression grossière min | médiane de `c_F` | facettes contraintes | sous le plancher |
+|---|---|---|---|---|---|---|
+| 0.1 | 256 | 9.89e-4 | 1.72e-1 | 1.07 | 92 % | ×506 |
+| 0.1 | 2048 | 2.45e-4 | 4.21e-2 | 1.05 | 91 % | ×2 042 |
+| 0.1 | 16384 | **3.53e-5** | 1.01e-2 | 1.07 | 91 % | ×14 160 |
+| 0.05 | 2048 | 6.59e-4 | 1.90e-2 | 1.04 | 88 % | ×759 |
+| 0.05 | 16384 | 2.10e-4 | 3.20e-3 | 1.10 | 88 % | ×2 386 |
+| 0.02 | 2048 | 2.02e-3 | 1.75e-2 | 1.04 | 83 % | ×248 |
+| 0.02 | 16384 | 9.76e-5 | 2.38e-3 | 1.11 | 82 % | ×5 123 |
+| 0.005 | 2048 | 6.37e-4 | 2.22e-2 | 0.97 | 79 % | ×785 |
+| 0.005 | 16384 | **3.88e-5** | 2.80e-3 | 1.08 | 77 % | ×12 902 |
+
+Trois faits, et la piste est fermée :
+
+1. **`c*` ne suit pas la difficulté du cas.** À `n = 16384`, `σ = 0.1` donne 3.53e-5 et `σ = 0.005`
+   donne 3.88e-5 — le même nombre — alors que la compression grossière minimale passe de 1.0e-2 à
+   2.8e-3. **L'identité 1D `c* = min compression grossière` est fausse en 2D** : elle valait pour une
+   raison de dimension, comme le reste de la 1D. La prédiction qui avait motivé le test (« `c*`
+   s'effondrera là où le cas est dur ») était donc mal posée : `c*` est déjà effondré partout, le cas
+   le plus facile compris.
+2. **`c*` décroît en ~1/n** : 9.89e-4 (256), 2.45e-4 (2048), 3.53e-5 (16384). **Raffiner dégrade la
+   garantie** — exactement le contraire de ce qu'un multi-échelle demande. Disqualifiant en soi.
+3. **Et c'est un effet de valeur extrême, pas de géométrie du transport.** La médiane de `c_F` vaut
+   **1.05** : la facette *typique* autoriserait `c > 1`. `c*` est le minimum sur ~3n facettes d'une loi
+   qui a de la masse en 0, et ce sont les facettes **presque dégénérées** de la triangulation régulière
+   grossière — quatre germes grossiers presque co-sphériques au sens du relevé, donc `pli( Uh ) → 0` —
+   qui l'imposent. Elles sont partout et leur nombre croît avec `n`. Aucun réglage ne rattrape un `min`
+   sur 3n tirages.
+
+Ça enterre au passage le raffinement qui semblait évident (un `c_T` par simplexe, résolu en LP : la
+condition est par facette et linéaire en les `c`). Il donnerait bien `c ≈ 1` loin des facettes
+dégénérées, mais à une facette quasi plate avec `pli( Q ) > 0` la contrainte force `c → 0` de toute
+façon, et les germes voisins retomberaient sur le relèvement : on aurait reconstruit `mls +
+relèvement`, en plus cher.
+
+### 8.6.6 Ce qui survit
+
+Un seul résidu, mais il est réel : **le certificat se calcule sur le niveau grossier seul et dit *où*
+le niveau fin sera malade** — au voisinage des facettes à petit `c_F` — avant de construire le moindre
+diagramme fin, là où `releve_minimal` les découvre aujourd'hui en construisant le diagramme fin et en
+le testant (et le § 15.9 documente un bug où « la réparation cherchait les malades là où ils avaient
+disparu »). À mesurer : le recouvrement entre les cellules vides du niveau fin après `--prol mls` et le
+voisinage des facettes à petit `c_F`.
+
+Les deux autres pistes vivantes, par ordre de rendement : le balayage diagonal amorti après
+`--corr releve` (§ 8.6.2 ; le `max|a−ν|/ν` de départ est à 1.6e3 à `σ = 0.005`), avec la seconde passe
+de relèvement qu'il impose ; et le chaînage des cellules nées du relèvement sur la réparation par amas
+du § 15.11–15.18 (départ harmonique, plafond de taille, gradient local), au lieu de passer au Newton
+global un départ à `max|a−ν|/ν = 80`. Le § 8.5 fait la passation directement.
+
+**Bibliographie (de mémoire, à vérifier avant de citer).** Diagramme de puissance ↔ enveloppe convexe
+inférieure du relevé, et triangulation régulière comme dual : Aurenhammer (1987), Aurenhammer, Hoffmann
+& Aronov (1998) ; triangulations régulières et leurs dégénérescences : Ziegler, *Lectures on Polytopes*
+(1995, ch. 5), De Loera, Rambau & Santos, *Triangulations* (2010) ; réalisabilité d'une tessellation
+comme diagramme de puissance (figures réciproques) : Ash & Bolker (1986), Aurenhammer (1987) ;
+multi-échelle en transport semi-discret : Mérigot (2011), Lévy (2015), Kitagawa, Mérigot & Thibert
+(2019).
+
 ---
 
 # 9. LES DENSITÉS HÉTÉROGÈNES : LA CONTINUATION EN LARGEUR (`densite`)
@@ -3960,3 +4167,136 @@ C'est le résultat utile pour la carte : **le gros tableau peut être en `float`
 passante, moitié de mémoire), les quelques scalaires de la marche non. `--acc float` désigne
 désormais le stockage ; `ImageT<float,float>` garde l'ancien comportement, et `image --check`
 imprime les deux pour qu'on ne les reconfonde pas.
+
+---
+
+# 20. DÉFORMER LA CIBLE POUR ALLONGER LE PAS (`newton --cible`)
+
+L'idée, posée en une ligne : on sait lire pour presque rien quand chaque cellule va s'éteindre le
+long de `d` (§ 15.14) ; **est-ce qu'on peut donner plus de masse cible aux plus exposées, pour que
+le coefficient de relaxation admissible monte ?** On ne touche alors qu'au **second membre** — pas
+de nouveau diagramme, pas de nouvel assemblage, une descente de plus sur la factorisation déjà
+faite — et la cible déformée est **transitoire** : l'itération suivante repart de `ν`.
+
+C'est un objet différent du § 13, où pondérer les équations ne changeait rien du tout (le système
+est carré, l'identité mange les poids). Changer le second membre change vraiment `d`. Tout est dans
+`src/solver/Cible.h`, branché dans `Newton.h` derrière `--cible`.
+
+## 20.1 Ce que le second membre peut atteindre, et ce qu'il ne peut pas
+
+Deux faits d'algèbre décident d'avance de la forme que l'idée doit prendre.
+
+**À l'ordre un, la direction de Newton ne tue personne.** `a_i( w + t d ) = a_i + t ( L d )_i =
+( 1 − t ) a_i + t ν_i` : chaque masse interpole linéairement de la sienne vers sa cible. Une
+extinction est donc **entièrement un effet de courbure**, et raisonner sur `ν` au premier ordre ne
+la voit même pas.
+
+**Le second membre fixe la divergence, jamais le gradient.** Ce qui tue la cellule `i` est le flux
+sortant **brut** `S_i = Σ_j max( 0, c_ij ( d_j − d_i ) )`, pendant que `( L d )_i = ν_i − a_i` n'est
+que le flux **net**. Une cellule peut encaisser beaucoup d'un côté et en perdre autant de l'autre :
+son net est petit, son brut la dévore. Nourrir `i` ne borne que le net.
+
+Deux conséquences, et les deux se mesurent :
+
+* le **contrôle obligatoire** : `ν~ = a + s ( ν − a )` donne `d~ = s d` **exactement**, donc un pas
+  admissible `U*/s`. Toute déformation **uniforme** du second membre est un pas plus court déguisé.
+  Seule une déformation non uniforme peut payer ;
+* le **plafond** : sur un patch où l'on pose `ν_i := a_i` (donc `b_i = 0`), `d` devient
+  **harmonique**, et l'harmonique minimise l'énergie de Dirichlet `Σ c_ij ( d_i − d_j )²` à bord
+  donné. C'est le plus petit gradient qu'un second membre puisse obtenir dans le patch : le plafond
+  de toute la famille. `--cible plafond` le calcule sans rien modifier, une résolution par épaisseur.
+
+## 20.2 Le plafond, mesuré : il est sous 1 là où ça compte
+
+Lignes `n = 10⁵`, `s = 0.005`, Cholesky, `--pas essai-limites`. `U*` est le pas lu sur les flux avant
+déformation ; la colonne donne `U*` après gel du patch, en multiple de `U*`.
+
+| itération | `U*` | 1 anneau | 2 anneaux | 4 anneaux | 8 anneaux | qui borne après |
+|---|---|---|---|---|---|---|
+| 0 | 3.08e−05 | ×0.92 | ×0.98 | ×0.78 | ×1.19 | la **même** cellule |
+| 1 | 1.24e−04 | ×0.79 | ×0.69 | ×0.68 | ×0.69 | la **même** cellule |
+| 2 | 2.69e−04 | ×0.96 | ×0.95 | ×0.93 | ×0.98 | la **même** cellule |
+| 3 | 2.28e−04 | ×0.99 | ×0.96 | ×0.99 | ×0.83 | la **même** cellule |
+| 5 | 1.56e−03 | ×0.87 | ×0.86 | ×0.84 | ×1.87 | 31862, dedans |
+| 9 | 4.64e−03 | ×0.87 | ×0.86 | ×0.85 | ×0.81 | la **même** cellule |
+| 10 | 8.50e−03 | ×1.67 | ×2.78 | ×2.15 | ×2.82 | 34411, dehors |
+
+**Le plafond est sous 1 dans toutes les itérations difficiles**, et il ne passe au-dessus qu'à la
+fin, quand le pas vaut déjà 1/2. Geler la demande autour du foyer **raccourcit** le pas, et la
+raison est nette : sur ce nuage la cellule qui borne est minuscule devant sa cible (`b_i = ν_i − a_i`
+très positif), et **cette demande est précisément l'ordre de sauvetage qui la maintient en vie**. La
+taire, c'est la lâcher. Le gel est donc le mauvais signe ; l'intuition de départ — *nourrir* — a le
+bon.
+
+## 20.3 Nourrir : ça marche, et ça ne sert à rien
+
+La dose a une échelle naturelle, et elle s'annule d'elle-même sur les cellules qui tiennent :
+
+```
+delta_i  =  kappa * max( 0, S_i − ( a_i − eps ) / F )
+```
+
+`kappa = 1` est la dose qui suffirait **si** tout le supplément passait par les facettes dévorantes.
+La masse est reprise au prorata de `ν` sur le reste (`Σ b~ = 0` est obligatoire : sans ça la ligne
+rayée par la jauge porte toute l'incohérence, § 9.6). Balayage de `κ`, itération 0 :
+
+| `κ` | masse donnée | `‖δb‖/‖b‖` | `U*` | qui borne |
+|---|---|---|---|---|
+| 0.25 | 0.01 % | 5.1e−04 | ×1.13 | la visée |
+| **1** | **0.03 %** | **2.0e−03** | **×1.80** | la visée |
+| 4 | 0.12 % | 8.2e−03 | ×1.64 | **une autre** |
+| 16 | 0.49 % | 3.3e−02 | ×0.53 | une autre |
+| 64 | 1.94 % | 1.3e−01 | ×0.11 | une autre |
+
+**Le mécanisme fonctionne exactement comme annoncé** : pour **trois centièmes de pour cent** de la
+masse déplacée et **une résolution linéaire**, le pas lu sur les flux **double**. Avec la dose
+auto-réglée, `--cible-f 2` atteint sa consigne au premier essai : `U* 3.076e−05 → 6.268e−05`
+(×2.04, `vise 6.151e−05`, 7 cellules nourries, 0.04 % de masse).
+
+Et pourtant, sur un solve complet (mêmes réglages, jusqu'à stagnation) :
+
+| | itérations | **diagrammes** | résolutions de plus | total |
+|---|---|---|---|---|
+| `essai-limites` (témoin) | 19 | **64** | — | 8.66 s |
+| `--cible gel --cible-f 2` | 23 | 77 | 90 (1.11 s) | 11.04 s |
+| `--cible gel --cible-f 4` | 21 | 68 | 85 (1.03 s) | 9.80 s |
+| `--cible gel --cible-f 8` | 20 | 66 | 75 (0.91 s) | 9.58 s |
+
+**Rien, et même un peu moins que rien.** Deux causes, toutes deux lisibles dans la trace.
+
+**`U*` n'est pas ce qui borne.** À l'itération 0 le témoin accepte `α* = 3.81e−03`, soit **124 fois**
+`U* = 3.08e−05`. La linéarisation en `t = 0` est conservative d'un facteur cent (§ 15.15 le disait
+déjà : « ce n'est pas `U` qui est faux, c'est le critère »). Doubler `U*` ne déplace donc pas le pas
+accepté — pire, la direction déformée le fait **tomber** de `3.81e−03` à `1.70e−03`.
+
+**Passé les premières itérations, aucune dose n'améliore quoi que ce soit.** Sur les 18 itérations,
+**douze** affichent `RIEN NE FAIT MIEUX` : sauver les exposées en nomme d'autres, exactement le
+constat de population du § 13.4 et de la courbe `N( t )` du banc GPU.
+
+## 20.4 Et le critère « population » ne sauve pas l'idée
+
+Puisque ce n'est pas une cellule isolée qui borne, on a remplacé le critère « maximiser `min_i U_i` »
+par « minimiser le **nombre** de cellules qui ne tiennent pas jusqu'à l'horizon `β` du pas »
+(`--cible-critere pop`). Le résultat est un **chiffre qui ferme la porte** : à `β = 0.25`, `U`
+déclare **99 580 cellules malades sur 100 000**, quand le diagramme à ce pas n'en trouve que **5 991**
+sous `ε`. Aucune dose ne peut rien pour 99 % du diagramme, le balayage rend `κ = 0` partout, et le
+solve est identique au témoin à 0.85 s près.
+
+C'est un fait utile en soi et il vaut au-delà d'ici : **`U` sert à choisir un pas — son minimum est
+un minorant utilisable — mais ne sert pas à classer les cellules une par une.** Sa conservativité,
+que le § 15.14 avait trouvée « accidentellement bonne », est de deux ordres de grandeur.
+
+## 20.5 Ce qui reste ouvert
+
+L'étude ferme la porte et dit pourquoi : le second membre ne contrôle que la divergence, l'extinction
+est un fait de gradient, et le plafond harmonique — la meilleure chose qu'un second membre puisse
+faire — est **sous 1** dans le régime difficile. Il reste deux ouvertures, et elles ne sont pas
+mesurées :
+
+* **doser sur la vraie limite plutôt que sur `U`.** `limites_masse` donne la limite exacte par
+  bissection ; un balayage sur `κ` la paierait en calculs de cellule par essai, ce qui tue la
+  promesse « une descente de plus, rien d'autre ». Il faudrait un doseur qui ne demande la vraie
+  limite qu'**une fois**, et en déduise `κ` par le modèle plutôt que par balayage ;
+* **le résidu pondéré** (§ 13.5, toujours pas mesuré) : `Σ C_i r_i²` ne change pas `d` mais change
+  quels pas l'amortissement **accepte**. C'est le seul endroit de cette famille où des poids ne se
+  simplifient pas — et c'est la seule case encore vide.
