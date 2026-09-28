@@ -61,6 +61,7 @@ struct DiagrammeGpu<D,TK>::Impl {
     int         *fac_j = nullptr;                    ///< les facettes, allouees une fois pour toutes
     TK          *fac_l = nullptr;
     int         *hrow = nullptr, *hcol = nullptr;    ///< la hessienne, idem
+    int         *hat = nullptr;                      ///< le curseur de remplissage de chaque ligne
     double      *hval = nullptr, *hdia = nullptr;
     double      *pid[ 2 ] = {};                      ///< positions dans l'ordre DE L'APPELANT
     void        *hscan = nullptr;                    ///< le tampon du scan CUB
@@ -224,7 +225,7 @@ DiagrammeGpu<D,TK>::~DiagrammeGpu() {
     cudaFree( m.img ); cudaFree( m.cond ); cudaFree( m.ncond ); cudaFree( m.res0 ); cudaFree( m.hist );
     cudaFree( m.dep_x ); cudaFree( m.dep_y ); cudaFree( m.dep_nb ); cudaFree( m.dep_id );
     cudaFree( m.cgv );
-    cudaFree( m.hrow ); cudaFree( m.hcol ); cudaFree( m.hval ); cudaFree( m.hdia ); cudaFree( m.hscan );
+    cudaFree( m.hrow ); cudaFree( m.hat ); cudaFree( m.hcol ); cudaFree( m.hval ); cudaFree( m.hdia ); cudaFree( m.hscan );
     for ( int d = 0; d < 2; ++d ) cudaFree( m.pid[ d ] );
     if ( m.sortie ) { libere_atelier<TK>( *( SortieBsp<TK> * ) m.sortie ); delete ( SortieBsp<TK> * ) m.sortie; }
     delete impl;
@@ -629,6 +630,7 @@ double DiagrammeGpu<D,TK>::assemble( Hessienne &H ) {
         const int BL = 256, gr = ( m.n + BL - 1 ) / BL;
         if ( ! m.hrow ) {
             CUDA_OK( cudaMalloc( &m.hrow, size_t( m.n + 1 ) * sizeof( int ) ) );
+            CUDA_OK( cudaMalloc( &m.hat, size_t( m.n ) * sizeof( int ) ) );
             CUDA_OK( cudaMalloc( &m.hdia, size_t( m.n ) * sizeof( double ) ) );
             for ( int d = 0; d < 2; ++d ) CUDA_OK( cudaMalloc( &m.pid[ d ], size_t( m.n ) * sizeof( double ) ) );
             SortieBsp<TK> *s = ( SortieBsp<TK> * ) m.sortie;
@@ -640,8 +642,10 @@ double DiagrammeGpu<D,TK>::assemble( Hessienne &H ) {
         cudaEvent_t e0, e1;
         CUDA_OK( cudaEventCreate( &e0 ) ); CUDA_OK( cudaEventCreate( &e1 ) );
         CUDA_OK( cudaEventRecord( e0 ) );
+        // le compte se fait par atomiques ( la ligne `j` recoit l'arete que la ligne `i` produit ),
+        // donc on part de zero -- `hrow[ n ]` compris
+        CUDA_OK( cudaMemsetAsync( m.hrow, 0, size_t( m.n + 1 ) * sizeof( int ) ) );
         k_hess_compte<<<gr, BL>>>( m.fac_j, m.n, NF, m.hrow );
-        CUDA_OK( cudaMemsetAsync( m.hrow + m.n, 0, sizeof( int ) ) );
         size_t o = m.hscan_o;
         CUDA_OK( cub::DeviceScan::ExclusiveSum( m.hscan, o, m.hrow, m.hrow, m.n + 1 ) );
         int nnz = 0;
@@ -652,8 +656,11 @@ double DiagrammeGpu<D,TK>::assemble( Hessienne &H ) {
             CUDA_OK( cudaMalloc( &m.hcol, size_t( m.hcap ) * sizeof( int ) ) );
             CUDA_OK( cudaMalloc( &m.hval, size_t( m.hcap ) * sizeof( double ) ) );
         }
-        k_hess_remplit<TK><<<gr, BL>>>( m.fac_j, m.fac_l, m.pid[ 0 ], m.pid[ 1 ], m.hrow, m.n, NF,
-                                        m.hcol, m.hval, m.hdia );
+        // le curseur de chaque ligne : une copie de `row`, avancee par atomique
+        CUDA_OK( cudaMemcpyAsync( m.hat, m.hrow, size_t( m.n ) * sizeof( int ), cudaMemcpyDeviceToDevice ) );
+        k_hess_remplit<TK><<<gr, BL>>>( m.fac_j, m.fac_l, m.pid[ 0 ], m.pid[ 1 ], m.hat, m.n, NF,
+                                        m.hcol, m.hval );
+        k_hess_dia<<<gr, BL>>>( m.hrow, m.hval, m.hdia, m.n );
         CUDA_OK( cudaEventRecord( e1 ) );
         CUDA_OK( cudaEventSynchronize( e1 ) );
         float t = 0;

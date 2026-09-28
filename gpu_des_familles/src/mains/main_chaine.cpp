@@ -286,7 +286,7 @@ int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu, bool arbre_gp
             if ( cel.nb <= 0 ) return TF( 0 );
             double px[ NMX ], py[ NMX ];
             const int nb = std::min( int( cel.nb ), NMX );
-            for ( int q = 0; q < nb; ++q ) { px[ q ] = double( cel.vx[ q ] ); py[ q ] = double( cel.vy[ q ] ); }
+            for ( int q = 0; q < nb; ++q ) { px[ q ] = double( cel.x( q ) ); py[ q ] = double( cel.y( q ) ); }
             for ( int i = 0, j = nb - 1; i < nb; j = i++ )
                 if ( cel.cid[ j ] >= 0 ) fac( cel.cid[ j ], TF( long_ponderee( img, px[ j ], py[ j ], px[ i ], py[ i ] ) ) );
             return TF( masse_pixels( img, px, py, nb ) );
@@ -312,7 +312,7 @@ int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu, bool arbre_gp
             if ( cel.nb <= 0 ) return TF( 0 );
             double px[ NMX ], py[ NMX ];
             const int nb = std::min( int( cel.nb ), NMX );
-            for ( int q = 0; q < nb; ++q ) { px[ q ] = double( cel.vx[ q ] ); py[ q ] = double( cel.vy[ q ] ); }
+            for ( int q = 0; q < nb; ++q ) { px[ q ] = double( cel.x( q ) ); py[ q ] = double( cel.y( q ) ); }
             return TF( masse_bord( img, px, py, nb ) );
         } );
         t_bord = now() - tb0;
