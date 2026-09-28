@@ -262,6 +262,7 @@ struct Newton {
         if ( o.apres_pas ) o.apres_pas( -1, 0, 0 );
 
         TF eps = 0, t_prec = 0, beta = o.beta0, t_sur = -1;
+        std::vector<char> protegee;                      // les cellules NON VIDES au depart : celles que `eps` defend
         for ( int it = 0; it < o.maxit; ++it ) {
             TF pire = 0;
             SI nvide = 0;
@@ -283,10 +284,28 @@ struct Newton {
                     b[ i ] = nu[ i ] / gp( x ) * ( c - g( x ) );
                 }
             }
-            if ( it == 0 ) {                             // le plancher d'aire de l'amortissement
-                TF am = a[ 0 ], nm = nu[ 0 ];
-                for ( SI i = 0; i < n; ++i ) { am = std::min( am, a[ i ] ); nm = std::min( nm, nu[ i ] ); }
-                eps = TF( 0.5 ) * std::min( nm, am );
+            if ( it == 0 ) {
+                // LE PLANCHER D'AIRE DE L'AMORTISSEMENT, ET LES CELLULES QU'IL DEFEND.
+                //
+                // Il se lisait `0.5 min( min nu, min a )` sur TOUTES les cellules. Une seule cellule
+                // vide au depart mettait donc `eps` a ZERO -- et alors le critere d'acceptation
+                // `m2 >= eps` est satisfait par n'importe quel pas : le garde-fou d'aire disparaissait
+                // en silence, et le premier pas pouvait vider des milliers de cellules ( mesure :
+                // 1 vide au depart -> 7750 apres un pas, README § 8.6 ). Or un depart avec une poignee
+                // de vides est exactement ce que rend une reparation incomplete, et il n'a rien de
+                // fatal en soi : a nombre de vides nul, un residu de depart quatre fois pire ne coute
+                // qu'une iteration ( § 8.6 ).
+                //
+                // Le plancher se lit donc sur les cellules VIVANTES, et il ne defend que celles-la :
+                // une cellule deja vide ne peut pas etre remontee par l'amortissement, et l'exiger
+                // au-dessus du plancher refuserait TOUT pas.
+                TF am = INFINI, nm = nu[ 0 ];
+                protegee.assign( n, 0 );
+                for ( SI i = 0; i < n; ++i ) {
+                    nm = std::min( nm, nu[ i ] );
+                    if ( a[ i ] > 0 ) { am = std::min( am, a[ i ] ); protegee[ i ] = 1; }
+                }
+                eps = TF( 0.5 ) * std::min( nm, am < INFINI ? am : nm );
             }
             const TF nr = merite( a );
             if ( o.plancher > 0 && nr < o.plancher ) {
@@ -815,7 +834,7 @@ struct Newton {
                         mesures_et_facettes( w2, a2, fa2, pda2 );
                         t_fait = t;
                         mauvaises.clear();
-                        for ( SI i = 0; i < n; ++i ) if ( a2[ i ] < eps ) mauvaises.push_back( i );
+                        for ( SI i = 0; i < n; ++i ) if ( protegee[ i ] && a2[ i ] < eps ) mauvaises.push_back( i );
                         if ( mauvaises.empty() ) break;
                         st.nb_cell_mauvaises += SI( mauvaises.size() );
                         ++st.nb_tours_essai;
@@ -894,8 +913,9 @@ struct Newton {
                         w2[ 0 ] = 0;                     // la jauge, imposee et non esperee
                         mesures_et_facettes( w2, a2, fa2, pda2 );
                     }
-                    TF m2 = a2[ 0 ];                     // le plancher `eps` est une aire ABSOLUE
-                    for ( SI i = 0; i < n; ++i ) m2 = std::min( m2, a2[ i ] );
+                    TF m2 = INFINI;                      // le plancher `eps` est une aire ABSOLUE, et il ne
+                    for ( SI i = 0; i < n; ++i )         // porte que sur les cellules VIVANTES AU DEPART
+                        if ( protegee[ i ] ) m2 = std::min( m2, a2[ i ] );
                     const TF n2r = merite( a2 );
                     if ( m2 >= eps && n2r <= ( 1 - gain * t / 2 ) * nr && n2r < nr ) { pris = true; break; }
                     t /= 2;

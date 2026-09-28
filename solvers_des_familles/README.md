@@ -833,6 +833,19 @@ dégénéré `|p|² − Uh`.
 `lines5_n100000`, `R = 8`. Le banc déclare admissible « toute aire `≥ 0.5 × min( ν_i, aire min de
 Voronoï )` » : une marge `c*` ne franchit ce plancher que si `c* ≳ 0.5`.
 
+> **CORRECTION (§ 8.7).** Ce critère-là est le mauvais, et la comparaison des `c*` au plancher du banc
+> ne prouve rien : le plancher d'amortissement de Newton n'est pas absolu, il **s'adapte au départ**
+> (`eps = 0.5 min( min ν, min a₀ )`). Des cellules minuscules sont donc parfaitement légales, et le
+> § 8.7 mesure que parmi les départs à zéro vide un résidu quatre fois pire ne coûte qu'**une**
+> itération. La construction par la triangulation échoue quand même, mais pour une raison mesurée
+> ailleurs : dans un simplexe `u = affine + c|p|²`, donc `w_i = ( 1 − c )|p_i|² + ℓ( p_i )`, et le
+> bissecteur donne `Cell_i = c · Vor_i − a/2` avec `a = ∇ℓ` — le motif du simplexe **contracté de `c`
+> et translaté de `−a/2`**. Mesuré sur le vrai niveau grossier : `|a/2|` médian vaut **0.80** dans un
+> domaine de côté 1, pour tout `c < 1` (0.80 à `c*`, 0.72 à 0.1, 0.55 à 0.3, et 0.09 seulement à
+> `c = 1`), et 100 % des centres prédits tombent hors du domaine. **Le théorème garantit « non vide
+> dans R² », pas « non vide dans `[0,1]²` »** — c'est l'antagonisme du § 15.16 (contraction contre
+> compatibilité de niveau), par simplexe, et `c = 1` est la prolongation barycentrique déjà rejetée.
+
 | σ | n du niveau | `c*` | compression grossière min | médiane de `c_F` | facettes contraintes | sous le plancher |
 |---|---|---|---|---|---|---|
 | 0.1 | 256 | 9.89e-4 | 1.72e-1 | 1.07 | 92 % | ×506 |
@@ -890,6 +903,138 @@ inférieure du relevé, et triangulation régulière comme dual : Aurenhammer (1
 comme diagramme de puissance (figures réciproques) : Ash & Bolker (1986), Aurenhammer (1987) ;
 multi-échelle en transport semi-discret : Mérigot (2011), Lévy (2015), Kitagawa, Mérigot & Thibert
 (2019).
+
+## 8.7 L'ADMISSIBILITÉ SEULE SUFFIT — et le plancher qui s'effondrait sur une cellule vide
+
+Tout le § 8 juge les départs sur leur *résidu*, et le § 8.5 conclut que « ce qui compte pour
+l'amortissement est le pire résidu (`max|a−ν|/ν = 80`), pas la distance ℓ² ». La question posée ici
+renverse le critère : **si le départ est admissible, combien reste-t-il vraiment à faire ?** La réponse
+est « deux ou trois diagrammes », et elle change la cible de tout le chapitre.
+
+### 8.7.1 Parmi les départs à zéro vide, le résidu ne coûte presque rien
+
+Famille de départs de qualité décroissante, tous admissibles : la solution fine lissée par `k`
+balayages de Jacobi, puis réparée (`--lisse-solution k --corr releve --passes 30`). `σ = 0.1`,
+`n = 10⁵`, contre Newton depuis Voronoï (**9 it, 10 diagrammes**) :
+
+| départ | résidu max | vides | Newton |
+|---|---|---|---|
+| Voronoï | — | 0 | 9 it, 10 diag |
+| lissée 1 balayage + relèvement (6 passes) | 80 | 0 | 10 it, 13 diag |
+| lissée 4 balayages + relèvement (19 passes) | 203 | 0 | **10 it, 13 diag** |
+| lissée 16 balayages + relèvement (27 passes) | 316 | 0 | **11 it, 15 diag** |
+
+Un facteur **quatre** sur le pire résidu coûte **une** itération. Et la comparaison qui tranche est à
+départ *identique*, seule la complétude de la réparation changeant :
+
+| réparation du même départ (lissée 4 balayages) | vides restants | Newton |
+|---|---|---|
+| relèvement, 6 passes | 42 | **STAGNATION**, 8 it, 61 diag |
+| relèvement, 30 passes | 0 | **CONVERGE, 10 it, 13 diag** |
+
+**Ce n'est donc pas le résidu qu'il faut viser, c'est le nombre de cellules vides** — et `0` n'était
+pas un objectif approché mais une condition binaire. Pourquoi, c'est la suite.
+
+### 8.7.2 Le plancher d'amortissement s'effondrait à zéro (corrigé)
+
+La trace, sur un départ à **une seule** cellule vide :
+
+```
+it 0  |r|_2 8.78e-03  max|a-nu|/nu 2.72e+02     1 vides  alpha* 2.50e-01
+it 1  |r|_2 7.46e-03  max|a-nu|/nu 2.37e+02  7750 vides  alpha* 5.00e-01 REFUSE
+```
+
+Le premier pas est **accepté** et vide 7 750 cellules. La cause était dans `Newton.h` :
+
+```
+eps = 0.5 * min( min nu, min a )        // `min a` sur TOUTES les cellules
+```
+
+Une cellule vide met `min a` à zéro, donc `eps = 0`, donc le critère d'acceptation `m2 >= eps` est
+satisfait par n'importe quel pas : **le garde-fou d'aire disparaissait en silence**, précisément dans
+le cas où il sert. Or un départ avec une poignée de vides est exactement ce que rend une réparation
+incomplète.
+
+Le plancher se lit maintenant sur les cellules **vivantes au départ**, et il ne défend que celles-là
+(`protegee` dans `Newton.h`) : une cellule déjà vide ne peut pas être remontée par l'amortissement, et
+l'exiger au-dessus du plancher refuserait *tout* pas. Non-régression vérifiée — quand aucune cellule
+n'est vide au départ, `protegee` vaut 1 partout et le calcul est identique : 9 it / 10 diag à
+`σ = 0.1`, 18 it / 30 diag sur le cas dur, inchangés.
+
+### 8.7.3 Le relèvement minimal exact, en UNE enveloppe convexe
+
+Le § 8.4 établit qu'en 1D le relèvement minimal *est* une projection : admissible à marge `ε` ⟺
+`ψ = ( 1 − ε )|p|² − w` est convexe, donc on prend son **enveloppe convexe inférieure** `H` et
+`w ← ( 1 − ε )|p|² − H( p_i )`. Le banc l'implémente autrement (`--corr releve`) : une bissection sur
+le poids de chaque cellule sous le plancher, le diagramme refait entre deux passes — et ça cascade.
+
+Or le même objet en 2D est l'enveloppe convexe inférieure des `n` points relevés **dans R³** : un
+`ConvexHull` de 10⁵ points (`scripts/enveloppe_2d.py`, sur le départ écrit par
+`multiechelle --ecrire-depart`). Cas dur `σ = 0.005` nettoyé (`n = 99993` : sept germes **confondus**
+retirés — le clip de `gen_cases.py` en fabrique à `10⁻⁸` là où l'espacement médian est `4.5·10⁻⁴`, et
+c'est ce qui faisait sortir la référence en STAGNATION ; elle **CONVERGE** une fois nettoyée, 18 it,
+30 diagrammes). Départ : solution lissée d'un balayage, 21 849 cellules sous le plancher, rmax 274.
+
+| réparation | sous le plancher | **vides dans R²** | relèvements |
+|---|---|---|---|
+| bissection `--corr releve`, 40 passes | 3 | — | **27 611** |
+| **enveloppe exacte, UNE passe** | 78 | **0** | 21 849, tous du minimum |
+
+**21 817 → 0 en une seule passe**, le théorème vérifié numériquement, sans cascade. Mise *après*
+l'enveloppe, la bissection **défait** son travail (24 090 relèvements, rmax remonté de 100 à 272) :
+c'est le mauvais outil pour finir.
+
+Ce qui reste est le **domaine** : l'enveloppe garantit « non vide dans R² », pas « non vide dans
+`[0,1]²` ». On ajoute donc les **miroirs** — l'image d'un germe à travers une paroi, au même poids, fait
+de cette paroi son bissecteur exact, donc contient la cellule dans le demi-espace — et on monte `ε` :
+
+| enveloppe | cellules sous le plancher |
+|---|---|
+| `ε = 1e-3`, sans miroir | 78 |
+| `ε = 1e-3`, miroirs bande 0.05 | 35 |
+| `ε = 1e-3`, miroirs complets | 26 |
+| `ε = 0.3`, miroirs bande 0.05 | **3** |
+
+Jamais zéro : les derniers sont bien des sommets de l'enveloppe, mais d'aire sous la résolution de
+l'arithmétique — la non-dégénérescence ne borne pas l'aire par le bas.
+
+### 8.7.4 Le cas dur converge, et il bat Voronoï
+
+Avec le plancher corrigé, une poignée de vides n'est plus fatale. Sur le cas dur, contre la référence
+(**18 it, 30 diagrammes**) :
+
+| départ (solution lissée 1 balayage, puis) | vides | Newton |
+|---|---|---|
+| bissection seule, 40 passes | 3 | STAGNATION, 1 it |
+| enveloppe `ε = 1e-3` | 78 | STAGNATION, 1 it |
+| enveloppe `ε = 1e-3` + miroirs complets | 26 | STAGNATION, 1 it |
+| enveloppe `ε = 0.03` + miroirs | 7 | STAGNATION, 1 it |
+| enveloppe `ε = 0.1` + miroirs | 7 | **CONVERGE, 19 it, 31 diag** |
+| **enveloppe `ε = 0.3` + miroirs** | **3** | **CONVERGE, 16 it, 27 diag** |
+
+**Première fois que `σ = 0.005` donne quelque chose** — le § 8.5 le déclarait hors de portée — et le
+départ réparé bat Voronoï de 11 % en itérations et 10 % en diagrammes. Le seuil n'est pas le seul
+nombre de vides (7 échoue à `ε = 0.03`, passe à `ε = 0.1`) : la taille des cellules survivantes compte
+aussi.
+
+**À lire avec la bonne réserve.** Ce départ dérive de la SOLUTION (lissée d'un balayage), c'est-à-dire
+la *borne* du § 8.2 et non une vraie prolongation. Ce qui est mesuré, c'est donc que **la borne est
+redevenue utilisable** : elle était inadmissible et sans recours, elle converge maintenant et gagne
+10 %. C'est un majorant de ce qu'une prolongation peut acheter, pas un gain acquis.
+
+### 8.7.5 Ce qui bloque le multi-échelle pour de bon
+
+Essayé : le vrai chemin, `--prol mls --corr aucune` sur le cas dur. **La cascade repart dès le niveau
+2** (`n = 2048`, 1 148 cellules sous le plancher à `t = 1`, Newton y stagne), donc le niveau fin part
+d'un grossier faux et le dump ne mesure plus rien. Le § 8.5 le disait déjà pour la bissection ; le
+constat est que **l'enveloppe doit vivre DANS le banc** pour réparer *chaque* niveau, pas seulement le
+plus fin en différé.
+
+C'est donc le travail qui reste, et il est bien délimité : un `--corr enveloppe`, c'est-à-dire une
+enveloppe convexe inférieure de `n` points relevés en dimension `D + 1`, appelée à chaque niveau. Le
+moteur n'a pas d'enveloppe convexe aujourd'hui (`AaBsp`, `Plan` ne la donnent pas) : soit une
+dépendance (qhull), soit un incrémental maison. Le chiffre qui justifie la dépense est celui du
+§ 8.7.3 : une passe contre 27 611 relèvements, et zéro vide dans R² au lieu de trois.
 
 ---
 

@@ -44,6 +44,7 @@ struct Opts {
     TF            marge  = 0.1;           ///< rattrape : l'air donne a la cellule relevee, en h_i^2
     bool          reference = false;
     std::string   ecrire;                 ///< prefixe : ecrire chaque niveau resolu ( n, puis `x.. w nu` par germe )
+    std::string   depart;                 ///< fichier de cas : ecrire les poids de DEPART, juste avant Newton
 };
 
 template<int D>
@@ -86,6 +87,13 @@ int depuis_solution( const Args &a, const Opts &o, const Nuage<PD::dim> &nu0 ) {
         mauv = teste_admissible( pd, w, nu, o.seuil * amin_vor, a.par, amin, pire );
         std::printf( "  %s : %d passes, %d relevements, %d cellules encore sous le plancher, max|a-nu|/nu %.2e\n",
                      o.corr.c_str(), faites, int( releves ), int( reste ), double( pire ) );
+    }
+    if ( ! o.depart.empty() ) {                          // le depart, pour le projeter hors ligne ( scripts/enveloppe_2d.py )
+        char e[ 512 ];
+        std::snprintf( e, sizeof e, "# depart : poids du fichier lisses par %d balayages%s ( multiechelle --ecrire-depart )\n"
+                                    "# format : n, puis n lignes « x.. w »\n",
+                       o.lisse_solution, ( o.corr == "releve" || o.corr == "rattrape" ) ? ", puis releves" : "" );
+        if ( ecrit_nuage<PD::dim>( o.depart, nu0, w.data(), e ) ) std::printf( "  depart ecrit dans '%s'\n", o.depart.c_str() );
     }
     Cholesky lin;
     Newton<PD> nw( pd, lin, nu0.P, a.par, o.newton );
@@ -189,6 +197,17 @@ int lance( const Args &a, const Opts &o, const Nuage<PD::dim> &nu0 ) {
             }
         }
 
+        if ( ! o.depart.empty() && l == 0 ) {             // le depart du niveau FIN, prolongation comprise
+            Nuage<D> nf;
+            for ( int d = 0; d < D; ++d ) nf.c[ d ].assign( L.P[ d ], L.P[ d ] + L.n );
+            nf.w.assign( w0.begin(), w0.end() );
+            nf.finish();
+            if ( ecrit_nuage<D>( o.depart, nf, w0.data(),
+                                 "# depart du niveau fin ( multiechelle --ecrire-depart )\n"
+                                 "# format : n, puis n lignes « x.. w »\n" ) )
+                std::printf( "    depart du niveau fin ecrit dans '%s'\n", o.depart.c_str() );
+        }
+
         // Newton
         NewtonOptions no = o.newton;
         no.tol = l ? o.tolg : o.newton.tol;
@@ -265,6 +284,7 @@ int main( int argc, char **argv ) {
         else if ( s == "--marge" )      o.marge = std::atof( val() );
         else if ( s == "--reference" )  o.reference = true;
         else if ( s == "--ecrire-niveaux" ) o.ecrire = val();
+        else if ( s == "--ecrire-depart" ) o.depart = val();
         else if ( s == "--lisse-solution" ) o.lisse_solution = std::atoi( val() );
         else if ( s == "--mls-anneaux" ) o.mls_anneaux = std::atoi( val() );
         else if ( s == "--mls-largeur" ) o.mls_largeur = std::atof( val() );
@@ -293,6 +313,7 @@ int main( int argc, char **argv ) {
                 "  --essais K      divisions de t au plus                            (12)\n"
                 "  --reference     Newton depuis w = 0 sur le niveau fin, a options egales\n"
                 "  --ecrire-niveaux PREFIX   ecrire chaque niveau resolu : PREFIX_niveauL.txt ( n, puis x.. w nu )\n"
+                "  --ecrire-depart FILE      avec --lisse-solution : ecrire les poids de DEPART, juste avant Newton\n"
                 "  --pas P         essais | essai-limites                            (essai-limites)\n"
                 "  --newton-tol T  --newton-max K  --t-min T  --quiet\n" );
             return s == "--help" || s == "-h" ? 0 : 1;
