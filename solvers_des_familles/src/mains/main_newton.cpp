@@ -439,6 +439,7 @@ int main( int argc, char **argv ) {
                                 : NewtonOptions::LIN;
         }
         else if ( s == "--puis" )       o.newton.puis = std::atof( val() );
+        else if ( s == "--bascule-residu" ) o.newton.bascule_residu = std::atof( val() );
         else if ( s == "--profil" )     o.newton.profil = std::atoi( val() );
         else if ( s == "--combi" )      o.newton.combi = std::atoi( val() );
         else if ( s == "--modele" )     o.newton.modele = std::atoi( val() );
@@ -506,6 +507,7 @@ int main( int argc, char **argv ) {
                 "  --t-min T       sous ce pas, STAGNATION                      (1e-10)\n"
                 "  --residu R      lin ( a - nu ) | barriere ( x - 1/x, x = a/nu ) | log | puissance  (lin)\n"
                 "  --puis P        puissance : g = ( x^P - 1 ) / P -- P = 1 EST lin, P = 0 EST log  (0.5)\n"
+                "  --bascule-residu R  repasser a lin des que max|a-nu|/nu <= R ( 0 : jamais )       (0)\n"
                 "  --merite R      LE JUGE DE L'AMORTISSEMENT, separement de la direction : lin | barriere | log |\n"
                 "                  puissance | pire ( max|a-nu|/nu, le critere d.arret lui-meme )   ( defaut : comme --residu )\n"
                 "  --profil K      a l'iteration K, balayer t et imprimer LES TROIS merites le long de la direction, puis sortir\n"

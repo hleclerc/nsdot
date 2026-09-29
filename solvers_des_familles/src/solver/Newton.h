@@ -151,6 +151,16 @@ struct NewtonOptions {
     enum Residu : int { LIN = 0, BARRIERE, LOG, PUISSANCE, PIRE };
     int  residu     = LIN;
     TF   puis       = 0.5;     ///< l'exposant `p` de PUISSANCE
+    /// LA BASCULE DE RESIDU : repasser a `LIN` des que `max|a - nu|/nu <= bascule_residu`. `0` : jamais.
+    ///
+    /// Pourquoi c'est la bonne forme. Les deux bouts ne servent pas au meme moment : `log` (`p = 0`)
+    /// ne reclame a une cellule affamee qu'une fraction de son ecart LOGARITHMIQUE, ce qui est ce
+    /// qu'il faut tant que la dynamique de `a / nu` est de 1 a 2000 ( § 21.3 ) ; `lin` est le vrai
+    /// Newton du probleme et c'est lui qui donne la convergence quadratique a la fin. Et la bascule ne
+    /// peut pas nuire tard, parce que pres de la solution `b_i = nu_i / g'( x_i ) ( c - g( x_i ) )`
+    /// tend vers `nu_i - a_i` POUR TOUT RESIDU : les directions deviennent colineaires, donc le choix
+    /// n'a plus d'objet.
+    TF   bascule_residu = 0;
     /// LE MERITE DE L'AMORTISSEMENT, SEPAREMENT DE LA DIRECTION. `-1` : le meme que `residu`.
     ///
     /// `--residu log` changeait DEUX choses a la fois -- le second membre de Newton et le juge qui
@@ -218,6 +228,7 @@ struct Newton {
     std::vector<TF> d;         ///< la derniere direction de Newton ( `d[ 0 ] == 0` )
     std::vector<Facette> fa;   ///< les facettes du diagramme courant ( celui de `w` )
     NewtonStats     st;
+    int             res_cur = NewtonOptions::LIN;  ///< le residu EN COURS ( `o.bascule_residu` le change )
 
     /// UNE DENSITE au lieu de Lebesgue ( 2D ) : la mesure d'une cellule est sa masse. Le pas par les
     /// limites ( ESSAI_LIMITES ) passe alors par `limites_masse` : la bissection, pas le polynome.
@@ -295,8 +306,8 @@ struct Newton {
         return r == NewtonOptions::BARRIERE ? 1 + 1 / ( x * x ) : r == NewtonOptions::LOG ? 1 / x : 1;
     }
     /// `g( x )` et `g'( x )` du residu choisi, `x = a / nu` borne loin de zero
-    TF g( TF x ) const { return g_de( x, o.residu, o.puis ); }
-    TF gp( TF x ) const { return gp_de( x, o.residu, o.puis ); }
+    TF g( TF x ) const { return g_de( x, res_cur, o.puis ); }
+    TF gp( TF x ) const { return gp_de( x, res_cur, o.puis ); }
 
     /// LE SECOND MEMBRE de Newton pour le residu `r` : `b_i = nu_i / g'( x_i ) ( c - g( x_i ) )`, avec
     /// `c` la moyenne ponderee qui le fait sommer a zero ( la jauge raye une ligne : sans ca elle
@@ -346,7 +357,7 @@ struct Newton {
     }
     /// le merite EFFECTIF de l'amortissement : celui de `merite_res`, ou celui de `residu` par defaut
     TF merite( const std::vector<TF> &A ) const {
-        return merite_de( A, o.merite_res < 0 ? o.residu : o.merite_res, o.puis );
+        return merite_de( A, o.merite_res < 0 ? res_cur : o.merite_res, o.puis );
     }
 
     /// LA BOUCLE, depuis `w_init` ( zero : Voronoi ). Rend `true` si le critere d'arret est atteint.
@@ -378,6 +389,7 @@ struct Newton {
             mesures_et_facettes( w, a, fa, pda );
         if ( o.apres_pas ) o.apres_pas( -1, 0, 0 );
 
+        res_cur = o.residu;                              // ... que `o.bascule_residu` fera passer a `LIN`
         TF eps = 0, t_prec = 0, beta = o.beta0, t_sur = -1;
         std::vector<char> protegee;                      // les cellules NON VIDES au depart : celles que `eps` defend
         for ( int it = 0; it < o.maxit; ++it ) {
@@ -387,7 +399,17 @@ struct Newton {
                 nvide += ! ( a[ i ] > 0 );
                 pire = std::max( pire, std::fabs( nu[ i ] - a[ i ] ) / nu[ i ] );
             }
-            membre( o.residu, o.puis, b );               // `J = diag( g' / nu ) L` : `L d = ( nu / g' ) ( c - g )`
+            // ---- LA BASCULE DE RESIDU : `log` tant que la dynamique est large, `lin` pour finir.
+            // Elle se decide ICI, avant le second membre ET avant le merite de l'iteration, pour que
+            // `b`, `nr` et `n2r` parlent tous du meme residu. Elle est LATCHEE : `pire` n'est pas
+            // monotone, et on ne veut pas revenir en arriere.
+            if ( o.bascule_residu > 0 && res_cur != NewtonOptions::LIN && pire <= o.bascule_residu ) {
+                res_cur = NewtonOptions::LIN;
+                if ( o.trace )
+                    std::printf( "      bascule : residu -> lin ( max|a-nu|/nu %.3e <= %.3e )\n",
+                                 double( pire ), double( o.bascule_residu ) );
+            }
+            membre( res_cur, o.puis, b );                // `J = diag( g' / nu ) L` : `L d = ( nu / g' ) ( c - g )`
             if ( it == 0 ) {
                 // LE PLANCHER D'AIRE DE L'AMORTISSEMENT, ET LES CELLULES QU'IL DEFEND.
                 //
@@ -719,7 +741,7 @@ struct Newton {
             if ( o.pas == NewtonOptions::MODELE ) {
                 if constexpr ( PD::dim == 2 ) {
                     const int NR = std::min( o.mod_k, int( PolyMulti::KMAX ) );
-                    const int rs[ 4 ] = { o.residu, NewtonOptions::LOG, NewtonOptions::BARRIERE, NewtonOptions::LIN };
+                    const int rs[ 4 ] = { res_cur, NewtonOptions::LOG, NewtonOptions::BARRIERE, NewtonOptions::LIN };
                     // LES DESCENTES DE PLUS SONT COMPTEES AVEC L'ALGEBRE LINEAIRE, pas avec le modele :
                     // c'est LA le vrai prix du span ( une resolution par direction supplementaire ), et
                     // les melanger au modele donnait a lire un chiffre pour un autre.

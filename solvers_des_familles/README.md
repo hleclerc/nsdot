@@ -5025,6 +5025,82 @@ span, donc `max|a−ν|/ν` sur le span, donc exactement le critère qui marche 
 > le modèle — un diagramme par itération — et que ça suffit à laisser `essai-limites --residu log`
 > devant en temps de paroi (5.1 s contre 7.5 s).
 
+## 21.7 Plus simple que le span : résoudre en `log` puis basculer sur `lin` (`--bascule-residu`)
+
+Les deux bouts ne servent pas au même moment. `log` ne réclame à une cellule affamée qu'une fraction
+de son écart *logarithmique*, ce qu'il faut tant que la dynamique de `a/ν` est de 1 à 2000 (§ 21.3) ;
+`lin` est le vrai Newton du problème et c'est lui qui donne la convergence quadratique à la fin. D'où
+l'idée, qui n'a besoin ni de span ni de modèle : **`log` au départ, `lin` pour finir**, avec une
+bascule quand `max|a−ν|/ν` descend sous un seuil.
+
+Elle ne peut pas nuire tard, et pour une raison algébrique. Près de la solution `g(x) ≈ g'(1)(x−1)`
+et `g'(x) ≈ g'(1)`, donc
+
+```
+b_i = ν_i / g'( x_i ) · ( c − g( x_i ) )   →   ν_i − a_i        pour TOUT résidu
+```
+
+**Tous les résidus deviennent la même direction de Newton au premier ordre.** Le choix n'a donc plus
+d'objet là où il ne sert plus — ce qui se voit aussi sur les `λ` que le modèle du § 22 retient tout
+seul : `log` pur pendant cinq itérations, puis `lin`, puis n'importe quoi (les directions sont
+colinéaires). La bascule est la version explicite et gratuite de ce que le modèle découvre.
+
+`--bascule-residu R`. Elle est **latchée** (`max|a−ν|/ν` n'est pas monotone) et se décide **avant le
+second membre**, donc avant le mérite de l'itération : `b`, `nr` et `n2r` parlent tous du même
+résidu — sans ça le premier pas se calcule avec un résidu et se juge avec un autre. Diagrammes,
+`--pas essai-limites --facteur 0.9`, `n = 10⁵` (`R = 0` : jamais ; `R = 10⁹` : dès l'itération 0, donc
+`lin` pur) :
+
+| `R` | uniforme | `σ = 0.1` | `σ = 0.02` | `σ = 0.005` |
+|---|---|---|---|---|
+| **0** — `log` pur | 8 | 8 | 13 | **536** |
+| 0.5 | **7** | 8 | 13 | **53** |
+| 2 | **7** | **7** | 13 | **53** |
+| 10 | **7** | **7** | 13 | **53** |
+| 50 | **7** | 8 | **12** | 54 |
+| 200 | **7** | 8 | 14 | 56 |
+| 1000 | **7** | 10 | 18 | 67 |
+| **10⁹** — `lin` pur | **7** | 10 | 26 | 64 |
+
+**Ça marche, le seuil n'est pas critique, et le gain est là où on ne l'attendait pas.** La fenêtre
+`R ∈ [0.5, 10]` est large et plate, et elle gagne un diagramme sur les deux cas faciles. Mais le vrai
+gain est sur le nuage dégénéré : **536 → 53 diagrammes**, un facteur dix, parce que `log` seul y
+passait 486 reculs à s'acharner sur une cellule que rien ne peut réparer et que `lin` borne à `ν`.
+C'est le même mécanisme qu'au § 22.4, atteint autrement.
+
+Et **la bascule simplifie la relaxation** au lieu de la compliquer — c'était la crainte inverse.
+Diagrammes à `σ = 0.02` contre `--facteur` :
+
+| `facteur` | 0.5 | 0.7 | 0.8 | 0.9 | 0.95 | 0.99 |
+|---|---|---|---|---|---|---|
+| `log` pur | 17 | 15 | 14 | **13** | **13** | 14 |
+| `log` + bascule 2 | 17 | 15 | **13** | **13** | **13** | **13** |
+
+Le plateau passe de `[0.9, 0.95]` à `[0.8, 0.99]` : une fois la fin confiée à `lin`, qui prend `t = 1`
+de lui-même, la longueur du pas de la phase `log` cesse d'être un réglage fin.
+
+En temps de paroi (`job -b`, Cholesky, `σ = 0.02`), c'est **le plus rapide de tout ce banc** :
+
+| | diagrammes | temps |
+|---|---|---|
+| `lin` / essais | 41 | 14.0 s |
+| `log` / limites | 13 | 5.13 s |
+| **`log` + bascule 2** | 13 | **5.04 s** |
+| modèle `K = 3` (§ 22) | **11** | 7.97 s |
+
+Donc les deux approches ne se remplacent pas, elles se partagent le terrain : **sur un cas normal la
+bascule gagne** (aussi peu de diagrammes que `log`, le meilleur temps, et deux lignes de code contre
+un polynôme multivarié) ; **sur le nuage dégénéré le modèle gagne largement** (13 diagrammes, 11.8 s
+et il CONVERGE, contre 53, 23.1 s et STAGNATION). La bascule est ce qu'il faut mettre par défaut ; le
+modèle est ce qu'il faut sortir quand ça ne passe pas.
+
+> **Attention sur `σ = 0.005` : ces chiffres dépendent du solveur linéaire.** `log` pur y fait 536
+> diagrammes avec AMGCL et 58 avec Cholesky — le nuage porte deux germes à 1.009e-08 (§ 8.7.3), le
+> système est mal conditionné, et un Krylov à tolérance relative n'y rend pas la même direction qu'une
+> factorisation. Les tableaux de cette section et du § 22.3 sont à AMGCL (le défaut en 2D) ; ceux en
+> temps sont à Cholesky. Sur ce nuage-là, comparer des variantes à solveur différent ne veut rien dire.
+
+
 # 22. LE MODÈLE POLYNOMIAL MULTI-DIRECTIONS (`Ecrasement.h` : `PolyMulti`, `newton --pas modele`)
 
 Le § 21.6 laissait une ouverture mesurée mais pas construite : le span de plusieurs directions
@@ -5119,7 +5195,8 @@ choix de pas, mais **un seul vecteur dans le span** — donc tout l'écart entre
 
 Sur `σ = 0.005` — le nuage dégénéré, deux germes à 1.009e-08 (§ 8.7.3) — le modèle à `K = 3` est **le
 seul essai de tout ce banc qui converge**, en 13 diagrammes et sans un recul, là où tout le reste
-stagne à 2.3e-6 entre 47 et 536 diagrammes. C'est à prendre avec la prudence qu'un cas unique mérite :
+stagne à 2.3e-6 entre 47 et 536 diagrammes (et voir l'avertissement du § 21.7 : sur CE nuage les
+chiffres dépendent du solveur linéaire, ce tableau est à AMGCL). C'est à prendre avec la prudence qu'un cas unique mérite :
 il faut les **trois** ingrédients à la fois (trois directions, le pas du modèle, le garde-fou du
 § 22.4), chacun retiré ramène la stagnation, et une conjonction aussi serrée sur un seul nuage ne fait
 pas une loi.
