@@ -5624,3 +5624,73 @@ Et le nuage dégénéré reste disponible comme **test** : `lines5_n100000_s0.00
 germes que l'ancien `_voronoi` (ils sont écrits depuis les mêmes positions), donc `--load` dessus donne
 le cas dégénéré, avec en prime son témoin. `pysdot` est désormais installé, donc `gen_cases.py`
 fonctionne à nouveau et les nuages hors dépôt sont régénérables.
+
+## 23.11 LE REDÉCOUPAGE, fait — et ce qu'il démontre (`--agrege`, `--agrege-brut`, `--agrege-fin`)
+
+Troisième étape écrite (`Agglo.h` : `sommets_cellule`, `aire_coupee`, `coupe_a_l_aire`, `redecoupe`).
+Le principe est le choix du paramètre : le plan qui sépare deux membres a une normale **fixe**
+(`p_j − p_i`), seul son décalage est libre, et on le cherche **directement** par bissection sur l'aire
+du morceau — monotone, sur une quantité de l'ordre de la cellule, donc parfaitement conditionnée.
+L'écart de poids n'est calculé qu'à la fin :
+
+```
+w_i − w_j = 2 ( p_j − p_i ) . x_plan − ( |p_j|² − |p_i|² )
+```
+
+**L'amplification par `1/δ` devient une sortie, jamais une inconnue.** C'est toute la différence avec
+ce que Newton peut faire sur le nuage complet, où les poids *sont* les inconnues.
+
+### Il est exact, et il fait ce qu'on attendait
+
+Nuage dégénéré (`lines5_n100000_s0.005_equal.txt`), `δ = 5e-8`, une grappe :
+
+| étape | résultat |
+|---|---|
+| réduit (99 999 germes) | **CONVERGE 2.12e-7**, 79 diagrammes |
+| **découpe** | 1 grappe, **écart local 5.17e-10** |
+| remontée, membres agrégés | **4.29e-2, 0 vide** — contre **1.06 et 1 vide sur 2** sans découpe |
+| correction finale (nuage complet) | STAGNATION 3.42e-6, **3 it / 39 diag** — contre **8 it / 141 diag** sans découpe |
+
+Sur l'uniforme (`δ = 3e-5`, 16 grappes) : écart local **3.4e-12**, membres à 2.6e-2 sans un vide
+(contre 1.04 et 7 vides), et la correction finale **CONVERGE en 2 itérations / 3 diagrammes** au lieu de
+6 / 20. Le découpage vaut donc un facteur 4 à 7 sur la phase de correction, et il supprime les cellules
+vides — qui étaient la vraie raison pour laquelle cette phase coûtait cher.
+
+### Mais bout à bout, la chaîne ne bat pas le solve direct — et c'est le résultat
+
+118 diagrammes et STAGNATION à 3.42e-6, contre 113 diagrammes et 2.35e-6 en direct. La correction
+finale **retombe sur le même plancher**, et elle ne peut pas faire autrement : elle est revenue à
+paramétrer la paire par deux poids.
+
+Ce plancher se calcule, et il tombe juste. Résolution d'un poids en `double` : `ε |w| = 2.2e-16 ×
+0.1285 = 2.8e-17`. Résolution du décalage du plan : divisée par `2d = 2 × 1.009e-8`, soit **3.1e-9**.
+Rapportée à l'étendue de la cellule le long de l'axe de la paire, `h = 4.53e-4`, ça donne une erreur
+d'aire relative de **3.1e-6** — mesurée 2.35e-6. **À 30 % près, le plancher du banc EST l'epsilon
+machine vu à travers `1/δ`.** Aucun algorithme ne le déplace.
+
+### Donc la conclusion porte sur l'interface, pas sur l'algorithme
+
+Les trois étapes marchent, chacune vérifiée :
+
+* le **problème réduit** converge à 2.12e-7 en 79 diagrammes, soit **dix fois mieux et moins cher** que
+  les 2.35e-6 / 113 diagrammes du direct ;
+* le **découpage** rend à chaque membre sa masse à 1e-10 près ;
+* et la **conversion en poids** détruit le tout.
+
+Autrement dit **la sortie de cette méthode ne peut pas être un vecteur de poids.** C'est le couple
+(poids du problème réduit, décalage du plan par grappe) qui porte la précision, et c'est exactement ce
+que `redecoupe` produit avant de le convertir. Un solveur dont l'interface est `w` ne peut pas exprimer
+la réponse — pas parce qu'il calcule mal, mais parce que deux `double` ne suffisent pas à coder un plan
+placé à 1e-9 près entre deux points distants de 1e-8.
+
+Ce qui donne la règle pratique, et elle est simple : **si le consommateur veut des cellules**, on lui
+donne le diagramme réduit plus les plans de coupe, et tout est exact ; **s'il veut des poids**, il
+faut accepter le plancher `ε|w| / (2 δ h)` ou dédupliquer les germes en amont (§ 23.7). Il n'y a pas de
+troisième possibilité, et c'est ce que cette section établit.
+
+Reste une limite de l'implémentation : `redecoupe` est **exact pour `k = 2`** — le seul cas mesuré, la
+taille maximale de grappe étant 2 sur tous les nuages. Pour `k > 2` il retire les membres un à un par
+coupes successives : les masses sont bonnes, donc la partition est optimale si les germes sont
+exactement confondus (le coût ne dépend alors pas du membre), mais elle n'est plus forcément un
+diagramme de puissance et les poids rendus ne sont qu'approchés. Et c'est 2D seulement, comme tout
+`Ecrasement.h`.

@@ -38,6 +38,7 @@
 //   le cout quand le diagramme est de toute facon paye : 4 % d'un diagramme en 2D, 1 % en 3D. )
 // =====================================================================================
 
+#include "solver/Ecrasement.h"
 #include "util/common.h"
 #include <cmath>
 #include <unordered_map>
@@ -137,6 +138,134 @@ void reduis( const TF *const *P, const std::vector<TF> &nu, const std::vector<SI
     for ( SI r = 0; r < m; ++r )
         for ( int d = 0; d < D; ++d )
             Q[ d ][ r ] /= nur[ r ] > 0 ? nur[ r ] : TF( 1 );
+}
+
+
+// =====================================================================================
+// LE REDECOUPAGE ( troisieme etape ) : rendre a chaque membre d'une grappe sa masse.
+//
+// Le probleme local est un transport semi-discret sur la cellule fusionnee, avec `k` germes. Ce qui le
+// rend facile est le CHOIX DU PARAMETRE. Le plan qui separe deux membres a une normale FIXE
+// ( `p_j - p_i` ) ; seul son decalage est libre. En le cherchant DIRECTEMENT -- une bissection sur
+// l'aire du morceau, monotone -- on travaille sur une quantite de l'ordre de la cellule, donc
+// parfaitement conditionnee. L'ecart de poids `w_i - w_j = 2 u . x_plan - ( |p_j|^2 - |p_i|^2 )` n'est
+// calcule qu'a la FIN : l'amplification par `1 / delta` devient une SORTIE et jamais une inconnue.
+//
+// C'est toute la difference avec ce que Newton peut faire sur le nuage complet : lui n'a que les poids
+// comme inconnues, donc il subit l'amplification et plafonne ( § 23.10 ).
+//
+// `k = 2` est traite EXACTEMENT, et c'est le seul cas qu'on ait mesure ( taille max 2 sur tous les
+// nuages ). Pour `k > 2` on retire les membres un a un par des coupes successives : les masses sont
+// bonnes -- donc le plan est optimal si les germes sont exactement confondus, le cout ne dependant
+// alors pas du membre -- mais la partition n'est plus forcement un diagramme de puissance, donc les
+// poids rendus ne sont qu'approches. C'est dit a l'appel.
+// =====================================================================================
+
+/// LES SOMMETS d'une cellule modelisee, dans l'ordre, aux poids de sa construction. Meme resolution de
+/// Cramer que `ModeleCellule::aire`, dont ceci est l'extraction.
+inline bool sommets_cellule( const ModeleCellule &m, std::vector<TF> &vx, std::vector<TF> &vy ) {
+    const int nb = m.nb;
+    vx.clear(); vy.clear();
+    if ( nb < 3 ) return false;
+    vx.resize( nb ); vy.resize( nb );
+    for ( int j = 0; j < nb; ++j ) {
+        const int a = j ? j - 1 : nb - 1;
+        const TF det = m.nx[ a ] * m.ny[ j ] - m.ny[ a ] * m.nx[ j ];
+        if ( ! ( std::fabs( det ) > 0 ) ) return false;
+        vx[ j ] = ( m.c0[ a ] * m.ny[ j ] - m.c0[ j ] * m.ny[ a ] ) / det;
+        vy[ j ] = ( m.nx[ a ] * m.c0[ j ] - m.nx[ j ] * m.c0[ a ] ) / det;
+    }
+    return true;
+}
+
+/// L'AIRE de la partie d'un polygone convexe ou `u . x <= s` ( Sutherland-Hodgman, une seule coupe ).
+inline TF aire_coupee( const std::vector<TF> &vx, const std::vector<TF> &vy, TF ux, TF uy, TF s ) {
+    const int nb = int( vx.size() );
+    if ( nb < 3 ) return 0;
+    std::vector<TF> ax, ay;
+    ax.reserve( nb + 1 ); ay.reserve( nb + 1 );
+    for ( int j = 0; j < nb; ++j ) {
+        const int l = j + 1 < nb ? j + 1 : 0;
+        const TF dj = ux * vx[ j ] + uy * vy[ j ] - s, dl = ux * vx[ l ] + uy * vy[ l ] - s;
+        if ( dj <= 0 ) { ax.push_back( vx[ j ] ); ay.push_back( vy[ j ] ); }
+        if ( ( dj < 0 ) != ( dl < 0 ) ) {
+            const TF t = dj / ( dj - dl );
+            ax.push_back( vx[ j ] + t * ( vx[ l ] - vx[ j ] ) );
+            ay.push_back( vy[ j ] + t * ( vy[ l ] - vy[ j ] ) );
+        }
+    }
+    TF a2 = 0;
+    for ( size_t j = 0; j < ax.size(); ++j ) {
+        const size_t l = j + 1 < ax.size() ? j + 1 : 0;
+        a2 += ax[ j ] * ay[ l ] - ax[ l ] * ay[ j ];
+    }
+    return std::fabs( a2 ) * TF( 0.5 );
+}
+
+/// LE DECALAGE `s` du plan `u . x = s` qui donne l'aire `cible` au morceau `u . x <= s`, par
+/// bissection. `u` n'est PAS normalise : c'est `p_j - p_i`, pour que `s` se convertisse directement en
+/// ecart de poids. Rend l'aire obtenue.
+inline TF coupe_a_l_aire( const std::vector<TF> &vx, const std::vector<TF> &vy, TF ux, TF uy,
+                          TF cible, TF &s, int nb_bis = 80 ) {
+    TF lo = INFINI, hi = -INFINI;
+    for ( size_t j = 0; j < vx.size(); ++j ) {
+        const TF d = ux * vx[ j ] + uy * vy[ j ];
+        lo = std::min( lo, d ); hi = std::max( hi, d );
+    }
+    // l'aire est croissante en `s`, de 0 en `lo` a l'aire totale en `hi`
+    for ( int k = 0; k < nb_bis; ++k ) {
+        const TF mi = TF( 0.5 ) * ( lo + hi );
+        if ( aire_coupee( vx, vy, ux, uy, mi ) < cible ) lo = mi; else hi = mi;
+    }
+    s = TF( 0.5 ) * ( lo + hi );
+    return aire_coupee( vx, vy, ux, uy, s );
+}
+
+/// LE REDECOUPAGE D'UNE GRAPPE : `mem` sont ses membres ( positions `P`, cibles `nu` ), `m` la cellule
+/// fusionnee, et `dw[ t ]` recoit le poids de `mem[ t ]` RELATIF a celui de la cellule fusionnee.
+/// `aires[ t ]` recoit l'aire obtenue. Rend `false` si la cellule n'a pas pu etre lue.
+///
+/// Pour `k = 2` c'est exact. Au-dela, les coupes successives donnent les bonnes masses mais la
+/// partition n'est plus forcement un diagramme de puissance ( voir en tete ).
+inline bool redecoupe( const ModeleCellule &m, const TF *const *P, const std::vector<TF> &nu,
+                       const std::vector<SI> &mem, std::vector<TF> &dw, std::vector<TF> &aires ) {
+    const int k = int( mem.size() );
+    dw.assign( k, TF( 0 ) );
+    aires.assign( k, TF( 0 ) );
+    std::vector<TF> vx, vy;
+    if ( ! sommets_cellule( m, vx, vy ) ) return false;
+    if ( k < 2 ) { aires[ 0 ] = aire_coupee( vx, vy, 1, 0, INFINI ); return true; }
+
+    // on retire les membres un a un ; `reste` est le polygone encore a partager
+    std::vector<TF> rx = vx, ry = vy;
+    for ( int t = 0; t + 1 < k; ++t ) {
+        const SI i = mem[ t ], j = mem[ t + 1 ];
+        const TF ux = P[ 0 ][ j ] - P[ 0 ][ i ], uy = P[ 1 ][ j ] - P[ 1 ][ i ];
+        if ( ! ( ux * ux + uy * uy > 0 ) ) return false;   // deux germes VRAIMENT au meme point
+        TF s = 0;
+        aires[ t ] = coupe_a_l_aire( rx, ry, ux, uy, nu[ i ], s );
+        // `u . x = s` est le plan de puissance entre `i` et `j` :
+        //     u . x = ( |p_j|^2 - |p_i|^2 + w_i - w_j ) / 2
+        const TF ni = P[ 0 ][ i ] * P[ 0 ][ i ] + P[ 1 ][ i ] * P[ 1 ][ i ];
+        const TF nj = P[ 0 ][ j ] * P[ 0 ][ j ] + P[ 1 ][ j ] * P[ 1 ][ j ];
+        dw[ t + 1 ] = dw[ t ] - ( 2 * s - ( nj - ni ) );   // `w_j = w_i - ( 2 s - ( |p_j|^2 - |p_i|^2 ) )`
+        // le reste, pour le tour suivant : la partie `u . x >= s`
+        std::vector<TF> nx, ny;
+        const int nb = int( rx.size() );
+        for ( int q = 0; q < nb; ++q ) {
+            const int l = q + 1 < nb ? q + 1 : 0;
+            const TF dq = ux * rx[ q ] + uy * ry[ q ] - s, dl = ux * rx[ l ] + uy * ry[ l ] - s;
+            if ( dq >= 0 ) { nx.push_back( rx[ q ] ); ny.push_back( ry[ q ] ); }
+            if ( ( dq > 0 ) != ( dl > 0 ) ) {
+                const TF tt = dq / ( dq - dl );
+                nx.push_back( rx[ q ] + tt * ( rx[ l ] - rx[ q ] ) );
+                ny.push_back( ry[ q ] + tt * ( ry[ l ] - ry[ q ] ) );
+            }
+        }
+        rx.swap( nx ); ry.swap( ny );
+    }
+    aires[ k - 1 ] = rx.size() >= 3 ? aire_coupee( rx, ry, 1, 0, INFINI ) : TF( 0 );
+    return true;
 }
 
 } // namespace sf

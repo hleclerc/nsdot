@@ -79,6 +79,8 @@ struct Opts {
     double        mixte_progres = 0;  ///< ... ou le gain minimal sur `|r|_2` par iteration ( 0 : eteint )
     double        mixte_kappa = 30;   ///< ... et le plancher de bruit vise : `kappa eps / sqrt( n )`
     double        agrege = 0;         ///< > 0 : resoudre EN DEUX ETAPES, germes agreges sous ce seuil ( `Agglo.h` )
+    bool          agrege_corr = true;  ///< ... et REDECOUPER les cellules fusionnees ( troisieme etape, 2D )
+    bool          agrege_fin = false;  ///< ... puis finir par un Newton sur le nuage COMPLET depuis ces poids
 };
 
 /// LE SOLVEUR LINEAIRE demande par les options, construit UNE FOIS et hors du dispatch : depuis
@@ -299,6 +301,45 @@ int lance_agrege( const Args &a, const Opts &o, const Nuage<PD::dim> &nu, Lineai
     // C'est exactement ce que le redecoupage du § 23.6 corrigerait, et la mesure ci-dessous le chiffre.
     std::vector<TF> w_plein( n );
     for ( SI i = 0; i < n; ++i ) w_plein[ i ] = nw.w[ vers[ i ] ];
+
+    // ---- etape 3 : LE REDECOUPAGE. Chaque cellule fusionnee est partagee entre les membres de sa
+    // grappe par des plans dont SEUL LE DECALAGE est libre, trouve par bissection sur l'aire. L'ecart
+    // de poids n'est deduit qu'a la fin, donc l'amplification par `1 / delta` est une sortie.
+    TF pire_loc = 0;
+    SI nb_coupees = 0, nb_ratees = 0;
+    if constexpr ( D == 2 ) {
+        if ( o.agrege_corr ) {
+            pdr.set_weights( nw.w.data(), a.par );
+            std::vector<std::vector<SI>> membres( m );
+            for ( SI i = 0; i < n; ++i )
+                if ( taille[ vers[ i ] ] > 1 ) membres[ vers[ i ] ].push_back( i );
+            // les cellules fusionnees, une par grappe non triviale
+            std::vector<ModeleCellule> mods( m );
+            std::vector<char> veut( m, 0 );
+            for ( SI r = 0; r < m; ++r ) veut[ r ] = taille[ r ] > 1;
+            parallel_for( m, a.par, [ & ]( SI k, int ) {
+                const SI r = pdr.ids[ k ];
+                if ( ! veut[ r ] ) return;
+                typename PD::Cell cel;
+                pdr.cellule( k, cel );
+                mods[ r ].depuis( cel, r, red.P, nw.w.data() );
+            } );
+            std::vector<TF> dw, aires;
+            for ( SI r = 0; r < m; ++r ) {
+                if ( ! veut[ r ] ) continue;
+                if ( ! redecoupe( mods[ r ], nu.P, nu_plein, membres[ r ], dw, aires ) ) { ++nb_ratees; continue; }
+                ++nb_coupees;
+                for ( size_t t = 0; t < membres[ r ].size(); ++t ) {
+                    w_plein[ membres[ r ][ t ] ] = nw.w[ r ] + dw[ t ];
+                    const SI i = membres[ r ][ t ];
+                    pire_loc = std::max( pire_loc, std::fabs( nu_plein[ i ] - aires[ t ] ) / nu_plein[ i ] );
+                }
+            }
+            std::printf( "        DECOUPE : %d grappes redecoupees ( %d echecs ), pire ecart LOCAL"
+                         " ( sur la cellule fusionnee ) %.3e\n",
+                         int( nb_coupees ), int( nb_ratees ), double( pire_loc ) );
+        }
+    }
     NewtonOptions om = o.newton;
     om.tol = 1e300;                                  // une seule mesure, pas de resolution
     om.trace = false;
@@ -330,6 +371,28 @@ int lance_agrege( const Args &a, const Opts &o, const Nuage<PD::dim> &nu, Lineai
                  int( n - nb_dedans ), double( pire_seuls ), int( au_dessus[ 0 ] ), int( au_dessus[ 1 ] ),
                  int( au_dessus[ 2 ] ), int( nb_dedans ), double( pire_gr ), int( nv_gr ),
                  pire_gr > pire_seuls * 10 ? "  <- le redecoupage manque ( § 23.6 )" : "" );
+
+    // ---- etape 4 : LA CORRECTION, un Newton sur le nuage COMPLET depuis ces poids.
+    //
+    // Ce qui reste apres le redecoupage n'est pas une erreur de partage -- celui-la est exact a 1e-10 --
+    // mais la PERTURBATION que l'agregation a introduite en deplacant la grappe sur son barycentre : les
+    // voisins voient leur bord bouger de `delta`, et sur une cellule en lamelle une aire bouge de
+    // `delta x perimetre / aire`. Personne d'autre que le nuage complet ne peut la corriger.
+    if ( o.agrege_fin ) {
+        const double tf0 = now();
+        PD pdf;
+        pdf.build( nu.P, nullptr, n, a.leaf );
+        lin.ordre( pdf.ids.data(), n );
+        Newton<PD> nf( pdf, lin, nu.P, a.par, o.newton );
+        nf.nu = nu_plein;
+        const bool okf = nf.resout( w_plein );
+        const NewtonStats sf = nf.st;
+        std::printf( "        FIN     : %s ( max|a-nu|/nu = %.2e, depart %.2e ) -- %d iterations,"
+                     " %d diagrammes ( %d reculs ), %.3f s\n",
+                     sf.fin, double( sf.reste ), double( sf.reste0 ), sf.nb_iter, sf.nb_diag,
+                     sf.nb_recul, now() - tf0 );
+        return okf ? 0 : 1;
+    }
     return ok ? 0 : 1;
 }
 
@@ -502,6 +565,8 @@ int main( int argc, char **argv ) {
         else if ( s == "--mixte-progres" ) o.mixte_progres = std::atof( val() );
         else if ( s == "--mixte-kappa" ) o.mixte_kappa = std::atof( val() );
         else if ( s == "--agrege" )     o.agrege = std::atof( val() );
+        else if ( s == "--agrege-brut" ) o.agrege_corr = false;
+        else if ( s == "--agrege-fin" )  o.agrege_fin = true;
         else if ( s == "--memo" )       o.newton.memo = true;
         else if ( s == "--cible" ) {
             const std::string v = val();
@@ -579,6 +644,8 @@ int main( int argc, char **argv ) {
                 "  --mixte-kappa K    ... et le PLANCHER DE BRUIT vise, en unites de eps_float / sqrt( n )  (30)\n"
                 "  --agrege D      resoudre EN DEUX ETAPES : agreger les germes a moins de D, resoudre le probleme reduit,\n"
                 "                  remonter les poids, et MESURER ce que ca vaut sur le nuage complet ( Agglo.h )\n"
+                "  --agrege-brut   ... sans le redecoupage des cellules fusionnees ( pour voir ce qu.il apporte )\n"
+                "  --agrege-fin    ... puis finir par un Newton sur le nuage COMPLET depuis les poids obtenus\n"
                 "  --quiet         pas de trace par iteration\n"
                 "  --pas P         essais ( KMT, defaut ) | dyadique | facteur | tenseur | essai-limites ( 2D )\n"
                 "                  | modele ( 2D ) : le pas cherche dans le SPAN de plusieurs directions, sur le modele\n"
