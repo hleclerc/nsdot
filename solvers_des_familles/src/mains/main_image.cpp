@@ -57,6 +57,12 @@ namespace {
 
 struct Opts {
     NewtonOptions newton;
+    // LE RESIDU REVIENT A `lin` ICI, contre le defaut de la bibliotheque ( `log`, § 24 ), PAR PRECAUTION
+    // ET NON PAR MESURE : ce main enchaine des centaines de systemes voisins ( § 12 ), donc il est dans
+    // le meme regime de continuation ou `log` a ete mesure mauvais ( § 9.6 ) et ou il fait echouer
+    // `densite` a `sigma = 0.02`. A remesurer ici avant de conclure quoi que ce soit.
+    // ( `--residu log` pour l'essayer quand meme. )
+    Opts() { newton.residu = NewtonOptions::LIN; }
     // LE SOLVEUR LINEAIRE EST LE PREMIER POSTE, ET C'ETAIT LE SEQUENTIEL. Eigen `SimplicialLDLT`
     // etait le defaut : 84 s sur 142 pour le relevement a `n = 1e5`, 106 s sur 157 pour
     // `essai-limites`, soit 59 a 68 % du temps dans UN SEUL FIL -- 2.3 CPU occupes sur 8 demandes.

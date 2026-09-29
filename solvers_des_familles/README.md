@@ -5843,3 +5843,95 @@ le moins éprouvé.
 Ce qui reste hors de ce bilan : le **multi-échelle** (§ 8, toujours sans solution), l'**agrégation**
 (§ 23.10–12, dont la phase 2 est écrite et vérifiée mais pas branchée dans le solveur par défaut), et
 les deux limites structurelles du modèle et des limites — **2D seulement**, comme tout `Ecrasement.h`.
+
+## 24.5 `--residu log` par défaut : ce qu'il a fallu corriger
+
+Fait — `NewtonOptions::residu = LOG`, la bascule vers `lin` étant déjà le défaut. Sur la suite :
+
+| | avant (`lin`) | après (`log` + bascule) |
+|---|---|---|
+| 2D uniforme | 8 diag | **7** |
+| 2D lignes / Voronoï | 78 diag | **39** |
+| 2D lignes / aires égales | 116 diag | **74** |
+| 3D uniforme | 9 diag | **6** |
+| 3D plans (les deux) | 27 diag | **17** |
+
+Le témoin passe toujours (écart 3.9e-12 sur une amplitude 0.128). Les `reste` sont un peu plus grands
+(8.2e-07 au lieu de 2.0e-07 sur les lignes), toujours loin sous la tolérance.
+
+**Mais le défaut de la bibliothèque a cassé la continuation en densité, et il a fallu l'y remettre à
+`lin`.** Le § 9.6 avait déjà mesuré que `log` y coûte dix fois plus ; j'espérais que la bascule l'en
+protégerait, puisque chaque étape repart d'un résidu déjà petit. À `σ = 0.05` c'est le cas — la bascule
+tire à l'itération 0 de chacune des 7 étapes, et le résultat est un match nul (192 diagrammes contre
+188, 152.3 s contre 152.1). À `σ = 0.02` **non** : certaines étapes démarrent au-dessus du seuil, et le
+défaut `log` **échoue** — 6 étapes sur 8, `STAGNATION` puis `SOLVEUR LINÉAIRE EN ÉCHEC`, 1 204
+diagrammes et 642 s, là où `lin` passe les 8 en 862 diagrammes et 503 s.
+
+Donc `main_densite` et `main_image` remettent `residu = LIN` dans leur `Opts`, avec la raison écrite sur
+place. Pour `densite` c'est **mesuré** ; pour `image` c'est **par précaution** — même régime de
+continuation (§ 12), mais pas remesuré ici, et c'est dit ainsi dans le code. Vérification : `densite
+--sigma 0.02 --conv 0.5` reproduit `lin` ligne pour ligne (`212 (176)`, `56 (40)`, `15 (6)`).
+
+La leçon est générale et vaut d'être écrite : **un défaut appartient au régime où il a été mesuré.**
+`log` a été mesuré sur des solves directs ; le mettre dans `NewtonOptions` le poussait dans un régime
+où le banc avait déjà la mesure contraire.
+
+## 24.6 MINIMISER le mérite au lieu de prendre le premier pas qui passe (`--pas merite`)
+
+Question posée : le pas du `log` n'était pas choisi en minimisant le résidu `log`, mais en cherchant
+jusqu'où aller avant qu'une cellule casse — est-ce qu'il ne faudrait pas plutôt minimiser ce qu'on veut
+minimiser ? Réponse : **si, et ça vaut 67 % des diagrammes sur le cas dur.**
+
+D'abord la mise au point, parce que les trois modes ne faisaient pas la même chose :
+
+* `--pas essais` (KMT) : échelle `t = 1, ½, ¼ …` et on prend **le premier** `t` qui passe les deux
+  clauses (plancher d'aire, décroissance `1 − t/2` du mérite). Le mérite `log` est donc bien utilisé,
+  mais comme **veto** et non comme objectif ;
+* `--pas essai-limites` : le pas est `facteur · α*`, c'est-à-dire **où les cellules cassent**, et le
+  mérite ne fait que vétoyer ;
+* `--pas modele` : pareil pour la longueur (`0.99 · α*`), le critère ne choisit que la direction.
+
+Et le profil (§ 21.2) montre que le mérite `log` a un **vrai minimum intérieur** — lignes `σ = 0.005`,
+direction `log`, itération 0 :
+
+| `t` | 1.0 | 0.5 | 0.25 | **0.125** | 0.0625 | → 0 |
+|---|---|---|---|---|---|---|
+| mérite `log` | 2374 | 643 | 334.6 | **322.5** | 333.0 | ↗ 350.3 |
+| cellules vides | 22 334 | 1 061 | 59 | 2 | 0 | 0 |
+
+Deux choses s'y lisent. Le minimum est à `t = 0.125`, et **le plancher d'aire le refuse** (2 cellules
+vides) alors que le mérite y est meilleur qu'au pas retenu. Et le mérite `log` **pénalise déjà les
+cellules vides**, monotonement (643 pour 1 061 vides, 334 pour 59, 322 pour 2) — ce qui rend le plancher
+possiblement redondant.
+
+`--pas merite` descend l'échelle jusqu'à ce que le mérite remonte et prend l'argmin. Avec une précaution
+qui vaut tout : **si le premier barreau passe déjà la condition de KMT, on le prend** et on ne cherche
+pas plus loin — sans ça, la minimisation paie un diagramme de plus par itération là où `t = 1` était
+déjà bon (mesuré : 13 diagrammes au lieu de 7 sur l'uniforme 2D, pour le même résultat).
+
+| | défaut (premier qui passe) | **`--pas merite`** | `--pas merite --sans-plancher-aire` |
+|---|---|---|---|
+| 2D uniforme | 7 | **7** | 7 |
+| **2D lignes `σ=0.005`** | 39, reste 8.2e-07 | **13, reste 1.8e-08** | **13** |
+| 2D lignes dégénéré | 74 | **49** | **49** |
+| 3D uniforme | 6 | **6** | 6 |
+| 3D plans | **17** | 21 | *SOLVEUR EN ÉCHEC* |
+
+**−67 % de diagrammes sur le cas dur 2D et un résidu 45 fois meilleur**, pour un changement qui ne
+touche qu'au choix du pas. C'est le même compte que `--pas modele` (13 diagrammes) sans aucune
+machinerie polynomiale, et sans les `K − 1` résolutions linéaires de plus.
+
+**Et le plancher d'aire devient effectivement redondant — en 2D.** Les colonnes avec et sans plancher
+sont **identiques** (7 / 13 / 49) : le mérite `log` seul suffit à garder les cellules vivantes, ce qui
+était l'intuition. Mais deux réserves fermes : avec le premier-pas-acceptable, éteindre le plancher est
+**catastrophique** (136 diagrammes au lieu de 39 sur les lignes, 170 au lieu de 74 sur le dégénéré) — la
+minimisation est ce qui le rend superflu, pas `log` ; et **en 3D ça casse** (`SOLVEUR LINÉAIRE EN
+ÉCHEC`), donc le plancher reste obligatoire là. L'écrêtage de `g` à `x ≥ 1e-8` en est la cause probable :
+il borne la pénalité d'une cellule vide à `−18.4` au lieu de `−∞`, donc le mérite peut en tolérer
+quelques-unes ; un `log` non écrêté rendrait le plancher inutile par construction, et c'est la prochaine
+chose à essayer.
+
+En 3D `--pas merite` coûte 4 diagrammes de plus sur les plans (21 contre 17) : le barreau
+supplémentaire qui confirme le minimum n'y est pas amorti. **Je ne l'ai donc pas mis par défaut** — ce
+serait un défaut dépendant de la dimension, et je viens de voir (§ 24.5) ce que coûte un défaut posé hors
+du régime où il a été mesuré.

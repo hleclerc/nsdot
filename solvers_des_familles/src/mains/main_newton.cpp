@@ -583,7 +583,8 @@ int main( int argc, char **argv ) {
             const std::string v = val();
             o.newton.pas = v == "dyadique" ? NewtonOptions::DYADIQUE : v == "facteur" ? NewtonOptions::FACTEUR
                          : v == "tenseur" ? NewtonOptions::TENSEUR : v == "essai-limites" ? NewtonOptions::ESSAI_LIMITES
-                         : v == "modele" ? NewtonOptions::MODELE : NewtonOptions::ESSAIS;
+                         : v == "modele" ? NewtonOptions::MODELE : v == "merite" ? NewtonOptions::MERITE
+                         : NewtonOptions::ESSAIS;
         }
         else if ( s == "--facteur" )    o.newton.facteur = std::atof( val() );
         else if ( s == "--theta-mult" ) o.newton.theta_mult = std::atof( val() );
@@ -670,6 +671,8 @@ int main( int argc, char **argv ) {
         else if ( s == "--diag-lap" )   o.newton.diag_lap = true;
         else if ( s == "--agglo" )      o.newton.agglo = std::atof( val() );
         else if ( s == "--mod-frac" )   o.newton.mod_frac = std::atoi( val() );
+        else if ( s == "--mer-patience" ) o.newton.mer_patience = std::atoi( val() );
+        else if ( s == "--sans-plancher-aire" ) o.newton.plancher_aire = false;
         else {
             std::printf( "usage: newton [options]\n" );
             Args::usage();
@@ -693,6 +696,7 @@ int main( int argc, char **argv ) {
                 "  --cout          calculer le COUT DE TRANSPORT sum_i int |x - p_i|^2 a la fin ( 2D )\n"
                 "  --quiet         pas de trace par iteration\n"
                 "  --pas P         essais ( KMT, defaut ) | dyadique | facteur | tenseur | essai-limites ( 2D )\n"
+                "                  | merite : le pas qui MINIMISE le merite le long de la direction ( au lieu du premier qui passe )\n"
                 "                  | modele ( 2D ) : le pas cherche dans le SPAN de plusieurs directions, sur le modele\n"
                 "                  polynomial d.aire -- aucun diagramme pour chercher, un seul pour verifier\n"
                 "  --mod-q Q       modele : le pas du simplexe cherche, 1/Q                        (4)\n"
@@ -723,7 +727,7 @@ int main( int argc, char **argv ) {
                 "  --lim-tol T     precision relative des limites               (1e-2)\n"
                 "  --lim-coeff C   ou verifier la prediction                    (0.99)\n"
                 "  --t-min T       sous ce pas, STAGNATION                      (1e-10)\n"
-                "  --residu R      lin ( a - nu ) | barriere ( x - 1/x, x = a/nu ) | log | puissance  (lin)\n"
+                "  --residu R      lin ( a - nu ) | barriere ( x - 1/x, x = a/nu ) | log | puissance  (log)\n"
                 "  --puis P        puissance : g = ( x^P - 1 ) / P -- P = 1 EST lin, P = 0 EST log  (0.5)\n"
                 "  --bascule-residu R  repasser a lin des que max|a-nu|/nu <= R ( 0 : jamais ; inerte si --residu lin )  (2)\n"
                 "  --merite R      LE JUGE DE L'AMORTISSEMENT, separement de la direction : lin | barriere | log |\n"
@@ -738,6 +742,8 @@ int main( int argc, char **argv ) {
                 "  --agglo D       a l'iteration 0, detecter les grappes de germes a moins de D ( union-find sur les aretes\n"
                 "                  de Delaunay du diagramme de Voronoi : aucune structure de plus ), puis sortir\n"
                 "  --mod-frac N    modele : combien de fractions de alpha* on essaye ( 1 = aucune recherche de relaxation )  (1)\n"
+                "  --mer-patience K   merite : barreaux qu.on laisse remonter avant de s.arreter        (1)\n"
+                "  --sans-plancher-aire   ETEINDRE le plancher d.aire de l.amortissement ( le merite log le penalise deja )\n"
                 "  --diag-lap      tracer ce qui rend L dure : etalement de la diagonale, des poids d'aretes, et l'ANISOTROPIE par ligne\n"
                 "  --methode M     newton ( defaut ) | lbfgs | cg : le premier ordre sur le dual ( PremierOrdre.h )\n"
                 "  --memoire K     L-BFGS : paires gardees                                     (10)\n"

@@ -40,6 +40,16 @@ namespace {
 
 struct Opts {
     NewtonOptions newton;
+    // LE RESIDU REVIENT A `lin` ICI, contre le defaut de la bibliotheque ( `log`, § 24 ). Ce n'est pas
+    // une preference : le defaut `log` a ete mesure sur des SOLVES DIRECTS, et la continuation en
+    // densite est l'autre regime -- celui ou le § 9.6 avait deja montre que `log` coute dix fois plus.
+    // La bascule vers `lin` ne suffit pas a l'en proteger : mesure a `sigma = 0.02`, `--conv 0.5`, le
+    // defaut `log` echoue ( 6 etapes sur 8, STAGNATION puis SOLVEUR LINEAIRE EN ECHEC, 1204 diagrammes )
+    // la ou `lin` passe les 8 en 862. A `sigma = 0.05` c'est un match nul ( 192 contre 188 ) parce que
+    // chaque etape y repart d'un residu sous le seuil, donc la bascule tire des l'iteration 0 ; a
+    // `sigma = 0.02` certaines etapes demarrent au-dessus et payent le plein tarif.
+    // ( `--residu log` pour l'essayer quand meme. )
+    Opts() { newton.residu = NewtonOptions::LIN; }
     std::string   solver = "chol";
     int           amgvar = Amg::RS_GS;
     TF            sigma = 0.05;       ///< l'echelle des largeurs ( multiplie celles du jeu )
@@ -447,6 +457,7 @@ int main( int argc, char **argv ) {
         else if ( s == "--variable" )   o.variable = val();
         else if ( s == "--fd" )         o.fd = std::atof( val() );
         else if ( s == "--garde" )      o.garde = val();
+        else if ( s == "--bascule-residu" ) o.newton.bascule_residu = std::atof( val() );
         else if ( s == "--residu" ) {
             const std::string v = val();
             o.newton.residu = v == "barriere" ? NewtonOptions::BARRIERE : v == "log" ? NewtonOptions::LOG : NewtonOptions::LIN;
@@ -502,7 +513,8 @@ int main( int argc, char **argv ) {
                 "  --mult-ok M     essai-limites : apres un essai passe direct, beta *= M     (2)\n"
                 "  --facteur F     essai-limites : t = F * limite                            (0.9)\n"
                 "  --lim-tol T     precision relative des limites                            (1e-2)\n"
-                "  --residu R      lin ( a - nu ) | barriere ( x - 1/x, x = a/nu ) | log : le residu de Newton et le merite  (lin)\n"
+                "  --residu R      lin ( a - nu ) | barriere ( x - 1/x, x = a/nu ) | log : le residu de Newton et le merite  (log)\n"
+                "  --bascule-residu R  repasser a lin des que max|a-nu|/nu <= R ( 0 : jamais )       (2)\n"
                 "  --garde G       global ( theta = 1, 1/2, ... ) | cellule ( les pincees relevees seules, puis theta )  (global)\n"
                 "  --passes K      garde par cellule : passes de relevement au plus              (6)\n"
                 "  --check         verifier la mesure ( circulation contre surface, derivee contre differences finies )\n"

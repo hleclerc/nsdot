@@ -80,7 +80,21 @@ struct NewtonOptions {
     bool trace      = true;
     int  extraire   = -1;      ///< >= 0 : s'arreter des que la DIRECTION de cette iteration est
                                ///< calculee ( `w` et `d` sont alors ceux du pas propose )
-    enum Pas : int { ESSAIS = 0, DYADIQUE, FACTEUR, TENSEUR, ESSAI_LIMITES, MODELE };
+    /// `MERITE` : le pas qui MINIMISE le merite le long de la direction, au lieu du premier pas qui le
+    /// fait decroitre assez. C'est la question posee dans l'autre sens : si le but est de minimiser le
+    /// merite `log`, autant le minimiser -- d'autant que le profil ( § 21.2 ) montre qu'il a un vrai
+    /// minimum interieur, et que ce minimum est SOUS le pas que le plancher d'aire autorise.
+    ///
+    /// Attention, ca sort de la theorie KMT : celle-ci exige la decroissance `1 - t/2` d'une norme `l2`
+    /// du residu, et minimiser n'est pas la meme condition. On n'exige plus qu'une decroissance stricte.
+    enum Pas : int { ESSAIS = 0, DYADIQUE, FACTEUR, TENSEUR, ESSAI_LIMITES, MODELE, MERITE };
+    /// MERITE : combien de barreaux de l'echelle on accepte de voir REMONTER avant de s'arreter ( le
+    /// profil est unimodal, donc 1 suffit ).
+    int  mer_patience = 1;
+    /// le PLANCHER D'AIRE de l'amortissement. L'eteindre est exactement l'experience que `log` invite a
+    /// faire : son merite penalise deja les cellules vides ( mesure, § 21.2 : 643 pour 1061 vides, 334
+    /// pour 59, 322 pour 2 ), donc le plancher est peut-etre redondant avec lui.
+    bool plancher_aire = true;
     int  mod_q      = 4;       ///< MODELE : le pas du simplexe cherche ( `1/mod_q` ), 4 = les 15 points de l'oracle
     /// MODELE : combien de directions ( 1 = Newton seul, 2 = + log, 3 = + barriere ).
     ///
@@ -150,7 +164,12 @@ struct NewtonOptions {
     /// exige une norme `l2` pour sa preuve de decroissance ; on mesure ce que coute de la remplacer
     /// par celle qu'on veut vraiment faire baisser.
     enum Residu : int { LIN = 0, BARRIERE, LOG, PUISSANCE, PIRE };
-    int  residu     = LIN;
+    /// LE DEFAUT EST `LOG`, avec la bascule vers `LIN` ci-dessous. Mesure ( § 24 ) : -50 % de diagrammes
+    /// sur le cas dur 2D, -37 % en 3D, rien de perdu nulle part. Et la bascule est ce qui le rend sans
+    /// danger hors du solve direct : en continuation de densite, ou `log` SEUL est catastrophique
+    /// ( § 9.6 : des dizaines d'iterations a pas 2e-3, residu fige ), chaque etape repart d'un residu
+    /// deja petit -- donc la bascule tire a l'iteration 0 et le residu est `lin` du debut a la fin.
+    int  residu     = LOG;
     TF   puis       = 0.5;     ///< l'exposant `p` de PUISSANCE
     /// LA BASCULE DE RESIDU : repasser a `LIN` des que `max|a - nu|/nu <= bascule_residu`. `0` : jamais.
     ///
@@ -402,8 +421,8 @@ struct Newton {
     bool resout( const std::vector<TF> &w_init, bool deja_mesure = false ) {
         const SI n = pd.n;
         TF nr_prec = 0;                                  // `|r|_2` de l'iteration precedente
-        std::vector<TF> a2, b, w2, da2;
-        std::vector<Facette> fa2;
+        std::vector<TF> a2, b, w2, da2, wb, ab;
+        std::vector<Facette> fa2, fab;
         std::vector<LimiteCellule> lim;
         std::vector<TF> ucel, u2, b2, d2, sflux, dgard, del;  // la passe CIBLE
         std::vector<char> touche, dumm;
@@ -1580,6 +1599,49 @@ struct Newton {
             bool pris = false;
             TF t_lim0 = t;
             w2.resize( n );
+
+            // ---- LE PAS QUI MINIMISE LE MERITE ( `--pas merite` )
+            //
+            // Le profil du § 21.2 montre que le merite `log` a un MINIMUM INTERIEUR le long de la
+            // direction, et qu'a l'iteration 0 le plancher d'aire refuse le pas ou il se trouve. Ici on
+            // descend l'echelle jusqu'a ce que le merite remonte, et on prend l'argmin -- ce qui coute
+            // en general LE MEME nombre de diagrammes, puisque KMT descendait de toute facon plus bas.
+            if ( o.pas == NewtonOptions::MERITE ) {
+                TF best = INFINI, tb = 0;
+                int monte = 0;
+                for ( TF tp = t; tp > o.t_min; tp /= 2 ) {
+                    for ( SI i = 0; i < n; ++i ) w2[ i ] = w[ i ] + tp * d[ i ];
+                    w2[ 0 ] = 0;
+                    mesures_et_facettes( w2, a2, fa2, pda2 );
+                    TF m2 = INFINI;
+                    for ( SI i = 0; i < n; ++i )
+                        if ( protegee[ i ] && a2[ i ] < m2 ) m2 = a2[ i ];
+                    const TF v = merite( a2 );
+                    // KMT D'ABORD : si le PREMIER barreau passe deja la condition de KMT, on le prend et
+                    // on ne cherche pas plus loin. Sans ca la minimisation paye un diagramme de plus par
+                    // iteration sur les cas ou `t = 1` etait deja bon -- mesure : 13 diagrammes au lieu de
+                    // 7 sur l'uniforme 2D, pour le meme resultat.
+                    if ( tp == t && ( ! o.plancher_aire || m2 >= eps )
+                         && v <= ( 1 - gain * tp / 2 ) * nr && v < nr ) {
+                        best = v; tb = tp;
+                        wb = w2; ab = a2; fab = fa2;
+                        break;
+                    }
+                    if ( ( ! o.plancher_aire || m2 >= eps ) && v < best ) {
+                        best = v; tb = tp; monte = 0;
+                        wb = w2; ab = a2; fab = fa2;         // le meilleur, a garder
+                    } else if ( best < INFINI && ++monte >= o.mer_patience )
+                        break;
+                    ++st.nb_recul;                          // tout barreau essaye en est un
+                }
+                if ( tb > 0 && best < nr ) {
+                    w2.swap( wb ); a2.swap( ab ); fa2.swap( fab );
+                    t = tb;
+                    st.nb_recul -= 1;                       // le barreau retenu n'est pas un recul
+                    pris = true;
+                }
+            }
+
             for ( int passe = 0; passe < 2 && ! pris; ++passe ) {
                 if ( passe == 1 ) {                      // la deformation n'a rien rendu
                     if ( d_sur.empty() || t_sur <= 0 ) break;
@@ -1618,7 +1680,7 @@ struct Newton {
                                      double( std::min( ( 1 - gain * t / 2 ) * nr, nr ) ) );
                         std::fflush( stdout );
                     }
-                    if ( m2 >= eps && n2r <= ( 1 - gain * t / 2 ) * nr && n2r < nr ) { pris = true; break; }
+                    if ( ( ! o.plancher_aire || m2 >= eps ) && n2r <= ( 1 - gain * t / 2 ) * nr && n2r < nr ) { pris = true; break; }
                     t /= 2;
                     ++st.nb_recul;
                     if ( t < o.t_min )
