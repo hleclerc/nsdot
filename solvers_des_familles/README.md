@@ -5665,8 +5665,14 @@ paramétrer la paire par deux poids.
 Ce plancher se calcule, et il tombe juste. Résolution d'un poids en `double` : `ε |w| = 2.2e-16 ×
 0.1285 = 2.8e-17`. Résolution du décalage du plan : divisée par `2d = 2 × 1.009e-8`, soit **3.1e-9**.
 Rapportée à l'étendue de la cellule le long de l'axe de la paire, `h = 4.53e-4`, ça donne une erreur
-d'aire relative de **3.1e-6** — mesurée 2.35e-6. **À 30 % près, le plancher du banc EST l'epsilon
-machine vu à travers `1/δ`.** Aucun algorithme ne le déplace.
+d'aire relative de **3.1e-6** — mesurée 2.35e-6. L'ordre de grandeur est donc le bon, et c'est bien
+pourquoi le plancher est vers `10⁻⁶` et pas `10⁻¹²` : **le plancher est l'epsilon machine vu à travers
+`1/δ`.**
+
+> **Nuance, ajoutée après coup (§ 24.3).** L'estimation ci-dessus utilise l'amplitude *globale* des poids
+> (0.1285), donc elle **majore** : ce qui compte est l'amplitude locale. Et 2.35e-6 n'est pas une barrière
+> que rien ne franchit — `--pas modele` atteint 9.65e-07 sur ce même nuage. C'est **où l'amortissement de
+> KMT cale**, et l'argument en `1/δ` en donne l'ordre de grandeur, pas la valeur exacte.
 
 ### Donc la conclusion porte sur l'interface, pas sur l'algorithme
 
@@ -5755,3 +5761,85 @@ les deux sont la même petitesse, vue une fois au numérateur et une fois au dé
 
 C'est le compromis raisonnable : on ne demande pas au solveur de calculer ce que le format ne peut pas
 stocker, et on constate que la quantité qui intéresse vraiment n'en dépend pas.
+
+---
+
+# 24. BILAN : L'ALGORITHME PAR DÉFAUT, ET CE QU'IL VAUT CONTRE KMT
+
+## 24.1 Le défaut, c'est KMT — et il n'a pas bougé
+
+À une exception près, tout ce que les § 21 à 23 ont ajouté est **en option**. Le défaut du banc est
+l'amortissement de Kitagawa–Mérigot–Thibert :
+
+* **direction** : Newton sur le dual de Kantorovich, `L d = ν − a` ;
+* **pas** : l'échelle `t = 1, 1/2, 1/4 …`, un diagramme par essai, accepté quand (a) toute cellule reste
+  au-dessus du plancher d'aire `eps` et (b) `|a − ν|₂` décroît d'au moins `1 − t/2`.
+
+L'exception est une **correction**, pas une accélération, et elle est dans le défaut : le plancher ne
+défend plus que les cellules **non vides au départ** (§ 8.7). Avant, une seule cellule vide mettait
+`eps = 0` et désactivait le garde-fou **en silence** — un départ avec une cellule vide pouvait en vider
+7 750 après un pas. C'est le seul changement au comportement par défaut de tout ce travail.
+
+## 24.2 Contre KMT (`job -b`, 8 fils, `n = 10⁵`)
+
+`scripts/bilan_kmt.sh`. « reste » est le `max|a−ν|/ν` atteint, et il compte : un nombre de diagrammes ne
+veut rien dire si les variantes ne s'arrêtent pas au même endroit.
+
+| 2D lignes / Voronoï | it | diag | temps | reste |
+|---|---|---|---|---|
+| **KMT (le défaut)** | 23 | 78 | 10.94 s | 2.00e-07 |
+| KMT + `p = 0.25` | 16 | 50 | 8.07 s | 8.27e-09 |
+| KMT + `log` + bascule | 14 | 39 | 6.44 s | 8.23e-07 |
+| **limites + `log` + bascule** | 12 | **19** | **4.25 s** | 2.69e-08 |
+| modèle (span, `K = 2`) | 12 | **13** | 6.57 s | 8.08e-07 |
+
+| 2D lignes / aires égales — le nuage **dégénéré** | it | diag | temps | reste |
+|---|---|---|---|---|
+| **KMT** | 24 | 113 | 14.21 s | STAGNATION 2.35e-06 |
+| KMT + `log` + bascule | 16 | 74 | 10.01 s | STAGNATION 2.35e-06 |
+| limites + `log` + bascule | 13 | 53 | 7.50 s | STAGNATION 2.35e-06 |
+| **modèle (span, `K = 2`)** | 12 | **13** | **7.40 s** | **CONVERGE 9.65e-07** |
+
+| 3D plans / Voronoï | it | diag | temps | reste |
+|---|---|---|---|---|
+| **KMT** | 13 | 27 | 10.48 s | 1.16e-10 |
+| **KMT + `p = 0.25`** | 9 | **17** | **7.53 s** | 1.63e-12 |
+| KMT + `log` + bascule | 9 | **17** | **7.50 s** | 1.96e-09 |
+
+Sur l'uniforme (2D comme 3D) tout se tient dans le bruit, sauf l'exposant qui gagne un tiers du temps
+en 3D (9 → 5 diagrammes, 3.05 → 1.93 s). C'est cohérent : il n'y a rien à gagner là où KMT accepte
+déjà `t = 1`.
+
+**Donc, contre KMT : −61 % de temps et −76 % de diagrammes sur le cas dur 2D, −28 % en 3D, et le seul
+essai qui converge sur le nuage dégénéré.** Le gain croît avec la difficulté et s'annule sur les cas
+faciles, ce qui est la bonne forme.
+
+## 24.3 Deux réserves qu'il faut lire avec les chiffres
+
+**Les variantes rapides s'arrêtent parfois plus près de la tolérance.** `limites + log` finit à 6.8e-07
+sur l'uniforme 2D là où KMT descend à 2.6e-10 : le dernier pas de Newton est quadratique, donc KMT
+dépasse largement la cible pour le même prix. Sur les cas durs la réserve ne tient pas — `limites + log`
+fait **à la fois** moins de diagrammes (19 contre 78) et un meilleur reste (2.7e-8 contre 2.0e-7).
+
+**Et le 2.35e-6 du nuage dégénéré n'est pas une barrière absolue.** Le § 23.11 l'explique par l'epsilon
+machine vu à travers `1/δ`, et l'ordre de grandeur est le bon — c'est bien pourquoi le plancher est vers
+`10⁻⁶` et pas `10⁻¹²`. Mais l'estimation utilisait l'amplitude *globale* des poids, donc elle majore :
+`--pas modele` atteint 9.65e-07 sur ce même nuage. Le 2.35e-6 est donc **où l'amortissement de KMT
+cale**, pas une limite que rien ne franchit.
+
+## 24.4 Ce qu'il faudrait mettre par défaut
+
+D'après ces mesures, et c'est un changement d'une ligne que je n'ai pas fait :
+
+* **`--residu log`** (la bascule vers `lin` étant déjà le défaut) : elle aide dans les deux dimensions,
+  n'a coûté nulle part, et c'est la seule amélioration disponible en 3D ;
+* **`--pas essai-limites`** en 2D : c'est la ligne la plus rapide, et elle ne fait aucun recul.
+
+Je laisserais le **modèle** en option : il donne le moins de diagrammes de tout le banc (13 partout sur
+les cas durs) et il est le seul à passer le nuage dégénéré, mais son balayage global coûte un diagramme
+par itération, donc il perd en temps de paroi sur les cas sains — et c'est le code le plus récent, donc
+le moins éprouvé.
+
+Ce qui reste hors de ce bilan : le **multi-échelle** (§ 8, toujours sans solution), l'**agrégation**
+(§ 23.10–12, dont la phase 2 est écrite et vérifiée mais pas branchée dans le solveur par défaut), et
+les deux limites structurelles du modèle et des limites — **2D seulement**, comme tout `Ecrasement.h`.
