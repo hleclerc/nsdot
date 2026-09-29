@@ -141,6 +141,7 @@ Mêmes itérations, mêmes diagrammes, mêmes reculs que l'ancien banc, au diagr
 | | it / diag (reculs) | diagrammes | résolution | TOTAL | ancien TOTAL |
 |---|---|---|---|---|---|
 | 2D lignes / aires égales | 24 / 113 (89) | 7.9 s (44 %) | 9.2 s | **17.9 s** | 22.5 s |
+| 2D lignes / Voronoï, nuage dédupliqué (§ 23.7) | 23 / 78 (54) | — | — | — | — |
 | 3D uniforme | 6 / 9 (2) | 2.9 s (56 %) | 2.1 s | **5.2 s** | — |
 | 3D plans / Voronoï | 13 / 27 (13) | 11.0 s (68 %) | 4.8 s | **16.3 s** | 20.8 s |
 
@@ -148,6 +149,19 @@ Sur les lignes, les poids trouvés collent à ceux du fichier (L-BFGS, pysdot) �
 amplitude de 0.128. La boucle y sort en `STAGNATION` à `max|a−ν|/ν = 3e-6` : c'est le plancher du
 cas (le fichier annonce 2.35e-6 en en-tête), pas un défaut du solveur — l'ancien banc s'arrête au
 même endroit.
+
+> **CE PLANCHER ÉTAIT UN DÉFAUT DE DONNÉES, et il n'existe plus sur le nuage Voronoï (§ 23.7).**
+> `lines5_n100000_s0.005_voronoi.txt` portait **56 paires de germes confondus**, dont une à 1.009e-08
+> pour un espacement médian de 4.5e-4 : deux germes au même point se partagent une cellule qu'aucun
+> poids ne sépare, d'où le plafond. Le nuage a été **dédupliqué en place** (`n = 99 944`) et la boucle
+> y **CONVERGE** désormais à 2.00e-07 en 78 diagrammes, contre 116 et `STAGNATION` avant.
+>
+> `lines5_n100000_s0.005_equal.txt` a été **laissé tel quel**, volontairement : c'est lui qui PORTE la
+> solution de référence (L-BFGS, pysdot), et retirer un germe la périme — sa masse doit être reprise
+> par les autres. `pysdot` n'étant installé nulle part ici, la régénérer est impossible, et un témoin
+> vaut plus qu'un nuage propre de plus. L'entrée « lignes / aires égales » de la suite garde donc le
+> nuage dégénéré, son plancher à 2.35e-6, **et son témoin** (écart 9.8e-13) — et elle joue maintenant
+> le rôle utile de cas dégénéré délibéré. Les deux entrées « lignes » ne sont plus le même nuage.
 
 Le solveur linéaire, sur les lignes : Cholesky **11.9 s** au total, Ruge-Stüben+GS 15.2 s,
 agrégation+spai0 17.9 s. Sur l'uniforme c'est l'inverse, et à 10⁶ Cholesky ne monte pas en
@@ -474,7 +488,7 @@ le majorant affine des poids (`WeightMajorant.h`) sur un nœud de germes clampé
 32 767 violés. Deux garde-fous (pente admise seulement si `|a_d| × étendue_d ≤ 8 ×
 étalement`, marge de 8 ulp sur `b`) : zéro violation, somme 1.000000000, témoins inchangés,
 même temps — et Newton stagne désormais à **2.35e-6, le plancher annoncé par le fichier**, au
-lieu de 3.05e-6. `check --load FILE [--cellule I] [--weights -1]` le vérifie ; **le même code
+lieu de 3.05e-6 (ce plancher était un défaut du nuage, corrigé depuis sur l'entrée Voronoï : § 23.7). `check --load FILE [--cellule I] [--weights -1]` le vérifie ; **le même code
 vit dans `sdot` (`refresh_weight_majorants`), à reporter.**
 
 # 8. LE MULTI-ÉCHELLE : LA PROLONGATION, MESURÉE (`multiechelle`)
@@ -973,7 +987,9 @@ Or le même objet en 2D est l'enveloppe convexe inférieure des `n` points relev
 `multiechelle --ecrire-depart`). Cas dur `σ = 0.005` nettoyé (`n = 99993` : sept germes **confondus**
 retirés — le clip de `gen_cases.py` en fabrique à `10⁻⁸` là où l'espacement médian est `4.5·10⁻⁴`, et
 c'est ce qui faisait sortir la référence en STAGNATION ; elle **CONVERGE** une fois nettoyée, 18 it,
-30 diagrammes). Départ : solution lissée d'un balayage, 21 849 cellules sous le plancher, rmax 274.
+30 diagrammes). Ce nettoyage-là était fait à la main, sur les seules paires les plus serrées ; il est
+devenu l'opération versionnée `cases/nettoie_germes.py`, qui en trouve **56** au seuil d'un pour cent
+de l'espacement médian, et le nuage Voronoï de `cases/` est nettoyé en place depuis (§ 23.7). Départ : solution lissée d'un balayage, 21 849 cellules sous le plancher, rmax 274.
 
 | réparation | sous le plancher | **vides dans R²** | relèvements |
 |---|---|---|---|
@@ -1503,7 +1519,9 @@ diagramme compris. L'hybride : le premier ordre pour partir de loin, Newton pour
 
 n = 100 000, 8 fils. 2D : Cholesky pour tout le monde ; 3D : AMG Ruge-Stüben+GS. Sur les lignes
 le plancher du cas est 2.35e-6 (§ 3), la tolérance est mise à 4e-6 pour que personne ne paie
-la sortie en STAGNATION. `L₀` = laplacien figé, refait selon les règles ci-dessus ; `refacto 1` =
+la sortie en STAGNATION. (Ce plancher était un défaut du nuage : le Voronoï dédupliqué du § 23.7
+converge à 2.0e-7, donc **une reprise de ce tableau n'aurait plus besoin de la tolérance élargie** —
+elle reste ici parce que les chiffres qui suivent ont été mesurés avec elle.) `L₀` = laplacien figé, refait selon les règles ci-dessus ; `refacto 1` =
 refait à chaque itération, c'est Newton avec cette recherche linéaire à la place des essais.
 
 | diagrammes (itérations) — temps | 2D uniforme | 2D lignes | 3D uniforme | 3D plans |
@@ -4097,6 +4115,7 @@ première réparation : après elle, la valeur obtenue (1.37e−05 en 2D à `n =
 |---|---|---|
 | `double`, uniforme | CONVERGE 2.04e−09, 6 it, 8 diag | CONVERGE **2.58e−10**, 6 it, 8 diag |
 | `double`, lignes | STAGNATION 2.35e−06, 116 diag | STAGNATION 2.35e−06, 116 diag |
+| ... le même, nuage dédupliqué (§ 23.7) | — | CONVERGE **2.00e−07**, **78 diag** |
 | `float`, uniforme | STAGNATION 3.67e−03, 133 diag | STAGNATION **5.40e−04**, **91 diag** |
 | **`float`, lignes** | **SOLVEUR LINÉAIRE EN ÉCHEC** (résidu 1.65e+03, 20 119 itérations de CG) | STAGNATION **1.13e−03** |
 
@@ -4934,10 +4953,17 @@ un point sur un plateau — et sur trois des cinq cas l'optimum est *à l'intér
 `0.25`, jamais en `p = 0` seul. Le gain le plus net est celui qui compte : le cas 3D dur passe de 27
 à 16 diagrammes (−41 %), le 2D dur de 41 à 27 (−34 %).
 
-Sur `σ = 0.005` tous les essais sortent en STAGNATION vers 2.4e-6 : ce nuage de `cases/` **est
-dégénéré** (deux germes à 1.009e-08 l'un de l'autre, § 8.7.3), et 2.4e-6 est son plancher, pas celui
-de la méthode. À plancher égal le classement tient quand même : 113 diagrammes à `p = 1`, 90 à
-`p = 0.5`, 84 à `p = 0.25`, 73 à `p = 0`.
+Sur `σ = 0.005` ces chiffres-là ont été mesurés **avant** la déduplication du nuage : tous les essais
+sortaient en STAGNATION vers 2.4e-6, le plancher du nuage et non celui de la méthode. À plancher égal
+le classement tenait déjà (113 diagrammes à `p = 1`, 90 à `p = 0.5`, 84 à `p = 0.25`, 73 à `p = 0`), et
+**sur le nuage dédupliqué (§ 23.7) il est plus net encore**, tout convergeant :
+
+| `p` | 1 | 0.9 | 0.75 | 0.5 | 0.25 | 0.1 | 0 |
+|---|---|---|---|---|---|---|---|
+| diagrammes | 78 | 64 | 64 | 56 | 50 | 44 | **39** |
+
+**78 → 39, un facteur deux** — le plus fort gain de l'exposant sur tout le banc, et c'est le cas le
+plus dur qui le donne. La dégénérescence le masquait.
 
 ## 21.5 La relaxation à la main, sous `essai-limites` (`--facteur`)
 
@@ -5053,20 +5079,25 @@ résidu — sans ça le premier pas se calcule avec un résidu et se juge avec u
 
 | `R` | uniforme | `σ = 0.1` | `σ = 0.02` | `σ = 0.005` |
 |---|---|---|---|---|
-| **0** — `log` pur | 8 | 8 | 13 | **536** |
-| 0.5 | **7** | 8 | 13 | **53** |
-| 2 | **7** | **7** | 13 | **53** |
-| 10 | **7** | **7** | 13 | **53** |
-| 50 | **7** | 8 | **12** | 54 |
-| 200 | **7** | 8 | 14 | 56 |
-| 1000 | **7** | 10 | 18 | 67 |
-| **10⁹** — `lin` pur | **7** | 10 | 26 | 64 |
+| **0** — `log` pur | 8 | 8 | 13 | 20 |
+| 0.5 | **7** | 8 | 13 | **19** |
+| 2 | **7** | **7** | 13 | **19** |
+| 10 | **7** | **7** | 13 | **19** |
+| 50 | **7** | 8 | **12** | 20 |
+| 200 | **7** | 8 | 14 | 22 |
+| 1000 | **7** | 10 | 18 | 33 |
+| **10⁹** — `lin` pur | **7** | 10 | 26 | 30 |
 
-**Ça marche, le seuil n'est pas critique, et le gain est là où on ne l'attendait pas.** La fenêtre
-`R ∈ [0.5, 10]` est large et plate, et elle gagne un diagramme sur les deux cas faciles. Mais le vrai
-gain est sur le nuage dégénéré : **536 → 53 diagrammes**, un facteur dix, parce que `log` seul y
-passait 486 reculs à s'acharner sur une cellule que rien ne peut réparer et que `lin` borne à `ν`.
-C'est le même mécanisme qu'au § 22.4, atteint autrement.
+**Ça marche, le seuil n'est pas critique, et le gain est modeste.** La fenêtre `R ∈ [0.5, 10]` est large
+et plate, et elle gagne un diagramme sur trois des quatre cas — sans rien coûter, et en supprimant un
+réglage (voir plus bas).
+
+> **CORRECTION.** La colonne `σ = 0.005` annonçait d'abord 536 diagrammes pour `log` pur contre 53 avec
+> la bascule — « un facteur dix », et j'en avais fait le vrai gain de l'idée. C'était **un artefact du
+> nuage dégénéré** : `log` s'acharnait 486 reculs sur une cellule que rien ne pouvait réparer, puisque
+> deux germes y étaient confondus. Sur le nuage dédupliqué (§ 23.7) la même colonne fait 20 contre 19.
+> La bascule reste utile — un diagramme partout, un réglage de moins — mais son gain est du même ordre
+> sur tous les nuages, et le facteur dix n'existait pas.
 
 Et **la bascule simplifie la relaxation** au lieu de la compliquer — c'était la crainte inverse.
 Diagrammes à `σ = 0.02` contre `--facteur` :
@@ -5094,13 +5125,11 @@ un polynôme multivarié) ; **sur le nuage dégénéré le modèle gagne largeme
 et il CONVERGE, contre 53, 23.1 s et STAGNATION). La bascule est ce qu'il faut mettre par défaut ; le
 modèle est ce qu'il faut sortir quand ça ne passe pas.
 
-> **Attention sur `σ = 0.005` : ces chiffres dépendent du solveur linéaire.** `log` pur y fait 536
-> diagrammes avec AMGCL et 58 avec Cholesky — le nuage porte 56 paires de germes trop proches, dont une
-> à 1.009e-08 (§ 8.7.3), donc des poids de laplacien à 1.4e4 contre une médiane de 0.29 (§ 23.3), et un
-> Krylov à tolérance relative n'y rend pas la même direction qu'une factorisation. Les tableaux de cette
-> section et du § 22.3 sont à AMGCL (le défaut en 2D) ; ceux en temps sont à Cholesky. Sur ce nuage-là,
-> comparer des variantes à solveur différent ne veut rien dire — et `cases/nettoie_germes.py` le rend
-> sain, après quoi il CONVERGE en 19 diagrammes (§ 23.3).
+> **Ce que la dégénérescence faisait aux comparaisons de solveurs.** Sur l'ancien nuage sale, `log` pur
+> faisait 536 diagrammes avec AMGCL et 58 avec Cholesky : les poids de laplacien montaient à 1.4e4 contre
+> une médiane de 0.29 (§ 23.2), et un Krylov à tolérance relative n'y rendait pas la même direction
+> qu'une factorisation. Comparer deux variantes à solveur différent n'y voulait donc rien dire. Sur le
+> nuage dédupliqué le problème disparaît — c'est l'une des raisons de la bascule du § 23.7.
 
 
 # 22. LE MODÈLE POLYNOMIAL MULTI-DIRECTIONS (`Ecrasement.h` : `PolyMulti`, `newton --pas modele`)
@@ -5179,26 +5208,31 @@ exactement celles où le pas est le plus long (`0.40`, `0.74`, `0.99`).
 Et le bilan en diagrammes, `n = 10⁵`, contre toutes les références des sections précédentes
 (`scripts/bilan_modele.sh`) :
 
-| variante | uniforme | `σ=0.1` | `σ=0.02` | `σ=0.005` (nuage dégénéré) |
+| variante | uniforme | `σ=0.1` | `σ=0.02` | `σ=0.005` (dédupliqué, § 23.7) |
 |---|---|---|---|---|
-| `lin` / essais — la référence du banc | 8 | 13 | 41 | 116, stagne |
-| `p = 0.25` / essais (§ 21.4) | 6 | 16 | 27 | 84, stagne |
-| `lin` / limites, relaxation 0.95 (§ 21.5) | 7 | 10 | 20 | 67, stagne |
-| `log` / limites, relaxation 0.9 (§ 21.5) | 8 | **8** | 13 | 536, stagne |
-| **modèle `K = 1`** — LE CONTRÔLE, pas de span | 7 | 11 | 16 | 61, stagne |
-| modèle `K = 2` | 6 | **8** | 11 | 47, stagne |
-| **modèle `K = 3`** — le défaut | 6 | **7** | 11 | **13, CONVERGE** |
-| modèle `K = 3` + limites exactes | **5** | **7** | **10** | 47, stagne |
+| `lin` / essais — la référence du banc | 8 | 13 | 41 | 78 |
+| `p = 0.25` / essais (§ 21.4) | 6 | 16 | 27 | 50 |
+| `lin` / limites, relaxation 0.95 (§ 21.5) | 7 | 10 | 20 | 31 |
+| `log` / limites, relaxation 0.9 (§ 21.5) | 8 | **8** | 13 | 20 |
+| **modèle `K = 1`** — LE CONTRÔLE, pas de span | 7 | 11 | 16 | 25 |
+| **modèle `K = 2`** — le défaut | 6 | **8** | 11 | **13** |
+| modèle `K = 3` | 6 | **7** | 11 | 14 |
+| modèle `K = 3` + limites exactes | **5** | **7** | **10** | **13** |
 
 Le contrôle `K = 1` est ce qui rend le tableau lisible : c'est le même code, le même critère, le même
 choix de pas, mais **un seul vecteur dans le span** — donc tout l'écart entre sa ligne et celle de
 `K = 3` est le span et rien d'autre. Il vaut 16 → 11 diagrammes à `σ = 0.02` (−31 %) et 11 → 7 à
 `σ = 0.1` (−36 %). Contre la référence du banc, 41 → 11 (−73 %).
 
-Sur `σ = 0.005` — le nuage dégénéré, deux germes à 1.009e-08 (§ 8.7.3) — le modèle à `K = 3` est **le
-seul essai de tout ce banc qui converge**, en 13 diagrammes et sans un recul, là où tout le reste
-stagne à 2.3e-6 entre 47 et 536 diagrammes (et voir l'avertissement du § 21.7 : sur CE nuage les
-chiffres dépendent du solveur linéaire, ce tableau est à AMGCL). C'est à prendre avec la prudence qu'un cas unique mérite :
+Sur `σ = 0.005` — le cas le plus dur, une fois dédupliqué — le modèle fait **13 diagrammes contre 78**
+pour la référence et 20 pour la meilleure combinaison réglée à la main, et **sans un seul recul**.
+
+> **CORRECTION.** Ce paragraphe disait que le modèle à `K = 3` était « le seul essai de tout ce banc qui
+> converge » sur ce nuage, en 13 diagrammes contre 47 pour `K = 2`, et j'en avais tiré qu'il fallait les
+> trois directions. C'était **entièrement la dégénérescence** : sur le nuage dédupliqué tout converge,
+> `K = 2` fait 13 et `K = 3` en fait 14. Le défaut est donc revenu à **deux directions**, ce qui économise
+> une résolution linéaire par itération — la troisième ne gagne qu'un diagramme sur `σ = 0.1` et en perd
+> un ici. C'est à prendre avec la prudence qu'un cas unique mérite :
 il faut les **trois** ingrédients à la fois (trois directions, le pas du modèle, le garde-fou du
 § 22.4), chacun retiré ramène la stagnation, et une conjonction aussi serrée sur un seul nuage ne fait
 pas une loi.
@@ -5213,7 +5247,7 @@ refuse tout.
 
 Deux parades mesurées :
 
-| `σ=0.005` | uniforme / `σ=0.1` / `σ=0.02` | |
+| juge du modèle | uniforme / `σ=0.1` / `σ=0.02` | `σ=0.005` **sale** (le cas qui a révélé le problème) |
 |---|---|---|
 | maximum strict | 5 / 7 / 10 | **1 139**, MAX IT |
 | mérite `log` (robuste, mais plus d'extrême) | 6 / 8 / 13 | 124 |
@@ -5327,10 +5361,10 @@ fait passer la partie linéaire de 4.5 s à **50 s**.
 `cases/nettoie_germes.py` retire d'une grappe tous les germes sauf le premier (on ne déplace personne :
 retirer un germe confondu avec son voisin ne change aucune cellule visible). 56 germes sur 100 000, et :
 
-| | `c` max | diag max | Newton | partie linéaire à 8 fils (chol / amg / mg) |
+| | `c` max | diag max | Newton (`log` / limites) | partie linéaire à 8 fils (chol / amg / mg) |
 |---|---|---|---|---|
 | sale | 1.4e4 | 1.4e4 | 53 diag, **STAGNATION** à 2.35e-6 | 2.15 / 3.34 / 4.51 s |
-| **propre** | **1.3e2** | **1.4e2** | **19 diag, CONVERGE** à 2.7e-8 | **1.99 / 2.65 / 2.97 s** |
+| **propre** | **1.3e2** | **1.4e2** | **19 diag, CONVERGE** à 2.7e-8 | **1.97 / 2.65 / 2.94 s** |
 
 L'étalement des poids est divisé par cent, le cas **converge** au lieu de plafonner, et les diagrammes
 passent de 53 à 19. Les solveurs itératifs sont ceux qui gagnent le plus (−21 % pour AMG, −34 % pour
@@ -5392,10 +5426,7 @@ ne change aucune cellule visible, le déplacer changerait le problème). Et sur 
 retirer un germe change le problème, donc les poids stockés ne le résolvent plus, et un témoin faux
 est pire que pas de témoin (le banc ignore de lui-même un `W` nul).
 
-Les fichiers propres sont écrits à côté (`*_propre.txt`), pas en place : remplacer
-`lines5_n100000_s0.005_*` changerait les chiffres de référence du banc — c'est le « plancher du cas à
-2.35e-6 » qui disparaît, et il est cité aux § 3, 8.7.3, 10.1, 21.7, 22.3 et 23.3. C'est une bascule à
-faire d'un coup, avec la mise à jour de ces sections.
+**La bascule a été faite** : § 23.7.
 
 ## 23.6 Ce qu'il faudra faire : FUSIONNER les germes confondus, pas les retirer
 
@@ -5428,3 +5459,92 @@ ne peut pas jeter des points.
 À mesurer quand ce sera écrit : que le `w` de la solution fusionnée-puis-découpée coïncide avec celui
 du problème complet là où le problème complet est soluble, et que `σ = 0.005` converge sans rien
 perdre — ce qui, contrairement à la déduplication, vaudra pour n'importe quel `ν`.
+
+## 23.7 LA BASCULE : les nuages Voronoï dédupliqués en place
+
+Faite. `cases/lines5_*_voronoi.txt` (les cinq : `σ = 0.005`, `0.02`, `0.05`, `0.1`, et `n = 2000`) sont
+remplacés par leurs versions dédupliquées. Les fichiers `_equal` sont **laissés tels quels** : ils
+portent la solution de référence, retirer un germe la périme, `pysdot` n'est installé nulle part ici
+donc on ne peut pas la régénérer, et un témoin vaut plus qu'un nuage propre de plus. Conséquence
+assumée : les deux entrées « lignes » de la suite ne sont plus le même nuage, et « lignes / aires
+égales » garde le nuage dégénéré, son plancher à 2.35e-6 **et son témoin** (écart 9.8e-13) — ce qui lui
+donne un rôle utile de cas dégénéré délibéré.
+
+Ce que ça change, entrée par entrée de la suite (défaut, un fil) :
+
+| | avant | après |
+|---|---|---|
+| 2D uniforme | 6 it, 8 diag, CONVERGE 2.58e-10 | inchangé |
+| **2D lignes / Voronoï** | 25 it, 116 diag, **STAGNATION** 2.35e-6 | **23 it, 78 diag, CONVERGE 2.00e-7** |
+| 2D lignes / aires égales | 25 it, 116 diag, STAGNATION 2.35e-6 | inchangé (volontairement) |
+| 3D (les deux) | — | inchangé (ces nuages étaient propres) |
+| 2D lignes `σ = 0.02 / 0.05 / 0.1` | 41 / 23 / 13 diag | 41 / 23 / 13 diag — **identiques** |
+
+Les six sections annoncées sont reprises : § 3 (le plancher), § 7 (la mention incidente), § 8.7.3 (le
+nettoyage à la main devenu versionné), § 10.1 (la tolérance élargie à 4e-6, désormais inutile), § 19.10
+(le tableau `fp32`), § 21.4 et § 21.7 (la colonne `σ = 0.005`), § 22.3 (le tableau du modèle) et
+§ 23.3/23.5. **Deux de mes conclusions y tombent**, et c'est le vrai intérêt de l'opération :
+
+* le « facteur dix » de la bascule de résidu (536 → 53 diagrammes) **n'existait pas** : c'était `log`
+  s'acharnant sur une cellule irréparable. Nuage propre : 20 contre 19 ;
+* la troisième direction du modèle ne servait qu'à ça. Nuage propre : `K = 2` fait 13 diagrammes,
+  `K = 3` en fait 14 — le défaut est revenu à **deux**, une résolution linéaire de moins par itération.
+
+En revanche l'exposant du § 21.4 ressort **plus fort** : 78 → 39 diagrammes sur le cas dédupliqué, un
+facteur deux, contre 113 → 73 avant. La dégénérescence le masquait.
+
+## 23.8 Ce que coûterait la phase d'agglomération (`newton --agglo D`)
+
+Question : une première phase d'agglomération paraît obligatoire pour un code robuste, mais on n'a pas
+les structures de données pour ça. **On les a**, et c'est le point.
+
+En `w = 0` le diagramme **est** celui de Voronoï, donc sa liste de facettes **est** le graphe de
+Delaunay. Or Delaunay contient l'arbre couvrant minimal euclidien, et les grappes du lien simple au
+seuil `δ` sont exactement les composantes connexes des arêtes de l'ACM sous `δ`. Donc **balayer `fa` et
+faire un union-find rend exactement les grappes voulues** — pas de kd-tree, pas de grille, pas de tri,
+et le diagramme est payé de toute façon. (La réciproque est la contrainte : un diagramme de Laguerre
+n'est pas Delaunay et ne contient plus l'ACM, donc la détection doit se faire *avant* la résolution —
+ce qui est justement le moment voulu.)
+
+`--agglo D` le fait et se chronomètre, `n = 10⁵` :
+
+| nuage | arêtes de Delaunay | sous le seuil | grappes | taille max | temps | en % d'un diagramme |
+|---|---|---|---|---|---|---|
+| lignes `σ=0.005` **sale** | 297 347 | 56 | **56** | 2 | 5.3 ms | **3.9 %** |
+| lignes `σ=0.005` propre | 297 230 | 0 | 0 | — | 5.2 ms | 3.7 % |
+| uniforme 2D (seuil 3e-5) | 298 957 | 16 | 16 | 2 | 6.1 ms | 4.6 % |
+| plans `σ=0.02` (3D) | 754 614 | 0 | 0 | — | 13.9 ms | **0.9 %** |
+
+**La détection coûte 4 % d'un diagramme en 2D, 1 % en 3D**, et elle trouve exactement les 56 grappes du
+nuage sale, toutes de taille 2. Autrement dit la phase 1 est gratuite, et sur un solve de 78 diagrammes
+elle se paie 700 fois.
+
+Ce qui reste à écrire est la phase 2, et son coût est de la même nature (§ 23.6) : construire la liste
+réduite plus la table de correspondance est `O(n)` ; résoudre le problème réduit est **moins cher** que
+l'original ; et redécouper les cellules fusionnées est une poignée de problèmes locaux à deux ou trois
+germes — 56 ici — dont le cas exactement confondu est **libre** (toute partition aux bonnes masses est
+optimale). Le travail est du code, pas du calcul.
+
+## 23.9 La recherche de relaxation ne sert à rien, et on peut la supprimer (`--mod-frac`)
+
+Il y avait une ambiguïté à lever. Sous `essai-limites` (§ 21.5) le `facteur` est une **constante**, pas
+une recherche : la passe des limites cherche `alpha*`, le pas exact où la première cellule touche le
+plancher, et on retient `facteur · alpha*`. Il n'y a jamais eu de recherche de relaxation là.
+
+Le modèle, lui, en faisait une : il évaluait le critère à cinq fractions de `alpha*(λ)` — c'était
+gratuit, donc pourquoi pas. Mais gratuit n'est pas utile. `--mod-frac 1` (la plus longue fraction
+seulement, `0.99 · alpha*`) contre `5` :
+
+| | uniforme | `σ=0.1` | `σ=0.02` | `σ=0.005` |
+|---|---|---|---|---|
+| 5 fractions | 6 | 8 | 11 | 13 |
+| **1 fraction** | **6** | **8** | **11** | **13** |
+
+**Identique partout**, et la trace montre pourquoi : le choix tombait sur `0.99` neuf fois sur dix. Le
+défaut est donc passé à **une seule fraction** — un cinquième du coût de la recherche, et un concept de
+moins.
+
+Et la raison est déjà dans le profil du § 21.2 : **le critère décroît de façon monotone le long du
+rayon jusqu'à ce que le plancher morde.** Le meilleur point admissible est donc toujours au bord, et il
+n'y a rien à chercher — seulement à s'arrêter juste avant. Ce qui répond à la question posée : oui, on
+utilise toujours ~0.9 à 0.99 du pas admissible exact, et autant l'écrire une fois pour toutes.

@@ -458,6 +458,8 @@ int main( int argc, char **argv ) {
         else if ( s == "--relax" )      o.newton.t0 = std::atof( val() );
         else if ( s == "--refus" )      o.newton.refus = std::atoi( val() );
         else if ( s == "--diag-lap" )   o.newton.diag_lap = true;
+        else if ( s == "--agglo" )      o.newton.agglo = std::atof( val() );
+        else if ( s == "--mod-frac" )   o.newton.mod_frac = std::atoi( val() );
         else {
             std::printf( "usage: newton [options]\n" );
             Args::usage();
@@ -479,7 +481,7 @@ int main( int argc, char **argv ) {
                 "                  | modele ( 2D ) : le pas cherche dans le SPAN de plusieurs directions, sur le modele\n"
                 "                  polynomial d.aire -- aucun diagramme pour chercher, un seul pour verifier\n"
                 "  --mod-q Q       modele : le pas du simplexe cherche, 1/Q                        (4)\n"
-                "  --mod-k K       modele : combien de directions ( 1 | 2 = + log | 3 = + barriere )  (3)\n"
+                "  --mod-k K       modele : combien de directions ( 1 | 2 = + log | 3 = + barriere ; 2 SUFFIT )  (2)\n"
                 "  --mod-limites   modele : le pas par les LIMITES EXACTES au lieu de la racine du modele ( un diagramme de\n"
                 "                  moins sur les cas sains, 34 de plus sur le nuage degenere, et 30 % de temps en plus )\n"
                 "  --mod-juge J    modele : sur quoi il choisit son melange -- pire ( defaut ) | log | barriere | puissance\n"
@@ -518,6 +520,9 @@ int main( int argc, char **argv ) {
                 "  --combi K       a l.iteration K, balayer le SIMPLEXE des directions lin/log/barriere et dire ce que gagne chaque melange\n"
                 "  --relax R       le premier pas essaye ( 1 = Newton entier ) -- la relaxation a la main  (1)\n"
                 "  --refus K       a l'iteration K, dire laquelle des deux clauses refuse chaque essai\n"
+                "  --agglo D       a l'iteration 0, detecter les grappes de germes a moins de D ( union-find sur les aretes\n"
+                "                  de Delaunay du diagramme de Voronoi : aucune structure de plus ), puis sortir\n"
+                "  --mod-frac N    modele : combien de fractions de alpha* on essaye ( 1 = aucune recherche de relaxation )  (1)\n"
                 "  --diag-lap      tracer ce qui rend L dure : etalement de la diagonale, des poids d'aretes, et l'ANISOTROPIE par ligne\n"
                 "  --methode M     newton ( defaut ) | lbfgs | cg : le premier ordre sur le dual ( PremierOrdre.h )\n"
                 "  --memoire K     L-BFGS : paires gardees                                     (10)\n"

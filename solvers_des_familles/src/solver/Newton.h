@@ -84,11 +84,12 @@ struct NewtonOptions {
     int  mod_q      = 4;       ///< MODELE : le pas du simplexe cherche ( `1/mod_q` ), 4 = les 15 points de l'oracle
     /// MODELE : combien de directions ( 1 = Newton seul, 2 = + log, 3 = + barriere ).
     ///
-    /// DEUX SUFFIT SUR LES CAS SAINS -- la troisieme ne change aucun des trois, et elle coute une
-    /// resolution lineaire de plus, qui est le vrai prix du span. Le defaut reste TROIS parce que sur
-    /// le nuage degenere `s0.005` c'est la troisieme qui fait la difference : 13 diagrammes et
-    /// CONVERGE avec elle, 47 et STAGNATION sans. Une resolution de plus contre ce mode d'echec-la.
-    int  mod_k      = 3;
+    /// DEUX SUFFIT, et le defaut y est revenu. La troisieme direction ne gagne qu'UN diagramme, sur un
+    /// seul cas ( `s0.1` ), et elle en perd un sur un autre ( `s0.005` nettoye : 13 a deux directions,
+    /// 14 a trois ) -- pour une resolution lineaire de plus a chaque iteration, qui est le vrai prix du
+    /// span. Elle avait paru indispensable tant que `s0.005` portait ses 56 paires de germes confondus
+    /// ( 13 diagrammes avec elle, 47 sans ) ; le nuage nettoye ( § 23.7 ) fait tomber cette raison.
+    int  mod_k      = 2;
     /// MODELE : prendre le pas de la passe des LIMITES EXACTES ( bissection par cellule, `alpha*`,
     /// puis `facteur * alpha*` ) au lieu de la racine du modele lui-meme.
     ///
@@ -196,6 +197,28 @@ struct NewtonOptions {
     /// Le residu n'y est POUR RIEN : `L` ne depend que des facettes ( `c_ij = |facette| / 2|p_i - p_j|` ),
     /// jamais de `g`. `log` ne change que le second membre.
     bool diag_lap   = false;
+    /// > 0 : a l'iteration 0, DETECTER les grappes de germes a moins de `agglo` l'un de l'autre, et dire
+    /// combien il y en a et ce que ca coute. C'est la premiere phase du § 23.6, et elle ne demande
+    /// AUCUNE structure de donnees nouvelle :
+    ///
+    /// le diagramme en `w = 0` EST celui de Voronoi, donc sa liste de facettes EST le graphe de Delaunay.
+    /// Or Delaunay contient l'arbre couvrant minimal euclidien, et les grappes du LIEN SIMPLE au seuil
+    /// `delta` sont exactement les composantes connexes des aretes de l'ACM sous `delta`. Donc balayer
+    /// `fa` et faire un union-find rend EXACTEMENT les grappes voulues -- pas de kd-tree, pas de grille,
+    /// pas de tri. Et le diagramme, on le paye de toute facon.
+    ///
+    /// ATTENTION : ca ne vaut qu'en `w = 0`. Un diagramme de Laguerre n'est pas Delaunay et ne contient
+    /// plus l'ACM -- la detection doit donc se faire AVANT la resolution, ce qui est justement le moment.
+    TF   agglo      = 0;
+    /// MODELE : combien de fractions de `alpha*` on essaye. LE DEFAUT EST UN -- aucune recherche.
+    ///
+    /// Elle etait gratuite ( sur le modele ) mais inutile, et c'est mesure : `1` contre `5` donne les
+    /// MEMES chiffres sur les quatre nuages ( 6, 8, 11, 13 diagrammes ), et la trace montre que le choix
+    /// tombait sur la plus longue fraction neuf fois sur dix. La raison est dans le profil du § 21.2 :
+    /// le critere DECROIT de facon monotone le long du rayon jusqu'a ce que le plancher morde, donc le
+    /// meilleur point admissible est TOUJOURS au bord. Il n'y a rien a chercher -- seulement a s'arreter
+    /// juste avant le bord, et `0.99` le fait.
+    int  mod_frac   = 1;
     int  refus      = -1;      ///< >= 0 : tracer, a CETTE iteration, laquelle des deux clauses de
                                ///< l.amortissement refuse chaque essai ( aire ou merite ), et sur quelle cellule
     bool memo       = false;   ///< 3D : les facettes du dernier diagramme ACCEPTE proposees en premier au suivant ( § 11 )
@@ -401,6 +424,63 @@ struct Newton {
         if ( ! deja_mesure )
             mesures_et_facettes( w, a, fa, pda );
         if ( o.apres_pas ) o.apres_pas( -1, 0, 0 );
+
+        // ---- LA PHASE D'AGGLOMERATION, PREMIERE MOITIE : detecter les grappes ( § 23.6 )
+        //
+        // Sans aucune structure de donnees nouvelle. En `w = 0` le diagramme EST celui de Voronoi, donc
+        // `fa` EST le graphe de Delaunay ; Delaunay contient l'arbre couvrant minimal euclidien ; et les
+        // grappes du lien simple au seuil `delta` sont exactement les composantes connexes des aretes de
+        // l'ACM sous `delta`. Un balayage de `fa` et un union-find suffisent donc, et sont EXACTS.
+        if ( o.agglo > 0 ) {
+            const double ta0 = now();
+            std::vector<SI> pere( n );
+            for ( SI i = 0; i < n; ++i ) pere[ i ] = i;
+            auto trouve = [ & ]( SI i ) {
+                while ( pere[ i ] != i ) { pere[ i ] = pere[ pere[ i ] ]; i = pere[ i ]; }
+                return i;
+            };
+            SI nb_aretes = 0, nb_proches = 0;
+            TF dmin = INFINI, dmed_ech = 0;
+            std::vector<TF> dists;
+            dists.reserve( fa.size() / 2 + 1 );
+            for ( const Facette &e : fa ) {
+                if ( e.i >= e.j ) continue;              // l'autre vue de la meme facette
+                ++nb_aretes;
+                TF d2 = 0;
+                for ( int k = 0; k < PD::dim; ++k ) {
+                    const TF u = P[ k ][ e.i ] - P[ k ][ e.j ];
+                    d2 += u * u;
+                }
+                const TF dd = std::sqrt( d2 );
+                dists.push_back( dd );
+                dmin = std::min( dmin, dd );
+                if ( dd < o.agglo ) {
+                    ++nb_proches;
+                    const SI a = trouve( e.i ), b = trouve( e.j );
+                    if ( a != b ) pere[ a < b ? b : a ] = a < b ? a : b;
+                }
+            }
+            if ( ! dists.empty() ) {
+                std::nth_element( dists.begin(), dists.begin() + dists.size() / 2, dists.end() );
+                dmed_ech = dists[ dists.size() / 2 ];
+            }
+            // les grappes, et leurs tailles
+            std::vector<SI> taille( n, 0 );
+            for ( SI i = 0; i < n; ++i ) ++taille[ trouve( i ) ];
+            SI nb_grappes = 0, nb_dedans = 0, tmax = 0;
+            for ( SI i = 0; i < n; ++i )
+                if ( taille[ i ] > 1 ) { ++nb_grappes; nb_dedans += taille[ i ]; tmax = std::max( tmax, taille[ i ] ); }
+            const double t_ag = now() - ta0;
+            std::printf( "    AGGLO seuil %.3e : %d aretes de Delaunay ( longueur min %.3e, mediane %.3e ),"
+                         " %d sous le seuil -> %d grappes, %d germes dedans, taille max %d, en %.4f s"
+                         " ( %.1f %% d'un diagramme )\n",
+                         double( o.agglo ), int( nb_aretes ), double( dmin ), double( dmed_ech ),
+                         int( nb_proches ), int( nb_grappes ), int( nb_dedans ), int( tmax ), t_ag,
+                         100.0 * t_ag / std::max( st.t_diag, 1e-9 ) );
+            std::fflush( stdout );
+            st.fin = "AGGLO";
+            return false;
+        }
 
         res_cur = o.residu;                              // ... que `o.bascule_residu` fera passer a `LIN`
         TF eps = 0, t_prec = 0, beta = o.beta0, t_sur = -1;
@@ -856,8 +936,11 @@ struct Newton {
                             alim[ p ] = std::min( alim[ p ], par_al[ size_t( th ) * npt + p ] );
 
                     // ---- LES CANDIDATES : `lambda` x fraction du pas admissible
+                    // LA RECHERCHE DE RELAXATION, et `--mod-frac 1` la supprime. Elle est gratuite sur le
+                    // modele, mais gratuite n'est pas utile : si le choix tombe toujours sur la fraction
+                    // la plus longue, autant ne pas la chercher. C'est ce que `--mod-frac` mesure.
                     const TF frac[] = { TF( 0.99 ), TF( 0.9 ), TF( 0.75 ), TF( 0.5 ), TF( 0.25 ) };
-                    const int NF = int( sizeof( frac ) / sizeof( frac[ 0 ] ) );
+                    const int NF = std::min( o.mod_frac, int( sizeof( frac ) / sizeof( frac[ 0 ] ) ) );
                     std::vector<TF> cand;                // `4` coordonnees par candidate
                     std::vector<int> cpt;                // ... et de quel `lambda` elle vient
                     for ( int p = 0; p < npt; ++p ) {
