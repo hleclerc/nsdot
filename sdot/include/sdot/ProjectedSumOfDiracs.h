@@ -27,13 +27,13 @@ struct ProjectedSumOfDiracs {
     }
 
     /// Compile-time: is the position gradient wanted? (here it flows to the ambient `points`).
-    HD auto position_grad_wanted( auto &&grad_src ) const { return grad_src.points.is_valid(); }
+    HD auto position_grad_wanted( auto &&grad_src ) const { return grad_src.points.is_valid; }
 
     /// d cost / d position(i) flows to the ambient point: grad_points(i,d) += grad_s * normal(d). The
     /// points gradient is SHARED across the batch (one point, every angle contributes) -> ATOMIC add.
     /// Compile-time no-op when the points gradient is not wanted (a NoneTensor twin, no `ref()`).
     HD void add_position_grad( auto &&grad_src, SI i, TF grad_s ) const {
-        if constexpr ( CT_VALUE( grad_src.points.is_valid() ) )
+        if constexpr ( grad_src.points.is_valid )
             for ( SI d = 0; d < ct_proj; ++d )
                 atomic_add( grad_src.points( ::num_dirac = i, proj_dim = d ).ref(),
                             TF( grad_s * TF( normal( proj_dim = d ) ) ) );
@@ -48,7 +48,7 @@ struct ProjectedSumOfDiracs {
     /// same, already-proven device-kernel launch path as every other kernel here. Compile-time
     /// no-op when the points gradient is not wanted.
     HD void zero_position_grad( auto &&queue, auto &&grad_src ) const {
-        if constexpr ( CT_VALUE( grad_src.points.is_valid() ) )
+        if constexpr ( grad_src.points.is_valid )
             grad_src.points.fill_with( queue, TF( 0 ) );
     }
 };

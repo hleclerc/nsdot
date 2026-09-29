@@ -16,7 +16,7 @@
     static constexpr int  ct_dim = DECAYED_TYPE_OF( nb_dims )::value; \
     static constexpr bool on_cpu = std::is_same_v<Queue,CpuQueue>; \
     using TF = DECAYED_TYPE_OF( POSITIONS )::TF; \
-    static constexpr bool has_weights = DECAYED_TYPE_OF( std::declval<DECAYED_TYPE_OF( WEIGHTS )>().is_valid() )::value; \
+    static constexpr bool has_weights = DECAYED_TYPE_OF( std::declval<DECAYED_TYPE_OF( WEIGHTS )>().is_valid )::value; \
     \
     HD SI   nb_seeds() const { return SI( POSITIONS.shape( 0 ) ); } \
     HD auto point( SI k ) const { return Vector<TF,ct_dim>::with_func( [&]( PI d ) { return TF( POSITIONS( k, d ) ); } ); } \

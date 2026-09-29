@@ -151,7 +151,7 @@ class OtPlan1d( Aggregate ):
         self.dst_dist.ensure_cell_cum_mass()
 
         # `barycenters` is produced only when asked for: including it in `output_attributes` binds it
-        # as an OUTPUT (the forward writes it, guarded on `is_valid()` C++-side); leaving it out keeps
+        # as an OUTPUT (the forward writes it, guarded on `is_valid` C++-side); leaving it out keeps
         # it a NoneTensor, and the backward recomputes b_i. This is what the flag decides.
         barycenters_out = [ "plan.barycenters" ] if self._with_barycenters else []
         group_size_expr = "num_local_marker.shape( 0 )"   # une expression C++, lue sur un argument

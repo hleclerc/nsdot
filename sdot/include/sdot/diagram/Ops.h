@@ -288,14 +288,14 @@ template<class PD>
 HD void scatter_cell_grad( const PD &pd, SI k0, const auto &cell, const auto &grad_vp, auto &&grad_positions, auto &&grad_weights ) {
     using TF = typename PD::TF;
     constexpr int D = PD::ct_dim;
-    if constexpr ( CT_VALUE( grad_positions.surely_null() ) && CT_VALUE( grad_weights.surely_null() ) ) {
+    if constexpr ( grad_positions.surely_null && grad_weights.surely_null ) {
         return;
     } else {
         if ( ! cell.bounded() || cell.nb_vertices() == 0 )
             return;
 
         auto atomic_add_to = []( auto &&dst, TF v ) {
-            if constexpr ( ! CT_VALUE( dst.surely_null() ) )
+            if constexpr ( ! dst.surely_null )
                 atomic_add( dst.ref(), v );
         };
 

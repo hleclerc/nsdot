@@ -20,7 +20,7 @@ struct Image {
 
     // build a FULLY-POPULATED image -- each of `origin` / `frame` / `knots` that is unbound
     // (a `NoneTensor`) replaced by its documented default -- and hand it to `cont`. Lets the
-    // methods below be written ONCE against a complete image instead of gating on `is_valid()`.
+    // methods below be written ONCE against a complete image instead of gating on `is_valid`.
     HD auto   with_defaults( auto &&cont ) const;
 
     // total measure of the piecewise-constant function: sum over cells of value * cell volume.

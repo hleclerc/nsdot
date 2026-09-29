@@ -30,11 +30,11 @@ UTP HD auto DTP::with_defaults( auto &&cont ) const {
     // frame, knots, current_mass, nb_cells_cum, cell_cum_mass. `::sdot::Image` (qualified) names the
     // TEMPLATE so CTAD re-deduces; bare `Image` would mean the current instantiation and defeat the
     // substitution.
-    if constexpr ( ! CT_VALUE( origin.is_valid() ) )
+    if constexpr ( ! origin.is_valid )
         return ::sdot::Image{ target_mass, nb_dims, shape, values, Vector<TF,ct_dim>::zeros(), frame, knots, current_mass, nb_cells_cum, cell_cum_mass }.with_defaults( FORWARD( cont ) );
-    else if constexpr ( ! CT_VALUE( frame.is_valid() ) )
+    else if constexpr ( ! frame.is_valid )
         return ::sdot::Image{ target_mass, nb_dims, shape, values, origin, Matrix<TF,ct_dim>::identity(), knots, current_mass, nb_cells_cum, cell_cum_mass }.with_defaults( FORWARD( cont ) );
-    else if constexpr ( ! CT_VALUE( knots.is_valid() ) )
+    else if constexpr ( ! knots.is_valid )
         return ::sdot::Image{ target_mass, nb_dims, shape, values, origin, frame, IotaTensor<TF>{}, current_mass, nb_cells_cum, cell_cum_mass }.with_defaults( FORWARD( cont ) );
     else
         return cont( *this );
@@ -202,7 +202,7 @@ UTP HD void DTP::_for_each_piece( const auto &cell, auto &&ws, auto &&func ) con
                     // le puits de gradient du morceau : `d masse / d values( k )` est le volume du
                     // morceau, et `k` est ce que cette fermeture-ci sait et que l'appelant ignore.
                     // Atomique : plusieurs work-items intègrent des cellules qui touchent le même pavé.
-                    if constexpr ( CT_VALUE( grad_dist.values.is_valid() ) )
+                    if constexpr ( grad_dist.values.is_valid )
                         atomic_add( grad_dist.values( idx ).ref(), g );
                 } } );
             } );
@@ -219,7 +219,7 @@ UTP HD void DTP::measure_bwd( auto &&grad_values, auto &&grad_mass ) const {
     // `mass` is linear in `values` (see `measure`): mass = Sum_c values(c) * |det(frame)| * spacing(c),
     // so grad_values(c) = grad_mass * |det(frame)| * spacing(c). Guarded at compile time: an
     // unperturbed `values` arrives as a `NoneTensor` (no `operator=`), so the block must vanish.
-    if constexpr ( CT_VALUE( grad_values.is_valid() ) ) {
+    if constexpr ( grad_values.is_valid ) {
         with_defaults( [&]( auto &&img ) {
             using ImgT = DECAYED_TYPE_OF( img );
             using TF = typename ImgT::TF;

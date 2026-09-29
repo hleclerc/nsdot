@@ -256,7 +256,7 @@ HD void bsp_build_level( const auto &src, auto &&dst, auto &&perm,
             box_out( 0, d ) = 0;
             box_out( 1, d ) = 0;
         }
-        if constexpr ( CT_VALUE( wa_out.is_valid() ) ) {
+        if constexpr ( wa_out.is_valid ) {
             for ( int d = 0; d < ct_dim; ++d )
                 wa_out( d ) = 0;
             wb_out = 0;
@@ -281,7 +281,7 @@ HD void bsp_build_level( const auto &src, auto &&dst, auto &&perm,
 
     // ---- le majorant des poids. Pas de poids -> les deux tenseurs sont des `NoneTensor` et tout
     // ce bloc disparait a la COMPILATION, comme dans `AaBsp.cxx`.
-    if constexpr ( CT_VALUE( wa_out.is_valid() ) )
+    if constexpr ( wa_out.is_valid )
         bsp_weight_majorant<ct_dim>( pos_in, w_in, b, e, wa_out, wb_out );
 
     // ---- couper, ou propager
@@ -310,7 +310,7 @@ HD void bsp_build_level( const auto &src, auto &&dst, auto &&perm,
         ord_out( j ) = ord_in( s );
         for ( int d = 0; d < ct_dim; ++d )
             pos_out( j, d ) = pos_in( s, d );
-        if constexpr ( CT_VALUE( w_in.is_valid() ) )
+        if constexpr ( w_in.is_valid )
             w_out( j ) = w_in( s );
     }
 }

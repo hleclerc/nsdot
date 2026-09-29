@@ -21,15 +21,15 @@ struct SumOfDiracs {
     HD TF position( SI i ) const { return positions( ::num_dirac = i, dim = 0 ); }
 
     /// Compile-time: is the position gradient wanted for this source? (lets OtPlan1d skip the whole
-    /// re-sort + re-sweep of the positions-grad block when it is not). Returns the `is_valid()`
+    /// re-sort + re-sweep of the positions-grad block when it is not). Returns the `is_valid`
     /// compile-time flag of the member `add_position_grad` would write.
-    HD auto position_grad_wanted( auto &&grad_src ) const { return grad_src.positions.is_valid(); }
+    HD auto position_grad_wanted( auto &&grad_src ) const { return grad_src.positions.is_valid; }
 
     /// Accumulate d cost / d position(i) into the gradient twin `grad_src`. Guarded at compile time:
     /// an unperturbed input reaches us as a NoneTensor (no `operator=`), so the write must vanish.
     /// A per-angle buffer, so each angle writes its OWN slot -- a plain `=`, no cross-angle race.
     HD void add_position_grad( auto &&grad_src, SI i, TF grad_s ) const {
-        if constexpr ( CT_VALUE( grad_src.positions.is_valid() ) )
+        if constexpr ( grad_src.positions.is_valid )
             grad_src.positions( ::num_dirac = i, dim = 0 ) = grad_s;
     }
 

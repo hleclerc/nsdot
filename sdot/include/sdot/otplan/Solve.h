@@ -147,7 +147,7 @@ void resoudre( const CpuQueue &queue, auto &pd, const auto &pd_in, const auto &d
         hist.rows( nb_steps, int( H_NB_DIAG ) ) = double( bal.nb_diag );
         hist.rows( nb_steps, int( H_NB_EVALS ) ) = double( nb_evals );
         hist.rows( nb_steps, int( H_S ) ) = s_courant;
-        if constexpr ( CT_VALUE( hist.weights.is_valid() ) )
+        if constexpr ( hist.weights.is_valid )
             for ( SI i = 0; i < n; ++i )
                 hist.weights( nb_steps, i ) = newton.w[ i ];
         ++nb_steps;
@@ -157,7 +157,7 @@ void resoudre( const CpuQueue &queue, auto &pd, const auto &pd_in, const auto &d
     std::vector<double> nu( n ), w( n, 0.0 );
     for ( SI i = 0; i < n; ++i ) nu[ i ] = double( nu_in( i ) );
     bool donne = false;
-    if constexpr ( CT_VALUE( w0_in.is_valid() ) ) {
+    if constexpr ( w0_in.is_valid ) {
         for ( SI i = 0; i < n; ++i ) { w[ i ] = double( w0_in( i ) ); donne |= w[ i ] != 0; }
     }
     int depart = donne ? DEPART_DONNE : DEPART_VORONOI;
@@ -169,7 +169,7 @@ void resoudre( const CpuQueue &queue, auto &pd, const auto &pd_in, const auto &d
     if ( s0 <= 0 ) {                                     // la moitie du diametre du domaine, ou du nuage
         double lo[ D ], hi[ D ];
         for ( int d = 0; d < D; ++d ) { lo[ d ] = 1e300; hi[ d ] = -1e300; }
-        if constexpr ( CT_VALUE( pd.box_min.is_valid() ) ) {
+        if constexpr ( pd.box_min.is_valid ) {
             for ( int d = 0; d < D; ++d ) { lo[ d ] = double( pd.box_min( d ) ); hi[ d ] = double( pd.box_max( d ) ); }
         } else {
             for ( SI k = 0; k < n; ++k ) {
@@ -198,7 +198,7 @@ void resoudre( const CpuQueue &queue, auto &pd, const auto &pd_in, const auto &d
         if ( minimum( a0 ) > minimum( a ) ) { w.swap( w0 ); a.swap( a0 ); fa.swap( fa0 ); depart = DEPART_VORONOI; }
         else newton.bal.set_weights( w );
     }
-    if constexpr ( CT_VALUE( pd.box_min.is_valid() ) ) {
+    if constexpr ( pd.box_min.is_valid ) {
         if ( minimum( a ) <= 0 ) {                       // des germes hors du domaine : la similitude
             double lo[ D ], hi[ D ];
             for ( int d = 0; d < D; ++d ) { lo[ d ] = double( pd.box_min( d ) ); hi[ d ] = double( pd.box_max( d ) ); }

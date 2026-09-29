@@ -30,7 +30,7 @@ struct PowerDiagram_Bsp {
     HD SI user_id( SI k ) const { return SI( tree.seed_indices( k ) ); }
 
     /// la memoire ( `memo_nbrs / memo_counts`, voir `FournisseurBsp` ) : nommee ou `Unbound`, a la compilation
-    static constexpr bool has_memo = DECAYED_TYPE_OF( std::declval<DECAYED_TYPE_OF( memo_counts )>().is_valid() )::value;
+    static constexpr bool has_memo = DECAYED_TYPE_OF( std::declval<DECAYED_TYPE_OF( memo_counts )>().is_valid )::value;
 
     template<class TK>
     HD auto fournisseur( SI k0 ) const { return FournisseurBsp<PowerDiagram_Bsp,TK,ct_dim,has_weights,has_memo>( *this, k0 ); }

@@ -292,10 +292,10 @@ UTP HD void DTP::sweep_outputs( auto &&sorted_indices, auto &&sorted_pos, auto &
             TF moment = 0;
             dst_dist.udp_cont( udp, mass, [&]( auto &&item ) {
                 local_cost += item.w2_dist( dirac_pos );
-                if constexpr ( CT_VALUE( barycenters.is_valid() ) )
+                if constexpr ( barycenters.is_valid )
                     moment += item.first_moment();
             } );
-            if constexpr ( CT_VALUE( barycenters.is_valid() ) )
+            if constexpr ( barycenters.is_valid )
                 barycenters( ::num_dirac = num_dirac, dim = 0 ) = moment / mass;   // center of mass of the slice
         }
     } );
@@ -340,7 +340,7 @@ UTP HD void DTP::update_outputs_presorted( auto &&sorted_indices, auto &&sorted_
 // with diracs sorted by position (order s = `sorted_indices`), and t_k = M^{-1}(W_k) the target
 // quantile at the cumulative source mass W_k = Sum_{j<k} w_{s(j)}.
 //
-// Each gradient below is guarded at compile time on `is_valid()`: an unperturbed input reaches
+// Each gradient below is guarded at compile time on `is_valid`: an unperturbed input reaches
 // us as a `NoneTensor` (no `operator=`), so its block must vanish -- see [[differentiation]].
 // Everything runs inside a SYCL kernel, so NO std::vector / dynamic allocation: the per-dirac
 // suffix sum is carried by two scalars instead of an array.
@@ -350,8 +350,8 @@ UTP HD void DTP::sweep_outputs_bwd( auto &&grad_plan, auto &&sorted_indices, aut
     const SI nb = src_dist.weights.size();
     const SI lo = ( nb * SI( local_index ) ) / local_size;
     const SI hi = ( nb * SI( local_index + 1 ) ) / local_size;
-    constexpr bool need_weight_value_grad = CT_VALUE( grad_plan.src_dist.weights.is_valid() )
-                                          || CT_VALUE( grad_plan.dst_dist.values.is_valid() );
+    constexpr bool need_weight_value_grad = grad_plan.src_dist.weights.is_valid
+                                          || grad_plan.dst_dist.values.is_valid;
 
     // --- d cost / d positions -------------------------------------------------------------------
     //   d cost / d p_i = Integral_{S_i} 2 (p_i - x) y dx = 2 w_i ( p_i - b_i ),  b_i the barycenter of
@@ -359,7 +359,7 @@ UTP HD void DTP::sweep_outputs_bwd( auto &&grad_plan, auto &&sorted_indices, aut
     // is skipped when the position gradient is not wanted; `add_position_grad` then scatters (per-angle
     // write for SumOfDiracs, atomic to the shared 2D points for a projected source).
     if constexpr ( CT_VALUE( src_dist.position_grad_wanted( grad_plan.src_dist ) ) ) {
-        if constexpr ( CT_VALUE( barycenters.is_valid() ) ) {
+        if constexpr ( barycenters.is_valid ) {
             // b_i was stored by the forward (`with_barycenters`): read it, no walk, order-independent --
             // EMBARRASSINGLY parallel over i, every work-item does its own chunk, no scratch touched.
             for( SI i = lo; i < hi; ++i ) {
@@ -418,7 +418,7 @@ UTP HD void DTP::sweep_outputs_bwd( auto &&grad_plan, auto &&sorted_indices, aut
             // view `src_dist.weights( ... )` directly would decrement the shared weights buffer and
             // corrupt every later read (the forward avoids this via its own `const TF mass`).
 
-            if constexpr ( CT_VALUE( grad_plan.dst_dist.values.is_valid() ) ) {
+            if constexpr ( grad_plan.dst_dist.values.is_valid ) {
                 // cooperative zeroing, chunked over CELLS -- accumulated below via atomic `+=`,
                 // one per piece.
                 const SI nb_cells = img.values.size();
@@ -479,10 +479,10 @@ UTP HD void DTP::sweep_outputs_bwd( auto &&grad_plan, auto &&sorted_indices, aut
                 }
                 const TF Phi_k = phi_total - pref;
 
-                if constexpr ( CT_VALUE( grad_plan.src_dist.weights.is_valid() ) )
+                if constexpr ( grad_plan.src_dist.weights.is_valid )
                     grad_plan.src_dist.weights( ::num_dirac = di ) = g * Phi_k;
 
-                if constexpr ( CT_VALUE( grad_plan.dst_dist.values.is_valid() ) )
+                if constexpr ( grad_plan.dst_dist.values.is_valid )
                     // `udp.index` is the cell of the piece being emitted (read before the walker
                     // advances); every piece lives in a single cell. ATOMIC: unlike the sequential
                     // original, a cell straddling a CHUNK BOUNDARY now gets one write from the end of
@@ -514,9 +514,9 @@ UTP HD void DTP::update_outputs_bwd( auto &&grad_plan, auto &&sorted_indices, au
     // `sorted_indices`/`sorted_pos` (via `sweep_outputs_bwd`), instead of paying a full redundant
     // radix sort per block.
     constexpr bool need_position_resort  = CT_VALUE( src_dist.position_grad_wanted( grad_plan.src_dist ) )
-                                         && ! CT_VALUE( barycenters.is_valid() );
-    constexpr bool need_weight_value_grad = CT_VALUE( grad_plan.src_dist.weights.is_valid() )
-                                          || CT_VALUE( grad_plan.dst_dist.values.is_valid() );
+                                         && ! barycenters.is_valid;
+    constexpr bool need_weight_value_grad = grad_plan.src_dist.weights.is_valid
+                                          || grad_plan.dst_dist.values.is_valid;
     if constexpr ( need_position_resort || need_weight_value_grad )
         sort_diracs( sorted_indices, radix_tmp, sorted_pos, local_index, local_size, group, local_scratch, sub_group );
     sweep_outputs_bwd( grad_plan, sorted_indices, sorted_pos, group_scan, local_index, local_size, group );

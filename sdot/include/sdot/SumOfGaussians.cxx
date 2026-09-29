@@ -66,15 +66,15 @@ UTP HD auto DTP::gradient_at( const auto &x ) const {
 
 UTP HD void DTP::add_value_grad_at( auto &&grad_dist, const auto &x, TF g ) const {
     auto add_to = []( auto &&dst, TF v ) {
-        if constexpr ( ! CT_VALUE( dst.surely_null() ) )
+        if constexpr ( ! dst.surely_null )
             atomic_add( dst.ref(), v );
     };
 
     // rien de demandé : pas une lecture, pas une exponentielle. Le test est à la COMPILATION, donc
     // un forward pur ne paie pas l'existence de ce bloc.
-    if constexpr ( CT_VALUE( grad_dist.weights.surely_null() )
-                && CT_VALUE( grad_dist.positions.surely_null() )
-                && CT_VALUE( grad_dist.sigmas.surely_null() ) ) {
+    if constexpr ( grad_dist.weights.surely_null
+                && grad_dist.positions.surely_null
+                && grad_dist.sigmas.surely_null ) {
         return;
     } else {
         const SI n = nb_gaussians;
@@ -86,7 +86,7 @@ UTP HD void DTP::add_value_grad_at( auto &&grad_dist, const auto &x, TF g ) cons
             add_to( grad_dist.weights( i ), g * k.phi );
 
             // d rho / d c_i = w_i * phi * ( x - c_i ) / s^2   ( le gradient EN x, changé de signe )
-            if constexpr ( ! CT_VALUE( grad_dist.positions.surely_null() ) ) {
+            if constexpr ( ! grad_dist.positions.surely_null ) {
                 const TF f = g * w * k.phi / ( k.s * k.s );
                 for ( PI c = 0; c < ct_dim; ++c )
                     add_to( grad_dist.positions( i, c ), f * ( TF( x[ c ] ) - TF( positions( i, c ) ) ) );
@@ -271,7 +271,7 @@ UTP HD void DTP::integrate_over_simplex_bwd( const auto &pts, TF g, auto &&grad_
     static_assert( ct_dim == 2, "le chemin exact est le 2D ; au-delà on passe par PointwiseDensity" );
 
     auto add_to = []( auto &&dst, TF v ) {
-        if constexpr ( ! CT_VALUE( dst.surely_null() ) )
+        if constexpr ( ! dst.surely_null )
             atomic_add( dst.ref(), v );
     };
 
@@ -308,7 +308,7 @@ UTP HD void DTP::integrate_over_simplex_bwd( const auto &pts, TF g, auto &&grad_
             }
         }
 
-        if constexpr ( ! CT_VALUE( grad_dist.positions.surely_null() ) )
+        if constexpr ( ! grad_dist.positions.surely_null )
             for ( PI c = 0; c < 2; ++c )
                 add_to( grad_dist.positions( i, c ), dc[ c ] );
 

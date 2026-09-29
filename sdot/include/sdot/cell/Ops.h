@@ -117,7 +117,7 @@ HD void measure( const auto &cell, auto &&res, auto &&scratch ) {
 
 template<class Local>
 HD void measure_bwd( const auto &cell, auto &&res, auto &&grad_res, auto &&grad_vertex_positions, auto &&scratch ) {
-    if constexpr ( ! CT_VALUE( grad_vertex_positions.surely_null() ) ) {
+    if constexpr ( ! grad_vertex_positions.surely_null ) {
         using TF = DECAYED_TYPE_OF( grad_res )::TF;
         constexpr int D = Local::ct_dim;
         Carver cv = carver_of( scratch );
