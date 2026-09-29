@@ -1053,10 +1053,35 @@ que Newton veut ; ce qu'il veut est une AIRE.** `ε` ne contrôle pas l'aire de 
 contrôle la stricte convexité du relevé — deux choses différentes, et c'est pour ça que la fenêtre en
 `ε` est erratique.
 
-Ce qui suit de là, et qui reste à essayer : remonter au minimum **plus une marge d'aire**,
-`w_i ← (1−ε)|p_i|² − H(p_i) + δ h_i²`, ce qui achète une aire `~δ h_i²` à la cellule qui naît. C'est
-l'idée de `rattrape` (§ 8), mais posée sur le relèvement MINIMAL au lieu de `−ψ(p_i)` — qui, lui,
-était bien trop fort et cascadait.
+**Trois suites ont été essayées à partir de là. Les trois échouent, et elles éliminent trois
+suspects nommés.** Dans tous les cas le départ est celui à `ε = 1e-3` (35 cellules cassées), sur
+lequel Newton meurt à l'itération 0 avec `reste` égal au `rmax` du départ — c'est-à-dire sans
+accepter un seul pas.
+
+1. **La marge d'aire `+ δ h_i²`** sur les germes remontés, puis re-projection (`--delta`,
+   `--gonfle`) : c'est l'idée de `rattrape`, mais posée sur le relèvement MINIMAL au lieu de
+   `−ψ(p_i)`. Sans garantie — abaisser le point relevé de `i` peut faire passer un VOISIN au-dessus
+   de l'enveloppe — mais empiriquement douce : le gonflage casse jusqu'à 5 049 cellules et **une
+   seule re-projection les répare à chaque fois**. Elle fait ce qu'on lui demande (35 → 10 cellules
+   sous le plancher quand `δ` va de 0 à 1) et **Newton meurt identiquement** (`reste` = 99.8, 92.7,
+   125, 267 pour `δ` = 0, 1e-2, 0.1, 1).
+2. **Le premier ordre sur les itérations de correction** (`--methode lbfgs | cg`, `--precond`,
+   `--bascule`, branchés sur `--lisse-solution` ; `newton` ne pouvait partir que de zéro). L-BFGS
+   précond `γI` / Jacobi / `L₀⁻¹` et CG : **tous stagnent au `reste` du départ**, pour 52 à 148
+   diagrammes. Sans plancher (`--po-sans-plancher`) : deux itérations et `reste` monte à 265. Ce
+   n'est donc **ni la direction de Newton** (le premier ordre n'en calcule pas et échoue pareil)
+   **ni le plancher d'aire** (l'enlever dégrade).
+3. **Le mérite** (`--residu barriere | log`, exposé ici) : l'hypothèse était que les deux recherches
+   linéaires acceptent sur `‖a−ν‖₂` alors que l'objet garanti croissant est le dual. Mesuré sur
+   trois départs (35, 6, 3 cellules cassées) × deux mérites : **les six meurent à l'itération 0**,
+   au `reste` du départ. Et là où `lin` convergeait (`ε = 0.2`), `barriere` et `log` échouent.
+
+Ce qui reste comme suspect, non mesuré : le relèvement fait naître des cellules à aire quasi nulle
+mais STRICTEMENT POSITIVE ; celles-là sont *protégées* par le plancher (§ 8.7.2), elles passent à
+zéro au moindre pas, et `m2 >= eps` refuse alors tout. Ce serait cohérent avec les trois échecs et
+avec le fait que la sur-remontée aidait. La mesure qui trancherait n'est pas une quatrième idée mais
+une **instrumentation** : imprimer, à l'itération 0 et le long de l'échelle de `t`, laquelle des deux
+clauses (`m2 >= eps` ou la décroissance du mérite) refuse, et pour quelle cellule.
 
 **À lire avec la bonne réserve.** Ce départ dérive de la SOLUTION (lissée d'un balayage), c'est-à-dire
 la *borne* du § 8.2 et non une vraie prolongation. Ce qui est mesuré est donc un majorant de ce qu'une
@@ -1075,6 +1100,36 @@ enveloppe convexe inférieure de `n` points relevés en dimension `D + 1`, appel
 moteur n'a pas d'enveloppe convexe aujourd'hui (`AaBsp`, `Plan` ne la donnent pas) : soit une
 dépendance (qhull), soit un incrémental maison. Le chiffre qui justifie la dépense est celui du
 § 8.7.3 : une passe contre 27 611 relèvements, et zéro vide dans R² au lieu de trois.
+
+### 8.7.6 Le mérite `log` : le seul gain de la session, et il n'a rien à voir avec le multi-échelle
+
+Le test du mérite (§ 8.7.4, point 3) n'a rien donné sur les départs réparés — mais il a donné
+quelque chose sur **la référence elle-même**. Newton depuis Voronoï, `essai-limites`, Cholesky,
+`lines5_n100000`, `--residu log` (`g = log(a_i/ν_i)`) contre `lin` (`a_i − ν_i`) :
+
+| σ | `lin` | `log` | gain en diagrammes |
+|---|---|---|---|
+| 0.1 | 9 it, 10 diag | **7 it, 8 diag** | −20 % |
+| 0.02 | 15 it, 26 diag | **9 it, 13 diag** | **−50 %** |
+| 0.005 | 18 it, 30 diag | **13 it, 20 diag** | −33 % |
+
+Gratuit — c'est un changement de second membre et de mérite, pas de coût par itération — et **le gain
+croît avec la difficulté du cas**. `barriere`, lui, perd (33 it, 69 diag à σ = 0.005).
+
+**Et c'est le verdict INVERSE de celui du § 9.6**, qui mesure les mêmes options et conclut que la
+barrière et le `log` coûtent dix fois plus. Les deux mesures sont justes ; ce sont deux régimes :
+
+* § 9.6 : densité hétérogène, **continuation** en largeur, des *milliers* de cellules en transition
+  à chaque étape. Là, `1/x` (ou `1/x` déguisé en `log`) fait du mérite un minimax où la pire cellule
+  décide de tout, et un pas plein en pince toujours quelques-unes de plus qu'il n'en répare ;
+* ici : densité **uniforme**, Newton direct depuis Voronoï, pas de transition de masse — la
+  population de cellules pincées est petite, et pondérer le résidu par `1/ν_i` (ce que `log` fait au
+  premier ordre) équilibre les cellules dont les tailles varient d'un facteur mille dans les queues
+  gaussiennes.
+
+Autrement dit `log` normalise ; c'est utile quand les `ν_i/|Vor_i|` s'étalent, nuisible quand des
+milliers de cellules sont au bord de l'extinction. À vérifier avant d'en faire un défaut : ces trois
+mesures sont toutes sur `lines5`, en 2D, à `n = 10⁵`, avec `essai-limites` et Cholesky.
 
 ---
 
@@ -1273,6 +1328,11 @@ séquentiel avec re-mesure locale (la leçon de la 1D, § 8.4) demanderait de ra
 chaque cellule : 600 rafraîchissements, le prix de 100 diagrammes.
 
 ## 9.6 Pénaliser les petites masses : le résidu barrière
+
+> **Le verdict est INVERSE hors de ce régime** : § 8.7.6 mesure `--residu log` sur Newton direct
+> depuis Voronoï, densité uniforme, et il GAGNE 20 à 50 % de diagrammes, le gain croissant avec la
+> difficulté. Ce qui suit vaut pour la continuation en densité, où des milliers de cellules sont en
+> transition — pas pour un solve direct.
 
 `--residu barriere | log` (dans `newton` aussi) : Newton sur `g(a_i/ν_i)` au lieu de `a_i − ν_i`,
 `g(x) = x − 1/x` (ou `log x`). Même solution, autre direction et autre mérite : une cellule

@@ -15,6 +15,7 @@
 #include "bench/Dispatch.h"
 #include "solver/Lineaire.h"
 #include "solver/Newton.h"
+#include "solver/PremierOrdre.h"
 #include "solver/Prolongation.h"
 #ifdef _OPENMP
 #include <omp.h>
@@ -45,6 +46,8 @@ struct Opts {
     bool          reference = false;
     std::string   ecrire;                 ///< prefixe : ecrire chaque niveau resolu ( n, puis `x.. w nu` par germe )
     std::string   depart;                 ///< fichier de cas : ecrire les poids de DEPART, juste avant Newton
+    std::string   methode = "newton";     ///< newton | lbfgs | cg ( `PremierOrdre.h` ), avec `--lisse-solution`
+    PremierOrdreOptions po;
 };
 
 template<int D>
@@ -99,6 +102,20 @@ int depuis_solution( const Args &a, const Opts &o, const Nuage<PD::dim> &nu0 ) {
     Newton<PD> nw( pd, lin, nu0.P, a.par, o.newton );
     nw.nu = nu;
     const double t0 = now();
+    // LE PREMIER ORDRE SUR LES ITERATIONS DE CORRECTION ( `--methode lbfgs | cg`, `--bascule` ) :
+    // depuis un depart pathologique, la direction de Newton se lit sur un laplacien dont des
+    // milliers de lignes sont degenerees ( cellules nees minuscules, et `Laplacien.h` met `dia = 1`
+    // sur une ligne vide ). Un premier ordre n'a pas ce defaut -- il ne resout rien -- et
+    // `--bascule R` rend la main a Newton des que `max|a-nu|/nu <= R`.
+    if ( o.methode != "newton" ) {
+        PremierOrdre<PD> po( nw, o.po );
+        po.resout( w );
+        std::printf( "  %s depuis la solution lissee : %s, %d iterations, %d diagrammes avant bascule%s, reste %.2e, %.3f s\n",
+                     o.po.nom().c_str(), po.st.fin, po.st.nb_iter, po.st.nb_diag,
+                     po.st.it_bascule >= 0 ? ( " ( Newton depuis l'iteration " + std::to_string( po.st.it_bascule ) + " )" ).c_str() : "",
+                     double( po.st.reste ), now() - t0 );
+        return 0;
+    }
     nw.resout( w );
     std::printf( "  newton depuis la solution lissee : %s, %d iterations, %d diagrammes, reste %.2e, %.3f s\n",
                  nw.st.fin, nw.st.nb_iter, nw.st.nb_diag, double( nw.st.reste ), now() - t0 );
@@ -285,6 +302,16 @@ int main( int argc, char **argv ) {
         else if ( s == "--reference" )  o.reference = true;
         else if ( s == "--ecrire-niveaux" ) o.ecrire = val();
         else if ( s == "--ecrire-depart" ) o.depart = val();
+        else if ( s == "--residu" ) {
+            const std::string v = val();
+            o.newton.residu = v == "barriere" ? NewtonOptions::BARRIERE : v == "log" ? NewtonOptions::LOG : NewtonOptions::LIN;
+        }
+        else if ( s == "--methode" )    o.methode = val();
+        else if ( s == "--precond" )    o.po.precond = std::atoi( val() );
+        else if ( s == "--bascule" )    o.po.bascule = std::atof( val() );
+        else if ( s == "--bascule-it" ) o.po.bascule_it = std::atoi( val() );
+        else if ( s == "--po-sans-plancher" ) o.po.plancher = false;
+        else if ( s == "--po-maxit" )   o.po.maxit = std::atoi( val() );
         else if ( s == "--lisse-solution" ) o.lisse_solution = std::atoi( val() );
         else if ( s == "--mls-anneaux" ) o.mls_anneaux = std::atoi( val() );
         else if ( s == "--mls-largeur" ) o.mls_largeur = std::atof( val() );
@@ -314,11 +341,16 @@ int main( int argc, char **argv ) {
                 "  --reference     Newton depuis w = 0 sur le niveau fin, a options egales\n"
                 "  --ecrire-niveaux PREFIX   ecrire chaque niveau resolu : PREFIX_niveauL.txt ( n, puis x.. w nu )\n"
                 "  --ecrire-depart FILE      avec --lisse-solution : ecrire les poids de DEPART, juste avant Newton\n"
+                "  --residu R      lin ( a - nu ) | barriere ( x - 1/x, x = a/nu ) | log  (lin)\n"
+                "  --methode M     avec --lisse-solution : newton ( defaut ) | lbfgs | cg ( PremierOrdre.h )\n"
+                "  --precond K     0 = gamma I ( gradient nu ) | 1 = Jacobi | 2 = L0^-1 ( defaut )\n"
+                "  --bascule R     passer a Newton des que max|a-nu|/nu <= R ; --bascule-it K ; --po-sans-plancher ; --po-maxit K\n"
                 "  --pas P         essais | essai-limites                            (essai-limites)\n"
                 "  --newton-tol T  --newton-max K  --t-min T  --quiet\n" );
             return s == "--help" || s == "-h" ? 0 : 1;
         }
     }
+    if ( o.methode == "cg" ) { o.po.methode = PremierOrdreOptions::CG; if ( o.po.c2 == TF( 0.5 ) ) o.po.c2 = TF( 0.1 ); }
     a.finalise();
     if ( a.dims != 2 ) { std::printf( "2D seulement\n" ); return 1; }
 

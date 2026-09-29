@@ -152,12 +152,29 @@ def main():
     ap.add_argument( "--depart", required = True )
     ap.add_argument( "--eps", type = float, default = 1e-3 )
     ap.add_argument( "--passes", type = int, default = 6 )
+    ap.add_argument( "--delta", type = float, default = 0.0, help = "gonflage : + delta h_i^2 sur les germes remontes, puis re-projection" )
+    ap.add_argument( "--gonfle", type = int, default = 1, help = "tours de gonflage" )
     ap.add_argument( "--bande", type = float, default = 0.0, help = "miroirs : largeur de la bande le long des parois ( 0 : pas de miroir )" )
     ap.add_argument( "--out", required = True )
     o = ap.parse_args()
 
     P, w = lit_cas( o.depart )
     w1, bilan, nf = projette( P, w, o.eps, o.passes, o.bande )
+
+    # ---- LE GONFLAGE : `+ delta h_i^2` sur les germes remontes, puis RE-PROJECTION.
+    #
+    # Pas de garantie : abaisser le point releve de `i` le rend plus extremal, mais peut faire passer
+    # un VOISIN au-dessus de l'enveloppe. Ce qui se recupere, c'est l'admissibilite APRES coup -- la
+    # re-projection la restaure toujours ( elle ne fait que remonter ). Le risque est donc que le
+    # gonflage SE PROPAGE : c'est ce que la colonne « remontes » mesure d'un tour a l'autre.
+    if o.delta > 0:
+        h = cKDTree( P ).query( P, k = 2 )[ 0 ][ :, 1 ]       # l'echelle locale : le plus proche voisin
+        for tour in range( o.gonfle ):
+            m = w1 > w
+            w1 = w1.copy(); w1[ m ] += o.delta * h[ m ] ** 2
+            w1, b2, _ = projette( P, w1, o.eps, o.passes, o.bande )
+            print( "  gonflage %d : delta = %g sur %d germes ; vides par passe : %s"
+                   % ( tour + 1, o.delta, int( m.sum() ), " -> ".join( str( b ) for b in b2 ) ) )
     d = w1 - w
     remontes = int( ( d > 0 ).sum() )
     print( "n = %d ( %d avec les miroirs ) ; eps = %g : cellules VIDES dans R^2 par passe : %s"
