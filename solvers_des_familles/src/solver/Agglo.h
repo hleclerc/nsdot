@@ -178,6 +178,31 @@ inline bool sommets_cellule( const ModeleCellule &m, std::vector<TF> &vx, std::v
     return true;
 }
 
+/// LES TROIS MOMENTS d'un polygone par rapport a `p` : l'aire, `int ( x - p )` et `int |x - p|^2`,
+/// EXACTS ( densite de Lebesgue ). On somme sur les triangles `( p, v_j, v_j+1 )` avec leurs aires
+/// SIGNEES, ce qui rend la formule valable que `p` soit dedans ou dehors.
+///
+/// Pourquoi ils sont ici. Le second moment n'existait nulle part dans le banc -- `PremierOrdre.h` le
+/// dit : « il faudrait le second moment de chaque cellule ». Or c'est exactement ce qu'il faut pour
+/// prendre les AGREGATS en compte dans le cout de transport et dans les barycentres ( § 23.12 ), donc
+/// pour que la solution puisse ETRE un agregat au lieu de le subir.
+inline void moments_cellule( const std::vector<TF> &vx, const std::vector<TF> &vy, TF px, TF py,
+                             TF &aire, TF &mx, TF &my, TF &m2 ) {
+    aire = mx = my = m2 = 0;
+    const int nb = int( vx.size() );
+    if ( nb < 3 ) return;
+    for ( int j = 0; j < nb; ++j ) {
+        const int l = j + 1 < nb ? j + 1 : 0;
+        const TF ax = vx[ j ] - px, ay = vy[ j ] - py;
+        const TF bx = vx[ l ] - px, by = vy[ l ] - py;
+        const TF ar = TF( 0.5 ) * ( ax * by - bx * ay );          // aire SIGNEE du triangle
+        aire += ar;
+        mx += ar / 3 * ( ax + bx );
+        my += ar / 3 * ( ay + by );
+        m2 += ar / 6 * ( ax * ax + ay * ay + ax * bx + ay * by + bx * bx + by * by );
+    }
+}
+
 /// L'AIRE de la partie d'un polygone convexe ou `u . x <= s` ( Sutherland-Hodgman, une seule coupe ).
 inline TF aire_coupee( const std::vector<TF> &vx, const std::vector<TF> &vy, TF ux, TF uy, TF s ) {
     const int nb = int( vx.size() );
@@ -266,6 +291,36 @@ inline bool redecoupe( const ModeleCellule &m, const TF *const *P, const std::ve
     }
     aires[ k - 1 ] = rx.size() >= 3 ? aire_coupee( rx, ry, 1, 0, INFINI ) : TF( 0 );
     return true;
+}
+
+/// LE COUT DE TRANSPORT `sum_i int_{C_i} |x - p_i|^2` sur un diagramme DEJA calcule ( poids poses ),
+/// plus l'aire totale ( un controle : elle doit faire la mesure du domaine ) et le pire decalage de
+/// barycentre de cellule. 2D, densite de Lebesgue.
+template<class PD>
+void cout_transport( PD &pd, const TF *const *P, const TF *w, const Parallel &par,
+                     TF &cout, TF &aire_tot, TF &pire_bary, std::vector<TF> *par_cellule = nullptr ) {
+    static_assert( PD::dim == 2, "les moments ne sont ecrits qu'en 2D" );
+    const SI n = pd.n;
+    pd.set_weights( w, par );
+    std::vector<TF> c( n, TF( 0 ) ), ai( n, TF( 0 ) ), bb( n, TF( 0 ) );
+    parallel_for( n, par, [ & ]( SI k, int ) {
+        const SI i = pd.ids[ k ];
+        typename PD::Cell cel;
+        pd.cellule( k, cel );
+        ModeleCellule m;
+        m.depuis( cel, i, P, w );
+        std::vector<TF> vx, vy;
+        if ( ! sommets_cellule( m, vx, vy ) ) return;
+        TF a = 0, mx = 0, my = 0, m2 = 0;
+        moments_cellule( vx, vy, P[ 0 ][ i ], P[ 1 ][ i ], a, mx, my, m2 );
+        a = std::fabs( a );
+        c[ i ] = std::fabs( m2 );
+        ai[ i ] = a;
+        bb[ i ] = a > 0 ? std::sqrt( mx * mx + my * my ) / a : TF( 0 );
+    } );
+    cout = 0; aire_tot = 0; pire_bary = 0;
+    for ( SI i = 0; i < n; ++i ) { cout += c[ i ]; aire_tot += ai[ i ]; pire_bary = std::max( pire_bary, bb[ i ] ); }
+    if ( par_cellule ) *par_cellule = c;
 }
 
 } // namespace sf

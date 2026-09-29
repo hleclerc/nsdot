@@ -81,6 +81,7 @@ struct Opts {
     double        agrege = 0;         ///< > 0 : resoudre EN DEUX ETAPES, germes agreges sous ce seuil ( `Agglo.h` )
     bool          agrege_corr = true;  ///< ... et REDECOUPER les cellules fusionnees ( troisieme etape, 2D )
     bool          agrege_fin = false;  ///< ... puis finir par un Newton sur le nuage COMPLET depuis ces poids
+    bool          cout = false;       ///< calculer le COUT DE TRANSPORT a la fin ( 2D, `Agglo.h` )
 };
 
 /// LE SOLVEUR LINEAIRE demande par les options, construit UNE FOIS et hors du dispatch : depuis
@@ -221,6 +222,16 @@ int lance( const Args &a, const Opts &o, const Nuage<PD::dim> &nu, Lineaire &lin
             std::printf( "  poids ecrits dans '%s'\n", o.ecrire.c_str() );
         else
             std::printf( "  impossible d'ecrire '%s'\n", o.ecrire.c_str() );
+    }
+
+    if ( o.cout ) {
+        if constexpr ( D == 2 ) {
+            TF ct = 0, at = 0, pb = 0;
+            cout_transport( pd, nu.P, nw.w.data(), a.par, ct, at, pb );
+            std::printf( "         COUT de transport = %.15e  ( aire totale %.15e, pire decalage de"
+                         " barycentre %.3e )\n", double( ct ), double( at ), double( pb ) );
+        } else
+            std::printf( "         COUT : les moments ne sont ecrits qu'en 2D.\n" );
     }
 
     // La verification qui ne coute rien : le nuage `_equal` PORTE deja la solution, obtenue par
@@ -371,6 +382,38 @@ int lance_agrege( const Args &a, const Opts &o, const Nuage<PD::dim> &nu, Lineai
                  int( n - nb_dedans ), double( pire_seuls ), int( au_dessus[ 0 ] ), int( au_dessus[ 1 ] ),
                  int( au_dessus[ 2 ] ), int( nb_dedans ), double( pire_gr ), int( nv_gr ),
                  pire_gr > pire_seuls * 10 ? "  <- le redecoupage manque ( § 23.6 )" : "" );
+
+    // ---- LE COUT DE TRANSPORT, VU PAR L'AGREGAT ( § 23.12 )
+    //
+    // Si on renonce a resoudre les `w` des germes agreges -- ce qui est raisonnable, puisqu'ils sont
+    // sous la precision machine -- alors la solution EST un agregat, et les fonctionnelles en aval
+    // doivent en tenir compte. Pour le cout, la decomposition est EXACTE :
+    //
+    //     sum_{i in r} int_{C_i} |x - p_i|^2
+    //         = int_{C_r} |x - q|^2  +  sum_{i in r} nu_i |p_i - q|^2  -  2 sum_{i in r} ( p_i - q ) . m_i
+    //
+    // avec `m_i = int_{C_i} ( x - q )`. Les DEUX PREMIERS termes ne demandent QUE la cellule fusionnee et
+    // les positions : aucun decoupage. Le troisieme est le seul qui en depende -- et il s'annule au
+    // premier ordre PARCE QUE `q` est le barycentre pondere par `nu` ( si `m_i ~ ( nu_i / nu_r ) M_r`,
+    // il vaut `-2 ( M_r / nu_r ) . sum nu_i ( p_i - q ) = 0` ). Voila la vraie raison de ce choix de `q`.
+    if ( o.cout ) {
+        if constexpr ( D == 2 ) {
+            TF ct = 0, at = 0, pb = 0;
+            cout_transport( pdr, red.P, nw.w.data(), a.par, ct, at, pb );
+            TF var = 0;                                  // le terme de VARIANCE INTERNE des grappes
+            for ( SI i = 0; i < n; ++i ) {
+                const SI r = vers[ i ];
+                if ( taille[ r ] < 2 ) continue;
+                TF s2 = 0;
+                for ( int d = 0; d < D; ++d ) { const TF u = nu.P[ d ][ i ] - red.P[ d ][ r ]; s2 += u * u; }
+                var += nu_plein[ i ] * s2;
+            }
+            std::printf( "        COUT vu par l'agregat = %.15e  =  %.15e ( cellules fusionnees )"
+                         " + %.15e ( variance interne )\n"
+                         "              ( aire totale %.15e, pire decalage de barycentre %.3e )\n",
+                         double( ct + var ), double( ct ), double( var ), double( at ), double( pb ) );
+        }
+    }
 
     // ---- etape 4 : LA CORRECTION, un Newton sur le nuage COMPLET depuis ces poids.
     //
@@ -567,6 +610,7 @@ int main( int argc, char **argv ) {
         else if ( s == "--agrege" )     o.agrege = std::atof( val() );
         else if ( s == "--agrege-brut" ) o.agrege_corr = false;
         else if ( s == "--agrege-fin" )  o.agrege_fin = true;
+        else if ( s == "--cout" )       o.cout = true;
         else if ( s == "--memo" )       o.newton.memo = true;
         else if ( s == "--cible" ) {
             const std::string v = val();
@@ -646,6 +690,7 @@ int main( int argc, char **argv ) {
                 "                  remonter les poids, et MESURER ce que ca vaut sur le nuage complet ( Agglo.h )\n"
                 "  --agrege-brut   ... sans le redecoupage des cellules fusionnees ( pour voir ce qu.il apporte )\n"
                 "  --agrege-fin    ... puis finir par un Newton sur le nuage COMPLET depuis les poids obtenus\n"
+                "  --cout          calculer le COUT DE TRANSPORT sum_i int |x - p_i|^2 a la fin ( 2D )\n"
                 "  --quiet         pas de trace par iteration\n"
                 "  --pas P         essais ( KMT, defaut ) | dyadique | facteur | tenseur | essai-limites ( 2D )\n"
                 "                  | modele ( 2D ) : le pas cherche dans le SPAN de plusieurs directions, sur le modele\n"

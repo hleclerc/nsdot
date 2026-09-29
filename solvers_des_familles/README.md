@@ -5694,3 +5694,64 @@ coupes successives : les masses sont bonnes, donc la partition est optimale si l
 exactement confondus (le coût ne dépend alors pas du membre), mais elle n'est plus forcément un
 diagramme de puissance et les poids rendus ne sont qu'approchés. Et c'est 2D seulement, comme tout
 `Ecrasement.h`.
+
+## 23.12 RENONCER aux `w` des germes agrégés : ce que ça coûte vraiment (`--cout`)
+
+Puisque l'écart de poids d'une paire à `δ = 10⁻⁸` est sous la précision machine (§ 23.11), autant
+**décider de ne pas le résoudre** : la solution EST alors un agrégat, et c'est aux fonctionnelles en
+aval d'en tenir compte. Reste à savoir ce que ça leur coûte. Pour le coût de transport, rien — et pas
+« négligeable » : rien, à seize chiffres.
+
+### La décomposition est exacte
+
+```
+Σ_{i∈r} ∫_{C_i} |x − p_i|²  =  ∫_{C_r} |x − q|²  +  Σ_{i∈r} ν_i |p_i − q|²  −  2 Σ_{i∈r} (p_i − q)·m_i
+```
+
+avec `m_i = ∫_{C_i}(x − q)`. Les **deux premiers termes ne demandent que la cellule fusionnée et les
+positions** : aucun découpage. Le troisième est le seul qui en dépende, et il s'annule au premier ordre
+**parce que `q` est le barycentre pondéré par `ν`** — si `m_i ≈ (ν_i/ν_r) M_r`, il vaut
+`−2 (M_r/ν_r)·Σ ν_i (p_i − q) = 0`. C'est la vraie raison de ce choix de `q`, que j'avais d'abord
+justifié par le second moment.
+
+Les moments (`aire`, `∫(x−p)`, `∫|x−p|²`) sont exacts, sommés sur les triangles `(p, v_j, v_{j+1})` avec
+leurs aires **signées** — ce qui vaut que `p` soit dedans ou dehors. Ils n'existaient nulle part dans le
+banc : `PremierOrdre.h` notait « il faudrait le second moment de chaque cellule ». Ils sont dans
+`Agglo.h` (`moments_cellule`, `cout_transport`).
+
+### Mesure : le coût est identique à 1.2e-17
+
+Nuage dégénéré, `n = 10⁵`, `δ = 5e-8` (une grappe) :
+
+| | coût de transport |
+|---|---|
+| solve **direct** (qui stagne à 2.35e-6 sur les aires) | `1.923535254484273e-02` |
+| **agrégé, sans jamais résoudre les `w` de la paire** | `1.923535254484250e-02` |
+
+**Écart relatif 1.2e-17.** Et la décomposition se lit : le terme de variance interne vaut `5.09e-22`
+(soit `ν δ² ≈ 10⁻⁵ × 10⁻¹⁶`, comme prévu), donc tout le coût est dans la cellule fusionnée. L'aire
+totale est la même (`0.999999999999` des deux côtés, le déficit étant la quadrature du diagramme).
+
+### Et la raison en une ligne
+
+Déplacer une masse `Δa` d'un membre à l'autre change le coût de `(w_i − w_j) · Δa` — parce que sur le
+plan de puissance qui les sépare, l'intégrande `|x−p_i|² − |x−p_j|²` vaut exactement `w_i − w_j`. Or
+c'est précisément cette quantité qui est minuscule (`~2δL ≈ 10⁻¹¹`). **Le coût de transport est aveugle
+exactement à la dégénérescence que les poids ne savent pas résoudre.** Ce n'est pas une coïncidence :
+les deux sont la même petitesse, vue une fois au numérateur et une fois au dénominateur.
+
+### Ce que l'agrégat change, et ce qu'il ne change pas
+
+* **rien à changer** pour tout ce qui est une somme pondérée par les masses : le coût de transport, la
+  masse totale, le barycentre global, tout moment global. La cellule fusionnée et les `ν_i` suffisent ;
+* **le terme de variance interne `Σ ν_i |p_i − q|²` est à ajouter**, et il est exact, explicite, et
+  calculable sans rien connaître du découpage ;
+* **le découpage n'est nécessaire que pour une quantité géométrique PAR MEMBRE** — le barycentre de la
+  cellule d'un membre, sa forme, son voisinage. `redecoupe` (§ 23.11) le fournit exactement pour `k = 2`,
+  et son coût est celui d'une poignée de bissections ;
+* et **l'interface doit porter l'agrégat**, ce qui est la conclusion du § 23.11 sous une autre forme : un
+  `std::vector<TF> w` de taille `n` ne peut pas représenter la solution, un (diagramme réduit + table de
+  grappes + masses) si.
+
+C'est le compromis raisonnable : on ne demande pas au solveur de calculer ce que le format ne peut pas
+stocker, et on constate que la quantité qui intéresse vraiment n'en dépend pas.
