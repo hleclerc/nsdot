@@ -16,6 +16,7 @@
 
 #include "bench/Dispatch.h"
 #include "bench/Trames.h"
+#include "solver/Agglo.h"
 #include "solver/Lineaire.h"
 #include "solver/Multigrille.h"
 #include "solver/Newton.h"
@@ -77,6 +78,7 @@ struct Opts {
     double        mixte_tmin = 1e-3;  ///< `--kernel mixte` : le pas sous lequel la phase `float` passe la main
     double        mixte_progres = 0;  ///< ... ou le gain minimal sur `|r|_2` par iteration ( 0 : eteint )
     double        mixte_kappa = 30;   ///< ... et le plancher de bruit vise : `kappa eps / sqrt( n )`
+    double        agrege = 0;         ///< > 0 : resoudre EN DEUX ETAPES, germes agreges sous ce seuil ( `Agglo.h` )
 };
 
 /// LE SOLVEUR LINEAIRE demande par les options, construit UNE FOIS et hors du dispatch : depuis
@@ -234,6 +236,103 @@ int lance( const Args &a, const Opts &o, const Nuage<PD::dim> &nu, Lineaire &lin
     return ok && st.nb_deborde == 0 ? 0 : 1;
 }
 
+/// LA RESOLUTION EN DEUX ETAPES ( `--agrege D`, voir `Agglo.h` ) : agreger les germes a moins de `D`,
+/// resoudre le probleme REDUIT, remonter les poids -- et surtout MESURER ce que ca vaut sur le nuage
+/// COMPLET, en separant les germes seuls des germes agreges. C'est ce dernier chiffre qui dit si
+/// l'etape de redecoupage ( § 23.6 ) est necessaire ou decorative.
+template<class PD>
+int lance_agrege( const Args &a, const Opts &o, const Nuage<PD::dim> &nu, Lineaire &lin ) {
+    constexpr int D = PD::dim;
+    const SI n = nu.n;
+    const std::vector<TF> nu_plein( n, TF( 1 ) / TF( n ) );
+
+#ifdef _OPENMP
+    omp_set_num_threads( a.par.threads );
+#endif
+
+    // ---- etape 0 : les grappes, sans diagramme et sans structure nouvelle
+    double t0 = now();
+    std::vector<SI> rep;
+    const SI perdus = grappes_proches<D>( nu.P, n, TF( o.agrege ), rep );
+    const double t_det = now() - t0;
+
+    if ( perdus == 0 ) {
+        std::printf( "  AGREGE : aucune grappe sous %.3e ( detection %.4f s ) -- rien a agreger,"
+                     " on resout normalement\n", o.agrege, t_det );
+        return lance<PD>( a, o, nu, lin );
+    }
+
+    // ---- etape 1 : le probleme reduit
+    Nuage<D> red;
+    std::vector<TF> nur;
+    std::vector<SI> vers, taille;
+    reduis<D>( nu.P, nu_plein, rep, red.c, nur, vers, taille );
+    red.nom = nu.nom + " ( agrege )";
+    red.w.assign( nur.size(), TF( 0 ) );
+    red.finish();
+    const SI m = red.n;
+    SI nb_gr = 0, nb_dedans = 0, tmax = 0;
+    for ( SI r = 0; r < m; ++r )
+        if ( taille[ r ] > 1 ) { ++nb_gr; nb_dedans += taille[ r ]; tmax = std::max( tmax, taille[ r ] ); }
+    std::printf( "  AGREGE seuil %.3e : %d germes -> %d, soit %d grappes ( %d germes dedans,"
+                 " taille max %d ), detection %.4f s\n",
+                 o.agrege, int( n ), int( m ), int( nb_gr ), int( nb_dedans ), int( tmax ), t_det );
+
+    // ---- etape 2 : resoudre le reduit, avec le meme Newton et rien de special
+    t0 = now();
+    PD pdr;
+    pdr.build( red.P, nullptr, m, a.leaf );
+    lin.ordre( pdr.ids.data(), m );
+    Newton<PD> nw( pdr, lin, red.P, a.par, o.newton );
+    nw.nu = nur;
+    const bool ok = nw.resout( std::vector<TF>( m, TF( 0 ) ) );
+    const double t_red = now() - t0;
+    const NewtonStats sr = nw.st;
+    std::printf( "        reduit  : %s ( max|a-nu|/nu = %.2e ) -- %d iterations, %d diagrammes"
+                 " ( %d reculs ), %.3f s\n",
+                 sr.fin, double( sr.reste ), sr.nb_iter, sr.nb_diag, sr.nb_recul, t_red );
+
+    // ---- etape 3 : remonter les poids, et MESURER sur le nuage complet
+    //
+    // Tous les membres d'une grappe recoivent LE MEME poids : leurs plans mutuels passent alors par le
+    // milieu, donc la cellule fusionnee se partage selon la GEOMETRIE et non selon les masses voulues.
+    // C'est exactement ce que le redecoupage du § 23.6 corrigerait, et la mesure ci-dessous le chiffre.
+    std::vector<TF> w_plein( n );
+    for ( SI i = 0; i < n; ++i ) w_plein[ i ] = nw.w[ vers[ i ] ];
+    NewtonOptions om = o.newton;
+    om.tol = 1e300;                                  // une seule mesure, pas de resolution
+    om.trace = false;
+    om.agglo = 0;
+    PD pdp;
+    pdp.build( nu.P, nullptr, n, a.leaf );
+    lin.ordre( pdp.ids.data(), n );
+    Newton<PD> nm( pdp, lin, nu.P, a.par, om );
+    nm.nu = nu_plein;
+    nm.resout( w_plein );
+    TF pire_seuls = 0, pire_gr = 0;
+    SI nv_gr = 0;
+    // COMBIEN de germes seuls sont touches, et pas seulement le pire : c'est la question, parce qu'un
+    // maximum sur 10^5 germes ne dit pas si l'erreur est LOCALE ( les voisins immediats d'une grappe )
+    // ou repandue. L'agregation deplace une grappe sur son barycentre, et un voisin voit son aire
+    // bouger de `deplacement x perimetre / aire` -- ce qui explose sur une cellule en LAMELLE.
+    const TF seuils[] = { TF( 1e-6 ), TF( 1e-4 ), TF( 1e-2 ) };
+    SI au_dessus[ 3 ] = { 0, 0, 0 };
+    for ( SI i = 0; i < n; ++i ) {
+        const TF e = std::fabs( nu_plein[ i ] - nm.a[ i ] ) / nu_plein[ i ];
+        if ( taille[ vers[ i ] ] > 1 ) { pire_gr = std::max( pire_gr, e ); nv_gr += ! ( nm.a[ i ] > 0 ); }
+        else {
+            pire_seuls = std::max( pire_seuls, e );
+            for ( int k = 0; k < 3; ++k ) au_dessus[ k ] += e > seuils[ k ];
+        }
+    }
+    std::printf( "        COMPLET : sur les %d germes SEULS, max %.3e et %d / %d / %d au-dessus de"
+                 " 1e-6 / 1e-4 / 1e-2 ; sur les %d AGREGES, max %.3e ( %d vides )%s\n",
+                 int( n - nb_dedans ), double( pire_seuls ), int( au_dessus[ 0 ] ), int( au_dessus[ 1 ] ),
+                 int( au_dessus[ 2 ] ), int( nb_dedans ), double( pire_gr ), int( nv_gr ),
+                 pire_gr > pire_seuls * 10 ? "  <- le redecoupage manque ( § 23.6 )" : "" );
+    return ok ? 0 : 1;
+}
+
 /// LA BASCULE `--kernel mixte` : resoudre en SIMPLE PRECISION tant que ca avance, FINIR en
 /// double. C'est la forme utile du fp32, parce que la mesure du § 19.8 est celle-ci : `float`
 /// suit `double` chiffre pour chiffre pendant les premieres iterations, puis la recherche
@@ -342,7 +441,8 @@ int deroule( const Args &a, const Opts &o ) {
             continue;
         }
         bad += dispatch<D>( a, [ & ]( auto tag ) {
-            return lance<typename decltype( tag )::type>( a, o, nu, *lin );
+            using T = typename decltype( tag )::type;
+            return o.agrege > 0 ? lance_agrege<T>( a, o, nu, *lin ) : lance<T>( a, o, nu, *lin );
         } );
     }
     return bad;
@@ -401,6 +501,7 @@ int main( int argc, char **argv ) {
         else if ( s == "--mixte-tmin" ) o.mixte_tmin = std::atof( val() );
         else if ( s == "--mixte-progres" ) o.mixte_progres = std::atof( val() );
         else if ( s == "--mixte-kappa" ) o.mixte_kappa = std::atof( val() );
+        else if ( s == "--agrege" )     o.agrege = std::atof( val() );
         else if ( s == "--memo" )       o.newton.memo = true;
         else if ( s == "--cible" ) {
             const std::string v = val();
@@ -476,6 +577,8 @@ int main( int argc, char **argv ) {
                 "  --mixte-tmin T  --kernel mixte : le pas sous lequel la phase float passe la main au double  (1e-3)\n"
                 "  --mixte-progres F  ... ou le gain minimal sur |r|_2 par iteration ( 0 : eteint )              (0)\n"
                 "  --mixte-kappa K    ... et le PLANCHER DE BRUIT vise, en unites de eps_float / sqrt( n )  (30)\n"
+                "  --agrege D      resoudre EN DEUX ETAPES : agreger les germes a moins de D, resoudre le probleme reduit,\n"
+                "                  remonter les poids, et MESURER ce que ca vaut sur le nuage complet ( Agglo.h )\n"
                 "  --quiet         pas de trace par iteration\n"
                 "  --pas P         essais ( KMT, defaut ) | dyadique | facteur | tenseur | essai-limites ( 2D )\n"
                 "                  | modele ( 2D ) : le pas cherche dans le SPAN de plusieurs directions, sur le modele\n"

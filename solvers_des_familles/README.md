@@ -5548,3 +5548,79 @@ Et la raison est déjà dans le profil du § 21.2 : **le critère décroît de f
 rayon jusqu'à ce que le plancher morde.** Le meilleur point admissible est donc toujours au bord, et il
 n'y a rien à chercher — seulement à s'arrêter juste avant. Ce qui répond à la question posée : oui, on
 utilise toujours ~0.9 à 0.99 du pas admissible exact, et autant l'écrire une fois pour toutes.
+
+## 23.10 La résolution en DEUX ÉTAPES, faite et mesurée (`newton --agrege D`)
+
+Le § 23.8 n'avait fait que la détection. Voici les deux étapes : agréger, résoudre. `Agglo.h` porte la
+détection (hachage de grille au pas `δ` + union-find, sans diagramme, donc utilisable avant tout le
+reste) et la réduction (un germe par grappe, au **barycentre pondéré par `ν`**, de cible `Σ ν_i`) ;
+`lance_agrege` enchaîne, remonte les poids, et mesure ce que ça vaut **sur le nuage complet** — le seul
+chiffre honnête.
+
+### Ce que la « dégénérescence » est vraiment
+
+Deux germes à distance `δ` sont séparés par un plan dont le décalage vaut `(w_i − w_j) / 2δ`. Placer ce
+plan à `ε` près du diamètre `L` de la cellule demande donc `w_i − w_j` à `2δεL` près : **l'écart de
+poids est divisé par `δ`**. À `δ = 10⁻⁸`, `L = 10⁻³`, `ε = 10⁻⁶`, il faut `w_i − w_j` à 2·10⁻¹⁷ près,
+sous l'epsilon machine relatif de poids qui valent ~10⁻¹. Ce n'est donc pas une insolubilité, c'est un
+**plancher de précision** — et il explique le 2.35e-6 exactement là où le banc s'arrêtait.
+
+### Une seule paire suffisait
+
+`lines5_n100000_s0.005_equal.txt` (le nuage dégénéré conservé, § 23.7), 8 fils :
+
+| `δ` | grappes | le problème RÉDUIT | germes seuls > 1e-6 | membres agrégés |
+|---|---|---|---|---|
+| — (sans agrégation) | — | **STAGNATION 2.35e-6**, 113 diag | — | — |
+| 5e-8 | **1** | **CONVERGE 2.12e-7**, 79 diag | **3** / 99 998 | max 1.06, 1 vide sur 2 |
+| 1e-7 | 3 | CONVERGE 2.12e-7, 79 diag | 11 / 99 994 | max 1.06, 3 vides sur 6 |
+| 1e-6 | 7 | CONVERGE 2.12e-7, 79 diag | 34 / 99 986 | max 5.21, 7 vides sur 14 |
+| 4.5e-6 | 56 | CONVERGE 3.38e-7, 74 diag | — | max 14.4, 56 vides sur 112 |
+
+**Tout le plancher à 2.35e-6 était UNE paire de germes à 10⁻⁸.** L'agréger suffit : le problème réduit
+converge à 2.12e-7, et les diagrammes passent de 113 à 79. C'est le résultat de la section.
+
+### Mais la remontée sans redécoupage ne vaut rien, et de deux façons
+
+Tous les membres d'une grappe reçoivent le **même** poids, donc leurs plans mutuels passent par le
+milieu : la cellule fusionnée se partage selon la **géométrie** et pas selon les masses voulues. Mesuré :
+chaque paire finit à ~100 % d'écart, et **la moitié des membres est vide**. Sans surprise, et c'est
+exactement ce que le § 23.6 corrigerait.
+
+L'autre façon est moins évidente et c'est la vraie contrainte. Agréger **déplace** la grappe sur son
+barycentre, et un voisin voit son aire bouger de `déplacement × périmètre / aire`. Sur une cellule en
+**lamelle** — ce que `σ = 0.005` fabrique — ce rapport explose : un déplacement de 2.5·10⁻⁸ donne 4.3 %
+d'erreur d'aire. Donc **le critère sur `δ` n'est pas « `δ` ≪ espacement » mais « `δ` ≪ épaisseur locale
+de cellule »**, et sur des lamelles l'épaisseur est minuscule.
+
+La bonne nouvelle est que l'erreur reste **strictement locale** : 3 germes seuls touchés pour une
+grappe, 11 pour trois, 34 pour sept — soit 3 à 7 voisins immédiats par grappe, sur 10⁵ germes dont tout
+le reste est sous 1e-6. Même forme sur l'uniforme (5 touchés pour une grappe, 109 pour seize).
+
+### Donc non, on n'est pas au bout — et la pièce qui manque n'est pas décorative
+
+Le redécoupage (§ 23.6) répare **les deux** problèmes d'un coup, et c'est ce qui le rend obligatoire
+plutôt qu'optionnel : une fois chaque membre remis à sa vraie position avec son propre poids, le
+diagramme est le vrai diagramme — les masses des membres sont bonnes *et* les voisins ne sont plus
+perturbés, puisque plus rien n'a bougé. Ce qui reste à écrire, par grappe :
+
+1. le plan entre deux membres a une normale **fixe** (`p_j − p_i`) ; seul son décalage est libre ;
+2. on le cherche par bissection sur l'aire du morceau — **monotone et parfaitement conditionné**,
+   parce que le paramètre est la POSITION du plan et non l'écart de poids ;
+3. on en **déduit** `w_i − w_j = 2δ · décalage` à la fin. L'amplification par `1/δ` devient une simple
+   sortie, jamais une inconnue — et c'est là tout l'intérêt de faire le découpage à part.
+
+Pour des germes **exactement** confondus, l'étape 2 est libre : le coût `∫|x − p_i|²` ne dépend pas du
+membre auquel on attribue un morceau, donc toute partition aux bonnes masses est optimale. La liberté
+dont on dispose est exactement celle dont on a besoin.
+
+### Deux notes de mise en œuvre
+
+`Agglo.h` détecte par hachage de grille (0.08 s à `n = 10⁵`) parce qu'il doit pouvoir tourner **sans
+diagramme**. Quand le diagramme est de toute façon payé, la variante Delaunay de `--agglo` est vingt
+fois plus rapide (5 ms, § 23.8) : c'est elle qu'il faudra brancher dans le solveur réel.
+
+Et le nuage dégénéré reste disponible comme **test** : `lines5_n100000_s0.005_equal.txt` porte les mêmes
+germes que l'ancien `_voronoi` (ils sont écrits depuis les mêmes positions), donc `--load` dessus donne
+le cas dégénéré, avec en prime son témoin. `pysdot` est désormais installé, donc `gen_cases.py`
+fonctionne à nouveau et les nuages hors dépôt sont régénérables.
