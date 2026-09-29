@@ -5095,10 +5095,12 @@ et il CONVERGE, contre 53, 23.1 s et STAGNATION). La bascule est ce qu'il faut m
 modèle est ce qu'il faut sortir quand ça ne passe pas.
 
 > **Attention sur `σ = 0.005` : ces chiffres dépendent du solveur linéaire.** `log` pur y fait 536
-> diagrammes avec AMGCL et 58 avec Cholesky — le nuage porte deux germes à 1.009e-08 (§ 8.7.3), le
-> système est mal conditionné, et un Krylov à tolérance relative n'y rend pas la même direction qu'une
-> factorisation. Les tableaux de cette section et du § 22.3 sont à AMGCL (le défaut en 2D) ; ceux en
-> temps sont à Cholesky. Sur ce nuage-là, comparer des variantes à solveur différent ne veut rien dire.
+> diagrammes avec AMGCL et 58 avec Cholesky — le nuage porte 56 paires de germes trop proches, dont une
+> à 1.009e-08 (§ 8.7.3), donc des poids de laplacien à 1.4e4 contre une médiane de 0.29 (§ 23.3), et un
+> Krylov à tolérance relative n'y rend pas la même direction qu'une factorisation. Les tableaux de cette
+> section et du § 22.3 sont à AMGCL (le défaut en 2D) ; ceux en temps sont à Cholesky. Sur ce nuage-là,
+> comparer des variantes à solveur différent ne veut rien dire — et `cases/nettoie_germes.py` le rend
+> sain, après quoi il CONVERGE en 19 diagrammes (§ 23.3).
 
 
 # 22. LE MODÈLE POLYNOMIAL MULTI-DIRECTIONS (`Ecrasement.h` : `PolyMulti`, `newton --pas modele`)
@@ -5258,3 +5260,98 @@ premières : il y a peut-être là de quoi ne jamais toucher les autres. Ce n'es
 
 Et comme tout `Ecrasement.h`, **c'est 2D seulement** : en 3D le volume est cubique en `t` et la marche
 dans la cellule est autre ; `--pas modele` y retombe sur les essais, en le disant.
+
+# 23. Y A-T-IL QUELQUE CHOSE À CONDITIONNER ? (`newton --diag-lap`)
+
+Question posée : maintenant que le résidu et le pas ont été travaillés, pourrait-on **mieux
+conditionner le système** pour que le multigrille y passe mieux ? La réponse est non, et c'est la
+mesure qui le dit — mais elle désigne autre chose, qui paye davantage.
+
+## 23.1 Le résidu ne touche pas la matrice
+
+Premier point, et il ferme une porte avant qu'on l'ouvre. La matrice assemblée est toujours
+
+```
+c_ij = |facette ij| / ( 2 |p_i − p_j| ),   L_ii = Σ_j c_ij,   L_ij = −c_ij
+```
+
+Elle ne dépend **que des facettes**. Le résidu (`lin`, `log`, `puissance`, la bascule du § 21.7) ne
+change que le **second membre** : `L d = ν/g'(x) · (c − g(x))`. Donc rien de tout le § 21 ne peut ni
+améliorer ni dégrader le conditionnement — et les chiffres le confirment : ~35 itérations de Krylov
+par résolution dans toutes les variantes.
+
+## 23.2 Ce qui rend `L` dure, mesuré (`--diag-lap`)
+
+`--diag-lap` imprime à chaque itération l'étalement de la diagonale, celui des poids d'arêtes, et
+l'**anisotropie par ligne** `max_j c_ij / Σ_j c_ij` — une ligne proche de 1 est un nœud couplé à un
+seul voisin, donc une chaîne, et c'est ce qui met une agrégation en échec. Au départ Voronoï,
+`n = 10⁵` :
+
+| cloud | diag méd. | diag max/min | `c` méd. | `c` max | anisotropie méd. | lignes > 0.9 |
+|---|---|---|---|---|---|---|
+| uniforme 2D | 2.61 | 1.4e2 | 0.287 | 1.4e2 | 0.440 | 0.68 % |
+| lignes `σ=0.1` | 2.60 | 3.5e2 | 0.286 | 3.2e2 | 0.439 | 0.75 % |
+| lignes `σ=0.02` | 2.60 | 2.0e2 | 0.289 | 1.8e2 | 0.438 | 0.69 % |
+| lignes `σ=0.005` | 2.65 | **1.5e4** | 0.293 | **1.4e4** | 0.442 | 1.06 % |
+| uniforme 3D | 0.071 | 5.1e1 | 2.1e-3 | 0.86 | 0.305 | 0.04 % |
+| plans `σ=0.02` | 0.048 | 2.2e2 | 1.5e-3 | 1.4 | 0.304 | 0.04 % |
+
+**L'anisotropie est identique partout**, y compris sur l'uniforme : 0.44 en 2D, 0.30 en 3D, et moins
+de 1.1 % de lignes au-dessus de 0.9. Le graphe de Laguerre n'est pas une chaîne, c'est un graphe
+régulier à six voisins — l'hypothèse « les nuages durs font un problème anisotrope » est **fausse**.
+
+Et sur toute une résolution (`σ = 0.02`, `log` + bascule, AMGCL), le compte de Krylov est **plat** :
+
+| it | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+|---|---|---|---|---|---|---|---|---|---|
+| Krylov | 34 | 35 | 34 | 36 | 35 | 39 | 36 | 34 | 31 |
+| anisotropie | 0.438 | 0.442 | 0.445 | 0.449 | 0.453 | 0.456 | 0.459 | 0.459 | 0.459 |
+
+35 par résolution du début à la fin — et l'uniforme en coûte 35 aussi. **Il n'y a rien à
+conditionner : le solveur voit partout la même matrice facile.**
+
+## 23.3 Sauf sur un nuage, et la cause est un défaut de données
+
+Une seule ligne du tableau sort : `σ = 0.005`, où `c` monte à **1.4e4** contre une médiane de 0.29.
+Cinq décades, sur une poignée d'arêtes. La cause est connue (§ 8.7.3) : `gen_cases.py` rabat les
+germes dans le carré unité, et à petit `σ` le rabattement en empile — **56 paires à moins de 1 % de
+l'espacement médian, dont une à 1.009e-08**. Comme `c_ij = |facette| / 2|p_i − p_j|`, une distance de
+`1e-8` donne un poids de `1e4`.
+
+Et là, effectivement, les solveurs itératifs souffrent : à huit fils, `σ = 0.005`, partie linéaire —
+Cholesky **2.15 s**, AMG agrégation 3.34 s, Ruge-Stüben 3.28 s, multigrille maison 4.51 s. Le direct
+gagne, ce qui n'arrive nulle part ailleurs en 2D à ce `n`. Pire, un lissage de plus (`--mg-nu 2`)
+fait passer la partie linéaire de 4.5 s à **50 s**.
+
+**La réparation n'est donc pas un préconditionneur, c'est le nuage.**
+`cases/nettoie_germes.py` retire d'une grappe tous les germes sauf le premier (on ne déplace personne :
+retirer un germe confondu avec son voisin ne change aucune cellule visible). 56 germes sur 100 000, et :
+
+| | `c` max | diag max | Newton | partie linéaire à 8 fils (chol / amg / mg) |
+|---|---|---|---|---|
+| sale | 1.4e4 | 1.4e4 | 53 diag, **STAGNATION** à 2.35e-6 | 2.15 / 3.34 / 4.51 s |
+| **propre** | **1.3e2** | **1.4e2** | **19 diag, CONVERGE** à 2.7e-8 | **1.99 / 2.65 / 2.97 s** |
+
+L'étalement des poids est divisé par cent, le cas **converge** au lieu de plafonner, et les diagrammes
+passent de 53 à 19. Les solveurs itératifs sont ceux qui gagnent le plus (−21 % pour AMG, −34 % pour
+le multigrille maison, contre −7 % pour Cholesky) : c'était bien eux que l'étalement pénalisait. Ils
+ne dépassent pas Cholesky pour autant sur ce nuage — sur les *lignes* le direct gagne de toute façon
+(§ 3), et c'est l'uniforme qui est le terrain de l'AMG.
+
+## 23.4 Le piège de mesure : toute comparaison de solveurs se fait au bon nombre de fils
+
+Il faut l'écrire, parce qu'on y tombe. À **un** fil, sur `σ = 0.02` (partie linéaire) : Cholesky
+1.54 s, Ruge-Stüben 3.62 s, agrégation 4.25 s, multigrille maison 6.06 s — Cholesky domine, et
+Ruge-Stüben bat l'agrégation de 15 %. À **huit** fils, même cas : multigrille maison **1.32 s**,
+agrégation 1.47 s, Cholesky 1.65 s, Ruge-Stüben **4.08 s**. Tout s'inverse :
+
+* **Cholesky ne monte pas en charge du tout** (1.72 → 1.77 s de 1 à 8 fils sur l'uniforme). Il gagne
+  à un fil et perd à huit, donc une comparaison mono-fil le fait paraître le meilleur solveur 2D
+  jusqu'à `n = 10⁶`, ce qui est faux dès qu'on utilise la machine ;
+* **le Gauss-Seidel de Ruge-Stüben se parallélise mal** : meilleur à un fil, presque trois fois pire
+  à huit. Son gain en itérations (−33 à −61 % de Krylov, réel et croissant avec la difficulté) est
+  mangé par le coût du lissage.
+
+Les conclusions du § 17 tiennent donc telles quelles, et le défaut 2D (`amg`) reste le bon. Ce qui
+change, c'est qu'on sait maintenant **pourquoi** il n'y a rien à gagner côté conditionnement, et
+**où** est le vrai levier : les germes du nuage, pas la matrice.

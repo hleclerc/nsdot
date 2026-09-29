@@ -160,7 +160,12 @@ struct NewtonOptions {
     /// peut pas nuire tard, parce que pres de la solution `b_i = nu_i / g'( x_i ) ( c - g( x_i ) )`
     /// tend vers `nu_i - a_i` POUR TOUT RESIDU : les directions deviennent colineaires, donc le choix
     /// n'a plus d'objet.
-    TF   bascule_residu = 0;
+    ///
+    /// LE DEFAUT EST `2`, dans la fenetre plate `[ 0.5, 10 ]` mesuree au § 21.7. Il est INERTE quand
+    /// `residu` vaut deja `LIN` ( le defaut ) -- la bascule ne peut que retourner A `lin`. Autrement
+    /// dit, `--residu log` veut maintenant dire « log puis lin », qui est le seul usage de `log` que
+    /// la mesure recommande. `--bascule-residu 0` rend le `log` pur.
+    TF   bascule_residu = 2;
     /// LE MERITE DE L'AMORTISSEMENT, SEPAREMENT DE LA DIRECTION. `-1` : le meme que `residu`.
     ///
     /// `--residu log` changeait DEUX choses a la fois -- le second membre de Newton et le juge qui
@@ -183,6 +188,14 @@ struct NewtonOptions {
                                ///< et dire, pour chaque melange, le plus grand pas admissible et ce qu.il gagne
     int  profil_nb  = 24;      ///< nombre de pas essayes par le profil ( `t = t0 / 2^k` )
     TF   t0         = 1;       ///< LE COEFFICIENT DE RELAXATION : le premier pas essaye ( 1 = Newton entier )
+    /// tracer, a chaque iteration, CE QUI REND `L` DURE : l'etalement de la diagonale, celui des poids
+    /// d'aretes, et l'ANISOTROPIE par ligne ( `max_j c_ij / sum_j c_ij` ). La derniere est la vraie
+    /// question pour un multigrille : une ligne proche de 1 est un noeud couple a UN seul voisin, donc
+    /// une chaine, et c'est ce qui met l'agregation en echec.
+    ///
+    /// Le residu n'y est POUR RIEN : `L` ne depend que des facettes ( `c_ij = |facette| / 2|p_i - p_j|` ),
+    /// jamais de `g`. `log` ne change que le second membre.
+    bool diag_lap   = false;
     int  refus      = -1;      ///< >= 0 : tracer, a CETTE iteration, laquelle des deux clauses de
                                ///< l.amortissement refuse chaque essai ( aire ou merite ), et sur quelle cellule
     bool memo       = false;   ///< 3D : les facettes du dernier diagramme ACCEPTE proposees en premier au suivant ( § 11 )
@@ -462,6 +475,33 @@ struct Newton {
             double t0 = now();
             L.assemble( n, fa );
             st.t_asm += now() - t0;
+            if ( o.diag_lap ) {
+                auto quant = []( std::vector<TF> v, double q ) {
+                    if ( v.empty() ) return TF( 0 );
+                    const size_t k = size_t( q * double( v.size() - 1 ) );
+                    std::nth_element( v.begin(), v.begin() + k, v.end() );
+                    return v[ k ];
+                };
+                std::vector<TF> dd( L.dia.begin() + 1, L.dia.end() ), cc, an;
+                SI nz = 0;
+                for ( SI i = 1; i < n; ++i ) {
+                    TF sm = 0, mx = 0;
+                    for ( SI e = L.row[ i ]; e < L.row[ i + 1 ]; ++e )
+                        if ( L.col[ e ] >= 1 ) { cc.push_back( L.c[ e ] ); sm += L.c[ e ]; mx = std::max( mx, L.c[ e ] ); }
+                    if ( sm > 0 ) an.push_back( mx / sm );
+                }
+                const TF cmed = quant( cc, 0.5 );
+                for ( TF v : cc ) nz += v < TF( 1e-6 ) * cmed;
+                SI chaine = 0;
+                for ( TF v : an ) chaine += v > TF( 0.9 );
+                std::printf( "      lap : diag %.2e / %.2e / %.2e ( max/min %.1e ) | aretes %d,"
+                             " c %.2e / %.2e / %.2e, %d sous 1e-6 med | anisotropie med %.3f, %.2f %% de lignes > 0.9\n",
+                             double( quant( dd, 0 ) ), double( quant( dd, 0.5 ) ), double( quant( dd, 1 ) ),
+                             double( quant( dd, 1 ) / std::max( quant( dd, 0 ), TF( 1e-300 ) ) ),
+                             int( cc.size() ), double( quant( cc, 0 ) ), double( cmed ), double( quant( cc, 1 ) ),
+                             int( nz ), double( quant( an, 0.5 ) ), 100.0 * double( chaine ) / double( std::max<size_t>( an.size(), 1 ) ) );
+                std::fflush( stdout );
+            }
             t0 = now();
             const bool fait = lin.resout( L, b, d );
             st.t_lin += now() - t0;

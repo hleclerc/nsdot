@@ -457,6 +457,7 @@ int main( int argc, char **argv ) {
         else if ( s == "--profil-nb" )  o.newton.profil_nb = std::atoi( val() );
         else if ( s == "--relax" )      o.newton.t0 = std::atof( val() );
         else if ( s == "--refus" )      o.newton.refus = std::atoi( val() );
+        else if ( s == "--diag-lap" )   o.newton.diag_lap = true;
         else {
             std::printf( "usage: newton [options]\n" );
             Args::usage();
@@ -507,7 +508,7 @@ int main( int argc, char **argv ) {
                 "  --t-min T       sous ce pas, STAGNATION                      (1e-10)\n"
                 "  --residu R      lin ( a - nu ) | barriere ( x - 1/x, x = a/nu ) | log | puissance  (lin)\n"
                 "  --puis P        puissance : g = ( x^P - 1 ) / P -- P = 1 EST lin, P = 0 EST log  (0.5)\n"
-                "  --bascule-residu R  repasser a lin des que max|a-nu|/nu <= R ( 0 : jamais )       (0)\n"
+                "  --bascule-residu R  repasser a lin des que max|a-nu|/nu <= R ( 0 : jamais ; inerte si --residu lin )  (2)\n"
                 "  --merite R      LE JUGE DE L'AMORTISSEMENT, separement de la direction : lin | barriere | log |\n"
                 "                  puissance | pire ( max|a-nu|/nu, le critere d.arret lui-meme )   ( defaut : comme --residu )\n"
                 "  --profil K      a l'iteration K, balayer t et imprimer LES TROIS merites le long de la direction, puis sortir\n"
@@ -517,6 +518,7 @@ int main( int argc, char **argv ) {
                 "  --combi K       a l.iteration K, balayer le SIMPLEXE des directions lin/log/barriere et dire ce que gagne chaque melange\n"
                 "  --relax R       le premier pas essaye ( 1 = Newton entier ) -- la relaxation a la main  (1)\n"
                 "  --refus K       a l'iteration K, dire laquelle des deux clauses refuse chaque essai\n"
+                "  --diag-lap      tracer ce qui rend L dure : etalement de la diagonale, des poids d'aretes, et l'ANISOTROPIE par ligne\n"
                 "  --methode M     newton ( defaut ) | lbfgs | cg : le premier ordre sur le dual ( PremierOrdre.h )\n"
                 "  --memoire K     L-BFGS : paires gardees                                     (10)\n"
                 "  --c2 C          Wolfe forte |phi'( alpha )| <= C |phi'( 0 )|                   (0.5 ; CG : 0.1)\n"
