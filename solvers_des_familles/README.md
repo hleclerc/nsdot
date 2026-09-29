@@ -5014,8 +5014,170 @@ où il y a un vrai choix à faire. Dit autrement : **le mérite `l²` est inerte
 direction, et nuisible dès qu'il y en a plusieurs.**
 
 C'est donc positif, et c'est la suite : le modèle polynomial multi-directions prédirait `a_i` sur le
-span, donc `max|a−ν|/ν` sur le span, donc exactement le critère qui marche — sans diagramme. Le
-risque est nommé et il est réel : le polynôme **mentait déjà** dès que la combinatoire change le
-long d'*une* direction (§ 7), et la parade `prédire / vérifier / corriger` de `Ecrasement.h`
-s'appuie sur un point à tester le long d'un segment. Sur un span de dimension 3 il faut la
-reformuler, et rien ne dit encore que ça reste une cellule par cellule.
+span, donc `max|a−ν|/ν` sur le span, donc exactement le critère qui marche — sans diagramme.
+
+> **CONSTRUIT ET MESURÉ AU § 22.** Il prédit le critère à `0.01 %` près sept itérations sur dix, la
+> recherche dans le span est bien gratuite (0.006 s par itération), et il fait 11 diagrammes à
+> `σ = 0.02` contre 41 pour la référence et 16 pour le même code privé de son span. Le risque nommé
+> ici s'est réalisé, mais par excès et non par défaut : le polynôme est **pessimiste** sur le plancher
+> (il annonce `alpha* = 0.118` quand l'exact vaut `0.273`), ce qui est le bon sens de l'erreur. Ce qui
+> n'était pas prévu, c'est que le coût ne serait pas la recherche mais **le balayage global** qui bâtit
+> le modèle — un diagramme par itération — et que ça suffit à laisser `essai-limites --residu log`
+> devant en temps de paroi (5.1 s contre 7.5 s).
+
+# 22. LE MODÈLE POLYNOMIAL MULTI-DIRECTIONS (`Ecrasement.h` : `PolyMulti`, `newton --pas modele`)
+
+Le § 21.6 laissait une ouverture mesurée mais pas construite : le span de plusieurs directions
+contient des pas bien meilleurs qu'aucune direction seule, mais les trouver coûtait un diagramme par
+essai. Voici l'objet qui les trouve sans diagramme.
+
+## 22.1 L'objet : l'aire sur un span, exacte à combinatoire figée
+
+C'est la même algèbre que `PolyCellule` (§ 7), avec `K` décalages au lieu d'un. Le décalage de chaque
+coupe est affine en `t = (t_1 … t_K)`, un sommet est l'intersection de deux droites donc **linéaire en
+leurs décalages**, et l'aire — une somme de produits vectoriels de sommets — est **quadratique en `t`,
+termes croisés compris** (cubique en 3D) :
+
+```
+A_i( t ) = c0 + sum_k g_k t_k + sum_{k >= l} q_kl t_k t_l          1 + K + K(K+1)/2 coefficients
+```
+
+`PolyMulti` les porte, plus le gradient en forme fermée — c'est lui qui rend une vraie descente
+possible au lieu d'une grille — et `rayon`, ce que `alpha_arete` devient sur un span : le rayon en
+norme infinie sous lequel **aucune arête ne s'annule**, donc sous lequel le polynôme est exact,
+`min_j l0_j / Σ_k |l^k_j|`. Attention, ça ne couvre qu'**un** des deux modes de rupture : un germe qui
+n'était pas voisin peut le devenir sans qu'aucune arête présente ne disparaisse, et ça ne se voit pas
+depuis la cellule seule.
+
+Les `K` directions viennent des `K` résidus, et **elles se résolvent sur la même factorisation** :
+`K − 1` descentes de plus, aucun assemblage, aucun diagramme.
+
+## 22.2 Le contrôle algébrique tombe au dernier chiffre (`--modele K`)
+
+`--modele K` bâtit le modèle à l'itération `K` et le confronte à **deux** témoins qui ne disent pas la
+même chose : `ModeleCellule::aire`, qui évalue la même aire à combinatoire figée mais point par point
+(contrôle **purement algébrique** — s'il ne tombe pas, les coefficients sont faux), puis le **vrai
+diagramme** (l'erreur de combinatoire, la seule qui décide). Lignes `σ = 0.02`, itération 0, `K = 3`,
+erreurs en unités de `ν` :
+
+| `‖t‖∞` | % prouvé exact | contre l'algèbre, méd. | contre le réel, méd. | contre le réel, max | `max\|a−ν\|/ν` prédit / réel | sous `eps` prédit / réel |
+|---|---|---|---|---|---|---|
+| 6.2e-2 | 27 % | 9.1e-13 | **1.9e-12** | 1.0e-1 | 2025.3 / 2025.3 | 0 / 0 |
+| 1.9e-1 | 1.6 % | 9.7e-13 | 3.0e-4 | 9.6 | 1230.5 / 1230.5 | 1 / 0 |
+| 2.5e-1 | 0.6 % | 9.1e-13 | 2.3e-3 | 6.4 | 1637.6 / 1637.6 | 156 / 18 |
+| 1.0 | 0 % | 1.1e-12 | 4.6e-1 | 2.5e+3 | 2533.7 / **21.3** | 15 777 / 47 576 |
+
+Le contrôle algébrique est à `1e-12 ν`, soit `1e-17` absolu : **les coefficients sont justes**. Contre
+le réel, il y a un régime : sous `‖t‖∞ ≈ 0.06` l'erreur médiane est au niveau machine, à `0.19` elle
+est de `3e-4 ν` et le critère est juste **à cinq chiffres**, et au-delà de `0.5` le modèle ne vaut
+plus rien.
+
+Deux remarques qui comptent pour la suite. D'abord `rayon` est très **pessimiste** : à `‖t‖∞ = 6e-2`
+il ne certifie que 27 % des cellules alors que l'erreur médiane est au niveau machine — normal, il
+borne le pire cas sur toute la boule, pas le long du rayon. Ensuite, et c'est ce qui rend la recherche
+sûre, **le modèle est conservateur sur le critère** : dès que la combinatoire d'une cellule casse, son
+aire prédite part n'importe où, donc le `max` prédit **explose** (2534 annoncé contre 21 en vérité).
+La recherche fuit donc d'elle-même les régions où le modèle ne vaut rien.
+
+## 22.3 Le pas cherché dans le span (`--pas modele`)
+
+Pour un `λ` **fixé** le modèle se réduit à une quadratique **scalaire** en `t` : le plus grand pas qui
+respecte le plancher est donc une **racine**, exactement comme pour une direction seule, pas une
+échelle dyadique. Et une fois `alpha*(λ)` connu, évaluer le critère à plusieurs fractions de ce pas ne
+coûte rien — c'est le profil du § 21.2, gratuit, et **le coefficient de relaxation du § 21.5 choisi par
+la mesure au lieu d'être réglé à la main**. Deux passages sur les cellules en tout : les racines, puis
+le critère des 75 candidates, jugées pendant que les coefficients de la cellule sont en registres.
+
+Ce que ça prédit, itération après itération : `max|a−ν|/ν` annoncé à l'itération `k` contre celui
+mesuré à `k + 1`, lignes `σ = 0.02` :
+
+| it | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| écart | +0.00 % | −0.01 % | −0.00 % | **+4.3 %** | **+6.3 %** | **+3.8 %** | +0.01 % | −0.00 % | +0.01 % | +0.01 % |
+
+Sept itérations sur dix prédites à `0.01 %` près, et les trois écarts de quelques pour cent sont
+exactement celles où le pas est le plus long (`0.40`, `0.74`, `0.99`).
+
+Et le bilan en diagrammes, `n = 10⁵`, contre toutes les références des sections précédentes
+(`scripts/bilan_modele.sh`) :
+
+| variante | uniforme | `σ=0.1` | `σ=0.02` | `σ=0.005` (nuage dégénéré) |
+|---|---|---|---|---|
+| `lin` / essais — la référence du banc | 8 | 13 | 41 | 116, stagne |
+| `p = 0.25` / essais (§ 21.4) | 6 | 16 | 27 | 84, stagne |
+| `lin` / limites, relaxation 0.95 (§ 21.5) | 7 | 10 | 20 | 67, stagne |
+| `log` / limites, relaxation 0.9 (§ 21.5) | 8 | **8** | 13 | 536, stagne |
+| **modèle `K = 1`** — LE CONTRÔLE, pas de span | 7 | 11 | 16 | 61, stagne |
+| modèle `K = 2` | 6 | **8** | 11 | 47, stagne |
+| **modèle `K = 3`** — le défaut | 6 | **7** | 11 | **13, CONVERGE** |
+| modèle `K = 3` + limites exactes | **5** | **7** | **10** | 47, stagne |
+
+Le contrôle `K = 1` est ce qui rend le tableau lisible : c'est le même code, le même critère, le même
+choix de pas, mais **un seul vecteur dans le span** — donc tout l'écart entre sa ligne et celle de
+`K = 3` est le span et rien d'autre. Il vaut 16 → 11 diagrammes à `σ = 0.02` (−31 %) et 11 → 7 à
+`σ = 0.1` (−36 %). Contre la référence du banc, 41 → 11 (−73 %).
+
+Sur `σ = 0.005` — le nuage dégénéré, deux germes à 1.009e-08 (§ 8.7.3) — le modèle à `K = 3` est **le
+seul essai de tout ce banc qui converge**, en 13 diagrammes et sans un recul, là où tout le reste
+stagne à 2.3e-6 entre 47 et 536 diagrammes. C'est à prendre avec la prudence qu'un cas unique mérite :
+il faut les **trois** ingrédients à la fois (trois directions, le pas du modèle, le garde-fou du
+§ 22.4), chacun retiré ramène la stagnation, et une conjonction aussi serrée sur un seul nuage ne fait
+pas une loi.
+
+## 22.4 Un `L∞` ne doit pas avoir d'otage (`--mod-hors`)
+
+Le § 21.6 avait établi que le mélange doit être choisi sur `max|a−ν|/ν` et pas sur le mérite `l²`.
+Premier essai avec le maximum **strict** : les trois cas sains vont bien, et `σ = 0.005` explose —
+**1 139 diagrammes, 1 078 reculs, MAX ITERATIONS**. Le diagnostic est direct : un `L∞` est otage de
+**la** cellule que rien ne peut réparer. Le choix du mélange devient du bruit, et l'amortissement
+refuse tout.
+
+Deux parades mesurées :
+
+| `σ=0.005` | uniforme / `σ=0.1` / `σ=0.02` | |
+|---|---|---|
+| maximum strict | 5 / 7 / 10 | **1 139**, MAX IT |
+| mérite `log` (robuste, mais plus d'extrême) | 6 / 8 / 13 | 124 |
+| **`k`-ième pire, `k = 10⁻⁴ n`** | **5 / 7 / 10** | **51** |
+
+Le mérite `log` répare le cas dégénéré mais coûte 30 % sur les cas sains — il a perdu la nature
+extrémale qui faisait trouver les bons pas. Enjamber une poignée d'aberrantes garde les deux :
+**rigoureusement les mêmes chiffres que le maximum strict** sur les cas sains, et le blocage disparaît.
+C'est le défaut (`mod_hors = 1e-4`, soit 10 cellules à `n = 10⁵`).
+
+## 22.5 En temps, c'est l'incumbent qui gagne — et on sait pourquoi
+
+Le § 21 comptait les diagrammes, comme demandé. En temps de paroi, `job -b`, lignes `σ = 0.02`,
+`n = 10⁵`, un fil :
+
+| variante | diagrammes | Cholesky | AMGCL |
+|---|---|---|---|
+| `lin` / essais | 41 | 14.5 s | 19.2 s |
+| `log` / `essai-limites` 0.9 | 13 | **5.1 s** | **8.0 s** |
+| modèle `K = 3` | 11 | 7.5 s | 14.0 s |
+| modèle `K = 3` + limites exactes | 10 | 10.9 s | 16.6 s |
+
+**Le modèle bat largement la référence du banc et perd contre `essai-limites --residu log`.** Le
+partage du coût le dit exactement (Cholesky, par itération) :
+
+* bâtir le modèle : **0.27 s, soit un diagramme** — il parcourt toutes les cellules, comme un
+  diagramme ;
+* **chercher dans le span : 0.006 s.** La promesse est tenue, la recherche est gratuite (mesuré en
+  retombant à une seule candidate, `--mod-q 1` : le temps ne bouge pas) ;
+* la passe des limites exactes, quand on la demande : 0.41 s, soit 1.6 diagramme.
+
+Autrement dit **le prix n'est pas la recherche, c'est le balayage global**. Et `essai-limites` gagne
+précisément parce qu'il ne balaye jamais : il essaye un pas et ne calcule les limites que des cellules
+qui ont cassé — sa passe coûte 0.057 s **au total** contre 2.8 s pour bâtir le modèle. Le prix du span
+lui-même, les `K − 1` résolutions de plus, est le poste secondaire et il dépend du solveur : presque
+gratuit avec une factorisation directe (une descente triangulaire), 0.4 s par direction avec un Krylov.
+C'est la première fois dans ce banc que Cholesky est le bon choix en 2D à `n = 10⁵`, et c'est pour
+cette raison-là.
+
+La suite est donc nommée, pas faite : **bâtir le modèle paresseusement**, seulement pour les cellules
+qui peuvent mordre — ce que `essai-limites` sait déjà trouver. Le point dur est que le critère `max`
+a besoin de toutes les cellules, mais le `k`-ième pire du § 22.4, lui, n'a besoin que des `k`
+premières : il y a peut-être là de quoi ne jamais toucher les autres. Ce n'est pas une ligne de code.
+
+Et comme tout `Ecrasement.h`, **c'est 2D seulement** : en 3D le volume est cubique en `t` et la marche
+dans la cellule est autre ; `--pas modele` y retombe sur les essais, en le disant.

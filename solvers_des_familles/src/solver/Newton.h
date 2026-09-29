@@ -80,7 +80,40 @@ struct NewtonOptions {
     bool trace      = true;
     int  extraire   = -1;      ///< >= 0 : s'arreter des que la DIRECTION de cette iteration est
                                ///< calculee ( `w` et `d` sont alors ceux du pas propose )
-    enum Pas : int { ESSAIS = 0, DYADIQUE, FACTEUR, TENSEUR, ESSAI_LIMITES };
+    enum Pas : int { ESSAIS = 0, DYADIQUE, FACTEUR, TENSEUR, ESSAI_LIMITES, MODELE };
+    int  mod_q      = 4;       ///< MODELE : le pas du simplexe cherche ( `1/mod_q` ), 4 = les 15 points de l'oracle
+    /// MODELE : combien de directions ( 1 = Newton seul, 2 = + log, 3 = + barriere ).
+    ///
+    /// DEUX SUFFIT SUR LES CAS SAINS -- la troisieme ne change aucun des trois, et elle coute une
+    /// resolution lineaire de plus, qui est le vrai prix du span. Le defaut reste TROIS parce que sur
+    /// le nuage degenere `s0.005` c'est la troisieme qui fait la difference : 13 diagrammes et
+    /// CONVERGE avec elle, 47 et STAGNATION sans. Une resolution de plus contre ce mode d'echec-la.
+    int  mod_k      = 3;
+    /// MODELE : prendre le pas de la passe des LIMITES EXACTES ( bissection par cellule, `alpha*`,
+    /// puis `facteur * alpha*` ) au lieu de la racine du modele lui-meme.
+    ///
+    /// Le polynome est PESSIMISTE sur le plancher : a l'iteration 0 des lignes `sigma = 0.02` il
+    /// annonce `alpha* = 0.118` quand l'exact vaut `0.273` -- une cellule qu'il voit passer sous `eps`
+    /// n'y passe pas, parce que sa combinatoire change avant. C'est le meme mensonge qu'au § 7.
+    ///
+    /// Et pourtant le defaut est NON, parce que la mesure dit que le pessimisme coute moins que la
+    /// parade : les limites exactes gagnent un diagramme sur deux cas sains ( 10 contre 11 ) mais en
+    /// perdent 34 sur le nuage degenere ( 47 et STAGNATION contre 13 et CONVERGE ), et leur passe
+    /// GLOBALE coute 0.41 s par iteration, soit 30 % de temps en plus.
+    bool mod_limites = false;
+    /// MODELE : SUR QUOI le modele choisit son melange. `PIRE` ( `max|a - nu|/nu` ) est le vrai critere
+    /// d'arret et c'est le bon choix -- sauf quand une cellule ne peut PAS etre reparee : un `L-infini`
+    /// est otage de cette cellule-la, le choix devient du bruit, et l'amortissement refuse tout
+    /// ( mesure sur le nuage degenere `s0.005`, ou deux germes sont a 1e-8 : 1 139 diagrammes et
+    /// 1 078 reculs ). `LOG` est la version robuste : tous les ecarts comptent, aucun ne decide seul.
+    int  mod_juge   = PIRE;
+    /// MODELE, juge `PIRE` : la fraction des cellules qu'on laisse DEHORS du maximum -- le critere
+    /// devient le `k`-ieme pire ecart, `k = mod_hors * n`. Zero : le maximum strict.
+    ///
+    /// C'est la synthese des deux mesures : `max` strict est le bon critere quand toute cellule est
+    /// reparable, et il devient du bruit des qu'une seule ne l'est pas. Enjamber une poignee
+    /// d'aberrantes garde la nature extremale du critere sans lui donner d'otage.
+    TF   mod_hors   = 1e-4;
     int  pas        = ESSAIS;  ///< comment choisir `t` ( voir en tete )
     TF   facteur    = 0.9;     ///< `t = facteur * alpha*` en mode FACTEUR
     TF   theta_mult = 5;       ///< TENSEUR : la cible partielle est `theta = theta_mult * alpha*`
@@ -134,6 +167,8 @@ struct NewtonOptions {
                                ///< brute ( pas du simplexe `1/oracle` ). Borne superieure, pas un algorithme.
     bool oracle_pire = false;  ///< l'oracle choisit sur le VRAI critere d'arret, `max |a - nu| / nu`,
                                ///< au lieu du merite ( qui est un mauvais juge : cf. le profil )
+    int  modele     = -1;      ///< >= 0 : a CETTE iteration, batir le modele multi-directions et le
+                               ///< confronter a l'evaluateur exact PUIS au vrai diagramme
     int  combi      = -1;      ///< >= 0 : a CETTE iteration, balayer le SIMPLEXE des trois directions ( lin, log, barriere )
                                ///< et dire, pour chaque melange, le plus grand pas admissible et ce qu.il gagne
     int  profil_nb  = 24;      ///< nombre de pas essayes par le profil ( `t = t0 / 2^k` )
@@ -523,6 +558,97 @@ struct Newton {
                 return false;
             }
 
+            // ---- LE MODELE MULTI-DIRECTIONS, MIS A L'EPREUVE ( `Ecrasement.h` : `PolyMulti` )
+            //
+            // Trois comparaisons, et elles ne disent pas la meme chose :
+            //   * contre `ModeleCellule::aire`, qui evalue la meme aire a combinatoire figee mais
+            //     point par point : c'est un controle PUREMENT ALGEBRIQUE, il doit tomber au
+            //     dernier chiffre. S'il ne tombe pas, les coefficients sont faux.
+            //   * contre le VRAI diagramme : c'est l'erreur de combinatoire, la seule qui decide si
+            //     le modele sert a quelque chose.
+            //   * `rayon` contre `|t|inf` : la ou le modele est PROUVE exact.
+            if ( it == o.modele ) {
+                if constexpr ( PD::dim == 2 ) {
+                    const int NR = 3;
+                    const int rs[ NR ] = { NewtonOptions::LIN, NewtonOptions::LOG, NewtonOptions::BARRIERE };
+                    std::vector<TF> dd[ NR ], bb;
+                    for ( int k = 0; k < NR; ++k ) {
+                        membre( rs[ k ], o.puis, bb );
+                        dd[ k ].assign( n, TF( 0 ) );
+                        if ( k == 0 || ! lin.sait_encore() ) lin.resout( L, bb, dd[ k ] );
+                        else                                 lin.resout_encore( bb, dd[ k ] );
+                    }
+                    const TF *dp[ NR ] = { dd[ 0 ].data(), dd[ 1 ].data(), dd[ 2 ].data() };
+                    const double tm0 = now();
+                    std::vector<PolyMulti> pm;
+                    polynomes_multi( pd, P, w, dp, NR, par, pm );
+                    const double t_mod = now() - tm0;
+                    std::vector<ModeleCellule> mod( n );  // le temoin algebrique
+                    parallel_for( n, par, [ & ]( SI k, int ) {
+                        typename PD::Cell cel;
+                        pd.cellule( k, cel );
+                        mod[ pd.ids[ k ] ].depuis( cel, pd.ids[ k ], P, w.data() );
+                    } );
+                    TF rmin = INFINI;
+                    SI n_ok = 0;
+                    for ( SI i = 0; i < n; ++i ) { rmin = std::min( rmin, pm[ i ].rayon ); n_ok += pm[ i ].etat == PolyCellule::OK; }
+                    std::printf( "    MODELE it %d, n %d, K %d : bati en %.3f s, %d cellules saines, rayon min %.3e\n",
+                                 it, int( n ), NR, t_mod, int( n_ok ), double( rmin ) );
+                    std::printf( "      %-22s %-9s %-7s %-10s %-10s %-10s  %-12s %-12s  %s\n",
+                                 "t ( lin, log, bar )", "|t|inf", "% prouv", "alg. med", "reel med", "reel max",
+                                 "pire modele", "pire reel", "sous eps mod/reel" );
+                    w2.resize( n );
+                    std::vector<TF> del( n ), tk( NR );
+                    const int Q = 4;
+                    for ( int i1 = 0; i1 <= Q; ++i1 )
+                    for ( int i2 = 0; i2 + i1 <= Q; ++i2 ) {
+                        if ( ( i1 + i2 ) % 2 ) continue;  // une candidate sur deux : le tableau reste lisible
+                        for ( TF tp : { TF( 1 ), TF( 0.25 ), TF( 0.0625 ) } ) {
+                            tk[ 0 ] = tp * TF( Q - i1 - i2 ) / Q; tk[ 1 ] = tp * TF( i1 ) / Q; tk[ 2 ] = tp * TF( i2 ) / Q;
+                            TF tinf = 0;
+                            for ( int k = 0; k < NR; ++k ) tinf = std::max( tinf, std::fabs( tk[ k ] ) );
+                            for ( SI i = 0; i < n; ++i ) {
+                                del[ i ] = tk[ 0 ] * dd[ 0 ][ i ] + tk[ 1 ] * dd[ 1 ][ i ] + tk[ 2 ] * dd[ 2 ][ i ];
+                                w2[ i ] = w[ i ] + del[ i ];
+                            }
+                            w2[ 0 ] = w[ 0 ];             // la jauge ne bouge pas : `d[ 0 ] = 0` deja
+                            mesures_et_facettes( w2, a2, fa2, pda2 );
+                            // les trois aires, cellule par cellule
+                            std::vector<TF> ealg, ereel;
+                            ealg.reserve( n ); ereel.reserve( n );
+                            TF pire_mod = 0, pire_reel = 0;
+                            SI sous_mod = 0, sous_reel = 0, prouve = 0;
+                            for ( SI i = 0; i < n; ++i ) {
+                                if ( pm[ i ].etat != PolyCellule::OK ) continue;
+                                const TF am = pm[ i ]( tk.data(), NR ), ax = mod[ i ].aire( del.data() );
+                                ealg.push_back( std::fabs( am - ax ) / nu[ i ] );
+                                ereel.push_back( std::fabs( am - a2[ i ] ) / nu[ i ] );
+                                pire_mod = std::max( pire_mod, std::fabs( nu[ i ] - am ) / nu[ i ] );
+                                pire_reel = std::max( pire_reel, std::fabs( nu[ i ] - a2[ i ] ) / nu[ i ] );
+                                sous_mod += am < eps;
+                                sous_reel += a2[ i ] < eps;
+                                prouve += pm[ i ].rayon >= tinf;
+                            }
+                            auto med = []( std::vector<TF> &v ) {
+                                if ( v.empty() ) return TF( 0 );
+                                std::nth_element( v.begin(), v.begin() + v.size() / 2, v.end() );
+                                return v[ v.size() / 2 ];
+                            };
+                            TF rmax = 0;
+                            for ( TF e : ereel ) rmax = std::max( rmax, e );
+                            std::printf( "      %6.3f %6.3f %6.3f   %-9.2e %6.1f%%  %-10.2e %-10.2e %-10.2e  %-12.4e %-12.4e  %d / %d\n",
+                                         double( tk[ 0 ] ), double( tk[ 1 ] ), double( tk[ 2 ] ), double( tinf ),
+                                         100.0 * double( prouve ) / double( std::max<SI>( n_ok, 1 ) ),
+                                         double( med( ealg ) ), double( med( ereel ) ), double( rmax ),
+                                         double( pire_mod ), double( pire_reel ), int( sous_mod ), int( sous_reel ) );
+                            std::fflush( stdout );
+                        }
+                    }
+                }
+                st.fin = "MODELE";
+                return false;
+            }
+
             // ---- LE PAS PAR LES LIMITES, s'il est demande
             TF t = o.t0, alpha_lim = -1;
             t_sur = -1;
@@ -576,6 +702,199 @@ struct Newton {
                     if ( o.trace )
                         std::printf( "      oracle : lambda ( lin %.2f, log %.2f, bar %.2f ), pas %.3e, merite %.6e\n",
                                      double( bl[ 0 ] ), double( bl[ 1 ] ), double( bl[ 2 ] ), double( bt ), double( best ) );
+                }
+            }
+
+            // ---- LE PAS PAR LE MODELE MULTI-DIRECTIONS ( `--pas modele` )
+            //
+            // On a mesure trois choses au § 21.6 : le span de plusieurs directions contient des pas
+            // bien meilleurs qu'aucune seule ; il faut les choisir sur `max|a - nu|/nu` et pas sur le
+            // merite ; et les trouver coutait un diagramme par essai. Ici le modele les evalue tous
+            // GRATUITEMENT -- `n` quadratiques en `K` variables -- et un seul diagramme verifie.
+            //
+            // Le modele est CONSERVATEUR sur le critere, et c'est ce qui rend la recherche sure : des
+            // que la combinatoire d'une cellule casse, son aire predite part n'importe ou, donc le
+            // `max` predit EXPLOSE. La recherche fuit donc d'elle-meme les regions ou le modele ne
+            // vaut rien ( mesure : a `|t|inf = 1` le modele annonce 2533 quand la realite fait 21 ).
+            if ( o.pas == NewtonOptions::MODELE ) {
+                if constexpr ( PD::dim == 2 ) {
+                    const int NR = std::min( o.mod_k, int( PolyMulti::KMAX ) );
+                    const int rs[ 4 ] = { o.residu, NewtonOptions::LOG, NewtonOptions::BARRIERE, NewtonOptions::LIN };
+                    // LES DESCENTES DE PLUS SONT COMPTEES AVEC L'ALGEBRE LINEAIRE, pas avec le modele :
+                    // c'est LA le vrai prix du span ( une resolution par direction supplementaire ), et
+                    // les melanger au modele donnait a lire un chiffre pour un autre.
+                    double ts0 = now();
+                    std::vector<TF> dd[ 4 ], bb;
+                    for ( int k = 0; k < NR; ++k ) {
+                        dd[ k ].assign( n, TF( 0 ) );
+                        if ( k == 0 ) { dd[ 0 ] = d; continue; }  // la direction de Newton est deja resolue
+                        membre( rs[ k ], o.puis, bb );
+                        if ( lin.sait_encore() ) lin.resout_encore( bb, dd[ k ] );
+                        else                     lin.resout( L, bb, dd[ k ] );
+                    }
+                    st.t_lin += now() - ts0;
+                    const double tm0 = now();
+                    const TF *dp[ 4 ] = { dd[ 0 ].data(), dd[ 1 ].data(), dd[ 2 ].data(), dd[ 3 ].data() };
+                    std::vector<PolyMulti> pm;
+                    polynomes_multi( pd, P, w, dp, NR, par, pm );
+                    TF best = INFINI, bl[ 4 ] = { 1, 0, 0, 0 }, bt = 0, balim = 0;
+                    SI sans_modele = 0;
+                    for ( SI i = 0; i < n; ++i ) sans_modele += protegee[ i ] && pm[ i ].etat != PolyCellule::OK;
+
+                    // ---- LA RECHERCHE DANS LE SPAN, sans un seul diagramme
+                    //
+                    // Pour un `lambda` FIXE, le modele se reduit a une quadratique SCALAIRE en `t` --
+                    // donc le plus grand pas qui respecte le plancher est une RACINE, exactement comme
+                    // pour une direction seule ( § 7 ), pas une echelle dyadique. Et une fois
+                    // `alpha*( lambda )` connu, evaluer le critere a plusieurs fractions de ce pas ne
+                    // coute rien : c'est le profil du § 21.2, gratuit, et le coefficient de relaxation
+                    // du § 21.5 choisi par la mesure au lieu d'etre regle a la main.
+                    //
+                    // LES CANDIDATES SE BALAYENT DEDANS, PAS DEHORS. Le premier essai mettait la boucle
+                    // sur les candidates AUTOUR de la boucle sur les cellules : 90 passages sur un
+                    // tableau de 12.8 Mo, donc 1.15 Go de trafic et 1.09 s par iteration -- QUATRE
+                    // diagrammes, ce qui annulait tout le gain. Ici la cellule est chargee UNE fois et
+                    // les 75 candidates se jugent sur ses coefficients restes en registres : deux
+                    // passages en tout, un par phase.
+                    const int Q = std::max( 1, o.mod_q );
+                    const int npt = NR == 1 ? 1 : NR == 2 ? Q + 1 : ( Q + 1 ) * ( Q + 2 ) / 2;
+                    const int nth = std::max( 1, par.threads );
+                    std::vector<TF> lam( size_t( npt ) * 4, TF( 0 ) );
+                    for ( int p = 0, i1 = 0, i2 = 0; p < npt; ++p ) {
+                        TF *ll = &lam[ size_t( p ) * 4 ];
+                        if ( NR == 1 )      ll[ 0 ] = 1;
+                        else if ( NR == 2 ) { ll[ 1 ] = TF( p ) / Q; ll[ 0 ] = 1 - ll[ 1 ]; }
+                        else {
+                            ll[ 1 ] = TF( i1 ) / Q; ll[ 2 ] = TF( i2 ) / Q; ll[ 0 ] = 1 - ll[ 1 ] - ll[ 2 ];
+                            if ( ++i2 + i1 > Q ) { i2 = 0; ++i1; }
+                        }
+                    }
+
+                    // ---- PHASE 1 : le pas admissible de chaque `lambda`, par les racines
+                    std::vector<TF> par_al( size_t( nth ) * npt, o.t0 );
+                    parallel_for( n, par, [ & ]( SI i, int th ) {
+                        if ( ! protegee[ i ] || pm[ i ].etat != PolyCellule::OK ) return;
+                        const PolyMulti &pmi = pm[ i ];
+                        TF *al = &par_al[ size_t( th ) * npt ];
+                        for ( int p = 0; p < npt; ++p ) {
+                            const TF *ll = &lam[ size_t( p ) * 4 ];
+                            PolyCellule sc;
+                            sc.a0 = pmi.c0;
+                            for ( int k = 0; k < NR; ++k ) {
+                                sc.a1 += pmi.g[ k ] * ll[ k ];
+                                for ( int m = 0; m <= k; ++m )
+                                    sc.a2 += pmi.q[ k * ( k + 1 ) / 2 + m ] * ll[ k ] * ll[ m ];
+                            }
+                            al[ p ] = std::min( al[ p ], sc.premiere_racine( eps ) );
+                        }
+                    } );
+                    std::vector<TF> alim( npt, o.t0 );
+                    for ( int th = 0; th < nth; ++th )
+                        for ( int p = 0; p < npt; ++p )
+                            alim[ p ] = std::min( alim[ p ], par_al[ size_t( th ) * npt + p ] );
+
+                    // ---- LES CANDIDATES : `lambda` x fraction du pas admissible
+                    const TF frac[] = { TF( 0.99 ), TF( 0.9 ), TF( 0.75 ), TF( 0.5 ), TF( 0.25 ) };
+                    const int NF = int( sizeof( frac ) / sizeof( frac[ 0 ] ) );
+                    std::vector<TF> cand;                // `4` coordonnees par candidate
+                    std::vector<int> cpt;                // ... et de quel `lambda` elle vient
+                    for ( int p = 0; p < npt; ++p ) {
+                        if ( ! ( alim[ p ] > 0 ) ) continue;
+                        for ( int f = 0; f < NF; ++f ) {
+                            const TF tp = std::min( o.t0, frac[ f ] * alim[ p ] );
+                            for ( int k = 0; k < 4; ++k ) cand.push_back( k < NR ? tp * lam[ size_t( p ) * 4 + k ] : TF( 0 ) );
+                            cpt.push_back( p );
+                        }
+                    }
+                    const int nc = int( cpt.size() );
+
+                    // ---- PHASE 2 : le critere de chaque candidate. `kh` = le rang du pire qu'on
+                    // retient ( 1 : le maximum strict ), et on ne garde que les `kh` premiers par thread
+                    const SI kh = std::min<SI>( 256, std::max<SI>( 1, SI( o.mod_hors * TF( n ) ) ) );
+                    const bool jpire = o.mod_juge == NewtonOptions::PIRE;
+                    std::vector<TF> tops, cs1, cs2;
+                    std::vector<SI> cnb;
+                    if ( nc > 0 ) {
+                        if ( jpire ) { tops.assign( size_t( nth ) * nc * kh, TF( 0 ) ); cnb.assign( size_t( nth ) * nc, 0 ); }
+                        else { cs1.assign( size_t( nth ) * nc, TF( 0 ) ); cs2.assign( size_t( nth ) * nc, TF( 0 ) );
+                               cnb.assign( size_t( nth ) * nc, 0 ); }
+                        parallel_for( n, par, [ & ]( SI i, int th ) {
+                            if ( pm[ i ].etat != PolyCellule::OK ) return;
+                            const PolyMulti &pmi = pm[ i ];
+                            const TF nui = nu[ i ], inv = TF( 1 ) / nui;
+                            for ( int c = 0; c < nc; ++c ) {
+                                const TF am = pmi( &cand[ size_t( c ) * 4 ], NR );
+                                const size_t ic = size_t( th ) * nc + c;
+                                if ( jpire ) {
+                                    const TF e = std::fabs( nui - am ) * inv;
+                                    TF *tp = &tops[ ic * size_t( kh ) ];
+                                    if ( e > tp[ kh - 1 ] ) {   // le cas frequent est ce seul test
+                                        SI j = kh - 1;
+                                        while ( j > 0 && tp[ j - 1 ] < e ) { tp[ j ] = tp[ j - 1 ]; --j; }
+                                        tp[ j ] = e;
+                                    }
+                                    ++cnb[ ic ];
+                                } else {
+                                    const TF gv = g_de( am * inv, o.mod_juge, o.puis );
+                                    cs1[ ic ] += gv; cs2[ ic ] += gv * gv; ++cnb[ ic ];
+                                }
+                            }
+                        } );
+                    }
+
+                    // ---- ET LE CHOIX
+                    std::vector<TF> fus;
+                    for ( int c = 0; c < nc; ++c ) {
+                        TF pir;
+                        if ( jpire ) {
+                            // le `kh`-ieme pire du TOUT : il est dans l'union des `kh`-premiers par thread
+                            fus.clear();
+                            for ( int th = 0; th < nth; ++th ) {
+                                const size_t ic = size_t( th ) * nc + c;
+                                const SI m = std::min<SI>( kh, cnb[ ic ] );
+                                for ( SI j = 0; j < m; ++j ) fus.push_back( tops[ ic * size_t( kh ) + j ] );
+                            }
+                            if ( fus.empty() ) continue;
+                            const SI r = std::min<SI>( kh, SI( fus.size() ) ) - 1;
+                            std::nth_element( fus.begin(), fus.begin() + r, fus.end(), std::greater<TF>() );
+                            pir = fus[ r ];
+                        } else {
+                            TF s1 = 0, s2 = 0;
+                            SI nv = 0;
+                            for ( int th = 0; th < nth; ++th ) {
+                                const size_t ic = size_t( th ) * nc + c;
+                                s1 += cs1[ ic ]; s2 += cs2[ ic ]; nv += cnb[ ic ];
+                            }
+                            if ( ! nv ) continue;
+                            pir = std::sqrt( std::max( TF( 0 ), s2 - s1 * s1 / TF( nv ) ) );
+                        }
+                        if ( pir < best ) {
+                            best = pir; balim = alim[ cpt[ c ] ];
+                            bt = 0;
+                            for ( int k = 0; k < NR; ++k ) { bl[ k ] = lam[ size_t( cpt[ c ] ) * 4 + k ]; }
+                            for ( int k = 0; k < NR; ++k ) bt = std::max( bt, bl[ k ] > 0 ? cand[ size_t( c ) * 4 + k ] / bl[ k ] : TF( 0 ) );
+                        }
+                    }
+                    if ( bt > 0 ) {
+                        for ( SI i = 0; i < n; ++i ) {
+                            TF s = 0;
+                            for ( int k = 0; k < NR; ++k ) s += bl[ k ] * dd[ k ][ i ];
+                            d[ i ] = s;
+                        }
+                        t = bt;
+                    }
+                    st.t_lim += now() - tm0;
+                    st.nb_cible_res += NR - 1;           // les descentes de plus, sur la meme factorisation
+                    if ( o.trace )
+                        std::printf( "      modele : lambda ( %.2f %.2f %.2f ), alpha*_mod %.3e, pas %.3e%s,"
+                                     " pire PREDIT %.4e%s\n",
+                                     double( bl[ 0 ] ), double( bl[ 1 ] ), double( bl[ 2 ] ), double( balim ),
+                                     double( bt ), o.mod_limites ? " ( repris par les limites exactes )" : "",
+                                     double( best ), sans_modele ? "  ( des cellules protegees SANS modele )" : "" );
+                } else if ( it == 0 ) {
+                    // le modele n'est ecrit qu'en 2D, et sans lui `--pas modele` retombe en silence sur
+                    // les essais : on le DIT, plutot que de laisser lire un chiffre pour un autre
+                    std::printf( "      ATTENTION : --pas modele n'existe qu'en 2D ; on retombe sur --pas essais.\n" );
                 }
             }
 
@@ -840,7 +1159,8 @@ struct Newton {
                 st.t_cible += now() - tc0;
             }
 
-            if ( o.pas != NewtonOptions::ESSAIS && o.pas != NewtonOptions::ESSAI_LIMITES ) {
+            if ( o.pas != NewtonOptions::ESSAIS && o.pas != NewtonOptions::ESSAI_LIMITES
+                 && ( o.pas != NewtonOptions::MODELE || o.mod_limites ) ) {
                 if constexpr ( PD::dim == 2 ) {
                     t0 = now();
                     OptionsLimites ol = o.lim;

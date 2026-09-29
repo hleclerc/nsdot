@@ -377,7 +377,7 @@ int main( int argc, char **argv ) {
             const std::string v = val();
             o.newton.pas = v == "dyadique" ? NewtonOptions::DYADIQUE : v == "facteur" ? NewtonOptions::FACTEUR
                          : v == "tenseur" ? NewtonOptions::TENSEUR : v == "essai-limites" ? NewtonOptions::ESSAI_LIMITES
-                         : NewtonOptions::ESSAIS;
+                         : v == "modele" ? NewtonOptions::MODELE : NewtonOptions::ESSAIS;
         }
         else if ( s == "--facteur" )    o.newton.facteur = std::atof( val() );
         else if ( s == "--theta-mult" ) o.newton.theta_mult = std::atof( val() );
@@ -441,6 +441,16 @@ int main( int argc, char **argv ) {
         else if ( s == "--puis" )       o.newton.puis = std::atof( val() );
         else if ( s == "--profil" )     o.newton.profil = std::atoi( val() );
         else if ( s == "--combi" )      o.newton.combi = std::atoi( val() );
+        else if ( s == "--modele" )     o.newton.modele = std::atoi( val() );
+        else if ( s == "--mod-q" )      o.newton.mod_q = std::atoi( val() );
+        else if ( s == "--mod-k" )      o.newton.mod_k = std::atoi( val() );
+        else if ( s == "--mod-limites" ) o.newton.mod_limites = true;
+        else if ( s == "--mod-hors" )   o.newton.mod_hors = std::atof( val() );
+        else if ( s == "--mod-juge" ) {
+            const std::string v = val();
+            o.newton.mod_juge = v == "log" ? NewtonOptions::LOG : v == "barriere" ? NewtonOptions::BARRIERE
+                              : v == "puissance" ? NewtonOptions::PUISSANCE : NewtonOptions::PIRE;
+        }
         else if ( s == "--oracle" )     o.newton.oracle = std::atoi( val() );
         else if ( s == "--oracle-pire" ) o.newton.oracle_pire = true;
         else if ( s == "--profil-nb" )  o.newton.profil_nb = std::atoi( val() );
@@ -464,6 +474,14 @@ int main( int argc, char **argv ) {
                 "  --mixte-kappa K    ... et le PLANCHER DE BRUIT vise, en unites de eps_float / sqrt( n )  (30)\n"
                 "  --quiet         pas de trace par iteration\n"
                 "  --pas P         essais ( KMT, defaut ) | dyadique | facteur | tenseur | essai-limites ( 2D )\n"
+                "                  | modele ( 2D ) : le pas cherche dans le SPAN de plusieurs directions, sur le modele\n"
+                "                  polynomial d.aire -- aucun diagramme pour chercher, un seul pour verifier\n"
+                "  --mod-q Q       modele : le pas du simplexe cherche, 1/Q                        (4)\n"
+                "  --mod-k K       modele : combien de directions ( 1 | 2 = + log | 3 = + barriere )  (3)\n"
+                "  --mod-limites   modele : le pas par les LIMITES EXACTES au lieu de la racine du modele ( un diagramme de\n"
+                "                  moins sur les cas sains, 34 de plus sur le nuage degenere, et 30 % de temps en plus )\n"
+                "  --mod-juge J    modele : sur quoi il choisit son melange -- pire ( defaut ) | log | barriere | puissance\n"
+                "  --mod-hors F    modele, juge pire : la fraction de cellules laissee DEHORS du maximum ( 0 = max strict )  (1e-4)\n"
                 "  --beta0 B       essai-limites : le premier essai                          (0.25)\n"
                 "  --mult-ok M     essai-limites : apres un essai passe direct, beta *= M     (2)\n"
                 "  --confiance C   essai-limites : apres un pas corrige, au moins C * t       (0 = beta inchange)\n"
@@ -493,6 +511,7 @@ int main( int argc, char **argv ) {
                 "  --profil K      a l'iteration K, balayer t et imprimer LES TROIS merites le long de la direction, puis sortir\n"
                 "  --profil-nb N   nombre de pas du profil ( t = relax / 2^k )                  (24)\n"
                 "  --oracle Q      le MEILLEUR melange des trois directions a chaque iteration, force brute ( pas du simplexe 1/Q )\n"
+                "  --modele K      a l.iteration K, batir le modele multi-directions ( PolyMulti ) et mesurer ce qu.il predit\n"
                 "  --combi K       a l.iteration K, balayer le SIMPLEXE des directions lin/log/barriere et dire ce que gagne chaque melange\n"
                 "  --relax R       le premier pas essaye ( 1 = Newton entier ) -- la relaxation a la main  (1)\n"
                 "  --refus K       a l'iteration K, dire laquelle des deux clauses refuse chaque essai\n"

@@ -178,6 +178,170 @@ struct ModeleCellule {
     TF aire( const TF *delta ) const { return aire( delta, []( d2::SI32, TF ) {} ); }
 };
 
+// =====================================================================================
+// LE MODELE MULTI-DIRECTIONS : l'aire de chaque cellule sur le SPAN de plusieurs directions.
+//
+// `PolyCellule` donne l'aire le long d'UNE direction. Ce qui suit la donne sur une combinaison
+// `sum_k t_k d^k`, et c'est la meme algebre : le decalage de chaque coupe est AFFINE en `t`
+// ( `c_j + sum_k t_k ( d^k_i - d^k_j ) / 2` ), un sommet est l'intersection de deux droites donc
+// LINEAIRE en leurs decalages, et l'aire -- une somme de produits vectoriels de sommets -- est
+// QUADRATIQUE en `t`, TERMES CROISES COMPRIS ( cubique en 3D, pas ecrit ).
+//
+// A quoi ca sert : les directions de plusieurs residus se resolvent SUR LA MEME FACTORISATION,
+// donc les avoir toutes coute deux descentes de plus et aucun diagramme. Le span contient des pas
+// bien meilleurs qu'aucune des directions seule ( § 21.6 ), mais les trouver demandait un
+// diagramme par essai. Avec ce modele, chercher dans le span devient GRATUIT : `n` quadratiques en
+// `K` variables, et un seul diagramme a la fin pour verifier.
+//
+// Ce que le modele NE sait pas : la combinatoire. `rayon` est ce que `alpha_arete` devient sur un
+// span -- le rayon en norme infinie sous lequel aucune arete presente ne s'annule, donc sous lequel
+// le polynome est EXACT. Attention, ca ne couvre qu'un des deux modes de rupture : un germe qui
+// n'etait pas voisin peut le devenir sans qu'aucune arete presente ne disparaisse, et ca ne se voit
+// pas depuis la cellule seule.
+// =====================================================================================
+
+/// L'aire d'une cellule sur le span de `nk` directions : `A( t ) = c0 + g . t + sum_{k>=l} q_kl t_k t_l`.
+struct PolyMulti {
+    enum { KMAX = 4 };
+    static constexpr int NQ = KMAX * ( KMAX + 1 ) / 2;
+
+    TF  c0 = 0;                     ///< l'aire en `t = 0`
+    TF  g[ KMAX ] = {};             ///< `dA / dt_k` en zero
+    TF  q[ NQ ] = {};               ///< le coefficient de `t_k t_l`, `k >= l`, a l'indice `k( k + 1 ) / 2 + l`
+    TF  rayon = INFINI;             ///< sous `|t|inf < rayon`, aucune arete ne s'annule : le polynome est exact
+    int nb_aretes = 0;
+    int etat = PolyCellule::OK;
+
+    TF operator()( const TF *t, int nk ) const {
+        TF v = c0;
+        for ( int k = 0; k < nk; ++k ) {
+            v += t[ k ] * g[ k ];
+            for ( int l = 0; l <= k; ++l ) v += q[ k * ( k + 1 ) / 2 + l ] * t[ k ] * t[ l ];
+        }
+        return v;
+    }
+
+    /// le gradient en `t` -- c'est lui qui rend une vraie descente possible, au lieu d'une grille
+    void gradient( const TF *t, int nk, TF *out ) const {
+        for ( int k = 0; k < nk; ++k ) {
+            TF s = g[ k ];
+            for ( int l = 0; l < nk; ++l ) {
+                const int a = std::max( k, l ), b = std::min( k, l );
+                s += ( k == l ? TF( 2 ) : TF( 1 ) ) * q[ a * ( a + 1 ) / 2 + b ] * t[ l ];
+            }
+            out[ k ] = s;
+        }
+    }
+};
+
+/// LE POLYNOME MULTI-DIRECTIONS d'une cellule `cel` du germe `i`, aux poids `w`, sur le span de
+/// `dirs[ 0 .. nk-1 ]`. C'est `polynome_cellule` avec `nk` decalages au lieu d'un.
+template<class Cell>
+PolyMulti polynome_multi_cellule( const Cell &cel, SI i, const TF *const *P, const TF *w,
+                                  const TF *const *dirs, int nk ) {
+    PolyMulti q;
+    if ( cel.nb < 0 )  { q.etat = PolyCellule::DEBORDE; return q; }
+    if ( cel.nb == 0 ) { q.etat = PolyCellule::VIDE_AU_DEPART; return q; }
+    const int nb = cel.nb;
+    q.nb_aretes = nb;
+
+    // ---- les droites : normale fixe, decalage affine en `t`
+    TF nxs[ Cell::max_nb ], nys[ Cell::max_nb ], cs[ Cell::max_nb ];
+    TF dl[ PolyMulti::KMAX ][ Cell::max_nb ];
+    const TF xi = P[ 0 ][ i ], yi = P[ 1 ][ i ];
+    for ( int j = 0; j < nb; ++j ) {
+        const auto id = cel.cid[ j ];
+        if ( id >= 0 ) {
+            const TF xj = P[ 0 ][ id ], yj = P[ 1 ][ id ];
+            const TF nx = xj - xi, ny = yj - yi;
+            nxs[ j ] = nx; nys[ j ] = ny;
+            cs[ j ] = TF( 0.5 ) * ( nx * ( xj + xi ) + ny * ( yj + yi ) + w[ i ] - w[ id ] );
+            for ( int k = 0; k < nk; ++k ) dl[ k ][ j ] = TF( 0.5 ) * ( dirs[ k ][ i ] - dirs[ k ][ id ] );
+        } else {                                         // le carre unite, cotes -1 .. -4 : immobiles
+            switch ( id ) {
+                case -1: nxs[ j ] =  0; nys[ j ] = -1; cs[ j ] = 0; break;
+                case -2: nxs[ j ] =  1; nys[ j ] =  0; cs[ j ] = 1; break;
+                case -3: nxs[ j ] =  0; nys[ j ] =  1; cs[ j ] = 1; break;
+                default: nxs[ j ] = -1; nys[ j ] =  0; cs[ j ] = 0; break;
+            }
+            for ( int k = 0; k < nk; ++k ) dl[ k ][ j ] = 0;
+        }
+    }
+
+    // ---- les sommets, affines en `t` : meme resolution de Cramer, un second membre par direction
+    TF v0x[ Cell::max_nb ], v0y[ Cell::max_nb ];
+    TF vkx[ PolyMulti::KMAX ][ Cell::max_nb ], vky[ PolyMulti::KMAX ][ Cell::max_nb ];
+    for ( int j = 0; j < nb; ++j ) {
+        const int a = j ? j - 1 : nb - 1;
+        const TF det = nxs[ a ] * nys[ j ] - nys[ a ] * nxs[ j ];
+        if ( ! ( std::fabs( det ) > 0 ) ) { q.etat = PolyCellule::DEGENERE; return q; }
+        v0x[ j ] = ( cs[ a ] * nys[ j ] - cs[ j ] * nys[ a ] ) / det;
+        v0y[ j ] = ( nxs[ a ] * cs[ j ] - nxs[ j ] * cs[ a ] ) / det;
+        for ( int k = 0; k < nk; ++k ) {
+            vkx[ k ][ j ] = ( dl[ k ][ a ] * nys[ j ] - dl[ k ][ j ] * nys[ a ] ) / det;
+            vky[ k ][ j ] = ( nxs[ a ] * dl[ k ][ j ] - nxs[ j ] * dl[ k ][ a ] ) / det;
+        }
+    }
+
+    // ---- l'aire signee, par bilinearite du produit vectoriel
+    auto cro = []( TF ax, TF ay, TF bx, TF by ) { return ax * by - bx * ay; };
+    TF c0 = 0;
+    for ( int j = 0; j < nb; ++j ) {
+        const int l = j + 1 < nb ? j + 1 : 0;
+        c0 += cro( v0x[ j ], v0y[ j ], v0x[ l ], v0y[ l ] );
+    }
+    const TF sg = c0 < 0 ? TF( -0.5 ) : TF( 0.5 );       // l'orientation en `t = 0`, pour une aire positive
+    q.c0 = sg * c0;
+    for ( int k = 0; k < nk; ++k ) {
+        TF gk = 0;
+        for ( int j = 0; j < nb; ++j ) {
+            const int l = j + 1 < nb ? j + 1 : 0;
+            gk += cro( v0x[ j ], v0y[ j ], vkx[ k ][ l ], vky[ k ][ l ] )
+                + cro( vkx[ k ][ j ], vky[ k ][ j ], v0x[ l ], v0y[ l ] );
+        }
+        q.g[ k ] = sg * gk;
+        for ( int m = 0; m <= k; ++m ) {
+            TF qq = 0;
+            for ( int j = 0; j < nb; ++j ) {
+                const int l = j + 1 < nb ? j + 1 : 0;
+                if ( m == k ) qq += cro( vkx[ k ][ j ], vky[ k ][ j ], vkx[ k ][ l ], vky[ k ][ l ] );
+                else          qq += cro( vkx[ k ][ j ], vky[ k ][ j ], vkx[ m ][ l ], vky[ m ][ l ] )
+                                  + cro( vkx[ m ][ j ], vky[ m ][ j ], vkx[ k ][ l ], vky[ k ][ l ] );
+            }
+            q.q[ k * ( k + 1 ) / 2 + m ] = sg * qq;
+        }
+    }
+
+    // ---- LE RAYON D'EXACTITUDE : `L_j( t ) >= l0_j - |t|inf sum_k | l^k_j |`, donc aucune arete ne
+    // s'annule tant que `|t|inf < min_j l0_j / sum_k | l^k_j |`
+    for ( int j = 0; j < nb; ++j ) {
+        const int l = j + 1 < nb ? j + 1 : 0;
+        const TF tx = -nys[ j ], ty = nxs[ j ];          // le long de l'arete `j`
+        TF l0 = ( v0x[ l ] - v0x[ j ] ) * tx + ( v0y[ l ] - v0y[ j ] ) * ty;
+        if ( l0 < 0 ) l0 = -l0;
+        TF sa = 0;
+        for ( int k = 0; k < nk; ++k )
+            sa += std::fabs( ( vkx[ k ][ l ] - vkx[ k ][ j ] ) * tx + ( vky[ k ][ l ] - vky[ k ][ j ] ) * ty );
+        if ( sa > 0 ) q.rayon = std::min( q.rayon, l0 / sa );
+    }
+    return q;
+}
+
+/// LES POLYNOMES MULTI-DIRECTIONS DE TOUTES LES CELLULES du diagramme `pd` ( aux poids `w` ).
+template<class PD>
+void polynomes_multi( const PD &pd, const TF *const *P, const std::vector<TF> &w,
+                      const TF *const *dirs, int nk, const Parallel &par, std::vector<PolyMulti> &poly ) {
+    static_assert( PD::dim == 2, "le modele multi-directions n'est ecrit qu'en 2D pour l'instant" );
+    using Cell = typename PD::Cell;
+    const SI n = pd.n;
+    poly.assign( n, PolyMulti{} );
+    parallel_for( n, par, [ & ]( SI k, int ) {
+        Cell cel;
+        pd.cellule( k, cel );
+        poly[ pd.ids[ k ] ] = polynome_multi_cellule( cel, pd.ids[ k ], P, w.data(), dirs, nk );
+    } );
+}
+
 /// LE POLYNOME D'UNE CELLULE `cel` du germe `i`, calculee aux poids `w + alpha0 d`, le long de
 /// `d` : `q( beta )` est l'aire en `w + ( alpha0 + beta ) d`, combinatoire figee.
 template<class Cell>
