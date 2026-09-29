@@ -95,6 +95,21 @@ struct NewtonOptions {
     /// faire : son merite penalise deja les cellules vides ( mesure, § 21.2 : 643 pour 1061 vides, 334
     /// pour 59, 322 pour 2 ), donc le plancher est peut-etre redondant avec lui.
     bool plancher_aire = true;
+    /// L'ECRETAGE de `g` : `x` est borne par le bas a cette valeur. `0` : PAS D'ECRETAGE -- une cellule
+    /// vide coute alors `+infini` au merite, donc AUCUN pas qui en vide une n'est acceptable, et le
+    /// plancher d'aire devient inutile PAR CONSTRUCTION.
+    ///
+    /// L'ecretage n'est retire QUE DU MERITE. Dans la direction il reste, parce que
+    /// `b_i = nu_i x_i ( c - log x_i )` vaut `0 x infini` sur une cellule vide : la direction doit rester
+    /// calculable pour pouvoir REMPLIR une cellule vide ( ce dont on a besoin au multi-echelle, § 8.7 ),
+    /// et l'ecretage lui donne exactement la bonne demande finie.
+    TF   g_ecrete   = 1e-8;
+    /// Note sur l'interaction des deux : le plancher ne peut etre ETEINT que pendant que le merite
+    /// interdit lui-meme les cellules vides, c'est-a-dire avec un `log`/`puissance` NON ECRETE. Des que
+    /// la bascule est passee a `lin`, le merite `lin` RECOMPENSE le vidage ( § 21.2 : son minimum le long
+    /// de la direction est en `t = 1`, la ou 50 030 cellules sur 100 000 sont vides ), donc le plancher
+    /// redevient indispensable. C'est mesure : sans cette regle, les plans 3D perdent une cellule a
+    /// exactement zero a l'iteration 4 -- apres la bascule -- et le solveur lineaire echoue.
     int  mod_q      = 4;       ///< MODELE : le pas du simplexe cherche ( `1/mod_q` ), 4 = les 15 points de l'oracle
     /// MODELE : combien de directions ( 1 = Newton seul, 2 = + log, 3 = + barriere ).
     ///
@@ -393,6 +408,10 @@ struct Newton {
     /// porte toute l'incoherence : mesure, le germe 0 explose et Newton stagne a la premiere etape ).
     TF merite_de( const std::vector<TF> &A, int r, TF p = 0 ) const {
         const SI n = SI( A.size() );
+        // LE LOG NON ECRETE : une cellule vide coute `+infini`, donc le pas est inacceptable, point.
+        if ( o.g_ecrete <= 0 && r != NewtonOptions::LIN && r != NewtonOptions::PIRE )
+            for ( SI i = 0; i < n; ++i )
+                if ( ! ( A[ i ] > 0 ) ) return INFINI;
         if ( r == NewtonOptions::PIRE ) {
             TF m = 0;
             for ( SI i = 0; i < n; ++i ) m = std::max( m, std::fabs( nu[ i ] - A[ i ] ) / nu[ i ] );
@@ -410,6 +429,13 @@ struct Newton {
         for ( SI i = 0; i < n; ++i ) { const TF e = g_de( A[ i ] / nu[ i ], r, p ) - m; s += e * e; }
         return std::sqrt( s );
     }
+    /// LE PLANCHER D'AIRE EST-IL ACTIF ? On ne peut l'eteindre que pendant que le merite interdit
+    /// lui-meme les cellules vides -- donc avec un `log`/`puissance` NON ECRETE, et jamais en `lin`.
+    bool plancher_actif() const {
+        return o.plancher_aire || o.g_ecrete > 0
+            || res_cur == NewtonOptions::LIN || res_cur == NewtonOptions::PIRE;
+    }
+
     /// le merite EFFECTIF de l'amortissement : celui de `merite_res`, ou celui de `residu` par defaut
     TF merite( const std::vector<TF> &A ) const {
         return merite_de( A, o.merite_res < 0 ? res_cur : o.merite_res, o.puis );
@@ -1608,8 +1634,9 @@ struct Newton {
             // en general LE MEME nombre de diagrammes, puisque KMT descendait de toute facon plus bas.
             if ( o.pas == NewtonOptions::MERITE ) {
                 TF best = INFINI, tb = 0;
-                int monte = 0;
+                int monte = 0, essais = 0;
                 for ( TF tp = t; tp > o.t_min; tp /= 2 ) {
+                    ++essais;
                     for ( SI i = 0; i < n; ++i ) w2[ i ] = w[ i ] + tp * d[ i ];
                     w2[ 0 ] = 0;
                     mesures_et_facettes( w2, a2, fa2, pda2 );
@@ -1617,27 +1644,27 @@ struct Newton {
                     for ( SI i = 0; i < n; ++i )
                         if ( protegee[ i ] && a2[ i ] < m2 ) m2 = a2[ i ];
                     const TF v = merite( a2 );
+                    const bool pl = plancher_actif();
                     // KMT D'ABORD : si le PREMIER barreau passe deja la condition de KMT, on le prend et
                     // on ne cherche pas plus loin. Sans ca la minimisation paye un diagramme de plus par
                     // iteration sur les cas ou `t = 1` etait deja bon -- mesure : 13 diagrammes au lieu de
                     // 7 sur l'uniforme 2D, pour le meme resultat.
-                    if ( tp == t && ( ! o.plancher_aire || m2 >= eps )
+                    if ( tp == t && ( ! pl || m2 >= eps )
                          && v <= ( 1 - gain * tp / 2 ) * nr && v < nr ) {
                         best = v; tb = tp;
                         wb = w2; ab = a2; fab = fa2;
                         break;
                     }
-                    if ( ( ! o.plancher_aire || m2 >= eps ) && v < best ) {
+                    if ( ( ! pl || m2 >= eps ) && v < best ) {
                         best = v; tb = tp; monte = 0;
                         wb = w2; ab = a2; fab = fa2;         // le meilleur, a garder
                     } else if ( best < INFINI && ++monte >= o.mer_patience )
                         break;
-                    ++st.nb_recul;                          // tout barreau essaye en est un
                 }
+                st.nb_recul += essais - 1;                  // tout barreau essaye sauf un est un recul
                 if ( tb > 0 && best < nr ) {
                     w2.swap( wb ); a2.swap( ab ); fa2.swap( fab );
                     t = tb;
-                    st.nb_recul -= 1;                       // le barreau retenu n'est pas un recul
                     pris = true;
                 }
             }
@@ -1680,7 +1707,7 @@ struct Newton {
                                      double( std::min( ( 1 - gain * t / 2 ) * nr, nr ) ) );
                         std::fflush( stdout );
                     }
-                    if ( ( ! o.plancher_aire || m2 >= eps ) && n2r <= ( 1 - gain * t / 2 ) * nr && n2r < nr ) { pris = true; break; }
+                    if ( ( ! plancher_actif() || m2 >= eps ) && n2r <= ( 1 - gain * t / 2 ) * nr && n2r < nr ) { pris = true; break; }
                     t /= 2;
                     ++st.nb_recul;
                     if ( t < o.t_min )

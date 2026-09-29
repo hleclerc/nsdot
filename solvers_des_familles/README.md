@@ -5935,3 +5935,48 @@ En 3D `--pas merite` coûte 4 diagrammes de plus sur les plans (21 contre 17) : 
 supplémentaire qui confirme le minimum n'y est pas amorti. **Je ne l'ai donc pas mis par défaut** — ce
 serait un défaut dépendant de la dimension, et je viens de voir (§ 24.5) ce que coûte un défaut posé hors
 du régime où il a été mesuré.
+
+## 24.7 Le `log` NON ÉCRÊTÉ : le plancher d'aire devient redondant — pendant la phase `log`
+
+`g` était écrêté à `x ≥ 1e-8`, donc `log` était borné à `−18.4` et une cellule vide ne coûtait qu'un
+montant **fini** au mérite : c'est pour ça qu'il en tolérait quelques-unes (§ 21.2). `--g-ecrete 0`
+retire l'écrêtage **du mérite seulement** : une cellule vide y coûte alors `+∞`, donc aucun pas qui en
+vide une n'est acceptable. L'écrêtage reste dans la **direction**, où `b_i = ν_i x_i (c − log x_i)`
+vaudrait `0 × ∞` sur une cellule vide — et où il faut au contraire pouvoir en **remplir** une (§ 8.7).
+
+### Mesure : il remplace le plancher exactement
+
+`--pas essais --sans-plancher-aire`, diagrammes :
+
+| | avec écrêtage | **sans écrêtage** | pour mémoire, plancher ACTIF |
+|---|---|---|---|
+| 2D uniforme | 7 | **7** | 7 |
+| 2D lignes `σ=0.005` | **136** | **39** | 39 |
+| 2D lignes dégénéré | **170** | **74** | 74 |
+| 3D plans | *ÉCHEC* | **22** | 17 |
+
+**Sur les deux cas durs 2D, les chiffres sans plancher sont identiques à ceux avec, au diagramme près.**
+Le plancher d'aire de KMT est donc *exactement* redondant avec un mérite `log` non écrêté — c'était
+l'intuition, et l'écrêtage était bien la seule raison pour laquelle il ne l'était pas.
+
+### Mais il a fallu une règle de plus, et elle est instructive
+
+Le premier essai échouait encore en 3D (`SOLVEUR LINÉAIRE EN ÉCHEC`). `--refus 4` dit pourquoi, et ce
+n'était pas ce que je supposais : à l'itération 4, `t = 0.5`, la cellule 5754 passe de `1.019e-05` à
+**exactement zéro**, l'aire refuse — **et le mérite accepte**. Parce que la bascule (§ 21.7) est déjà
+passée à `lin`, et **le mérite `lin` récompense le vidage** : son minimum le long de la direction est en
+`t = 1`, là où 50 030 cellules sur 100 000 sont vides (§ 21.2).
+
+D'où la règle, qui n'est pas un réglage mais une conséquence : **le plancher ne peut être éteint que
+pendant que le mérite interdit lui-même les cellules vides**, donc avec un `log`/`puissance` non écrêté,
+et **jamais en `lin`**. Avec elle, les plans 3D convergent (22 diagrammes, reste 1.45e-12).
+
+### Ce que ça vaut, et ce que ça ne vaut pas
+
+Ce n'est **pas un gain** : les chiffres sont au mieux identiques, et en 3D le plancher éteint coûte
+5 diagrammes (22 contre 17). C'est une **simplification** — un garde-fou de moins à porter, et un
+morceau de la théorie KMT qui s'avère être une conséquence du mérite plutôt qu'une hypothèse séparée,
+dès qu'on prend le bon mérite et qu'on ne l'écrête pas.
+
+Les défauts ne changent pas : `plancher_aire = true` et `g_ecrete = 1e-8`. Ce qui change est qu'on sait
+maintenant **pourquoi** le plancher est là — il couvre la phase `lin`, et rien d'autre.
