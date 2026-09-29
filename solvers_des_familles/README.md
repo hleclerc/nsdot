@@ -1076,12 +1076,52 @@ accepter un seul pas.
    trois départs (35, 6, 3 cellules cassées) × deux mérites : **les six meurent à l'itération 0**,
    au `reste` du départ. Et là où `lin` convergeait (`ε = 0.2`), `barriere` et `log` échouent.
 
-Ce qui reste comme suspect, non mesuré : le relèvement fait naître des cellules à aire quasi nulle
-mais STRICTEMENT POSITIVE ; celles-là sont *protégées* par le plancher (§ 8.7.2), elles passent à
-zéro au moindre pas, et `m2 >= eps` refuse alors tout. Ce serait cohérent avec les trois échecs et
-avec le fait que la sur-remontée aidait. La mesure qui trancherait n'est pas une quatrième idée mais
-une **instrumentation** : imprimer, à l'itération 0 et le long de l'échelle de `t`, laquelle des deux
-clauses (`m2 >= eps` ou la décroissance du mérite) refuse, et pour quelle cellule.
+**L'INSTRUMENTATION TRANCHE** (`--refus K` : à l'itération `K`, laquelle des deux clauses refuse
+chaque essai, et sur quelle cellule). Sur le départ à `ε = 1e-3`, résidu `lin`, échelle complète :
+
+```
+t 1.00e+00  AIRE NON ( cellule     0 : a0 3.56e-05 -> 0 )  MERITE NON
+t 2.44e-04  AIRE NON ( cellule    70 : a0 4.34e-09 -> 0 )  MERITE ok
+t 3.82e-06  AIRE NON ( cellule  1970 : a0 2.56e-12 -> 0 )  MERITE ok
+t 2.38e-07  AIRE ok  ( cellule 71280 : a0 7.75e-13 -> 9.08e-13 )  MERITE ok
+```
+
+**C'est TOUJOURS la clause d'AIRE**, jamais le mérite. Et les chiffres nomment le mal : `eps` vaut
+`2.9e-14` pour une cible `ν = 1e-5` — neuf ordres de grandeur sous elle, parce qu'il se lit sur
+`min a₀` et que la plus petite cellule née de la projection fait `5.8e-14`. La cellule qui bloque
+**change à chaque essai** (4.3e-9, 2.5e-10, 2.6e-12, 4.7e-11) : ce sont les cellules que le
+relèvement vient de faire naître, **exactement à leur seuil**. Le pas ne passe qu'à `t = 2.4e-7`, où
+le mérite gagne `1e-9` en relatif — d'où « une itération, aucun progrès ».
+
+**Le relèvement minimal dépose donc le départ sur un PLI du diagramme, par construction.** Tout ce
+qui précède s'explique d'un coup : la sur-remontée aidait parce qu'elle écartait du pli ; le mérite
+ne changeait rien parce qu'il n'a jamais bloqué ; le premier ordre échouait pareil parce que sa
+recherche linéaire porte le même plancher.
+
+**Et `log` ne sauve pas les petites cellules** (l'intuition était qu'elles pourraient passer au prix
+d'itérations). Instrumenté : `log` est bien plus permissif sur l'AIRE — il accepte à `t = 3.8e-6`
+contre `2.4e-7` pour `lin`, quinze fois plus loin — puis **le mérite prend le relais et bloque**. La
+raison est structurelle : avec `g = log x`, une cellule à `a/ν = 5.8e-9` pèse `log(5.8e-9) ≈ −19`
+contre `~0` pour une saine, donc le mérite vaut **1617** au lieu de `5.6e-3`. `log` transforme le
+mérite en un COMPTE des cellules microscopiques, et aucun pas ne le réduit de la fraction exigée.
+C'est le mécanisme du § 9.6 pour la barrière, appliqué à `log` dès qu'il y a des milliers de
+microscopiques. Corollaire : rendre le plancher RELATIF (pour que les deux critères « parlent la
+même langue ») ne servirait à rien — ça doublerait le blocage au lieu de le lever.
+
+4. **Le `+ δ h²` SANS re-projeter** (`--gonfle 0`), refait parce que la re-projection reposait sur le
+   pli les cellules qu'un voisin gonflé venait de faire déborder. Négatif aussi, et l'échelle dit
+   pourquoi : `h² ≈ 1e-5 ≈ ν`, donc sortir une cellule de `1e-13` demande `δ ~ 1` — et `δ = 1` en
+   vide 5 049 autres. Le `δ` qui soigne les malades est celui qui en fabrique ; il n'y a pas de
+   fenêtre (9 / 1 651 / 3 321 / 5 049 vides créés pour `δ` = 1e-3 … 1, et les quatre meurent à
+   l'itération 0 au `reste` du départ).
+
+**Le bilan de ces quatre essais tient en une phrase** : le problème n'est pas le critère, c'est que
+le départ contient des milliers de cellules microscopiques. Tout critère qui les regarde bloque ;
+tout critère qui les ignore accepte des pas qui ne les réparent pas ; et aucun réajustement des
+poids *après coup* ne les enlève. **La réparation doit faire naître les cellules avec une aire
+réelle À LA CONSTRUCTION** — ce que le relèvement minimal, par définition, ne fait pas. C'est
+exactement ce que la bissection de `--corr releve` fait (cible d'aire), au prix de la cascade ; les
+deux outils ont donc des défauts complémentaires, et c'est là qu'est la suite.
 
 **À lire avec la bonne réserve.** Ce départ dérive de la SOLUTION (lissée d'un balayage), c'est-à-dire
 la *borne* du § 8.2 et non une vraie prolongation. Ce qui est mesuré est donc un majorant de ce qu'une

@@ -169,12 +169,24 @@ def main():
     # gonflage SE PROPAGE : c'est ce que la colonne « remontes » mesure d'un tour a l'autre.
     if o.delta > 0:
         h = cKDTree( P ).query( P, k = 2 )[ 0 ][ :, 1 ]       # l'echelle locale : le plus proche voisin
-        for tour in range( o.gonfle ):
-            m = w1 > w
+        m = w1 > w
+        if o.gonfle == 0:
+            # SANS RE-PROJETER. Le premier essai gonflait puis re-projetait, et la re-projection
+            # REPOSE SUR LE PLI exactement les cellules qu'un voisin gonfle venait de faire deborder
+            # -- elle defaisait donc ce que le gonflage achetait ( README § 8.7.4 ). Ici on garde le
+            # gonflage et on ACCEPTE les vides qu'il cree : mieux vaut quelques cellules vides, que
+            # le plancher ne defend plus ( § 8.7.2 ), que des milliers de cellules AU SEUIL.
             w1 = w1.copy(); w1[ m ] += o.delta * h[ m ] ** 2
-            w1, b2, _ = projette( P, w1, o.eps, o.passes, o.bande )
-            print( "  gonflage %d : delta = %g sur %d germes ; vides par passe : %s"
-                   % ( tour + 1, o.delta, int( m.sum() ), " -> ".join( str( b ) for b in b2 ) ) )
+            vides = len( pas_sommets( P, ( P * P ).sum( axis = 1 ) - w1 ) )
+            print( "  gonflage SANS re-projection : delta = %g sur %d germes -> %d cellules vides dans R^2"
+                   % ( o.delta, int( m.sum() ), vides ) )
+        else:
+            for tour in range( o.gonfle ):
+                m = w1 > w
+                w1 = w1.copy(); w1[ m ] += o.delta * h[ m ] ** 2
+                w1, b2, _ = projette( P, w1, o.eps, o.passes, o.bande )
+                print( "  gonflage %d : delta = %g sur %d germes ; vides par passe : %s"
+                       % ( tour + 1, o.delta, int( m.sum() ), " -> ".join( str( b ) for b in b2 ) ) )
     d = w1 - w
     remontes = int( ( d > 0 ).sum() )
     print( "n = %d ( %d avec les miroirs ) ; eps = %g : cellules VIDES dans R^2 par passe : %s"

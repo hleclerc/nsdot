@@ -96,6 +96,8 @@ struct NewtonOptions {
     /// LOG `g = log x` : `x -> x ( 1 - log x )`.
     enum Residu : int { LIN = 0, BARRIERE, LOG };
     int  residu     = LIN;
+    int  refus      = -1;      ///< >= 0 : tracer, a CETTE iteration, laquelle des deux clauses de
+                               ///< l.amortissement refuse chaque essai ( aire ou merite ), et sur quelle cellule
     bool memo       = false;   ///< 3D : les facettes du dernier diagramme ACCEPTE proposees en premier au suivant ( § 11 )
     /// appele apres chaque pas ACCEPTE ( et au depart, `it = -1` ) : `pd` porte alors `w`
     std::function<void( int it, TF t, int reculs )> apres_pas;
@@ -914,9 +916,26 @@ struct Newton {
                         mesures_et_facettes( w2, a2, fa2, pda2 );
                     }
                     TF m2 = INFINI;                      // le plancher `eps` est une aire ABSOLUE, et il ne
-                    for ( SI i = 0; i < n; ++i )         // porte que sur les cellules VIVANTES AU DEPART
-                        if ( protegee[ i ] ) m2 = std::min( m2, a2[ i ] );
+                    SI i_m2 = -1;                        // porte que sur les cellules VIVANTES AU DEPART
+                    for ( SI i = 0; i < n; ++i )
+                        if ( protegee[ i ] && a2[ i ] < m2 ) { m2 = a2[ i ]; i_m2 = i; }
                     const TF n2r = merite( a2 );
+                    // POURQUOI CE PAS EST REFUSE. Les deux clauses ne disent pas la meme chose et on
+                    // ne savait pas laquelle mordait : `--refus` les separe, a l'iteration `it` seule.
+                    if ( o.refus == it ) {
+                        const bool c_aire = m2 >= eps;
+                        const bool c_mer  = n2r <= ( 1 - gain * t / 2 ) * nr && n2r < nr;
+                        std::printf( "      refus it %d  t %.3e : AIRE %s ( m2 %.3e %s eps %.3e", it, double( t ),
+                                     c_aire ? "ok " : "NON", double( m2 ), c_aire ? ">=" : "<", double( eps ) );
+                        if ( i_m2 >= 0 )
+                            std::printf( ", cellule %d : a0 %.3e -> a2 %.3e, nu %.3e, a2/nu %.2e",
+                                         int( i_m2 ), double( a[ i_m2 ] ), double( a2[ i_m2 ] ),
+                                         double( nu[ i_m2 ] ), double( a2[ i_m2 ] / nu[ i_m2 ] ) );
+                        std::printf( " )  MERITE %s ( %.6e -> %.6e, exige <= %.6e )\n",
+                                     c_mer ? "ok " : "NON", double( nr ), double( n2r ),
+                                     double( std::min( ( 1 - gain * t / 2 ) * nr, nr ) ) );
+                        std::fflush( stdout );
+                    }
                     if ( m2 >= eps && n2r <= ( 1 - gain * t / 2 ) * nr && n2r < nr ) { pris = true; break; }
                     t /= 2;
                     ++st.nb_recul;

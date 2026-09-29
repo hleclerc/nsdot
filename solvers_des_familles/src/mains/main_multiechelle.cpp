@@ -302,6 +302,7 @@ int main( int argc, char **argv ) {
         else if ( s == "--reference" )  o.reference = true;
         else if ( s == "--ecrire-niveaux" ) o.ecrire = val();
         else if ( s == "--ecrire-depart" ) o.depart = val();
+        else if ( s == "--refus" )      o.newton.refus = std::atoi( val() );
         else if ( s == "--residu" ) {
             const std::string v = val();
             o.newton.residu = v == "barriere" ? NewtonOptions::BARRIERE : v == "log" ? NewtonOptions::LOG : NewtonOptions::LIN;
@@ -341,6 +342,7 @@ int main( int argc, char **argv ) {
                 "  --reference     Newton depuis w = 0 sur le niveau fin, a options egales\n"
                 "  --ecrire-niveaux PREFIX   ecrire chaque niveau resolu : PREFIX_niveauL.txt ( n, puis x.. w nu )\n"
                 "  --ecrire-depart FILE      avec --lisse-solution : ecrire les poids de DEPART, juste avant Newton\n"
+                "  --refus K       tracer, a l.iteration K, laquelle des deux clauses de l.amortissement refuse\n"
                 "  --residu R      lin ( a - nu ) | barriere ( x - 1/x, x = a/nu ) | log  (lin)\n"
                 "  --methode M     avec --lisse-solution : newton ( defaut ) | lbfgs | cg ( PremierOrdre.h )\n"
                 "  --precond K     0 = gamma I ( gradient nu ) | 1 = Jacobi | 2 = L0^-1 ( defaut )\n"
