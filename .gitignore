@@ -23,7 +23,6 @@ old_sdot/
 very_old_sdot/
 old_od/
 
-otrec/src/otrec/benchmarks/results/*.png
 graphify-out/
 .private/
 .cache/
@@ -66,11 +65,13 @@ octave*
 
 attic
 .aider*
-sdot/catalogue/*
-!sdot/catalogue/README.md
 
 # errand : depot a part (git init dans errand/)
 errand/
 
 # loom : depot a part (git init dans loom/, historique repris par `git subtree split`)
 loom/
+
+# sdot et otrec : depots a part eux aussi, meme montage
+sdot/
+otrec/
