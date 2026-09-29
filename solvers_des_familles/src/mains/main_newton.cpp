@@ -429,8 +429,23 @@ int main( int argc, char **argv ) {
         else if ( s == "--t-min" )      o.newton.t_min = std::atof( val() );
         else if ( s == "--residu" ) {
             const std::string v = val();
-            o.newton.residu = v == "barriere" ? NewtonOptions::BARRIERE : v == "log" ? NewtonOptions::LOG : NewtonOptions::LIN;
+            o.newton.residu = v == "barriere" ? NewtonOptions::BARRIERE : v == "log" ? NewtonOptions::LOG
+                            : v == "puissance" ? NewtonOptions::PUISSANCE : NewtonOptions::LIN;
         }
+        else if ( s == "--merite" ) {
+            const std::string v = val();
+            o.newton.merite_res = v == "barriere" ? NewtonOptions::BARRIERE : v == "log" ? NewtonOptions::LOG
+                                : v == "puissance" ? NewtonOptions::PUISSANCE : v == "pire" ? NewtonOptions::PIRE
+                                : NewtonOptions::LIN;
+        }
+        else if ( s == "--puis" )       o.newton.puis = std::atof( val() );
+        else if ( s == "--profil" )     o.newton.profil = std::atoi( val() );
+        else if ( s == "--combi" )      o.newton.combi = std::atoi( val() );
+        else if ( s == "--oracle" )     o.newton.oracle = std::atoi( val() );
+        else if ( s == "--oracle-pire" ) o.newton.oracle_pire = true;
+        else if ( s == "--profil-nb" )  o.newton.profil_nb = std::atoi( val() );
+        else if ( s == "--relax" )      o.newton.t0 = std::atof( val() );
+        else if ( s == "--refus" )      o.newton.refus = std::atoi( val() );
         else {
             std::printf( "usage: newton [options]\n" );
             Args::usage();
@@ -471,7 +486,16 @@ int main( int argc, char **argv ) {
                 "  --lim-tol T     precision relative des limites               (1e-2)\n"
                 "  --lim-coeff C   ou verifier la prediction                    (0.99)\n"
                 "  --t-min T       sous ce pas, STAGNATION                      (1e-10)\n"
-                "  --residu R      lin ( a - nu ) | barriere ( x - 1/x, x = a/nu ) | log  (lin)\n"
+                "  --residu R      lin ( a - nu ) | barriere ( x - 1/x, x = a/nu ) | log | puissance  (lin)\n"
+                "  --puis P        puissance : g = ( x^P - 1 ) / P -- P = 1 EST lin, P = 0 EST log  (0.5)\n"
+                "  --merite R      LE JUGE DE L'AMORTISSEMENT, separement de la direction : lin | barriere | log |\n"
+                "                  puissance | pire ( max|a-nu|/nu, le critere d.arret lui-meme )   ( defaut : comme --residu )\n"
+                "  --profil K      a l'iteration K, balayer t et imprimer LES TROIS merites le long de la direction, puis sortir\n"
+                "  --profil-nb N   nombre de pas du profil ( t = relax / 2^k )                  (24)\n"
+                "  --oracle Q      le MEILLEUR melange des trois directions a chaque iteration, force brute ( pas du simplexe 1/Q )\n"
+                "  --combi K       a l.iteration K, balayer le SIMPLEXE des directions lin/log/barriere et dire ce que gagne chaque melange\n"
+                "  --relax R       le premier pas essaye ( 1 = Newton entier ) -- la relaxation a la main  (1)\n"
+                "  --refus K       a l'iteration K, dire laquelle des deux clauses refuse chaque essai\n"
                 "  --methode M     newton ( defaut ) | lbfgs | cg : le premier ordre sur le dual ( PremierOrdre.h )\n"
                 "  --memoire K     L-BFGS : paires gardees                                     (10)\n"
                 "  --c2 C          Wolfe forte |phi'( alpha )| <= C |phi'( 0 )|                   (0.5 ; CG : 0.1)\n"

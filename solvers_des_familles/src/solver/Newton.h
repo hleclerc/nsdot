@@ -94,8 +94,50 @@ struct NewtonOptions {
     /// merite pour l'amortissement. BARRIERE `g = x - 1/x` : une cellule minuscule ( `x << 1` ) recoit
     /// `x -> 2x` au lieu de sa masse entiere d'un coup, et `|g| ~ 1/x` refuse les pas qui la pincent ;
     /// LOG `g = log x` : `x -> x ( 1 - log x )`.
-    enum Residu : int { LIN = 0, BARRIERE, LOG };
+    /// LA FAMILLE DES PUISSANCES, qui contient les deux bouts et tout ce qu'il y a entre :
+    ///
+    ///     g_p( x ) = ( x^p - 1 ) / p,   g_p'( x ) = x^( p - 1 ),   g_0 = log
+    ///
+    /// `p = 1` EST `lin` ( au signe pres ), `p = 0` EST `log`, `p = -1` est `1 - 1/x`. Comparer trois
+    /// residus ne dit pas POURQUOI l'un gagne ; un exposant continu, si -- parce qu'il donne la
+    /// pente. Ce que `p` regle est le PARTAGE DU TRAVAIL entre les deux queues : le second membre
+    /// de Newton vaut `b_i = a_i x^( -p ) ( c - g_p( x ) )`, donc
+    ///
+    ///     cellule GLOUTONNE ( x >> 1 ) : b ~ -a / p ( et -a log x en p = 0 )
+    ///     cellule AFFAMEE   ( x << 1 ) : b ~ nu x^( 1 - p ) / p -- qui TEND VERS ZERO des que p < 1
+    ///
+    /// A `p = 1` seulement, une cellule affamee reclame son deficit ENTIER `nu`. Or elle ne peut pas
+    /// le prendre : elle est enserree par des voisines dont le poids est trop haut, et elle ne
+    /// grandira que quand CELLES-LA baisseront. La demande est donc inexaucable, et c'est elle qui
+    /// force le pas minuscule. Tout `p < 1` l'annule et laisse le travail aux gloutonnes -- qui,
+    /// elles, peuvent le faire.
+    /// `PIRE` n'est pas un residu -- il n'a pas de derivee utilisable -- mais il fait un MERITE :
+    /// `max_i |a_i - nu_i| / nu_i`, c'est-a-dire LE CRITERE D'ARRET LUI-MEME. L'amortissement KMT
+    /// exige une norme `l2` pour sa preuve de decroissance ; on mesure ce que coute de la remplacer
+    /// par celle qu'on veut vraiment faire baisser.
+    enum Residu : int { LIN = 0, BARRIERE, LOG, PUISSANCE, PIRE };
     int  residu     = LIN;
+    TF   puis       = 0.5;     ///< l'exposant `p` de PUISSANCE
+    /// LE MERITE DE L'AMORTISSEMENT, SEPAREMENT DE LA DIRECTION. `-1` : le meme que `residu`.
+    ///
+    /// `--residu log` changeait DEUX choses a la fois -- le second membre de Newton et le juge qui
+    /// accepte le pas -- donc on ne pouvait pas savoir laquelle gagnait. Les deux roles n'ont rien
+    /// a voir : la direction est un modele local ( ou `log` SURESTIME les cellules trop grosses,
+    /// puisque sa tangente demande `a -> a ( 1 - log x )` < 0 des que `x > e` ), le merite est une
+    /// norme ( ou `log` est le seul des trois a ne pas etre domine par une queue ). On les separe.
+    int  merite_res = -1;
+    /// >= 0 : a CETTE iteration, balayer le pas sur une echelle geometrique et imprimer, pour chaque
+    /// `t`, LES TROIS merites, l'aire minimale et le pire ecart -- puis s'arreter. C'est le profil
+    /// le long de la direction : ce que chaque juge voit du MEME deplacement.
+    int  profil     = -1;
+    int  oracle     = 0;       ///< > 0 : le MEILLEUR melange des trois directions a chaque iteration, a la force
+                               ///< brute ( pas du simplexe `1/oracle` ). Borne superieure, pas un algorithme.
+    bool oracle_pire = false;  ///< l'oracle choisit sur le VRAI critere d'arret, `max |a - nu| / nu`,
+                               ///< au lieu du merite ( qui est un mauvais juge : cf. le profil )
+    int  combi      = -1;      ///< >= 0 : a CETTE iteration, balayer le SIMPLEXE des trois directions ( lin, log, barriere )
+                               ///< et dire, pour chaque melange, le plus grand pas admissible et ce qu.il gagne
+    int  profil_nb  = 24;      ///< nombre de pas essayes par le profil ( `t = t0 / 2^k` )
+    TF   t0         = 1;       ///< LE COEFFICIENT DE RELAXATION : le premier pas essaye ( 1 = Newton entier )
     int  refus      = -1;      ///< >= 0 : tracer, a CETTE iteration, laquelle des deux clauses de
                                ///< l.amortissement refuse chaque essai ( aire ou merite ), et sur quelle cellule
     bool memo       = false;   ///< 3D : les facettes du dernier diagramme ACCEPTE proposees en premier au suivant ( § 11 )
@@ -204,14 +246,43 @@ struct Newton {
         return std::sqrt( s );
     }
 
-    /// `g( x )` et `g'( x )` du residu choisi, `x = a / nu` borne loin de zero
-    TF g( TF x ) const {
+    /// `g( x )` et `g'( x )` du residu `r`, `x = a / nu` borne loin de zero
+    static TF g_de( TF x, int r, TF p = 0 ) {
         x = std::max( x, TF( 1e-8 ) );
-        return o.residu == NewtonOptions::BARRIERE ? x - 1 / x : o.residu == NewtonOptions::LOG ? std::log( x ) : x - 1;
+        if ( r == NewtonOptions::PUISSANCE )
+            return p == 0 ? std::log( x ) : ( std::pow( x, p ) - 1 ) / p;
+        return r == NewtonOptions::BARRIERE ? x - 1 / x : r == NewtonOptions::LOG ? std::log( x ) : x - 1;
     }
-    TF gp( TF x ) const {
+    static TF gp_de( TF x, int r, TF p = 0 ) {
         x = std::max( x, TF( 1e-8 ) );
-        return o.residu == NewtonOptions::BARRIERE ? 1 + 1 / ( x * x ) : o.residu == NewtonOptions::LOG ? 1 / x : 1;
+        if ( r == NewtonOptions::PUISSANCE )
+            return std::pow( x, p - 1 );
+        return r == NewtonOptions::BARRIERE ? 1 + 1 / ( x * x ) : r == NewtonOptions::LOG ? 1 / x : 1;
+    }
+    /// `g( x )` et `g'( x )` du residu choisi, `x = a / nu` borne loin de zero
+    TF g( TF x ) const { return g_de( x, o.residu, o.puis ); }
+    TF gp( TF x ) const { return gp_de( x, o.residu, o.puis ); }
+
+    /// LE SECOND MEMBRE de Newton pour le residu `r` : `b_i = nu_i / g'( x_i ) ( c - g( x_i ) )`, avec
+    /// `c` la moyenne ponderee qui le fait sommer a zero ( la jauge raye une ligne : sans ca elle
+    /// porterait toute l'incoherence ). `r = LIN` redonne `nu - a`.
+    void membre( int r, TF p, std::vector<TF> &bb ) const {
+        const SI n = SI( a.size() );
+        bb.assign( n, TF( 0 ) );
+        if ( r == NewtonOptions::LIN ) {
+            for ( SI i = 0; i < n; ++i ) bb[ i ] = nu[ i ] - a[ i ];
+            return;
+        }
+        TF su = 0, sug = 0;
+        for ( SI i = 0; i < n; ++i ) {
+            const TF x = a[ i ] / nu[ i ], u = nu[ i ] / gp_de( x, r, p );
+            su += u; sug += u * g_de( x, r, p );
+        }
+        const TF c = sug / su;
+        for ( SI i = 0; i < n; ++i ) {
+            const TF x = a[ i ] / nu[ i ];
+            bb[ i ] = nu[ i ] / gp_de( x, r, p ) * ( c - g_de( x, r, p ) );
+        }
     }
     /// LE MERITE de l'amortissement : `| a - nu |_2` pour LIN ( les chiffres de reference ), et la norme
     /// SANS DIMENSION `| g( a / nu ) - moyenne |_2` pour les autres. La moyenne : `sum a = sum nu` est
@@ -219,19 +290,28 @@ struct Newton {
     /// `g( x_i ) = c` pour tout `i` qu'on resout ( qui force `x_i = 1` puisque la moyenne des `x` est 1 ),
     /// et le second membre projete somme a zero comme il faut ( sans ca, la ligne rayee par la jauge
     /// porte toute l'incoherence : mesure, le germe 0 explose et Newton stagne a la premiere etape ).
-    TF merite( const std::vector<TF> &A ) const {
+    TF merite_de( const std::vector<TF> &A, int r, TF p = 0 ) const {
         const SI n = SI( A.size() );
-        if ( o.residu == NewtonOptions::LIN ) {
+        if ( r == NewtonOptions::PIRE ) {
+            TF m = 0;
+            for ( SI i = 0; i < n; ++i ) m = std::max( m, std::fabs( nu[ i ] - A[ i ] ) / nu[ i ] );
+            return m;
+        }
+        if ( r == NewtonOptions::LIN ) {
             TF s = 0;
             for ( SI i = 0; i < n; ++i ) s += ( nu[ i ] - A[ i ] ) * ( nu[ i ] - A[ i ] );
             return std::sqrt( s );
         }
         TF m = 0;
-        for ( SI i = 0; i < n; ++i ) m += g( A[ i ] / nu[ i ] );
+        for ( SI i = 0; i < n; ++i ) m += g_de( A[ i ] / nu[ i ], r, p );
         m /= n;
         TF s = 0;
-        for ( SI i = 0; i < n; ++i ) { const TF e = g( A[ i ] / nu[ i ] ) - m; s += e * e; }
+        for ( SI i = 0; i < n; ++i ) { const TF e = g_de( A[ i ] / nu[ i ], r, p ) - m; s += e * e; }
         return std::sqrt( s );
+    }
+    /// le merite EFFECTIF de l'amortissement : celui de `merite_res`, ou celui de `residu` par defaut
+    TF merite( const std::vector<TF> &A ) const {
+        return merite_de( A, o.merite_res < 0 ? o.residu : o.merite_res, o.puis );
     }
 
     /// LA BOUCLE, depuis `w_init` ( zero : Voronoi ). Rend `true` si le critere d'arret est atteint.
@@ -268,24 +348,11 @@ struct Newton {
         for ( int it = 0; it < o.maxit; ++it ) {
             TF pire = 0;
             SI nvide = 0;
-            b.assign( n, TF( 0 ) );
             for ( SI i = 0; i < n; ++i ) {
                 nvide += ! ( a[ i ] > 0 );
                 pire = std::max( pire, std::fabs( nu[ i ] - a[ i ] ) / nu[ i ] );
-                b[ i ] = nu[ i ] - a[ i ];               // `-r`, le second membre de Newton
             }
-            if ( o.residu != NewtonOptions::LIN ) {      // `J = diag( g' / nu ) L` : `L d = ( nu / g' ) ( c - g )`,
-                TF su = 0, sug = 0;                      // `c` la moyenne ponderee qui fait sommer `b` a zero
-                for ( SI i = 0; i < n; ++i ) {
-                    const TF x = a[ i ] / nu[ i ], u = nu[ i ] / gp( x );
-                    su += u; sug += u * g( x );
-                }
-                const TF c = sug / su;
-                for ( SI i = 0; i < n; ++i ) {
-                    const TF x = a[ i ] / nu[ i ];
-                    b[ i ] = nu[ i ] / gp( x ) * ( c - g( x ) );
-                }
-            }
+            membre( o.residu, o.puis, b );               // `J = diag( g' / nu ) L` : `L d = ( nu / g' ) ( c - g )`
             if ( it == 0 ) {
                 // LE PLANCHER D'AIRE DE L'AMORTISSEMENT, ET LES CELLULES QU'IL DEFEND.
                 //
@@ -355,12 +422,162 @@ struct Newton {
                 return false;
             }
 
+            // ---- LE PROFIL LE LONG DE LA DIRECTION : ce que chaque juge voit du MEME deplacement.
+            //
+            // L'amortissement ne montre que sa decision. Ici on balaye `t` et on imprime les TROIS
+            // merites cote a cote, plus l'aire minimale : on lit d'un coup lequel decroit, sur quelle
+            // plage, et si c'est l'aire ou le merite qui ferme la porte.
+            if ( it == o.profil ) {
+                const TF r_lin = merite_de( a, NewtonOptions::LIN ), r_bar = merite_de( a, NewtonOptions::BARRIERE ),
+                         r_log = merite_de( a, NewtonOptions::LOG ), r_pui = merite_de( a, NewtonOptions::PUISSANCE, o.puis );
+                std::printf( "    PROFIL it %d, direction %s, n %d : depart merites lin %.6e  barriere %.6e  log %.6e  p=%g %.6e\n",
+                             it, o.residu == NewtonOptions::BARRIERE ? "barriere" : o.residu == NewtonOptions::LOG ? "log"
+                               : o.residu == NewtonOptions::PUISSANCE ? "puissance" : "lin",
+                             int( n ), double( r_lin ), double( r_bar ), double( r_log ), double( o.puis ), double( r_pui ) );
+                std::printf( "      %-10s %-12s %-12s %-12s %-12s  %-10s %-10s %-9s %s\n", "t", "lin", "barriere", "log", "puissance",
+                             "aire min", "max ecart", "vides", "qui decroit ( >= 1 - t/2 exige )" );
+                w2.resize( n );
+                for ( int k = 0; k < o.profil_nb; ++k ) {
+                    const TF tp = o.t0 / TF( SI( 1 ) << k );
+                    for ( SI i = 0; i < n; ++i ) w2[ i ] = w[ i ] + tp * d[ i ];
+                    w2[ 0 ] = 0;
+                    mesures_et_facettes( w2, a2, fa2, pda2 );
+                    TF m2 = INFINI, pir = 0;
+                    SI nv2 = 0;
+                    for ( SI i = 0; i < n; ++i ) {
+                        if ( protegee[ i ] && a2[ i ] < m2 ) m2 = a2[ i ];
+                        nv2 += ! ( a2[ i ] > 0 );
+                        pir = std::max( pir, std::fabs( nu[ i ] - a2[ i ] ) / nu[ i ] );
+                    }
+                    const TF s_lin = merite_de( a2, NewtonOptions::LIN ), s_bar = merite_de( a2, NewtonOptions::BARRIERE ),
+                             s_log = merite_de( a2, NewtonOptions::LOG ), s_pui = merite_de( a2, NewtonOptions::PUISSANCE, o.puis );
+                    const TF ex = 1 - tp / 2;            // la decroissance exigee par l'amortissement
+                    char qui[ 48 ];
+                    std::snprintf( qui, sizeof( qui ), "%s %s %s %s", s_lin <= ex * r_lin ? "lin" : "---",
+                                   s_bar <= ex * r_bar ? "bar" : "---", s_log <= ex * r_log ? "log" : "---",
+                                   s_pui <= ex * r_pui ? "pui" : "---" );
+                    std::printf( "      %-10.3e %-12.6e %-12.6e %-12.6e %-12.6e  %-10.3e %-10.3e %-9d %s\n",
+                                 double( tp ), double( s_lin ), double( s_bar ), double( s_log ), double( s_pui ),
+                                 double( m2 ), double( pir ), int( nv2 ), qui );
+                    std::fflush( stdout );
+                }
+                st.fin = "PROFIL";
+                return false;
+            }
+
+            // ---- LA COMBINAISON DE PLUSIEURS DIRECTIONS : le SPAN contient-il mieux que ses bouts ?
+            //
+            // Trois residus donnent trois directions, et les trois se resolvent SUR LA MEME
+            // FACTORISATION -- donc deux descentes de plus, aucun diagramme, aucun assemblage. La
+            // question qui decide s'il vaut la peine de modeliser l'aire sur tout le span ( le
+            // polynome multi-directions ) est : un MELANGE fait-il nettement mieux qu'aucune des
+            // trois seule ? On le mesure a la force brute -- pour chaque `lambda` du simplexe, le
+            // plus grand pas qui respecte le plancher, et le pire ecart qu'il atteint.
+            if ( it == o.combi ) {
+                const int NR = 3;
+                const int rs[ NR ] = { NewtonOptions::LIN, NewtonOptions::LOG, NewtonOptions::BARRIERE };
+                std::vector<TF> dd[ NR ], bb;
+                for ( int k = 0; k < NR; ++k ) {
+                    membre( rs[ k ], o.puis, bb );
+                    dd[ k ].assign( n, TF( 0 ) );
+                    if ( k == 0 || ! lin.sait_encore() ) lin.resout( L, bb, dd[ k ] );
+                    else                                 lin.resout_encore( bb, dd[ k ] );
+                }
+                std::printf( "    COMBI it %d, n %d, eps %.3e : depart max ecart %.3e, merites lin %.6e log %.6e\n",
+                             it, int( n ), double( eps ), double( pire ),
+                             double( merite_de( a, NewtonOptions::LIN ) ), double( merite_de( a, NewtonOptions::LOG ) ) );
+                std::printf( "      %-16s %-10s %-4s %-10s %-10s %-12s %-12s\n", "lambda (lin,log,bar)",
+                             "t admis", "diag", "aire min", "max ecart", "merite lin", "merite log" );
+                w2.resize( n );
+                const int Q = 4;                         // le pas du simplexe : `lambda` multiple de 1/Q
+                for ( int i1 = 0; i1 <= Q; ++i1 )
+                for ( int i2 = 0; i2 + i1 <= Q; ++i2 ) {
+                    const TF l0 = TF( Q - i1 - i2 ) / Q, l1 = TF( i1 ) / Q, l2 = TF( i2 ) / Q;
+                    int nd = 0;
+                    TF tp = o.t0;
+                    for ( ; tp > TF( 1e-6 ); tp /= 2 ) {
+                        for ( SI i = 0; i < n; ++i )
+                            w2[ i ] = w[ i ] + tp * ( l0 * dd[ 0 ][ i ] + l1 * dd[ 1 ][ i ] + l2 * dd[ 2 ][ i ] );
+                        w2[ 0 ] = 0;
+                        mesures_et_facettes( w2, a2, fa2, pda2 );
+                        ++nd;
+                        TF m2 = INFINI;
+                        for ( SI i = 0; i < n; ++i )
+                            if ( protegee[ i ] && a2[ i ] < m2 ) m2 = a2[ i ];
+                        if ( m2 >= eps ) {
+                            TF pir = 0;
+                            for ( SI i = 0; i < n; ++i ) pir = std::max( pir, std::fabs( nu[ i ] - a2[ i ] ) / nu[ i ] );
+                            std::printf( "      %4.2f %4.2f %4.2f     %-10.3e %-4d %-10.3e %-10.3e %-12.6e %-12.6e\n",
+                                         double( l0 ), double( l1 ), double( l2 ), double( tp ), nd, double( m2 ),
+                                         double( pir ), double( merite_de( a2, NewtonOptions::LIN ) ),
+                                         double( merite_de( a2, NewtonOptions::LOG ) ) );
+                            break;
+                        }
+                    }
+                    if ( tp <= TF( 1e-6 ) )
+                        std::printf( "      %4.2f %4.2f %4.2f     %-10s %-4d\n", double( l0 ), double( l1 ),
+                                     double( l2 ), "AUCUN", nd );
+                    std::fflush( stdout );
+                }
+                st.fin = "COMBI";
+                return false;
+            }
+
             // ---- LE PAS PAR LES LIMITES, s'il est demande
-            TF t = 1, alpha_lim = -1;
+            TF t = o.t0, alpha_lim = -1;
             t_sur = -1;
             d_sur.clear();
             TF gain = 1;                                 // ce que `t = 1` vise : `nu` pour `d`, la cible
                                                          // partielle `theta` pour un pas tensoriel
+
+            // ---- L'ORACLE : le MEILLEUR melange des trois directions, trouve a la force brute.
+            //
+            // Ce n'est pas un algorithme -- il paye ~50 diagrammes par iteration pour choisir. C'est
+            // la BORNE SUPERIEURE de ce qu'un modele d'aire sur le span rendrait, et donc le seul
+            // chiffre qui dit s'il vaut la peine de le construire. On ne compte que les ITERATIONS.
+            if ( o.oracle > 0 ) {
+                const int NR = 3;
+                const int rs[ NR ] = { NewtonOptions::LIN, NewtonOptions::LOG, NewtonOptions::BARRIERE };
+                std::vector<TF> dd[ NR ], bb;
+                for ( int k = 0; k < NR; ++k ) {
+                    membre( rs[ k ], o.puis, bb );
+                    dd[ k ].assign( n, TF( 0 ) );
+                    if ( k == 0 || ! lin.sait_encore() ) lin.resout( L, bb, dd[ k ] );
+                    else                                 lin.resout_encore( bb, dd[ k ] );
+                }
+                const int Q = o.oracle;
+                TF best = INFINI, bl[ 3 ] = { 1, 0, 0 }, bt = 0;
+                w2.resize( n );
+                for ( int i1 = 0; i1 <= Q; ++i1 )
+                for ( int i2 = 0; i2 + i1 <= Q; ++i2 ) {
+                    const TF ll[ 3 ] = { TF( Q - i1 - i2 ) / Q, TF( i1 ) / Q, TF( i2 ) / Q };
+                    for ( TF tp = o.t0; tp > o.t_min; tp /= 2 ) {
+                        for ( SI i = 0; i < n; ++i )
+                            w2[ i ] = w[ i ] + tp * ( ll[ 0 ] * dd[ 0 ][ i ] + ll[ 1 ] * dd[ 1 ][ i ] + ll[ 2 ] * dd[ 2 ][ i ] );
+                        w2[ 0 ] = 0;
+                        mesures_et_facettes( w2, a2, fa2, pda2 );
+                        TF m2 = INFINI;
+                        for ( SI i = 0; i < n; ++i )
+                            if ( protegee[ i ] && a2[ i ] < m2 ) m2 = a2[ i ];
+                        if ( m2 < eps ) continue;        // le plancher ferme : on raccourcit
+                        TF v = merite( a2 );             // le juge, celui de `--merite`
+                        if ( o.oracle_pire ) {           // ... ou LE VRAI CRITERE D'ARRET, `max |a - nu| / nu`
+                            v = 0;
+                            for ( SI i = 0; i < n; ++i ) v = std::max( v, std::fabs( nu[ i ] - a2[ i ] ) / nu[ i ] );
+                        }
+                        if ( v < best ) { best = v; bl[ 0 ] = ll[ 0 ]; bl[ 1 ] = ll[ 1 ]; bl[ 2 ] = ll[ 2 ]; bt = tp; }
+                        break;                           // pour ce `lambda`, le plus long pas admissible suffit
+                    }
+                }
+                if ( bt > 0 ) {
+                    for ( SI i = 0; i < n; ++i )
+                        d[ i ] = bl[ 0 ] * dd[ 0 ][ i ] + bl[ 1 ] * dd[ 1 ][ i ] + bl[ 2 ] * dd[ 2 ][ i ];
+                    t = bt;
+                    if ( o.trace )
+                        std::printf( "      oracle : lambda ( lin %.2f, log %.2f, bar %.2f ), pas %.3e, merite %.6e\n",
+                                     double( bl[ 0 ] ), double( bl[ 1 ] ), double( bl[ 2 ] ), double( bt ), double( best ) );
+                }
+            }
 
             // ---- LA CIBLE MODIFIEE ( `Cible.h` ) : on ne touche QU'AU SECOND MEMBRE, et on
             // resout sur la meme factorisation -- aucun diagramme, aucun assemblage

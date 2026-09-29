@@ -1163,13 +1163,18 @@ barrière et le `log` coûtent dix fois plus. Les deux mesures sont justes ; ce 
   à chaque étape. Là, `1/x` (ou `1/x` déguisé en `log`) fait du mérite un minimax où la pire cellule
   décide de tout, et un pas plein en pince toujours quelques-unes de plus qu'il n'en répare ;
 * ici : densité **uniforme**, Newton direct depuis Voronoï, pas de transition de masse — la
-  population de cellules pincées est petite, et pondérer le résidu par `1/ν_i` (ce que `log` fait au
-  premier ordre) équilibre les cellules dont les tailles varient d'un facteur mille dans les queues
-  gaussiennes.
+  population de cellules pincées est petite.
 
-Autrement dit `log` normalise ; c'est utile quand les `ν_i/|Vor_i|` s'étalent, nuisible quand des
-milliers de cellules sont au bord de l'extinction. À vérifier avant d'en faire un défaut : ces trois
-mesures sont toutes sur `lines5`, en 2D, à `n = 10⁵`, avec `essai-limites` et Cholesky.
+> **CORRECTION (§ 21).** Ce paragraphe attribuait le gain au fait que `log` pondère le résidu par
+> `1/ν_i`. C'est faux : dans ce banc `ν_i = 1/n` pour tout `i`, il n'y a aucun étalement de `ν` à
+> égaliser. Et il attribuait le gain au **mérite**, alors que la mesure qui sépare les deux rôles
+> (§ 21.1) montre que le mérite est **inerte** — le gain est entièrement dans la DIRECTION. Le vrai
+> mécanisme est au § 21.3 : `p` est la fraction de l'écart *logarithmique* que le pas réclame, et
+> `p = 1` est le seul membre de la famille qui réclame aux cellules affamées un déficit qu'elles ne
+> peuvent pas prendre. Les deux réserves de ce paragraphe sont levées au § 21.4 : mesuré aussi **en
+> 3D**, en `--pas essais` et avec AMGCL, et le gain y est du même ordre (27 → 16 diagrammes). Et
+> `log` n'est pas l'optimum — c'est un point sur un plateau dont l'intérieur (`p = 0.25` à `0.5`)
+> fait parfois mieux.
 
 ---
 
@@ -1373,6 +1378,13 @@ chaque cellule : 600 rafraîchissements, le prix de 100 diagrammes.
 > depuis Voronoï, densité uniforme, et il GAGNE 20 à 50 % de diagrammes, le gain croissant avec la
 > difficulté. Ce qui suit vaut pour la continuation en densité, où des milliers de cellules sont en
 > transition — pas pour un solve direct.
+>
+> **Et le POURQUOI est au § 21**, qui sépare les deux rôles que cette option confond. Deux résultats
+> portent directement sur ce qui suit : (a) le mérite de l'amortissement est **inerte** le long d'une
+> direction donnée — c'est le plancher d'aire qui décide, donc l'analyse « `1/x` en fait un minimax »
+> ci-dessous décrit la DIRECTION, pas le juge ; (b) `x − 1/x` ne répare qu'un côté — sa courbure
+> relative s'éteint en `x⁻³` sur les cellules trop grosses, donc il redevient `a − ν` exactement là
+> où c'est dur, tandis que la famille `(xᵖ−1)/p` tient les deux queues (§ 21.3).
 
 `--residu barriere | log` (dans `newton` aussi) : Newton sur `g(a_i/ν_i)` au lieu de `a_i − ν_i`,
 `g(x) = x − 1/x` (ou `log x`). Même solution, autre direction et autre mérite : une cellule
@@ -4786,3 +4798,224 @@ mesurées :
 * **le résidu pondéré** (§ 13.5, toujours pas mesuré) : `Σ C_i r_i²` ne change pas `d` mais change
   quels pas l'amortissement **accepte**. C'est le seul endroit de cette famille où des poids ne se
   simplifient pas — et c'est la seule case encore vide.
+
+# 21. LE RÉSIDU ET LE JUGE : CE QUE `p` RÈGLE VRAIMENT (`newton --residu`, `--merite`, `--profil`)
+
+`--residu log` gagnait 20 à 50 % de diagrammes sur Newton direct (§ 8.7.6) et on ne savait pas
+pourquoi. La question posée ici est précise : **pourquoi `log x` ferait-il mieux que `x − 1/x` ?**
+Elle a trois réponses, et la troisième était invisible parce que l'option en changeait deux à la
+fois.
+
+Les trois balayages sont dans `scripts/` (`matrice_merite.sh`, `scan_puissance.sh`,
+`scan_relax.sh`). Seul `lines5_n100000_s0.005` est versionné ; les deux autres nuages se
+régénèrent par `2d_des_familles/cases/gen_cases.py --sigma 0.02` (et `--sigma 0.1`), graine par
+défaut.
+
+## 21.1 Deux rôles confondus dans une seule option (`--merite`)
+
+`--residu` changeait **le second membre de Newton** (le modèle local) **et le mérite de
+l'amortissement** (la norme qui accepte le pas). Ce sont deux choses sans rapport. `--merite` les
+sépare ; la matrice 3 × 3, `n = 10⁵`, `--pas essais`, diagrammes :
+
+| cas | dir. `lin` | | | dir. `barriere` | | | dir. `log` | | |
+|---|---|---|---|---|---|---|---|---|---|
+| **juge** | lin | bar | log | lin | bar | log | lin | bar | log |
+| 2D uniforme | 8 | 8 | 8 | 9 | 9 | 9 | **7** | **7** | **7** |
+| 2D lignes `σ=0.1` | 13 | 13 | 13 | 19 | 18 | 18 | **11** | **11** | **11** |
+| 2D lignes `σ=0.02` | 41 | 38 | *63* | *60* | 30 | *35* | **29** | **29** | **29** |
+| 3D uniforme | 9 | 9 | 9 | 8 | 8 | 8 | **6** | **6** | **6** |
+| 3D plans `σ=0.02` | 27 | 27 | 27 | *47* | 18 | *35* | **16** | **16** | **16** |
+
+(*en italique* : sorti en STAGNATION loin de la tolérance — la comparaison de diagrammes n'y veut
+rien dire.) Le verdict est net : **le long d'une direction donnée, le juge ne fait rien.** Les trois
+colonnes d'un même bloc sont identiques chiffre pour chiffre, sauf quand le juge ne correspond pas à
+la direction — et alors il ne fait que casser. Le gain de `log` est **entièrement dans la
+direction**.
+
+Le contrôle qui le confirme : `--merite pire`, c'est-à-dire l'amortissement jugé sur `max|a−ν|/ν`,
+le critère d'arrêt lui-même (ce qui ruine la preuve de décroissance de KMT, mais on mesure).
+Résultat : **rigoureusement les mêmes chiffres** — 13 / 27 / 41 diagrammes à `σ = 0.1 / 0.02` pour
+`p = 1`, comme avec le mérite `l²`. Remplacer la norme ne change rien parce que **la clause du
+mérite ne mord jamais** : c'est le plancher d'aire qui décide de tout (ce que `--refus` disait déjà
+au § 8.7.4, ici confirmé hors du départ réparé).
+
+## 21.2 Le profil le long de la direction (`--profil K`)
+
+`--profil K` balaye `t` à l'itération `K` et imprime les quatre mérites côte à côte. Lignes
+`σ = 0.005`, itération 0, départ Voronoï (`max|a−ν|/ν = 1666`, mérite `lin` 6.29e-2) :
+
+| | `t = 1` | | premier `t` sans vide | |
+|---|---|---|---|---|
+| direction | vides | mérite `lin` | `t` | `max\|a−ν\|/ν` |
+| `lin` | **50 030** | 1.19e-2 | 3.9e-3 | 1659 (−0.4 %) |
+| `barriere` | 13 299 | 1.47e-2 | 6.2e-2 | 1564 (−6 %) |
+| `log` | 22 376 | 1.27e-2 | 6.2e-2 | **1380 (−17 %)** |
+
+Deux choses s'y lisent d'un coup.
+
+**Le mérite `lin` récompense le pas qui vide la moitié du diagramme.** Il *décroît à tous les pas
+essayés*, et son minimum est en `t = 1`, là où 50 030 cellules sur 100 000 sont vides. La raison est
+arithmétique : avec `ν` uniforme, une cellule affamée ne peut coûter que `ν` au mérite (elle est
+bornée par zéro), une gloutonne coûte `(x−1)ν` sans borne. Une gloutonne à `x = 50` pèse donc autant
+que **2 401 cellules vides**. C'est pour ça que l'amortissement KMT a besoin d'un plancher d'aire
+*dur* : sans lui, son propre mérite pousserait Newton dans un diagramme dégénéré.
+
+**Et le pas admissible, lui, dépend violemment de la direction** : `lin` ne survit qu'à
+`t = 3.9e-3` — huit reculs — pour un gain de 0.4 % sur le pire écart, quand `log` passe à
+`t = 6.2e-2` et gagne 17 %.
+
+## 21.3 L'algèbre : `p` est la fraction de l'écart LOGARITHMIQUE qu'on réclame
+
+Newton sur `g(a_i/ν_i) = c` résout `L d = b` avec `b_i = ν_i/g'(x_i)·(c − g(x_i))`, et `b_i` est le
+changement d'aire **demandé**. Pour la famille des puissances `g_p(x) = (xᵖ − 1)/p`
+(`g_p' = x^{p−1}`), le calcul se ferme exactement (à `c` près, qui ne sert qu'à faire sommer `b` à
+zéro) :
+
+```
+b_i = ( nu_i x_i^(1-p) - a_i ) / p
+```
+
+Autrement dit **la cible de la cellule `i` n'est plus `ν_i` mais `ν_i x_i^{1−p} = ν_i^p a_i^{1−p}`,
+l'interpolée géométrique entre son aire actuelle et sa cible.** En échelle logarithmique, l'écart
+restant après la demande vaut `(1−p) log x_i` : **`p` est exactement la fraction de l'écart
+logarithmique que le pas réclame, la même pour toutes les cellules.** `p = 1` réclame tout,
+`p = 0.5` la moitié, `p → 0` une fraction infinitésimale — et c'est la limite `log`.
+
+Ce que ça donne aux deux bouts, et la comparaison avec `x − 1/x` :
+
+| | gloutonne `x ≫ 1` | affamée `x ≪ 1` |
+|---|---|---|
+| `lin` (`p = 1`) | `−a` | `+ν` — **son déficit ENTIER** |
+| `g_p`, `p < 1` | `−a/p` | `+ν x^{1−p}/p` → **0** |
+| `barriere` (`x − 1/x`) | `−a` (à l'identique de `lin`) | `+a` |
+
+**Voilà la réponse à la question posée.** `x − 1/x` ne répare **qu'un côté** : il adoucit la demande
+des affamées, mais sa courbure relative `g''/g' = −2/(x³+x)` s'éteint en `x⁻³` sur les gloutonnes —
+il *redevient* `lin` exactement là où le problème est dur. La famille `(xᵖ−1)/p`, elle, tient les
+deux queues avec le même exposant.
+
+Et pourquoi la demande des affamées est celle qui coûte : **elle est inexauçable.** Une cellule
+affamée n'est pas affamée parce que son poids est trop bas, elle l'est parce que ses voisines ont un
+poids trop haut ; elle ne grandira que quand celles-là baisseront. Lui réclamer `ν` d'un coup, c'est
+demander au système linéaire quelque chose hors de son domaine de validité, et **ça pollue toute la
+direction** — ce que l'amortissement ne peut pas réparer, puisqu'il ne sait que multiplier la
+direction entière par un scalaire. C'est aussi pourquoi le gain croît avec la difficulté : la
+dynamique de `x` au départ est de 1 à 2 000, donc l'écart logarithmique est grand, et c'est lui que
+`p` comprime.
+
+Symétriquement, `p < 0` donne une cible `ν x^{1−p}` **au-delà** de la valeur actuelle : à
+`p = −0.5`, une gloutonne à `x = 2160` se voit assigner `x^{1.5} ≈ 10⁵`, donc un `b` de 90 fois son
+aire. Le dépassement croît avec `|p|` — et la dégradation mesurée est monotone.
+
+## 21.4 Le balayage de l'exposant (`--residu puissance --puis P`)
+
+`p = 1` **est** `lin` et `p = 0` **est** `log` — la famille recouvre les deux options discrètes, et
+les chiffres le vérifient (8 / 13 / 41 / 9 / 27 diagrammes à `p = 1`, identiques à la colonne
+`lin/lin` de la matrice ; seul `σ = 0.005` diffère d'un cheveu, 113 contre 116, parce que le mérite
+de la famille est centré et celui de `LIN` ne l'est pas). Diagrammes, `n = 10⁵`, `--pas essais` :
+
+| `p` | 2D unif. | 2D `σ=0.1` | 2D `σ=0.02` | 3D unif. | 3D plans |
+|---|---|---|---|---|---|
+| **1** (= `lin`) | 8 | 13 | 41 | 9 | 27 |
+| 0.9 | 7 | 17 | 32 | 7 | 22 |
+| 0.75 | 6 | 14 | 30 | 7 | 19 |
+| 0.5 | **5** | **11** | 32 | **5** | **16** |
+| 0.25 | 6 | 16 | **27** | **5** | 17 |
+| 0.1 | 6 | 13 | 29 | **5** | **16** |
+| **0** (= `log`) | 7 | **11** | 29 | 6 | **16** |
+| −0.25 | 9 | 16 | — | 6 | 18 |
+| −0.5 | 10 | 22 | — | 8 | 20 |
+| −1 | 11 | 37 | — | 10 | 24 |
+| −2 | 17 | 48 | — | 14 | 39 |
+
+La forme est la même partout : **une pente franche de `p = 1` vers `p ≈ 0.25`, un plateau large sur
+`[0, 0.5]`, et une dégradation monotone sous zéro.** Donc `log` n'est pas un bout de chemin, c'est
+un point sur un plateau — et sur trois des cinq cas l'optimum est *à l'intérieur*, en `p = 0.5` ou
+`0.25`, jamais en `p = 0` seul. Le gain le plus net est celui qui compte : le cas 3D dur passe de 27
+à 16 diagrammes (−41 %), le 2D dur de 41 à 27 (−34 %).
+
+Sur `σ = 0.005` tous les essais sortent en STAGNATION vers 2.4e-6 : ce nuage de `cases/` **est
+dégénéré** (deux germes à 1.009e-08 l'un de l'autre, § 8.7.3), et 2.4e-6 est son plancher, pas celui
+de la méthode. À plancher égal le classement tient quand même : 113 diagrammes à `p = 1`, 90 à
+`p = 0.5`, 84 à `p = 0.25`, 73 à `p = 0`.
+
+## 21.5 La relaxation à la main, sous `essai-limites` (`--facteur`)
+
+La passe des limites rend `alpha*`, le pas exact qui met la première cellule au plancher, et retient
+`facteur · alpha*`. Ce `facteur` **est** le coefficient de relaxation, et il n'avait jamais été
+balayé contre l'exposant. Lignes `σ = 0.02`, `--pas essai-limites`, diagrammes (aucun recul, dans
+tout le tableau) :
+
+| `facteur` | 0.5 | 0.7 | 0.8 | 0.9 | 0.95 | 0.99 |
+|---|---|---|---|---|---|---|
+| `p = 1` | 32 | 26 | 22 | 26 | **20** | 32 |
+| `p = 0.5` | 25 | 20 | 18 | 16 | **15** | **15** |
+| `p = 0` | 17 | 15 | 14 | **13** | **13** | 14 |
+
+Trois choses, dont une qui n'était pas attendue.
+
+**Les deux mécanismes se composent, presque proprement.** Le pas par les limites fait 41 → 20 avec
+`lin`, l'exposant fait 20 → 13 par-dessus : **13 diagrammes contre 41 pour la référence**, un
+facteur 3.2, et la meilleure valeur absolue de tout ce banc sur ce cas.
+
+**Et le bon résidu rend la relaxation presque indifférente.** À `p = 1` la courbe est irrégulière et
+pointue (32 → 20 → 32, avec un creux parasite à 0.8) : il y a un réglage à trouver, et il est
+étroit. À `p = 0` elle est plate entre 0.7 et 0.99 (15 → 13 → 14). C'est cohérent avec le § 21.3 :
+quand la direction demande l'inexauçable, *jusqu'où* on la suit devient critique ; quand elle
+demande une fraction de l'écart logarithmique, la longueur du pas cesse d'être le paramètre
+sensible. **Un réglage de moins à porter, ce qui vaut plus que les trois diagrammes gagnés.**
+
+## 21.6 Plusieurs directions et leur modèle : le span vaut mieux, mais pas selon le mérite
+
+Trois résidus donnent trois directions, et **elles se résolvent sur la même factorisation** — deux
+descentes de plus, aucun diagramme, aucun assemblage. Si le modèle polynomial de l'aire (§ 7) était
+étendu à plusieurs directions, il donnerait `a_i` sur tout leur span sans diagramme : à combinatoire
+figée chaque sommet est affine en `w`, donc l'aire est **quadratique** en les coefficients du
+mélange (cubique en 3D), avec les termes croisés. La question qui décide s'il faut le construire :
+**le span contient-il nettement mieux que ses bouts ?**
+
+`--combi K` répond à l'itération `K` à la force brute. Lignes `σ = 0.02`, itération 0, pour chaque
+mélange le plus grand pas admissible et le pire écart qu'il atteint (départ 2159) :
+
+| `λ` (lin, log, bar) | `t` admis | `max\|a−ν\|/ν` |
+|---|---|---|
+| 1, 0, 0 (`lin` pur) | 6.2e-2 | 2025 |
+| 0, 1, 0 (`log` pur) | 1.2e-1 | 1072 |
+| 0, 0, 1 (`barriere` pur) | 2.5e-1 | 1640 |
+| **0.25, 0.75, 0** | 2.5e-1 | **602** |
+| 0, 0.75, 0.25 | 2.5e-1 | 602 |
+
+Le mélange ¼ `lin` + ¾ `log` fait **1.8 fois mieux que la meilleure direction pure**, et le
+mécanisme se lit : `log` pur ne survivait pas à `t = 0.25`, et c'est l'ajout de `lin` qui le permet.
+Normal — `lin` est précisément la direction qui *nourrit les affamées* (§ 21.3). **Les deux rôles
+sont complémentaires : `log` fait le travail sur les gloutonnes, `lin` protège le plancher.** Aucun
+résidu seul ne peut exprimer ça.
+
+`--oracle Q` pousse jusqu'au bout : à *chaque* itération, le meilleur mélange du simplexe, choisi à
+la force brute. Ce n'est pas un algorithme (~50 diagrammes par itération pour choisir) mais la
+**borne supérieure** de ce que le modèle rendrait. Itérations, `n = 10⁵` :
+
+| cas | meilleure direction pure | oracle, choix sur le **mérite** | oracle, choix sur **`max\|a−ν\|/ν`** |
+|---|---|---|---|
+| 2D `σ = 0.1` | 7 | 7 | **6** |
+| 2D `σ = 0.02` | 11 | *13* | **8** |
+| 2D `σ = 0.005` | 15 (stagne à 2.4e-6) | *18* (stagne) | **15, et CONVERGE à 6.8e-7** |
+
+**Et c'est le critère de sélection qui décide, pas le mélange.** Choisi sur le mérite `l²`, l'oracle
+fait *moins bien* que la direction pure (13 contre 11) : il a tout le span à sa disposition et il
+choisit mal. Choisi sur `max|a−ν|/ν`, il gagne un tiers des itérations — et sur le nuage dégénéré
+`σ = 0.005` il est **le seul essai de tout ce banc qui converge**, là où toutes les directions pures
+stagnent à 2.4e-6.
+
+Le contrôle du § 21.1 verrouille l'interprétation : changer le juge pour `pire` sur une direction
+*seule* ne change **rien** (mêmes chiffres exactement). Donc les deux tiers d'itérations gagnés ici
+viennent bien du **mélange**, et le critère `pire` n'est nécessaire que pour *choisir dedans* — là
+où il y a un vrai choix à faire. Dit autrement : **le mérite `l²` est inerte quand il n'y a qu'une
+direction, et nuisible dès qu'il y en a plusieurs.**
+
+C'est donc positif, et c'est la suite : le modèle polynomial multi-directions prédirait `a_i` sur le
+span, donc `max|a−ν|/ν` sur le span, donc exactement le critère qui marche — sans diagramme. Le
+risque est nommé et il est réel : le polynôme **mentait déjà** dès que la combinatoire change le
+long d'*une* direction (§ 7), et la parade `prédire / vérifier / corriger` de `Ecrasement.h`
+s'appuie sur un point à tester le long d'un segment. Sur un span de dimension 3 il faut la
+reformuler, et rien ne dit encore que ça reste une cellule par cellule.
