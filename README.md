@@ -1,14 +1,33 @@
 # nsdot
 
-Monorepo — 3 projets indépendants :
+**Un plan de travail**, plus un monorepo : les quatre paquets ont chacun leur dépôt, et ce
+dépôt-ci ne les suit plus — il les *accueille*, à côté de la recherche qui les consomme.
+
+```bash
+scripts/bootstrap.sh          # clone les quatre ici, aux noms attendus
+errand --setup --env nsdot    # l'environnement, avec les quatre en éditable
+```
 
 ```
-loom/     Interface agnostique Jax/Torch → noyaux C++ (tensor, Aggregate, drivers, compilation)
-sdot/     Transport optimal semi-discret (Cell, PowerDiagram, OtPlan, OtPlan1d, distributions)
-otrec/    Application de reconstruction CT (Reconstruction, Sinogram)
+loom/     git@github.com:hleclerc/loom.git       Jax/Torch → noyaux C++ (tensor, Aggregate, ffi_call)
+sdot/     git@github.com:hleclerc/sdot-ffi.git   Transport optimal semi-discret (Cell, PowerDiagram, OtPlan)
+otrec/    git@github.com:hleclerc/otrec.git      Reconstruction CT (Reconstruction, Sinogram)
+errand/   git@github.com:hleclerc/errand.git     Le lanceur de travaux
 ```
 
-Chaque projet a son propre `pyproject.toml`. Dépendances : `otrec` → `sdot` → `loom`.
+Dépendances : `otrec` → `sdot` → `loom`. Chacun a son `pyproject.toml`.
+
+Le couplage entre eux est **physique, pas git** : `errandfile.py` déclare `src = [ "loom/src",
+"sdot/src", "otrec/src" ]` et les conteneurs montent `loom` sur `/opt/sdot/loom`. D'où les noms de
+répertoire imposés ci-dessus — `sdot/` vient du dépôt `sdot-ffi`, le nom local étant celui du
+paquet python.
+
+**Ce qui reste suivi ici** : la recherche (`2d_des_familles/`, `solvers_des_familles/`,
+`gpu_des_familles/`, `unidim/`), les notes et la doc, et la glu qui n'a de sens qu'à travers les
+quatre (`errandfile.py`, `scripts/`, `containers/`).
+
+**Ce qui n'y est plus** : la CI des wheels et `catalogue_record/` sont partis dans `sdot-ffi`, avec
+le wheel qui porte les binaires du catalogue.
 
 `unidim/` est un prototype à part (pas de `pyproject.toml`, pas installé) : reconstruction CT
 par transport optimal 1D, voir [Prototype `unidim`](#prototype-unidim) plus bas.

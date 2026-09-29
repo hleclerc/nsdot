@@ -16,7 +16,8 @@
 #     et n'y serait de toute façon jamais retrouvé ;
 #   * c'est un cache : il se reconstruit, et il pèse des gigaoctets (2,7 Go mesurés).
 #
-# Ce qui DOIT traverser, et qu'on ne met donc pas ici : `catalogue_record/`, le relevé des sources
+# `catalogue_record/` a demenage dans le depot `sdot-ffi` ( avec la CI qui le compile ), donc il ne
+# traverse plus d'ici. Ce qui restait a dire : le relevé des sources
 # engendrées. Il est versionné, il est indépendant de la machine, et c'est précisément lui qui
 # permet de compiler les noyaux ailleurs (`loom-kernels compile`).
 
@@ -32,9 +33,6 @@ wheelhouse/
 *.whl
 graphify-out/
 
-# le catalogue compilé ( le relevé, lui, traverse )
-sdot/catalogue/*
-!sdot/catalogue/README.md
 
 # python
 __pycache__/
