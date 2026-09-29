@@ -21,6 +21,18 @@ Ce que ca casse, et c'est deux choses distinctes :
 
 Donc la reparation n'est pas un preconditionneur, c'est le nuage.
 
+CE QUI EST MALADE, RELEVE ( § 23.5 ) : `s0.005` seulement. Les autres nuages de `cases/` ont bien deux
+a cinq paires sous le seuil, mais a ~0.3 % de l'espacement median -- donc `c_ij` reste dans la plage
+saine, et les deduplquer ne change RIEN ( memes iterations, memes diagrammes ). Les nuages 3D sont
+propres. Le mal commence vers 0.2 % de la mediane ; `s0.005` est a 0.002 %.
+
+ET CE N'EST PAS LA BONNE OPERATION EN GENERAL ( § 23.6 ) : retirer un germe fait DISPARAITRE sa masse.
+Benin quand `nu` est uniforme, faux des que `nu` est une donnee. Il faudra FUSIONNER -- une grappe
+devient un germe de cible `sum nu_i`, on resout, on redivise la cellule entre ses membres ( ce qui est
+arbitraire pour des germes exactement confondus, donc gratuit ). Ce script est le prealable, pas la
+solution.
+
+    ./nettoie_germes.py fichier.txt --essai                            # relever, sans ecrire
     ./nettoie_germes.py lines5_n100000_s0.005_voronoi.txt              # -> ..._propre.txt
     ./nettoie_germes.py entree.txt -o sortie.txt --seuil 1e-6
 """
@@ -79,6 +91,9 @@ def main():
     p.add_argument( "--seuil", type = float, default = 0.0,
                     help = "distance sous laquelle deux germes sont confondus"
                            " ( 0 : 1 %% de l'espacement median )" )
+    p.add_argument( "--essai", action = "store_true", help = "relever seulement, n'ecrire rien" )
+    p.add_argument( "--garde-poids", action = "store_true",
+                    help = "garder les poids du fichier au lieu de les annuler ( voir ci-dessous )" )
     a = p.parse_args()
 
     entete, d = lit( a.entree )
@@ -99,6 +114,8 @@ def main():
     if nb == 0:
         print( "  rien a faire" )
         return 0
+    if a.essai:
+        return 0
 
     # ce que ca change pour le laplacien : `c_ij = |facette| / 2 |p_i - p_j|`, donc l'etalement des
     # poids est borne par celui des distances -- c'est LUI qu'on vient de couper
@@ -106,12 +123,27 @@ def main():
     print( "  apres : min %.3e ( x%.0f ), median %.3e" % ( d2[ :, 1 ].min(),
            d2[ :, 1 ].min() / max( dd[ :, 1 ].min(), 1e-300 ), np.median( d2[ :, 1 ] ) ) )
 
+    # LES POIDS D'UN FICHIER `_equal` NE SURVIVENT PAS A LA DEDUPLICATION, et c'est important : ces
+    # fichiers PORTENT la solution, obtenue par un tout autre chemin ( L-BFGS, pysdot ), et le banc s'en
+    # sert de temoin independant. Retirer un germe CHANGE le probleme -- sa masse doit etre reprise par
+    # les autres -- donc les poids stockes ne resolvent plus rien. On les annule, ce qui fait que le banc
+    # les ignore de lui-meme ( `W` reste nul, donc pas de temoin ) plutot que de comparer a un faux.
+    poids = d[ :, D ]
+    if np.any( poids != 0 ) and not a.garde_poids:
+        print( "  ATTENTION : ce fichier PORTE des poids non nuls ( un temoin ). Ils ne resolvent plus le"
+               " probleme reduit : on les ANNULE. `--garde-poids` pour passer outre." )
+        d = d.copy()
+        d[ :, D ] = 0.0
+
     sortie = a.sortie
     if sortie is None:
         base, ext = os.path.splitext( a.entree )
         sortie = base + "_propre" + ext
     entete = entete + [ "# germes dedupliques par nettoie_germes.py : seuil %.3e, %d retires"
                         % ( seuil, nb ) ]
+    if np.any( poids != 0 ) and not a.garde_poids:
+        entete = entete + [ "# ATTENTION : les poids du fichier d'origine ont ete ANNULES -- ils"
+                            " resolvaient l'ancien nuage, pas celui-ci. Ce fichier n'est plus un temoin." ]
     ecrit( sortie, entete, d[ garde ] )
     print( "  ecrit dans %s ( %d germes )" % ( sortie, int( garde.sum() ) ) )
     return 0

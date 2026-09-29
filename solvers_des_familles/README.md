@@ -5355,3 +5355,76 @@ agrégation 1.47 s, Cholesky 1.65 s, Ruge-Stüben **4.08 s**. Tout s'inverse :
 Les conclusions du § 17 tiennent donc telles quelles, et le défaut 2D (`amg`) reste le bon. Ce qui
 change, c'est qu'on sait maintenant **pourquoi** il n'y a rien à gagner côté conditionnement, et
 **où** est le vrai levier : les germes du nuage, pas la matrice.
+
+## 23.5 Tous les nuages, relevés — et un seul était malade
+
+`cases/nettoie_germes.py --essai` relève sans écrire. Espacement au plus proche voisin, `n = 10⁵`
+sauf mention, seuil à 1 % de la médiane :
+
+| nuage | min | médiane | min/médiane | paires |
+|---|---|---|---|---|
+| lignes `σ=0.005` | **1.009e-08** | 4.53e-04 | **2.2e-5** | 56 |
+| lignes `σ=0.02` | 2.25e-06 | 8.22e-04 | 2.7e-3 | 2 |
+| lignes `σ=0.05` | 4.92e-06 | 1.12e-03 | 4.4e-3 | 3 |
+| lignes `σ=0.1` | 4.27e-06 | 1.31e-03 | 3.3e-3 | 5 |
+| lignes `σ=0.005`, `n=2000` | 8.06e-06 | 3.18e-03 | 2.5e-3 | 1 |
+| **plans `σ=0.02` (3D)** | 2.65e-04 | 7.63e-03 | 3.5e-2 | **0** |
+
+Les nuages 3D sont **propres** : aucune paire sous le seuil. Et parmi les 2D, un seul est malade.
+Newton par défaut, 8 fils, avant / après déduplication :
+
+| σ | sale | propre |
+|---|---|---|
+| 0.1 | 9 it, 13 diag, CONVERGE 3.48e-8 | 9 it, 13 diag, CONVERGE 3.47e-8 |
+| 0.05 | 13 it, 23 diag, CONVERGE 6.60e-8 | 13 it, 23 diag, CONVERGE 6.56e-8 |
+| 0.02 | 18 it, 41 diag, CONVERGE 2.47e-10 | 18 it, 41 diag, CONVERGE 2.47e-10 |
+| **0.005** | 24 it, **113** diag, **STAGNATION** 2.35e-6 | 23 it, **78** diag, **CONVERGE** 2.00e-7 |
+
+**Trois nuages sur quatre : rien ne change**, au diagramme près. Ce qui est cohérent avec le § 23.2 :
+leurs paires sont à ~0.3 % de l'espacement médian, donc `c_ij ≈ h / 2·dist` reste à 1e2–3e2, dans la
+plage saine. Le seuil à 1 % de la médiane est **prudent, pas nécessaire** — il retire deux à cinq
+germes inutilement. Le mal commence vers 0.2 % de la médiane, là où `c_ij` sort de la plage ; à
+2.2e-5 de la médiane, `σ = 0.005` est quatre ordres de grandeur au-delà.
+
+Deux précautions dans le script. Il ne **déplace** personne (retirer un germe confondu avec son voisin
+ne change aucune cellule visible, le déplacer changerait le problème). Et sur un fichier `_equal`, qui
+**porte la solution** et sert de témoin indépendant au banc, il **annule les poids** en le disant :
+retirer un germe change le problème, donc les poids stockés ne le résolvent plus, et un témoin faux
+est pire que pas de témoin (le banc ignore de lui-même un `W` nul).
+
+Les fichiers propres sont écrits à côté (`*_propre.txt`), pas en place : remplacer
+`lines5_n100000_s0.005_*` changerait les chiffres de référence du banc — c'est le « plancher du cas à
+2.35e-6 » qui disparaît, et il est cité aux § 3, 8.7.3, 10.1, 21.7, 22.3 et 23.3. C'est une bascule à
+faire d'un coup, avec la mise à jour de ces sections.
+
+## 23.6 Ce qu'il faudra faire : FUSIONNER les germes confondus, pas les retirer
+
+Retirer marche pour un nuage de test, et c'est faux en général : **la masse du germe retiré
+disparaît**. Avec `ν = 1/n` uniforme c'est bénin (chaque cible passe de 1/100 000 à 1/99 944), mais
+dès que `ν` est une donnée — une mesure à transporter — supprimer un point n'est pas permis.
+
+La bonne opération est la **fusion** :
+
+1. une grappe de germes à moins de `δ` devient **UN** germe, placé au barycentre pondéré par `ν`
+   (celui qui minimise le second moment), de cible `ν = Σ ν_i` ;
+2. on résout le problème réduit, où plus aucune arête ne porte un `c_ij` aberrant ;
+3. on **redivise** la cellule obtenue entre les membres de la grappe, avec leurs masses prescrites.
+
+Ce qui rend l'étape 3 presque gratuite, et c'est le point : **pour des germes exactement confondus, le
+découpage est arbitraire.** Le coût `∫|x − p_i|²` est le même quel que soit le membre auquel on
+attribue un morceau, puisqu'ils sont au même point — donc *n'importe quelle* partition de la cellule
+aux bonnes masses est optimale, et il n'y a rien à résoudre. Pour des germes à distance `δ`, l'écart
+de coût entre deux attributions est `O(δ · diam)` : le découpage optimal est le diagramme de puissance
+LOCAL de la grappe restreint à la cellule fusionnée — deux ou trois germes, donc un problème minuscule
+et exact — et les poids qu'il demande sont `O(δ · diam)`, une perturbation.
+
+Côté code c'est un **enrobage** de `Newton`, pas une modification : construire la liste de germes
+fusionnée plus la table de correspondance, résoudre, puis découper chaque cellule fusionnée localement.
+Le moteur ne voit jamais la dégénérescence, donc le laplacien ne porte jamais de poids à 1e4 — la
+réparation du § 23.3 devient structurelle au lieu d'être un prétraitement de fichier. Et ça donne au
+passage la bonne réponse à une question qui se posera de toute façon sur des données réelles, où l'on
+ne peut pas jeter des points.
+
+À mesurer quand ce sera écrit : que le `w` de la solution fusionnée-puis-découpée coïncide avec celui
+du problème complet là où le problème complet est soluble, et que `σ = 0.005` converge sans rien
+perdre — ce qui, contrairement à la déduplication, vaudra pour n'importe quel `ν`.
