@@ -71,3 +71,6 @@ sdot/catalogue/*
 
 # errand : depot a part (git init dans errand/)
 errand/
+
+# loom : depot a part (git init dans loom/, historique repris par `git subtree split`)
+loom/
