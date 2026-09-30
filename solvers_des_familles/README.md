@@ -6129,7 +6129,15 @@ mérite est hors d'atteinte, et c'est la contrainte qui fixe le pas.
 **Et `log2` non centré ne change rien** : même forme, même seuil, même absence de minimum intérieur. Le
 centrage n'était pas la cause.
 
-### Près de la solution (itération 10) : un minimum intérieur net, contrainte inactive
+### Près de la solution (itération 10, BASCULE COUPÉE) : un minimum intérieur net, contrainte inactive
+
+> **LA CONDITION SANS LAQUELLE CE PROFIL NE VEUT RIEN DIRE** — elle manquait ici, et c'est une objection
+> de l'utilisateur qui l'a fait apparaître. Sous le réglage **par défaut**, la bascule tombe à
+> l'itération 9 (`max|a−ν|/ν = 9.1e-01 ≤ 2`) : à partir de là `res_cur = LIN`, la branche `MERITE` est
+> court-circuitée (`res_cur != LIN`), et le mérite `log` **n'est plus le juge de rien** — `--profil`
+> l'imprime en spectateur. Le profil ci-dessous n'est donc valable que parce qu'il a été pris
+> `--bascule-residu 0 --g-ecrete 0`, c'est-à-dire en `log` pur jusqu'à la convergence. **C'est un énoncé
+> sur le `log` pur, pas sur l'algorithme par défaut.**
 
 | `t` | 4.0 | 2.56 | 1.64 | 1.31 | **1.049** | 0.839 | 0.671 | … | 0.058 |
 |---|---|---|---|---|---|---|---|---|---|
@@ -6142,6 +6150,33 @@ l'aire minimale restant à 7.6e-06 contre un plancher `eps ~ 4e-10`. La contrain
 inactive, et le mérite choisit `t ≈ 1` tout seul. `log` et `log2` y coïncident à sept chiffres, parce que
 `moyenne(log x) → 0` près de la solution : c'est pourquoi le centrage ne pouvait rien changer.
 
+### Et sous le DÉFAUT, la bascule sépare exactement les deux régimes
+
+La conséquence de la note ci-dessus est mesurable. Sous le défaut, la dernière itération où le mérite
+`log` juge quelque chose est la **8** (`max|a−ν|/ν = 7.5`), et son profil fin y est celui du régime
+contraint, pas celui du régime libre :
+
+| `t` | 1.000 | 0.800 | **0.640** | 0.512 | 0.410 | … | 0.055 |
+|---|---|---|---|---|---|---|---|
+| mérite `log` (écrêté) | 570.9 | 183.6 | **42.36** | 53.26 | 65.01 | ↗ | 105.2 |
+| cellules vides | 929 | 85 | **0** | 0 | 0 | | 0 |
+
+Le minimum admissible est au **dernier barreau sans cellule vide** : `t = 0.64`, le bord. (Les 570.9 et
+183.6 ne sont finis que par l'écrêtage `g_ecrete = 1e-8` ; non écrêtés ce sont des `inf`, et la colonne
+« vides » dit pourquoi.)
+
+**Donc dans l'algorithme par défaut le mérite `log` ne gouverne QUE le régime contraint**, et le régime
+libre est remis à `lin`, qui y prend `t = 1` — ce que le profil en `log` pur dit être précisément
+l'optimum. Les deux régimes ne sont pas seulement « tôt » et « tard » : ils sont **de part et d'autre de
+la bascule**.
+
+Et ça donne au seuil `R` un sens qu'il n'avait pas. La contrainte cesse d'être active quand
+`max|a−ν|/ν` tombe à O(1) — exactement là où `R = 2` déclenche. Le seuil n'est pas une constante
+ajustée : il **marque la transition de régime**, ce qui explique le plateau du balayage du § 21.7 (`R` de
+0.5 à 50 : 19–20 diagrammes ; `R = 1e9`, donc bascule immédiate : 30 ; `R = 0`, jamais : 20). Sur le
+nuage propre et l'échelle dyadique, bascule et `log` pur font d'ailleurs le même compte (39 diagrammes
+chacun) : ce que la bascule achète est ailleurs (les nuages dégénérés, et `essai-limites`).
+
 ### Ce que ça explique enfin, sans invoquer la chance
 
 Les deux régimes sont le tableau classique — **contraint tôt, libre tard** — et ils expliquent d'un coup
@@ -6150,8 +6185,8 @@ tous les échecs de recherche linéaire mesurés plus haut :
 * **tôt**, la contrainte est active : le pas optimal est **au bord**, donc il faut *calculer le bord*
   (`α*`, par cellule, pour moins qu'un diagramme) et non chercher un minimum qui n'est pas là. C'est
   pourquoi `merite, départ α*` fait 13 diagrammes et l'échelle dyadique 48 (§ 24.9) ;
-* **tard**, la contrainte est inactive et le minimum est à `t ≈ 1` : Newton le prend déjà. Il n'y a rien
-  à chercher non plus.
+* **tard**, la contrainte est inactive et le minimum est à `t ≈ 1` : Newton le prend déjà — et sous le
+  défaut c'est `lin` qui le prend, la bascule ayant déjà eu lieu. Il n'y a rien à chercher non plus.
 
 **Dans aucun des deux régimes une recherche linéaire n'a de quoi gagner** — dans le premier parce que
 l'optimum est sur la frontière, dans le second parce qu'il est en `t = 1`. C'est la vraie raison, et elle
