@@ -672,6 +672,7 @@ int main( int argc, char **argv ) {
         else if ( s == "--agglo" )      o.newton.agglo = std::atof( val() );
         else if ( s == "--mod-frac" )   o.newton.mod_frac = std::atoi( val() );
         else if ( s == "--mer-patience" ) o.newton.mer_patience = std::atoi( val() );
+        else if ( s == "--mer-raffine" ) o.newton.mer_raffine = std::atoi( val() );
         else if ( s == "--sans-plancher-aire" ) o.newton.plancher_aire = false;
         else if ( s == "--g-ecrete" )   o.newton.g_ecrete = std::atof( val() );
         else {
@@ -744,6 +745,7 @@ int main( int argc, char **argv ) {
                 "                  de Delaunay du diagramme de Voronoi : aucune structure de plus ), puis sortir\n"
                 "  --mod-frac N    modele : combien de fractions de alpha* on essaye ( 1 = aucune recherche de relaxation )  (1)\n"
                 "  --mer-patience K   merite : barreaux qu.on laisse remonter avant de s.arreter        (1)\n"
+                "  --mer-raffine K    merite : evaluations de SECTION DOREE apres l.argmin dyadique ( 0 : aucune )  (0)\n"
                 "  --sans-plancher-aire   ETEINDRE le plancher d.aire de l.amortissement ( le merite log le penalise deja )\n"
                 "  --g-ecrete X    l.ecretage de g dans le MERITE ( 0 : aucun, une cellule vide coute +infini )  (1e-8)\n"
                 "  --diag-lap      tracer ce qui rend L dure : etalement de la diagonale, des poids d'aretes, et l'ANISOTROPIE par ligne\n"

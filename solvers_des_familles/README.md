@@ -5980,3 +5980,48 @@ dès qu'on prend le bon mérite et qu'on ne l'écrête pas.
 
 Les défauts ne changent pas : `plancher_aire = true` et `g_ecrete = 1e-8`. Ce qui change est qu'on sait
 maintenant **pourquoi** le plancher est là — il couvre la phase `lin`, et rien d'autre.
+
+## 24.8 Et si on minimisait VRAIMENT ? Le pas hors de la grille dyadique (`--mer-raffine`)
+
+Objection juste : les pas affichés tombent toujours sur `1, ½, ¼, ⅛ …` parce que **l'échelle est
+dyadique**. `--pas merite` prend donc l'argmin *sur les barreaux*, pas le vrai minimum — une grille de
+facteur deux, et rien ne dit que le minimum tombe dessus. `--mer-raffine K` ajoute `K` évaluations de
+section dorée sur `[ t*/2, min(t₀, 2t*) ]`, où le profil est unimodal.
+
+Les pas deviennent effectivement non dyadiques — lignes `σ = 0.005`, `raffine 8` : `0.117`, `0.136`,
+`0.144`, `0.119`, `0.154`, `0.303`, `0.569`, `0.641`, … Donc l'objection porte. Mais :
+
+| diagrammes | `raffine 0` | 2 | 4 | 8 |
+|---|---|---|---|---|
+| 2D uniforme | **7** | 19 | 31 | 46 |
+| 2D lignes `σ=0.005` | **13** | 40 | 66 | 145 |
+| 2D lignes dégénéré | **49** | 102 | 130 | 230 |
+| 3D plans | **21** | 47 | 68 | 110 |
+
+**Raffiner coûte `K` diagrammes par itération et ne rachète rien** — le compte d'itérations ne bouge
+presque pas (12 → 13 → 13 → 16 sur les lignes), donc c'est une perte sèche. Deux raisons, et la seconde
+est la vraie.
+
+**La première est banale :** au voisinage d'un minimum la fonction est quadratique, donc gagner sur la
+position du minimum ne gagne presque rien sur sa valeur. Le barreau dyadique est déjà « assez bon ».
+
+**La seconde se lit dans la trace, et elle est plus intéressante.** Avec `raffine 8`, le mérite continue
+de descendre proprement (`1.969e-04 → 1.694e-04 → 1.364e-04 → 5.682e-05`) pendant que le **vrai**
+critère REMONTE : `max|a−ν|/ν` passe de `0.976` à `1.897`, `2.114`, `2.467` sur quatre itérations. Ces
+itérations sont **après la bascule**, donc le mérite minimisé est le mérite `lin` — et le § 21.1 avait
+établi que celui-là est un mauvais juge (son minimum le long de la direction est là où 50 030 cellules
+sont vides). Le minimiser *finement* revient donc à **sur-ajuster un mauvais objectif**.
+
+Autrement dit : **la grossièreté de l'échelle dyadique nous protégeait.** Satisfaire approximativement
+un mérite qui n'est qu'un substitut vaut mieux que le minimiser exactement. C'est le même enseignement
+qu'au § 22.4, où choisir le mélange sur le mérite `l²` faisait pire qu'une direction pure.
+
+Sur la précision numérique, qui était l'autre moitié de la question : les aires sont des aires de
+polygone **exactes** (les sommets sont résolus depuis leurs plans, § 19.11), donc `log(a/ν)` est calculé
+à ~1e-16 près sauf sur les cellules quasi dégénérées. L'imprécision n'est pas numérique — c'est
+l'objectif qui n'est pas le bon.
+
+Le défaut reste donc `mer_raffine = 0`. Ce qu'il faudrait pour que la question se repose utilement :
+minimiser `max|a−ν|/ν` lui-même le long du pas, et non le mérite — ce qui demande de l'évaluer sans
+diagramme, donc le modèle polynomial du § 22. C'est exactement ce que `--pas modele` fait pour la
+*direction*, et il atteint les mêmes 13 diagrammes.

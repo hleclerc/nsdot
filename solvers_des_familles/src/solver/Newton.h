@@ -91,6 +91,14 @@ struct NewtonOptions {
     /// MERITE : combien de barreaux de l'echelle on accepte de voir REMONTER avant de s'arreter ( le
     /// profil est unimodal, donc 1 suffit ).
     int  mer_patience = 1;
+    /// MERITE : evaluations de RAFFINEMENT du pas apres l'argmin dyadique ( `0` : aucun ).
+    ///
+    /// L'echelle est dyadique, donc l'argmin trouve est le meilleur BARREAU, pas le vrai minimum : la
+    /// grille est d'un facteur 2, ce qui est grossier, et rien ne dit que le minimum tombe dessus. On
+    /// raffine par SECTION DOREE sur `[ tb / 2, min( t0, 2 tb ) ]`, ou le profil est unimodal. Chaque
+    /// evaluation coute un diagramme -- c'est ce que le modele polynomial du § 22 saurait rendre
+    /// gratuit, et c'est la raison d'etre de cette mesure : savoir si ca vaut la peine.
+    int  mer_raffine = 0;
     /// le PLANCHER D'AIRE de l'amortissement. L'eteindre est exactement l'experience que `log` invite a
     /// faire : son merite penalise deja les cellules vides ( mesure, § 21.2 : 643 pour 1061 vides, 334
     /// pour 59, 322 pour 2 ), donc le plancher est peut-etre redondant avec lui.
@@ -1660,6 +1668,32 @@ struct Newton {
                         wb = w2; ab = a2; fab = fa2;         // le meilleur, a garder
                     } else if ( best < INFINI && ++monte >= o.mer_patience )
                         break;
+                }
+                // ---- LE RAFFINEMENT : section doree autour du meilleur barreau
+                if ( o.mer_raffine > 0 && tb > 0 ) {
+                    const TF phi = TF( 0.6180339887498949 );
+                    TF lo = tb / 2, hi = std::min( o.t0, 2 * tb );
+                    auto evalue = [ & ]( TF tp ) {          // rend le merite, et garde le meilleur
+                        for ( SI i = 0; i < n; ++i ) w2[ i ] = w[ i ] + tp * d[ i ];
+                        w2[ 0 ] = 0;
+                        mesures_et_facettes( w2, a2, fa2, pda2 );
+                        ++essais;
+                        TF m2 = INFINI;
+                        for ( SI i = 0; i < n; ++i )
+                            if ( protegee[ i ] && a2[ i ] < m2 ) m2 = a2[ i ];
+                        const TF v = merite( a2 );
+                        if ( ( ! plancher_actif() || m2 >= eps ) && v < best ) {
+                            best = v; tb = tp;
+                            wb = w2; ab = a2; fab = fa2;
+                        }
+                        return ( ! plancher_actif() || m2 >= eps ) ? v : INFINI;
+                    };
+                    TF x1 = hi - phi * ( hi - lo ), x2 = lo + phi * ( hi - lo );
+                    TF f1 = evalue( x1 ), f2 = evalue( x2 );
+                    for ( int k = 2; k < o.mer_raffine; ++k ) {
+                        if ( f1 < f2 ) { hi = x2; x2 = x1; f2 = f1; x1 = hi - phi * ( hi - lo ); f1 = evalue( x1 ); }
+                        else           { lo = x1; x1 = x2; f1 = f2; x2 = lo + phi * ( hi - lo ); f2 = evalue( x2 ); }
+                    }
                 }
                 st.nb_recul += essais - 1;                  // tout barreau essaye sauf un est un recul
                 if ( tb > 0 && best < nr ) {
