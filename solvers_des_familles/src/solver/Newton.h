@@ -197,6 +197,16 @@ struct NewtonOptions {
     /// vers la direction de l'arrivee, pas s'en eloigner. La moitie negative ne coute que des
     /// diagrammes.
     bool g2_bpos    = false;
+    /// GRILLE2 : EVALUER LA GRILLE PAR LE MODELE POLYNOMIAL au lieu de diagrammes ( 2D ).
+    ///
+    /// A connectivite fixe l'aire de chaque cellule est un polynome EXACT du deplacement ( § 22 ) :
+    /// `A_i( t ) = c0 + g . t + sum q_kl t_k t_l` sur le span, avec un RAYON sous lequel l'exactitude
+    /// est prouvee. Explorer `( alpha, beta )` ne coute alors plus rien -- ni diagramme, ni cellule --
+    /// donc la grille peut etre aussi fine qu'on veut, et une DESCENTE DE GRADIENT devient possible
+    /// ( `PolyMulti::gradient` ). Le seul cout est la construction, un diagramme par iteration.
+    bool g2_modele  = false;
+    int  g2_desc    = 0;       ///< GRILLE2 MODELE : evaluations de DESCENTE DE GRADIENT ( 0 : aucune )
+    bool g2_verif   = true;    ///< GRILLE2 MODELE : verifier l'argmin du modele par un vrai diagramme
     bool g2_trace   = true;    ///< GRILLE2 : imprimer la matrice des merites
     int  pas        = ESSAIS;  ///< comment choisir `t` ( voir en tete )
     TF   facteur    = 0.9;     ///< `t = facteur * alpha*` en mode FACTEUR
@@ -536,6 +546,7 @@ struct Newton {
         std::vector<LimiteCellule> lim;
         std::vector<TF> ucel, u2, b2, d2, sflux, dgard, del;  // la passe CIBLE
         std::vector<char> touche, dumm;
+        std::vector<PolyMulti> pm2;                  // GRILLE2 MODELE : le polynome par cellule
         std::vector<TF> d_pre, bson, as_;            // GRILLE2 : la SECONDE DIRECTION, son second membre
         std::vector<Facette> fas_;                   // ... et les mesures du point de SONDE
         Laplacien Lson;                              // GRILLE2 SONDE : le laplacien au point de sonde
@@ -1771,6 +1782,11 @@ struct Newton {
                     if ( al < o.t_min ) break;
                     mat0[ ia ] = evalue( al, 0 );
                     if ( al_s == 0 && mat0[ ia ] < INFINI ) { al_s = al; as_ = a2; fas_ = fa2; }
+                    // AVEC LE MODELE, LE RESTE DE LA COLONNE EST GRATUIT : on s'arrete au premier
+                    // point admissible, qui est tout ce dont la sonde a besoin. Descendre l'echelle
+                    // entiere en diagrammes coutait `g2_na - 1` diagrammes par iteration pour rien
+                    // ( mesure : 54 diagrammes au lieu de 24 sur 2D lignes s0.005 ).
+                    if ( o.g2_modele && al_s > 0 ) break;
                 }
 
                 // ---- 2. LA SECONDE DIRECTION
@@ -1792,6 +1808,127 @@ struct Newton {
                 }
                 const bool avec = SI( d_pre.size() ) == n;
 
+                // ---- 3bis. LE MODELE POLYNOMIAL EXACT SUR LE SPAN `{ d, e }` ( `--g2-modele` )
+                //
+                // A connectivite fixe, `A_i` est un POLYNOME exact du deplacement, avec un rayon sous
+                // lequel l'exactitude est PROUVEE ( § 22 ). Explorer `( alpha, beta )` ne coute alors
+                // plus rien : la grille peut etre fine, et le gradient donne une vraie descente. Le
+                // seul cout est la construction ( un diagramme, compte comme tel ).
+                bool fait_mod = false;
+                if ( o.g2_modele && avec ) {
+                    if constexpr ( PD::dim == 2 ) {
+                        double tm0 = now();
+                        pd.set_weights( w.data(), par );  // la descente a bouge les poids du diagramme
+                        st.t_maj += now() - tm0;
+                        ++st.nb_diag;
+                        const TF *dp[ 2 ] = { d.data(), d_pre.data() };
+                        tm0 = now();
+                        polynomes_multi( pd, P, w, dp, 2, par, pm2 );
+                        const double t_mod = now() - tm0;
+                        SI sans = 0;
+                        TF rmin = INFINI;
+                        for ( SI i = 0; i < n; ++i ) {
+                            if ( pm2[ i ].etat != PolyCellule::OK ) ++sans;
+                            else rmin = std::min( rmin, pm2[ i ].rayon );
+                        }
+                        // le merite `log2` du modele, son aire minimale, et ce qui sort du rayon
+                        auto mod = [ & ]( TF t1, TF t2, TF *pmin, SI *pdeh ) {
+                            const TF tk[ 2 ] = { t1, t2 };
+                            const TF tinf = std::max( std::fabs( t1 ), std::fabs( t2 ) );
+                            TF s2 = 0, mn = INFINI;
+                            SI deh = 0;
+                            for ( SI i = 0; i < n; ++i ) {
+                                const PolyMulti &q = pm2[ i ];
+                                if ( q.etat != PolyCellule::OK ) continue;
+                                if ( q.rayon < tinf ) ++deh;
+                                const TF A = q( tk, 2 );
+                                if ( protegee[ i ] && A < mn ) mn = A;
+                                if ( ! ( A > 0 ) ) { s2 = INFINI; break; }
+                                const TF gg = std::log( A / nu[ i ] );
+                                s2 += gg * gg;
+                            }
+                            if ( pmin ) *pmin = mn;
+                            if ( pdeh ) *pdeh = deh;
+                            return s2 == INFINI ? INFINI : std::sqrt( s2 );
+                        };
+                        // ---- LA GRILLE FINE, gratuite
+                        TF mb = INFINI, t1b = 0, t2b = 0;
+                        const int NA = std::max( o.g2_na, 1 ), NB = std::max( o.g2_nb, 1 );
+                        for ( int ia = 0; ia < NA; ++ia ) {
+                            const TF al = t / TF( SI( 1 ) << ia );
+                            if ( al < o.t_min ) break;
+                            for ( int ib = 0; ib < NB; ++ib ) {
+                                const TF be = o.g2_bpos ? o.g2_bmax * ib / TF( std::max( NB - 1, 1 ) )
+                                                        : o.g2_bmax * ( 2 * ib - ( NB - 1 ) ) / TF( std::max( NB - 1, 1 ) );
+                                TF mn;
+                                const TF v = mod( al, al * be, &mn, nullptr );
+                                if ( v < mb && ( ! plancher_actif() || mn >= eps ) ) { mb = v; t1b = al; t2b = al * be; }
+                            }
+                        }
+                        const TF m_grille = mb;
+                        // ---- LA DESCENTE DE GRADIENT sur le modele, depuis l'argmin de la grille
+                        int nd_ok = 0;
+                        if ( o.g2_desc > 0 && mb < INFINI ) {
+                            TF t1 = t1b, t2 = t2b, h = std::fabs( t1b ) / 4;
+                            for ( int k = 0; k < o.g2_desc && h > TF( 1e-12 ); ++k ) {
+                                TF gr[ 2 ] = { 0, 0 };
+                                const TF tk[ 2 ] = { t1, t2 };
+                                for ( SI i = 0; i < n; ++i ) {  // d( sum g^2 ) / dt = 2 sum g / A dA/dt
+                                    const PolyMulti &q = pm2[ i ];
+                                    if ( q.etat != PolyCellule::OK ) continue;
+                                    const TF A = q( tk, 2 );
+                                    if ( ! ( A > 0 ) ) continue;
+                                    TF da[ 2 ];
+                                    q.gradient( tk, 2, da );
+                                    const TF c = 2 * std::log( A / nu[ i ] ) / A;
+                                    gr[ 0 ] += c * da[ 0 ]; gr[ 1 ] += c * da[ 1 ];
+                                }
+                                const TF ng = std::max( std::fabs( gr[ 0 ] ), std::fabs( gr[ 1 ] ) );
+                                if ( ! ( ng > 0 ) ) break;
+                                const TF n1 = t1 - h * gr[ 0 ] / ng, n2 = t2 - h * gr[ 1 ] / ng;
+                                TF mn;
+                                const TF v = mod( n1, n2, &mn, nullptr );
+                                if ( v < mb && ( ! plancher_actif() || mn >= eps ) ) {
+                                    mb = v; t1 = n1; t2 = n2; t1b = n1; t2b = n2; ++nd_ok;
+                                } else
+                                    h /= 2;
+                            }
+                        }
+                        // ---- LA VERIFICATION : UN seul vrai diagramme a l'argmin du modele
+                        TF v_reel = INFINI;
+                        if ( mb < INFINI ) {
+                            for ( SI i = 0; i < n; ++i ) w2[ i ] = w[ i ] + t1b * d[ i ] + t2b * d_pre[ i ];
+                            w2[ 0 ] = 0;
+                            mesures_et_facettes( w2, a2, fa2, pda2 );
+                            ++essais;
+                            TF m2 = INFINI;
+                            for ( SI i = 0; i < n; ++i )
+                                if ( protegee[ i ] && a2[ i ] < m2 ) m2 = a2[ i ];
+                            v_reel = merite( a2 );
+                            if ( ( ! plancher_actif() || m2 >= eps ) && v_reel < best ) {
+                                best = v_reel; al_b = t1b; be_b = t1b != 0 ? t2b / t1b : TF( 0 );
+                                wb = w2; ab = a2; fab = fa2;
+                            }
+                        }
+                        if ( o.trace && o.g2_trace ) {
+                            TF mn; SI deh;
+                            mod( t1b, t2b, &mn, &deh );
+                            std::printf( "      MODELE sur { d, e } : bati en %.3f s, %d cellules sans modele,"
+                                         " rayon min %.3e\n        grille %d x %d : merite modele %.6e"
+                                         " -> descente ( %d pas retenus ) %.6e\n        argmin t = ( %.4g, %.4g )"
+                                         " soit alpha %.4g beta %.4g | aire min modele %.3e | %d cellules HORS rayon"
+                                         " | merite REEL %.6e ( ecart %.2f %% )\n",
+                                         t_mod, int( sans ), double( rmin ), NA, NB, double( m_grille ),
+                                         nd_ok, double( mb ), double( t1b ), double( t2b ), double( t1b ),
+                                         double( t1b != 0 ? t2b / t1b : TF( 0 ) ), double( mn ), int( deh ),
+                                         double( v_reel ),
+                                         double( v_reel < INFINI && mb > 0 ? 100 * ( v_reel - mb ) / mb : TF( 0 ) ) );
+                            std::fflush( stdout );
+                        }
+                        fait_mod = true;
+                    }
+                }
+
                 // ---- 3. LE BALAYAGE EN `beta`, aux memes `alpha`
                 std::vector<TF> bs;
                 if ( avec && o.g2_nb > 1 ) {
@@ -1801,14 +1938,14 @@ struct Newton {
                     bs.push_back( 0 );
                 const int nb = int( bs.size() );
                 std::vector<TF> mat( size_t( o.g2_na ) * nb, INFINI );
-                for ( int ia = 0; ia < o.g2_na; ++ia ) {
+                for ( int ia = 0; ia < o.g2_na && ! fait_mod; ++ia ) {
                     const TF al = t / TF( SI( 1 ) << ia );
                     if ( al < o.t_min ) break;
                     for ( int ib = 0; ib < nb; ++ib )
                         mat[ size_t( ia ) * nb + ib ] = bs[ ib ] == 0 ? mat0[ ia ] : evalue( al, bs[ ib ] );
                 }
 
-                if ( o.trace && o.g2_trace ) {
+                if ( o.trace && o.g2_trace && ! fait_mod ) {
                     // LE COSINUS DIT SI LA GRILLE A DE LA RESOLUTION. Si la seconde direction est
                     // colineaire a `d`, `beta` ne fait que rehausser `alpha` : le plan est un rayon et
                     // un argmin en `beta = 0` ne veut rien dire. A lire AVANT la matrice.

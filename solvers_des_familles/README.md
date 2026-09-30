@@ -6415,3 +6415,74 @@ Deux remarques de coût qui vont dans le même sens : le solve de la sonde est *
 suivante** quand `β = 0` gagne (même point, même laplacien, même second membre), donc son coût marginal
 n'est payé que lorsque le mélange sert ; et un `β` obtenu par le polynôme ne coûterait aucun diagramme
 du tout.
+
+## 24.14 Le modèle polynomial sur le span `{ d, d(sonde) }` : l'exploration devient gratuite
+
+Le § 24.13 avait localisé le coût : chaque point d'essai en `(α, β)` était un diagramme. Or à
+**connectivité fixe** l'aire de chaque cellule est un polynôme exact du déplacement (§ 22), donc
+l'exploration ne coûte plus rien. `--g2-modele` construit `PolyMulti` sur le span `{ d, e }` et évalue
+le mérite `log2` depuis les aires modélisées ; `--g2-desc K` ajoute une **descente de gradient** par
+`PolyMulti::gradient`. Coût total : une construction de l'ordre d'**un** diagramme — c'est
+ce que le § 22 avait mesuré, et la trace la donne au même ordre — plus **un** diagramme de vérification
+à l'argmin. Elle est comptée comme un diagramme dans les chiffres ci-dessous ; la comparaison en temps
+de paroi demande un `job -b` et n'est pas encore faite.
+
+Deux détails qui font toute la différence sur le coût :
+
+* la colonne `β = 0` s'arrête au **premier point admissible** — c'est tout ce dont la sonde a besoin, le
+  reste de l'échelle étant donné par le modèle. Descendre l'échelle entière en diagrammes coûtait
+  `g2_na − 1` diagrammes par itération pour rien : **54 diagrammes au lieu de 24** sur 2D lignes s0.005 ;
+* la vérification est unique : on ne paie pas la grille, on paie le point retenu.
+
+### Les chiffres ( `--residu log` partout, itérations / diagrammes )
+
+| variante | 2D uniforme | 2D lignes s0.02 | 2D lignes s0.005 | 2D aires égales (dég.) |
+|---|---|---|---|---|
+| référence ( limites + log ) | 6 it / **7** | 9 it / **13** | 12 it / **19** | 13 it / **53** |
+| grille par DIAGRAMMES ( § 24.13 ) | 6 it / 15 | 9 it / 50 | 11 it / 68 | 12 it / 102 |
+| **modèle 6 × 21 + descente** | **5** it / 8 | 9 it / 20 | **11** it / 24 | **12** it / 58 |
+| modèle, sans descente | 6 it / 9 | 9 it / 20 | 11 it / 26 | 12 it / 60 |
+| modèle 6 × **81** + descente 40 | 5 it / 8 | 9 it / 20 | 11 it / 24 | 12 it / 58 |
+| modèle, `β ≤ 2` | 5 it / 8 | 9 it / 20 | 11 it / 26 | 13 it / 61 |
+
+Trois lectures, dont une négative importante :
+
+1. **le modèle remplace la grille de diagrammes à −65 %** (24 contre 68 sur le cas dur, 8 contre 15 sur
+   l'uniforme) pour le même nombre d'itérations, et il gagne une itération sur trois cas des quatre —
+   l'uniforme 2D descend à **5 itérations**, le meilleur compte jamais mesuré sur ce cas ;
+2. **la descente de gradient sert** : elle vaut une itération sur l'uniforme (5 au lieu de 6) et −8 % de
+   diagrammes sur le cas dur (24 au lieu de 26). Elle sort des lignes de la grille, ce qu'un raffinement
+   ne fait pas ;
+3. **raffiner la grille ne sert à RIEN** : 21 → 81 valeurs de `β` donne des résultats *identiques* sur
+   les quatre cas, et élargir à `β ≤ 2` ne gagne rien non plus. Donc ce qui reste n'est **pas** un
+   problème de résolution de la recherche.
+
+### Ce qui limite, et c'est le § 22 qui l'avait déjà dit
+
+La trace donne la mesure : `rayon min` vaut **1.3e-07 à 1.6e-05** alors que les pas retenus sont de
+**0.1 à 0.5**, et **91 701 cellules sur 99 944** sont hors de leur rayon au point évalué. L'écart du
+mérite modélisé au mérite réel suit :
+
+| itération | 0 | 1 | 2 | 3 | 4 | 5 |
+|---|---|---|---|---|---|---|
+| mérite modèle | 616.5 | 357.6 | 265.6 | 212.6 | 147.4 | 76.5 |
+| mérite réel | 310.5 | 252.4 | 219.8 | 191.0 | 141.9 | 75.8 |
+| écart | **−50 %** | −29 % | −17 % | −10 % | −3.7 % | **−0.9 %** |
+
+Ce n'est pas une surprise et ça ne contredit pas le § 22, qui avait mesuré les deux faits qui
+expliquent tout : `rayon` est **très pessimiste** (à `‖t‖∞ = 6e-2` il ne certifie que 27 % des cellules
+alors que l'erreur médiane est au niveau machine), et le modèle est **conservateur sur le critère** —
+quand la combinatoire d'une cellule casse, son aire prédite part n'importe où et le mérite prédit
+**explose**. C'est exactement ce qu'on lit ici : le modèle annonce toujours **plus** que la vérité, donc
+la recherche fuit d'elle-même les régions où il ne vaut rien, et l'argmin qu'elle rend reste bon. Le
+modèle **classe** bien avant de **chiffrer** juste.
+
+Et il devient juste là où on en aurait le moins besoin : à 0.9 % près à l'itération 5, juste avant la
+bascule. Sa zone de validité est la **fin** de la phase `log`, pas le début.
+
+### Portée : 2D seulement
+
+`polynomes_multi` porte un `static_assert( PD::dim == 2 )`. Le gain le plus net du § 24.13 — **deux
+itérations sur neuf en 3D** — n'est donc **pas** récupérable par cette voie en l'état : il faudrait
+écrire le polynôme multi-directions du volume d'une cellule 3D. C'est la limite à connaître avant de
+choisir ce qu'on garde.
