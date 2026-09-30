@@ -99,6 +99,13 @@ struct NewtonOptions {
     /// evaluation coute un diagramme -- c'est ce que le modele polynomial du § 22 saurait rendre
     /// gratuit, et c'est la raison d'etre de cette mesure : savoir si ca vaut la peine.
     int  mer_raffine = 0;
+    /// MERITE : partir du pas des LIMITES EXACTES ( `facteur * alpha*` ) au lieu de `t0`.
+    ///
+    /// C'est ce que le mode faisait depuis le debut sans que ce soit dit : la passe des limites tourne
+    /// pour tout `pas != essais`, donc le premier barreau de l'echelle etait deja `facteur * alpha*` et
+    /// non `1`. D'ou des pas comme `0.107` ou `0.123` la ou j'annoncais une echelle dyadique. Les deux
+    /// variantes sont maintenant separees et mesurees.
+    bool mer_limites = true;
     /// le PLANCHER D'AIRE de l'amortissement. L'eteindre est exactement l'experience que `log` invite a
     /// faire : son merite penalise deja les cellules vides ( mesure, § 21.2 : 643 pour 1061 vides, 334
     /// pour 59, 322 pour 2 ), donc le plancher est peut-etre redondant avec lui.
@@ -1358,7 +1365,8 @@ struct Newton {
             }
 
             if ( o.pas != NewtonOptions::ESSAIS && o.pas != NewtonOptions::ESSAI_LIMITES
-                 && ( o.pas != NewtonOptions::MODELE || o.mod_limites ) ) {
+                 && ( o.pas != NewtonOptions::MODELE || o.mod_limites )
+                 && ( o.pas != NewtonOptions::MERITE || o.mer_limites ) ) {
                 if constexpr ( PD::dim == 2 ) {
                     t0 = now();
                     OptionsLimites ol = o.lim;
@@ -1640,7 +1648,12 @@ struct Newton {
             // direction, et qu'a l'iteration 0 le plancher d'aire refuse le pas ou il se trouve. Ici on
             // descend l'echelle jusqu'a ce que le merite remonte, et on prend l'argmin -- ce qui coute
             // en general LE MEME nombre de diagrammes, puisque KMT descendait de toute facon plus bas.
-            if ( o.pas == NewtonOptions::MERITE ) {
+            // LA MINIMISATION N'A DE SENS QUE PENDANT LA PHASE `log`. Apres la bascule le merite est
+            // `lin`, et le § 21.1 a etabli que celui-la est un MAUVAIS JUGE : le minimiser -- a plus
+            // forte raison finement -- revient a sur-ajuster un substitut, et le vrai critere remonte
+            // ( mesure : `max|a-nu|/nu` de 0.976 a 2.47 en quatre iterations ). Donc dans la phase
+            // `lin` on rend la main a KMT, qui protege l'aire et se contente du premier pas acceptable.
+            if ( o.pas == NewtonOptions::MERITE && res_cur != NewtonOptions::LIN ) {
                 TF best = INFINI, tb = 0;
                 int monte = 0, essais = 0;
                 for ( TF tp = t; tp > o.t_min; tp /= 2 ) {

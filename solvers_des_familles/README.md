@@ -5921,6 +5921,12 @@ déjà bon (mesuré : 13 diagrammes au lieu de 7 sur l'uniforme 2D, pour le mêm
 touche qu'au choix du pas. C'est le même compte que `--pas modele` (13 diagrammes) sans aucune
 machinerie polynomiale, et sans les `K − 1` résolutions linéaires de plus.
 
+> **CORRECTION (§ 24.9) : ces −67 % ne viennent PAS de la minimisation.** `--pas merite` entrait aussi
+> dans la passe des limites — elle tourne pour tout `pas != essais` — donc son premier barreau était
+> `facteur · α*` et non `t₀`, ce que les pas affichés (`0.107`, `0.123`, `0.168`) disaient déjà sans que
+> je le voie. Sur une échelle **vraiment** dyadique (`--mer-sans-limites`) la minimisation fait **48
+> diagrammes, pire que les 39 de KMT**. Le gain était l'`α*` exact, pas l'argmin.
+
 **Et le plancher d'aire devient effectivement redondant — en 2D.** Les colonnes avec et sans plancher
 sont **identiques** (7 / 13 / 49) : le mérite `log` seul suffit à garder les cellules vivantes, ce qui
 était l'intuition. Mais deux réserves fermes : avec le premier-pas-acceptable, éteindre le plancher est
@@ -6012,9 +6018,12 @@ itérations sont **après la bascule**, donc le mérite minimisé est le mérite
 établi que celui-là est un mauvais juge (son minimum le long de la direction est là où 50 030 cellules
 sont vides). Le minimiser *finement* revient donc à **sur-ajuster un mauvais objectif**.
 
-Autrement dit : **la grossièreté de l'échelle dyadique nous protégeait.** Satisfaire approximativement
-un mérite qui n'est qu'un substitut vaut mieux que le minimiser exactement. C'est le même enseignement
-qu'au § 22.4, où choisir le mélange sur le mérite `l²` faisait pire qu'une direction pure.
+> **CETTE SECTION ÉTAIT MAL POSÉE, voir le § 24.9.** Le raffinement s'appliquait aussi **après la
+> bascule**, donc il minimisait le mérite `lin` — ce qui n'est pas la proposition et explique à lui seul
+> la remontée de `max|a−ν|/ν`. Corrigé (minimisation pendant la phase `log` seulement), le raffinement
+> coûte deux fois moins mais reste une perte, et pour une raison qui n'a rien à voir avec celle écrite
+> ici. La conclusion « la grossièreté nous protégeait » est retirée : c'était l'aveu de ne pas contrôler
+> ce que je mesurais, pas un résultat.
 
 Sur la précision numérique, qui était l'autre moitié de la question : les aires sont des aires de
 polygone **exactes** (les sommets sont résolus depuis leurs plans, § 19.11), donc `log(a/ν)` est calculé
@@ -6025,3 +6034,61 @@ Le défaut reste donc `mer_raffine = 0`. Ce qu'il faudrait pour que la question 
 minimiser `max|a−ν|/ν` lui-même le long du pas, et non le mérite — ce qui demande de l'évaluer sans
 diagramme, donc le modèle polynomial du § 22. C'est exactement ce que `--pas modele` fait pour la
 *direction*, et il atteint les mêmes 13 diagrammes.
+
+## 24.9 Ce que minimiser le résidu `log` donne vraiment — et pourquoi `α*` EST la réponse
+
+Deux objections justes ont défait les § 24.6 et 24.8, et la résolution est plus propre que ce que
+j'avais écrit.
+
+### Première erreur : je minimisais le mérite APRÈS la bascule
+
+La proposition était : minimiser le résidu `log` **pendant la phase `log`**, et protéger l'aire pendant
+la phase `lin`. Or `--pas merite` minimisait `merite()`, qui suit le résidu courant — donc **après la
+bascule il minimisait le mérite `lin`**, dont le § 21.1 a établi qu'il est un mauvais juge. La remontée
+de `max|a−ν|/ν` que j'attribuais à « la finesse » venait de là. Corrigé : la minimisation ne s'applique
+plus que tant que le résidu n'est pas `lin` ; après, KMT reprend avec son plancher.
+
+### Deuxième erreur : `--pas merite` n'était pas l'échelle dyadique que j'annonçais
+
+La passe des limites tourne pour tout `pas != essais`, donc le premier barreau était déjà
+`facteur · α*`. Les pas affichés le disaient (`0.107`, `0.123`, `0.168` — pas des puissances de deux) et
+je ne l'ai pas vu. `--mer-sans-limites` sépare enfin les deux. Lignes `σ = 0.005`, diagrammes :
+
+| | uniforme | lignes `σ=0.005` | dégénéré | plans 3D |
+|---|---|---|---|---|
+| KMT (`essais`) | 7 | 39 | 74 | **17** |
+| **`merite`, départ `α*`** | **7** | **13** | **47** | 21 |
+| `merite`, départ `α*`, raffiné 4 | 11 | 42 | 76 | 31 |
+| `merite`, échelle dyadique | 7 | **48** | 83 | 21 |
+| `merite`, dyadique, raffiné 4 | 11 | 70 | 108 | 31 |
+| `merite`, dyadique, raffiné 8 | 15 | 101 | 146 | 43 |
+
+**Les 13 diagrammes venaient du `α*` exact, pas de l'argmin.** Sur une vraie échelle dyadique, minimiser
+fait 48 — *pire* que KMT. Et raffiner est une perte dans les deux variantes.
+
+### Et la résolution : le minimum sur l'ENSEMBLE ADMISSIBLE est au bord
+
+Les deux points de vue se réconcilient, et c'est le profil du § 21.2 qui le dit. Le long de la
+direction, le mérite `log` **décroît de façon monotone** jusqu'au voisinage de la limite du plancher :
+son minimum libre est à `t = 0.125`, **au-delà** de ce que le plancher autorise (2 cellules vides).
+Autrement dit :
+
+> le minimum du mérite `log` **sur l'ensemble admissible** est au **bord** de cet ensemble, c'est-à-dire
+> en `α*`.
+
+Donc « minimiser le résidu `log` » et « aller jusqu'où les cellules cassent » ne sont pas deux stratégies
+concurrentes : **la seconde est la solution exacte de la première.** Chercher l'argmin par essais est
+une façon coûteuse et imprécise de trouver un bord qu'`Ecrasement.h` calcule directement, par cellule,
+pour moins qu'un diagramme. C'est pour ça que `α*` gagne, et c'est pour ça que raffiner autour de
+l'argmin ne peut rien rendre : on raffine vers un point que la contrainte interdit.
+
+Ce qui reste vrai de la proposition, et qui vaut : **le critère d'acceptation, lui, doit bien être le
+mérite `log`** — et c'est ce que fait `merite, départ α*`, qui prend `facteur · α*` et l'accepte si le
+mérite `log` décroît. 13 diagrammes contre 19 pour `essai-limites` et 39 pour KMT.
+
+### Ce que je retire
+
+La phrase du § 24.8 — « la grossièreté de l'échelle dyadique nous protégeait » — est retirée. Elle
+disait qu'un réglage arbitraire compensait une erreur d'objectif, ce qui n'est pas un résultat mais
+l'aveu de ne pas maîtriser ce qui était mesuré. La vraie raison est géométrique et se démontre : la
+contrainte est active à l'optimum, donc c'est la contrainte qu'il faut calculer.
