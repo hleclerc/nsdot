@@ -70,6 +70,7 @@ struct Opts {
     int         nb_gauss = 4;
     std::string gauss;
     TF          plancher = 0;
+    std::string germes = "aleatoire";    ///< aleatoire | regulier ( grille a peine bruitee )
     std::string diracs = "uniforme";    ///< uniforme | rho ( germes tires selon la densite )
     TF          conv0 = 0.5, conv_ratio = 2, conv_min = 0;
     std::vector<TF> liste;
@@ -89,6 +90,7 @@ struct Opts {
     // DANS l'objectif ( `a_i -> 0` donne `+inf` ), donc le minimum du merite ne peut pas affamer une
     // cellule. Il n'y a rien a interdire de l'exterieur. ( `--span-garde F > 0` ajoute quand meme un
     // plancher relatif a la base, utile seulement pour mesurer en `lin`, ou la barriere n'existe pas. )
+    int         prol_lisse = 0;          ///< passes de Jacobi amorti SUR la prolongation ( `lisse_jacobi` )
     int         span_grille = 33;        ///< span : points de la grille 1-D par coordonnee et par balayage
     TF          span_garde = 0.5;
     int         span = 0;               ///< `--span K` : minimiser le merite sur un span de 1..K directions, `L` gele
@@ -109,6 +111,26 @@ Nuage<2> nuage_selon( const Densite &rho, SI n, unsigned graine ) {
         if ( u01( rng ) * rmax <= rho.rho( x, y ) ) { nu.c[ 0 ].push_back( x ); nu.c[ 1 ].push_back( y ); }
     }
     nu.w.assign( n, TF( 0 ) );
+    nu.finish();
+    return nu;
+}
+
+/// UNE GRILLE A PEINE BRUITEE : `m x m` germes a `( i + 1/2 ) / m`, deplaces d'au plus `bruit * h`
+/// pour casser la degenerescence du reseau carre ( sommets quadruples ) sans toucher a l'ECART
+/// MINIMAL, qui est ce qui fixe `alpha*`.
+Nuage<2> nuage_regulier( SI n, unsigned graine, TF bruit = 0.05 ) {
+    Nuage<2> nu;
+    const SI m = SI( std::lround( std::sqrt( double( n ) ) ) );
+    const TF h = TF( 1 ) / TF( m );
+    nu.nom = "grille " + std::to_string( m ) + "x" + std::to_string( m );
+    std::mt19937_64 rng( graine + 101 );
+    std::uniform_real_distribution<TF> u( -bruit, bruit );
+    for ( SI i = 0; i < m; ++i )
+        for ( SI j = 0; j < m; ++j ) {
+            nu.c[ 0 ].push_back( ( TF( i ) + TF( 0.5 ) + u( rng ) ) * h );
+            nu.c[ 1 ].push_back( ( TF( j ) + TF( 0.5 ) + u( rng ) ) * h );
+        }
+    nu.w.assign( nu.c[ 0 ].size(), TF( 0 ) );
     nu.finish();
     return nu;
 }
@@ -389,6 +411,7 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu0, Lineaire &lin ) {
         else if ( o.prol == "mls" )        retombes = prolonge_mls<D>( nu0.P, pq, Pc, Lc, wc, a.par, w, o.mls_anneaux, o.mls_largeur );
         else if ( o.prol == "ctransf" )    prolonge_ctransf<D>( nu0.P, pq, Pc, Llag, wc, w );
         else { prol_ok = false; return; }
+        if ( o.prol_lisse ) lisse_jacobi( Lvor, o.prol_lisse, w );   // `Prolongation.h`
         t_prol += now() - tp;
 
         // LES QUATRE NOMBRES. Ce n'est PAS `teste_admissible` ( qui mesure du Lebesgue ) : la mesure
@@ -520,7 +543,13 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu0, Lineaire &lin ) {
             amin = std::min( amin, x );
             amax = std::max( amax, x );
         }
-        return amin > 0 && amin >= plancher_span ? nw.merite( at ) : INFINI;
+        // LE CARRE du merite : `nw.merite` rend la NORME, et le jacobien du span derive la somme des
+        // carres. Les melanger fait un facteur `2 * merite` sur le gradient -- ce qui a failli me faire
+        // conclure a un jacobien faux ( -2.565e4 contre -46.6 en differences finies, soit exactement
+        // `2 x 275` ). Le minimiseur travaille donc sur `S = merite^2`, dont l'argmin est le meme.
+        if ( ! ( amin > 0 && amin >= plancher_span ) ) return INFINI;
+        const TF m = nw.merite( at );
+        return m * m;
     };
 
     // ---- LA MINIMISATION SUR LE SPAN : des recherches 1-D cycliques. Le merite sur le span n'est pas
@@ -531,27 +560,113 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu0, Lineaire &lin ) {
     // le bord du domaine admissible, et qu'un gradient n'y mene pas. Le premier balayage couvre
     // `[ -0.5, 1.5 ]` ( `alpha_0 = 1` est dedans ), les suivants raffinent autour du meilleur point.
     // Les points non admissibles sont refuses : le blocage se fait AVANT que la cellule se vide.
-    auto minimise = [ & ]( int sweeps ) {
-        const int N = o.span_grille;
+    // ALPHA* LE LONG D'UNE DIRECTION, par bissection sur de vrais diagrammes. Ce n'est plus le
+    // parametre de la recherche ( la barriere du `log` s'en charge ) mais le DIAGNOSTIC qui decide :
+    // la mesure 1D dit que le seuil est `alpha* > 1`, en transition de phase et non en continuum
+    // ( `alpha* = 0.30` -> 53 iterations, `0.62` -> 42, `1.07` -> 10 ). On le lit AVANT tout le reste.
+    auto alpha_etoile = [ & ]( const std::vector<TF> &d, TF haut = 4 ) {
+        std::vector<TF> ww( n ), aa;
+        std::vector<Facette> ff;
+        auto ok = [ & ]( TF al ) {
+            for ( SI i = 0; i < n; ++i ) ww[ i ] = wb[ i ] + al * d[ i ];
+            nw.mesures_et_facettes( ww, aa, ff );
+            for ( SI i = 0; i < n; ++i ) if ( ! ( aa[ i ] > 0 ) ) return false;
+            return true;
+        };
+        if ( ok( haut ) ) return haut;                   // la direction ne vide rien jusqu'a `haut`
+        TF lo = 0, hi = haut;
+        for ( int it = 0; it < 40 && hi - lo > 1e-6 * std::max( hi, TF( 1e-6 ) ); ++it ) {
+            const TF mi = TF( 0.5 ) * ( lo + hi );
+            if ( ok( mi ) ) lo = mi; else hi = mi;
+        }
+        return lo;
+    };
+
+    // LE PRODUIT `L v`, pour le jacobien du span
+    auto Lfois = [ & ]( const Laplacien &L, const std::vector<TF> &v, std::vector<TF> &r ) {
+        r.assign( n, TF( 0 ) );
+        for ( SI i = 0; i < n; ++i ) {
+            TF x = L.dia[ i ] * v[ i ];
+            for ( SI e = L.row[ i ]; e < L.row[ i + 1 ]; ++e ) x -= L.c[ e ] * v[ L.col[ e ] ];
+            r[ i ] = x;
+        }
+    };
+
+    // GAUSS-NEWTON DANS L'ESPACE DES `alpha`. `log2` etant une somme de carres, le pas resout
+    // `min | r + J da |^2` avec `r_i = g( a_i / nu_i ) - moyenne` et `J_ik = ( L d_k )_i / a_i` -- c'est
+    // `da = d g / d alpha` en passant par `da = L dw`, exact a combinatoire figee. Un solve `k x k`.
+    //
+    // PAS DE `alpha*` DANS LA RECHERCHE, et c'est le point : avec le residu `log` la barriere est DANS
+    // l'objectif ( `a_i -> 0` donne `+inf` ), donc la recherche de pas recule d'elle-meme et le bord
+    // n'est jamais franchi. Le grille du debut etait mal echelonnee ( elle balayait `[ -0.5, 1.5 ]`
+    // quand `alpha*` valait 1e-3 ) et rendait `alpha_0 = 0` par artefact ; elle reste sous
+    // `--span-grille` pour comparaison.
+    auto minimise_gn = [ & ]( int itmax, int &gn_it, TF &norme_grad ) {
+        const int k = int( t.size() );
+        std::vector<TF> aa, r, col, grad( k );
+        std::vector<Facette> ff;
+        Laplacien Lc2;
+        Eigen::MatrixXd JtJ( k, k );
+        Eigen::VectorXd Jtr( k ), da( k );
         TF amin, amax;
         TF best = evalue( t, amin, amax );
-        for ( int s = 0; s < sweeps; ++s ) {
-            const TF demi = TF( 1 ) / std::pow( TF( 4 ), TF( s ) );     // 1, 1/4, 1/16 ...
-            for ( size_t k = 0; k < t.size(); ++k ) {
-                const TF c = t[ k ], lo = s == 0 ? TF( -0.5 ) : c - demi, hi = s == 0 ? TF( 1.5 ) : c + demi;
-                TF meilleur = c;
-                for ( int j = 0; j < N; ++j ) {
-                    t[ k ] = lo + ( hi - lo ) * TF( j ) / TF( N - 1 );
-                    const TF m = evalue( t, amin, amax );
-                    if ( m < best ) { best = m; meilleur = t[ k ]; }
-                }
-                t[ k ] = meilleur;
+        gn_it = 0; norme_grad = 0;
+        for ( int it = 1; it <= itmax; ++it ) {
+            // l'etat au point courant : les masses, les facettes, `L`
+            for ( SI i = 0; i < n; ++i ) {
+                TF v = wb[ i ];
+                for ( int j = 0; j < k; ++j ) v += t[ j ] * D[ j ][ i ];
+                wt[ i ] = v;
             }
+            nw.mesures_et_facettes( wt, aa, ff );
+            bool sain = true;
+            for ( SI i = 0; i < n; ++i ) if ( ! ( aa[ i ] > 0 ) ) { sain = false; break; }
+            if ( ! sain ) break;
+            Lc2.assemble( n, ff );
+            r.assign( n, TF( 0 ) );
+            TF moy = 0;
+            for ( SI i = 0; i < n; ++i ) { r[ i ] = std::log( aa[ i ] / nw.nu[ i ] ); moy += r[ i ]; }
+            moy /= TF( n );
+            for ( SI i = 0; i < n; ++i ) r[ i ] -= moy;
+            std::vector<std::vector<TF>> J( k );
+            for ( int j = 0; j < k; ++j ) {
+                Lfois( Lc2, D[ j ], col );
+                J[ j ].resize( n );
+                for ( SI i = 0; i < n; ++i ) J[ j ][ i ] = col[ i ] / aa[ i ];
+            }
+            for ( int j = 0; j < k; ++j ) {
+                TF g = 0;
+                for ( SI i = 0; i < n; ++i ) g += J[ j ][ i ] * r[ i ];
+                grad[ j ] = 2 * g;
+                Jtr( j ) = -g;
+                for ( int l = 0; l <= j; ++l ) {
+                    TF v = 0;
+                    for ( SI i = 0; i < n; ++i ) v += J[ j ][ i ] * J[ l ][ i ];
+                    JtJ( j, l ) = JtJ( l, j ) = v;
+                }
+            }
+            norme_grad = 0;
+            for ( int j = 0; j < k; ++j ) norme_grad += grad[ j ] * grad[ j ];
+            norme_grad = std::sqrt( norme_grad );
+            da = JtJ.ldlt().solve( Jtr );
+            // la recherche de pas : des moities tant que `log2` n'est pas fini ou ne descend pas
+            const std::vector<TF> t0 = t;
+            TF pas = 1, f2 = INFINI;
+            bool pris = false;
+            for ( int e = 0; e < 40; ++e, pas /= 2 ) {
+                for ( int j = 0; j < k; ++j ) t[ j ] = t0[ j ] + pas * TF( da( j ) );
+                f2 = evalue( t, amin, amax );
+                if ( f2 < best ) { pris = true; break; }
+            }
+            if ( ! pris ) { t = t0; break; }
+            gn_it = it;
+            const bool fini = std::fabs( best - f2 ) <= TF( 1e-12 ) * std::fabs( best );
+            best = f2;
+            if ( fini ) break;
         }
         return best;
     };
 
-    // ---- LA BOUCLE SUR `k`
     // LE TEMOIN, `k = 0` : Newton depuis la base elle-meme, au meme `s`, dans le meme binaire.
         {
             nw.st = NewtonStats{};
@@ -560,12 +675,43 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu0, Lineaire &lin ) {
             std::printf( "  TEMOIN k=0 ( Newton depuis la base ) : %d it, %d diag ( %d reculs ), %.2f s, reste %.2e, %s\n",
                          nw.st.nb_iter, nw.st.nb_diag, nw.st.nb_recul, now() - t0, double( nw.st.reste ), nw.st.fin );
         }
-        std::printf( "  k  |  merite         |  min a/nu   |  max a/nu  |  coef w_prol  |  actives  |  diag  ||  IT RESTANTES  |  diag ( reculs )  |  reste  |  fin\n" );
+        // LE GRADIENT CONTRE DES DIFFERENCES FINIES CENTREES. Sans ce controle, un `|grad|` enorme
+        // sans descente ne se distingue pas d'un jacobien faux -- et c'est exactement ce qu'on voit.
+        {
+            const int k = 1;
+            std::vector<TF> aa, ff_r, col;
+            std::vector<Facette> ff;
+            Laplacien Lc2;
+            nw.mesures_et_facettes( wb, aa, ff );
+            Lc2.assemble( n, ff );
+            Lfois( Lc2, D[ 0 ], col );
+            TF moy = 0;
+            std::vector<TF> r( n );
+            for ( SI i = 0; i < n; ++i ) { r[ i ] = std::log( aa[ i ] / nw.nu[ i ] ); moy += r[ i ]; }
+            moy /= TF( n );
+            TF ana = 0;
+            for ( SI i = 0; i < n; ++i ) ana += 2 * ( col[ i ] / aa[ i ] ) * ( r[ i ] - moy );
+            std::vector<TF> tt( 1 );
+            TF amin, amax;
+            const TF hh = 1e-6;
+            tt[ 0 ] = hh;  const TF fp = evalue( tt, amin, amax );
+            tt[ 0 ] = -hh; const TF fm = evalue( tt, amin, amax );
+            const TF num = ( fp - fm ) / ( 2 * hh );
+            std::printf( "  CONTROLE du gradient du span ( k = 1, en t = 0 ) : analytique %.6e,"
+                         " differences finies %.6e, ecart relatif %.2e\n",
+                         double( ana ), double( num ), double( std::fabs( ana - num ) / std::max( std::fabs( num ), TF( 1e-300 ) ) ) );
+            (void) k; (void) ff_r;
+        }
+        std::printf( "  ALPHA* le long de w_prol depuis la base = %.4e"
+                     "   ( la mesure 1D dit : le seuil est 1 )\n", double( alpha_etoile( D[ 0 ] ) ) );
+        std::printf( "  k  |  merite         |  min a/nu   |  max a/nu  |  coef w_prol  |  gn it |    |grad| |  diag  ||  IT RESTANTES  |  diag ( reculs )  |  reste  |  fin\n" );
     for ( int k = 1; k <= o.span && k <= int( PolyMulti::KMAX ); ++k ) {
         if ( int( D.size() ) < k ) break;
         t.resize( k, TF( 0 ) );
         nb_eval = 0;
-        const TF mer = minimise( 2 );
+        int gn_it = 0;
+        TF ngrad = 0;
+        const TF mer = minimise_gn( 60, gn_it, ngrad );
         // l'etat au minimum : les masses, et le rayon de validite du modele gele sur CE span
         TF amin, amax;
         evalue( t, amin, amax );
@@ -573,8 +719,7 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu0, Lineaire &lin ) {
         // LES CONTRAINTES ACTIVES : les cellules posees sur le plancher. C'est ce qui dit si « projeter
         // sur le bord » est une projection ( quelques contraintes ) ou un programme lineaire ( des
         // milliers ) -- et donc si un span de quelques directions peut suivre ce bord.
-        SI actives = 0;
-        for ( SI i = 0; i < n; ++i ) actives += a_opt[ i ] / nw.nu[ i ] <= TF( 1.05 ) * plancher_span;
+        (void) plancher_span;
         TF rayon = INFINI, pave = 0, tinf = 0;
         {
             std::vector<const TF *> dp( k );
@@ -601,8 +746,8 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu0, Lineaire &lin ) {
         nw.st = NewtonStats{};
         const double t0 = now();
         nw.resout( w_opt );
-        std::printf( "  %d  |  %.6e  |  %9.3e  |  %8.1f  |  %+9.4f  |  %+8.1e  |  %5d  ||  %4d  |  %4d ( %3d )  |  %.2e  |  %s\n",
-                     k, double( mer ), double( amin ), double( amax ), double( t[ 0 ] ), double( actives ), nb_eval,
+        std::printf( "  %d  |  %.6e  |  %9.3e  |  %8.1f  |  %+9.4f  |  %5d | %8.1e  |  %5d  ||  %4d  |  %4d ( %3d )  |  %.2e  |  %s\n",
+                     k, double( mer ), double( amin ), double( amax ), double( t[ 0 ] ), gn_it, double( ngrad ), nb_eval,
                      nw.st.nb_iter, nw.st.nb_diag, nw.st.nb_recul, double( nw.st.reste ), nw.st.fin );
 
         // ---- CE QUI MANQUE : la direction de Newton AU MINIMUM, sur la factorisation GELEE, puis
@@ -698,6 +843,7 @@ int main( int argc, char **argv ) {
         else if ( s == "--gauss" )      o.gauss = val();
         else if ( s == "--plancher" )   o.plancher = std::atof( val() );
         else if ( s == "--diracs" )     o.diracs = val();
+        else if ( s == "--germes" )     o.germes = val();
         else if ( s == "--conv" )       o.conv0 = std::atof( val() );
         else if ( s == "--conv-ratio" ) o.conv_ratio = std::atof( val() );
         else if ( s == "--conv-min" )   o.conv_min = std::atof( val() );
@@ -718,6 +864,7 @@ int main( int argc, char **argv ) {
         else if ( s == "--span" )       { o.span = std::atoi( val() ); o.fin = false; }
         else if ( s == "--span-garde" ) o.span_garde = std::atof( val() );
         else if ( s == "--span-grille" ) o.span_grille = std::atoi( val() );
+        else if ( s == "--prol-lisse" ) o.prol_lisse = std::atoi( val() );
         else if ( s == "--solver" )     o.solver = val();
         else if ( s == "--amg-var" )    o.amgvar = std::atoi( val() );
         else if ( s == "--newton-tol" ) o.newton.tol = std::atof( val() );
@@ -734,6 +881,10 @@ int main( int argc, char **argv ) {
                 "  --sigma S       l'echelle des largeurs du jeu de gaussiennes            (0.02)\n"
                 "  --nb-gauss N --gauss SPEC --plancher F    la densite ( voir densite --help )\n"
                 "  --diracs D      uniforme | rho ( germes tires selon la densite )   (uniforme)\n"
+                "  --germes G      aleatoire | regulier : une grille a peine bruitee. `alpha*` est fixe par\n"
+                "                  la paire de germes la PLUS SERREE, et sur un tirage aleatoire le plus petit\n"
+                "                  ecart est `O( 1/n )` au lieu de `O( 1/sqrt n )` en 2D -- la pathologie du\n"
+                "                  § 23.7, qui ecrase `alpha*` pour une raison etrangere au sujet (aleatoire)\n"
                 "  --conv S0       la continuation : S0, S0/R, ... >= Smin, puis 0          (0.5)\n"
                 "  --conv-ratio R                                                            (2)\n"
                 "  --conv-min S                                                 (0 : sigma / 4)\n"
@@ -743,6 +894,11 @@ int main( int argc, char **argv ) {
                 "                  | lloyd ( quantification optimale ponderee )            (bsp)\n"
                 "  --lloyd-it K    iterations de Lloyd                                      (20)\n"
                 "  --prol P        copie | harmonique | mls | ctransf                      (mls)\n"
+                "  --prol-lisse M  passes de Jacobi amorti SUR la prolongation. Ce qui borne un pas le\n"
+                "                  long d'une prolongation n'est pas son amplitude mais la difference\n"
+                "                  seconde qu'elle porte a l'echelle de la cellule : `alpha* x saut = 2h^2`.\n"
+                "                  Regle mesuree en 1D : LISSER JUSQU'A CE QUE `alpha*` DEPASSE 1. En 2D un\n"
+                "                  agregat de R germes a un rayon de sqrt( R ), donc M ~ R et non R^2   (0)\n"
                 "  --mls-anneaux K --mls-largeur F   le pochoir du MLS                     (2, 1)\n"
                 "  --seuil F       sous le plancher : F * min( nu_i, aire min de Voronoi )  (0.5)\n"
                 "  --tolg T        la tolerance de Newton au niveau GROSSIER   (0 : la meme)\n"
@@ -775,7 +931,8 @@ int main( int argc, char **argv ) {
     }
     const Opts &oc = o;
     const Nuage<2> nu = o.diracs == "rho" ? nuage_selon( densite_jeu( o.sigma, o.nb_gauss, o.gauss, o.plancher ), a.n, a.graine )
-                                          : nuage_uniforme<2>( a.n, a.graine, 0 );
+                       : o.germes == "regulier" ? nuage_regulier( a.n, a.graine )
+                                                : nuage_uniforme<2>( a.n, a.graine, 0 );
     return dispatch<2>( a, [ & ]( auto tag ) {
         using PD = typename decltype( tag )::type;
 #ifdef SF_EIGEN
