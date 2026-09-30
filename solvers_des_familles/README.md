@@ -6196,3 +6196,63 @@ Ce qui resterait à essayer, et que ces profils désignent : la seule marge est 
 `eps`) et `t₀` (le vidage), soit 15 % en `t` pour 0.4 % de mérite à l'itération 0. Autrement dit il n'y a
 rien à gagner là non plus, et le pas est un problème **résolu** — ce qui reste est ailleurs (le § 22 pour
 la direction, le § 8 pour le multi-échelle).
+
+## 24.11 Peut-on remonter la bascule plus tôt ? Non — et le seuil est déjà au bord
+
+Le § 24.10 dit que `R = 2` tombe **sur** la transition de régime. Monter `R`, c'est donc confier à `lin`
+des itérations où la contrainte d'aire mord encore — exactement ce que le § 21 avait mesuré comme son
+point faible. Le balayage le confirme sur les six cas (`scripts/scan_bascule_tot.sh`, diagrammes) :
+
+| cas | `R=0` (jamais) | **`R=2`** | `R=10` | `R=50` | `R=200` | `R=1e9` (tout de suite) |
+|---|---|---|---|---|---|---|
+| 2D uniforme, dyadique | 7 | **7** | 8 (+1 recul) | 8 | 8 | 8 |
+| **3D uniforme** | 6 | **6** | **9** (+2 reculs) | 9 | 9 | 9 |
+| 2D lignes s0.005 | 39 | **39** | 41 | 42 | 45 | 78 |
+| 2D lignes s0.02 | 29 | **29** | 28 | 27 | 28 | 41 |
+| 2D aires égales (DÉGÉNÉRÉ) | 73 | **74** | 75 | 78 | 79 | 113 |
+| 3D plans s0.02 | 16 | **17** | 17 | 18 | 22 | 27 |
+
+Le seul gain apparent, 2D s0.02 à `R=50` (27 contre 29), s'arrête à un résidu 2000 fois plus lâche
+(3.65e-07 contre 1.81e-10) : c'est une arrivée sous la tolérance une itération plus tôt, pas une
+convergence plus rapide. Le 3D uniforme est le contre-exemple franc : **+50 % de diagrammes dès `R=10`**.
+
+**L'asymétrie est le vrai enseignement.** Basculer plus TARD est presque gratuit partout (`R=0` ≈ `R=2`
+à un diagramme près) — sauf sur le nuage dégénéré avec `essai-limites`, où ne jamais basculer explose :
+**736 diagrammes et MAX ITERATIONS contre 53**. La contrainte n'est donc pas « tôt ou tard » mais
+« pas trop tôt, et pas jamais », et `2` est le bord haut de la fenêtre gratuite.
+
+### L'autre lecture : mesurer la transition au lieu de la seuiller ( `--bascule-pas` )
+
+`R` est une constante à régler, et le § 24.10 dit ce qu'elle approxime : le moment où la contrainte
+cesse de mordre. Ça ne s'approxime pas, ça **se mesure** — un pas plein accepté *est* la preuve que la
+contrainte n'a pas mordu. D'où `--bascule-pas T` : basculer dès qu'un pas `>= T` a été accepté. Aucune
+constante d'échelle, rien qui dépende du cas (diagrammes, `--bascule-residu 0` pour isoler) :
+
+| cas | `R = 2` | `pas >= 1` | `pas >= 0.9` | `pas >= 0.5` |
+|---|---|---|---|---|
+| 2D uniforme (dyad. / limites) | 7 / 7 | 7 / 7 | 7 / 7 | 7 / 7 |
+| 2D lignes s0.005 | 39 / 19 | 39 / 19 | 39 / 19 | 39 / 19 |
+| 2D lignes s0.02 | 29 / 13 | 29 / 13 | 29 / 13 | 29 / 13 |
+| 2D aires égales (DÉGÉNÉRÉ) | 74 / **53** | 73 / **53** | 73 / **53** | 74 / **53** |
+| 3D uniforme | 6 / 6 | 6 / 6 | 6 / 6 | 6 / 6 |
+| 3D plans s0.02 | 17 / 17 | 16 / 16 | 16 / 16 | 17 / 17 |
+
+Égalité partout, aux deux `−1` près — qui sont encore des arrivées sous la tolérance une itération plus
+tôt (3D plans : reste 4.01e-07 contre 1.96e-09). **Et le critère mesuré protège le cas dégénéré** : 53
+diagrammes comme le seuil, contre 736 sans bascule du tout. C'est donc un remplacement viable, qui
+supprime un paramètre.
+
+**Mais il ne peut pas être plus tôt que le seuil, et il y a un cas où il est strictement moins bon.** Le
+test porte sur le pas de l'itération précédente, et `t_prec = 0` à l'itération 0 : le critère mesuré ne
+peut PAS tirer à l'itération 0. Or c'est précisément ce que la continuation de densité demande (§ 9.6,
+et la note de `bascule_residu`) : chaque étape repart d'un résidu déjà petit, le seuil tire donc
+immédiatement et le solve est `lin` du début à la fin — ce qui est vital, puisque `log` seul y est
+catastrophique. Le seuil garde donc un rôle que la mesure ne peut pas reprendre, et les deux sont
+cumulables (ils sont en OU, chacun latché). Le défaut reste `R = 2`, `bascule_pas = 0`.
+
+### Ce que « plus tôt » voudrait dire vraiment
+
+Aucun des deux mécanismes ne peut avancer la bascule, parce que la transition n'est pas un réglage :
+c'est le moment où le pas de Newton `log` devient admissible, donc une propriété de l'itéré. Pour
+l'atteindre en moins d'itérations il faut une meilleure **direction** (le § 22, qui fait 13 diagrammes)
+ou un meilleur **départ** (le § 8, multi-échelle). La bascule, elle, est déjà au bon endroit.

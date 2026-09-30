@@ -223,6 +223,18 @@ struct NewtonOptions {
     /// dit, `--residu log` veut maintenant dire « log puis lin », qui est le seul usage de `log` que
     /// la mesure recommande. `--bascule-residu 0` rend le `log` pur.
     TF   bascule_residu = 2;
+    /// LA BASCULE PAR LE PAS, au lieu d'un seuil sur `max|a - nu|/nu`. `0` : inactive.
+    ///
+    /// `bascule_residu` est un SEUIL, donc une constante a regler. Or le § 24.10 a montre ce que ce
+    /// seuil approxime : la transition entre le regime ou la contrainte d'aire est ACTIVE ( le pas
+    /// optimal est au bord ) et celui ou elle est INACTIVE ( le pas optimal est `t = 1` ). Cette
+    /// transition, on ne l'approxime pas : on la MESURE. Des que l'amortissement a accepte un pas
+    /// `>= bascule_pas`, la contrainte n'a pas mordu, et c'est exactement la condition sous laquelle
+    /// `lin` est sans danger. Aucune constante d'echelle, donc, et rien qui depende du cas.
+    ///
+    /// Le test porte sur le pas de l'iteration PRECEDENTE ( la bascule se decide avant la direction ),
+    /// donc il tire une iteration apres la transition. Il est latche comme l'autre.
+    TF   bascule_pas = 0;
     /// LE MERITE DE L'AMORTISSEMENT, SEPAREMENT DE LA DIRECTION. `-1` : le meme que `residu`.
     ///
     /// `--residu log` changeait DEUX choses a la fois -- le second membre de Newton et le juge qui
@@ -577,6 +589,14 @@ struct Newton {
                 if ( o.trace )
                     std::printf( "      bascule : residu -> lin ( max|a-nu|/nu %.3e <= %.3e )\n",
                                  double( pire ), double( o.bascule_residu ) );
+            }
+            // La MEME bascule, mais declenchee par la contrainte elle-meme : un pas plein accepte dit
+            // qu'elle n'a pas mordu, donc que `lin` est sans danger ( cf. `o.bascule_pas` ).
+            if ( o.bascule_pas > 0 && res_cur != NewtonOptions::LIN && t_prec >= o.bascule_pas ) {
+                res_cur = NewtonOptions::LIN;
+                if ( o.trace )
+                    std::printf( "      bascule : residu -> lin ( pas precedent %.3e >= %.3e )\n",
+                                 double( t_prec ), double( o.bascule_pas ) );
             }
             membre( res_cur, o.puis, b );                // `J = diag( g' / nu ) L` : `L d = ( nu / g' ) ( c - g )`
             if ( it == 0 ) {
