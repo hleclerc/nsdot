@@ -6066,21 +6066,39 @@ je ne l'ai pas vu. `--mer-sans-limites` sépare enfin les deux. Lignes `σ = 0.0
 **Les 13 diagrammes venaient du `α*` exact, pas de l'argmin.** Sur une vraie échelle dyadique, minimiser
 fait 48 — *pire* que KMT. Et raffiner est une perte dans les deux variantes.
 
-### Et la résolution : le minimum sur l'ENSEMBLE ADMISSIBLE est au bord
+### Et la résolution : le mérite NON ÉCRÊTÉ est monotone, donc son argmin EST le bord
 
-Les deux points de vue se réconcilient, et c'est le profil du § 21.2 qui le dit. Le long de la
-direction, le mérite `log` **décroît de façon monotone** jusqu'au voisinage de la limite du plancher :
-son minimum libre est à `t = 0.125`, **au-delà** de ce que le plancher autorise (2 cellules vides).
-Autrement dit :
+J'avais d'abord écrit que le minimum libre du mérite était « au-delà de ce que le plancher autorise
+(2 cellules vides) ». **C'est incohérent** : si le mérite vaut `+∞` dès qu'une cellule est vide, un point
+à 2 cellules vides ne peut pas être son minimum. L'erreur était de citer un profil mesuré avec le `log`
+**écrêté**, où une cellule vide ne coûte que `−18.4` et reste donc bon marché.
 
-> le minimum du mérite `log` **sur l'ensemble admissible** est au **bord** de cet ensemble, c'est-à-dire
-> en `α*`.
+Le profil fin avec le `log` **non écrêté** (`--profil-ratio 1.05`, itération 0, lignes `σ = 0.005`) dit
+ce qui se passe réellement :
 
-Donc « minimiser le résidu `log` » et « aller jusqu'où les cellules cassent » ne sont pas deux stratégies
-concurrentes : **la seconde est la solution exacte de la première.** Chercher l'argmin par essais est
-une façon coûteuse et imprécise de trouver un bord qu'`Ecrasement.h` calcule directement, par cellule,
-pour moins qu'un diagramme. C'est pour ça que `α*` gagne, et c'est pour ça que raffiner autour de
-l'argmin ne peut rien rendre : on raffine vers un point que la contrainte interdit.
+| `t` | ≥ 0.1228 | **0.1169** | 0.1114 | 0.1061 | … | 0.0591 |
+|---|---|---|---|---|---|---|
+| mérite `log` non écrêté | **`inf`** | **322.96** | 323.81 | 324.66 | ↗ | 333.77 |
+| aire min | 0 | 1.59e-09 | 2.97e-09 | 4.19e-09 | | 3.94e-09 |
+| cellules vides | ≥ 1 | **0** | 0 | 0 | | 0 |
+
+**Le mérite non écrêté décroît de façon monotone jusqu'au seuil de vidage, puis saute à `+∞`.** Il n'y a
+**aucun minimum intérieur** : son argmin est le plus grand pas qui ne vide aucune cellule. Donc
+
+> « minimiser le résidu `log` » et « prendre le plus grand pas qui ne casse aucune cellule » ne sont pas
+> deux stratégies concurrentes : **c'est la même règle**, et c'est un théorème d'une ligne, pas une
+> coïncidence.
+
+Ce qui rend aussi la réponse au raffinement exacte : raffiner autour d'un argmin n'a pas de sens quand
+la fonction est monotone — il n'y a qu'un **bord** à localiser, et c'est ce que `Ecrasement.h` fait
+directement, par cellule, pour moins qu'un diagramme.
+
+Une nuance quantitative reste, et elle est petite. Le plancher `eps` est **plus strict** que
+« non vide » : le bord du vidage est à `t₀ ≈ 0.123`, le plancher mord à `α* = 0.107`, donc le plancher
+interdit une plage de 15 % en `t` où le mérite s'améliorait encore — pour 0.5 % de mérite (322.96 contre
+324.66). C'est pourquoi remplacer `eps` par zéro ne change aucun chiffre (mesuré au § 24.7 : identique
+au diagramme près). Viser `t₀` exactement plutôt que `α*` serait la version exacte de la règle, et
+`premiere_racine( niveau )` sait déjà le faire avec `niveau = 0` ; ça ne rapporterait que ces 0.5 %.
 
 Ce qui reste vrai de la proposition, et qui vaut : **le critère d'acceptation, lui, doit bien être le
 mérite `log`** — et c'est ce que fait `merite, départ α*`, qui prend `facteur · α*` et l'accepte si le

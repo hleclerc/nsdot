@@ -666,6 +666,7 @@ int main( int argc, char **argv ) {
         else if ( s == "--oracle" )     o.newton.oracle = std::atoi( val() );
         else if ( s == "--oracle-pire" ) o.newton.oracle_pire = true;
         else if ( s == "--profil-nb" )  o.newton.profil_nb = std::atoi( val() );
+        else if ( s == "--profil-ratio" ) o.newton.profil_ratio = std::atof( val() );
         else if ( s == "--relax" )      o.newton.t0 = std::atof( val() );
         else if ( s == "--refus" )      o.newton.refus = std::atoi( val() );
         else if ( s == "--diag-lap" )   o.newton.diag_lap = true;
@@ -736,7 +737,8 @@ int main( int argc, char **argv ) {
                 "  --merite R      LE JUGE DE L'AMORTISSEMENT, separement de la direction : lin | barriere | log |\n"
                 "                  puissance | pire ( max|a-nu|/nu, le critere d.arret lui-meme )   ( defaut : comme --residu )\n"
                 "  --profil K      a l'iteration K, balayer t et imprimer LES TROIS merites le long de la direction, puis sortir\n"
-                "  --profil-nb N   nombre de pas du profil ( t = relax / 2^k )                  (24)\n"
+                "  --profil-nb N   nombre de pas du profil ( t = relax / ratio^k )              (24)\n"
+                "  --profil-ratio F   le rapport entre deux barreaux du profil ( 2 : dyadique )    (2)\n"
                 "  --oracle Q      le MEILLEUR melange des trois directions a chaque iteration, force brute ( pas du simplexe 1/Q )\n"
                 "  --modele K      a l.iteration K, batir le modele multi-directions ( PolyMulti ) et mesurer ce qu.il predit\n"
                 "  --combi K       a l.iteration K, balayer le SIMPLEXE des directions lin/log/barriere et dire ce que gagne chaque melange\n"

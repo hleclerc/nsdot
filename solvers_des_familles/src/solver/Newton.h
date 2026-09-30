@@ -236,7 +236,8 @@ struct NewtonOptions {
                                ///< confronter a l'evaluateur exact PUIS au vrai diagramme
     int  combi      = -1;      ///< >= 0 : a CETTE iteration, balayer le SIMPLEXE des trois directions ( lin, log, barriere )
                                ///< et dire, pour chaque melange, le plus grand pas admissible et ce qu.il gagne
-    int  profil_nb  = 24;      ///< nombre de pas essayes par le profil ( `t = t0 / 2^k` )
+    int  profil_nb  = 24;      ///< nombre de pas essayes par le profil ( `t = t0 / ratio^k` )
+    TF   profil_ratio = 2;     ///< le rapport entre deux barreaux du profil ( `2` : dyadique )
     TF   t0         = 1;       ///< LE COEFFICIENT DE RELAXATION : le premier pas essaye ( 1 = Newton entier )
     /// tracer, a chaque iteration, CE QUI REND `L` DURE : l'etalement de la diagonale, celui des poids
     /// d'aretes, et l'ANISOTROPIE par ligne ( `max_j c_ij / sum_j c_ij` ). La derniere est la vraie
@@ -674,8 +675,10 @@ struct Newton {
                 std::printf( "      %-10s %-12s %-12s %-12s %-12s  %-10s %-10s %-9s %s\n", "t", "lin", "barriere", "log", "puissance",
                              "aire min", "max ecart", "vides", "qui decroit ( >= 1 - t/2 exige )" );
                 w2.resize( n );
+                TF tp_k = o.t0 * o.profil_ratio;
                 for ( int k = 0; k < o.profil_nb; ++k ) {
-                    const TF tp = o.t0 / TF( SI( 1 ) << k );
+                    tp_k /= o.profil_ratio;
+                    const TF tp = tp_k;
                     for ( SI i = 0; i < n; ++i ) w2[ i ] = w[ i ] + tp * d[ i ];
                     w2[ 0 ] = 0;
                     mesures_et_facettes( w2, a2, fa2, pda2 );
