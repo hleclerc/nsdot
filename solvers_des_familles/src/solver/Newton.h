@@ -193,7 +193,14 @@ struct NewtonOptions {
     /// `max_i |a_i - nu_i| / nu_i`, c'est-a-dire LE CRITERE D'ARRET LUI-MEME. L'amortissement KMT
     /// exige une norme `l2` pour sa preuve de decroissance ; on mesure ce que coute de la remplacer
     /// par celle qu'on veut vraiment faire baisser.
-    enum Residu : int { LIN = 0, BARRIERE, LOG, PUISSANCE, PIRE };
+    /// `LOG2` n'est PAS un residu -- c'est un MERITE : `sqrt( sum ( log x_i )^2 )`, NON CENTRE.
+    ///
+    /// Le merite `LOG` est centre ( `| g - moyenne( g ) |_2` ) parce que le SECOND MEMBRE doit sommer a
+    /// zero : on resout `g( x_i ) = c` et non `g( x_i ) = 0`, la jauge rayant une ligne. Mais rien
+    /// n'oblige le JUGE a l'etre, et un merite centre peut decroitre le long d'un rayon qui n'approche
+    /// pas la solution -- il ne mesure que la DISPERSION des `g`, pas leur ecart a zero. `LOG2` mesure
+    /// l'ecart a zero, donc il s'annule exactement a la solution.
+    enum Residu : int { LIN = 0, BARRIERE, LOG, PUISSANCE, PIRE, LOG2 };
     /// LE DEFAUT EST `LOG`, avec la bascule vers `LIN` ci-dessous. Mesure ( § 24 ) : -50 % de diagrammes
     /// sur le cas dur 2D, -37 % en 3D, rien de perdu nulle part. Et la bascule est ce qui le rend sans
     /// danger hors du solve direct : en continuation de densite, ou `log` SEUL est catastrophique
@@ -428,6 +435,14 @@ struct Newton {
         if ( o.g_ecrete <= 0 && r != NewtonOptions::LIN && r != NewtonOptions::PIRE )
             for ( SI i = 0; i < n; ++i )
                 if ( ! ( A[ i ] > 0 ) ) return INFINI;
+        if ( r == NewtonOptions::LOG2 ) {            // NON CENTRE : l'ecart a zero, pas la dispersion
+            TF s2 = 0;
+            for ( SI i = 0; i < n; ++i ) {
+                const TF g = g_de( A[ i ] / nu[ i ], NewtonOptions::LOG );
+                s2 += g * g;
+            }
+            return std::sqrt( s2 );
+        }
         if ( r == NewtonOptions::PIRE ) {
             TF m = 0;
             for ( SI i = 0; i < n; ++i ) m = std::max( m, std::fabs( nu[ i ] - A[ i ] ) / nu[ i ] );
@@ -667,13 +682,14 @@ struct Newton {
             // plage, et si c'est l'aire ou le merite qui ferme la porte.
             if ( it == o.profil ) {
                 const TF r_lin = merite_de( a, NewtonOptions::LIN ), r_bar = merite_de( a, NewtonOptions::BARRIERE ),
-                         r_log = merite_de( a, NewtonOptions::LOG ), r_pui = merite_de( a, NewtonOptions::PUISSANCE, o.puis );
+                         r_log = merite_de( a, NewtonOptions::LOG ), r_pui = merite_de( a, NewtonOptions::PUISSANCE, o.puis ),
+                         r_lg2 = merite_de( a, NewtonOptions::LOG2 );
                 std::printf( "    PROFIL it %d, direction %s, n %d : depart merites lin %.6e  barriere %.6e  log %.6e  p=%g %.6e\n",
                              it, o.residu == NewtonOptions::BARRIERE ? "barriere" : o.residu == NewtonOptions::LOG ? "log"
                                : o.residu == NewtonOptions::PUISSANCE ? "puissance" : "lin",
                              int( n ), double( r_lin ), double( r_bar ), double( r_log ), double( o.puis ), double( r_pui ) );
-                std::printf( "      %-10s %-12s %-12s %-12s %-12s  %-10s %-10s %-9s %s\n", "t", "lin", "barriere", "log", "puissance",
-                             "aire min", "max ecart", "vides", "qui decroit ( >= 1 - t/2 exige )" );
+                std::printf( "      %-10s %-12s %-12s %-12s %-12s %-12s  %-10s %-10s %-9s %s\n", "t", "lin", "barriere", "log",
+                             "puissance", "log2", "aire min", "max ecart", "vides", "qui decroit ( >= 1 - t/2 exige )" );
                 w2.resize( n );
                 TF tp_k = o.t0 * o.profil_ratio;
                 for ( int k = 0; k < o.profil_nb; ++k ) {
@@ -690,15 +706,16 @@ struct Newton {
                         pir = std::max( pir, std::fabs( nu[ i ] - a2[ i ] ) / nu[ i ] );
                     }
                     const TF s_lin = merite_de( a2, NewtonOptions::LIN ), s_bar = merite_de( a2, NewtonOptions::BARRIERE ),
-                             s_log = merite_de( a2, NewtonOptions::LOG ), s_pui = merite_de( a2, NewtonOptions::PUISSANCE, o.puis );
+                             s_log = merite_de( a2, NewtonOptions::LOG ), s_pui = merite_de( a2, NewtonOptions::PUISSANCE, o.puis ),
+                             s_lg2 = merite_de( a2, NewtonOptions::LOG2 );
                     const TF ex = 1 - tp / 2;            // la decroissance exigee par l'amortissement
-                    char qui[ 48 ];
-                    std::snprintf( qui, sizeof( qui ), "%s %s %s %s", s_lin <= ex * r_lin ? "lin" : "---",
+                    char qui[ 64 ];
+                    std::snprintf( qui, sizeof( qui ), "%s %s %s %s %s", s_lin <= ex * r_lin ? "lin" : "---",
                                    s_bar <= ex * r_bar ? "bar" : "---", s_log <= ex * r_log ? "log" : "---",
-                                   s_pui <= ex * r_pui ? "pui" : "---" );
-                    std::printf( "      %-10.3e %-12.6e %-12.6e %-12.6e %-12.6e  %-10.3e %-10.3e %-9d %s\n",
+                                   s_pui <= ex * r_pui ? "pui" : "---", s_lg2 <= ex * r_lg2 ? "lg2" : "---" );
+                    std::printf( "      %-10.3e %-12.6e %-12.6e %-12.6e %-12.6e %-12.6e  %-10.3e %-10.3e %-9d %s\n",
                                  double( tp ), double( s_lin ), double( s_bar ), double( s_log ), double( s_pui ),
-                                 double( m2 ), double( pir ), int( nv2 ), qui );
+                                 double( s_lg2 ), double( m2 ), double( pir ), int( nv2 ), qui );
                     std::fflush( stdout );
                 }
                 st.fin = "PROFIL";

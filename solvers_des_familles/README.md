@@ -6082,16 +6082,13 @@ ce qui se passe réellement :
 | aire min | 0 | 1.59e-09 | 2.97e-09 | 4.19e-09 | | 3.94e-09 |
 | cellules vides | ≥ 1 | **0** | 0 | 0 | | 0 |
 
-**Le mérite non écrêté décroît de façon monotone jusqu'au seuil de vidage, puis saute à `+∞`.** Il n'y a
-**aucun minimum intérieur** : son argmin est le plus grand pas qui ne vide aucune cellule. Donc
+À cette itération-là, **le mérite non écrêté décroît de façon monotone jusqu'au seuil de vidage**, puis
+saute à `+∞` : son argmin est le plus grand pas qui ne vide aucune cellule, donc « minimiser » et « aller
+au bord » sont la même règle.
 
-> « minimiser le résidu `log` » et « prendre le plus grand pas qui ne casse aucune cellule » ne sont pas
-> deux stratégies concurrentes : **c'est la même règle**, et c'est un théorème d'une ligne, pas une
-> coïncidence.
-
-Ce qui rend aussi la réponse au raffinement exacte : raffiner autour d'un argmin n'a pas de sens quand
-la fonction est monotone — il n'y a qu'un **bord** à localiser, et c'est ce que `Ecrasement.h` fait
-directement, par cellule, pour moins qu'un diagramme.
+> **MAIS CE N'EST PAS GÉNÉRAL, et je l'avais écrit comme tel (§ 24.10).** Un mérite purement monotone
+> serait mal conçu ; celui-ci ne l'est pas. À l'itération 0 on est simplement trop loin pour que son
+> minimum soit atteignable. Voir le § 24.10, qui mesure les deux régimes.
 
 Une nuance quantitative reste, et elle est petite. Le plancher `eps` est **plus strict** que
 « non vide » : le bord du vidage est à `t₀ ≈ 0.123`, le plancher mord à `α* = 0.107`, donc le plancher
@@ -6110,3 +6107,57 @@ La phrase du § 24.8 — « la grossièreté de l'échelle dyadique nous protég
 disait qu'un réglage arbitraire compensait une erreur d'objectif, ce qui n'est pas un résultat mais
 l'aveu de ne pas maîtriser ce qui était mesuré. La vraie raison est géométrique et se démontre : la
 contrainte est active à l'optimum, donc c'est la contrainte qu'il faut calculer.
+
+## 24.10 Le mérite n'est PAS monotone — la contrainte est active tôt, inactive tard
+
+Objection juste : un résidu purement monotone le long du rayon serait **mal conçu**, puisqu'il ne
+pénaliserait jamais le dépassement. J'avais écrit la monotonie comme une propriété du mérite ; c'en est
+une propriété **de l'itéré**, et c'est ce que deux profils fins montrent.
+
+### Loin de la solution (itération 0, `max|a−ν|/ν = 1665`) : monotone sur tout l'admissible
+
+| `t` | ≥ 0.126 | **0.1167** | 0.1081 | 0.1000 | … | 0.0397 |
+|---|---|---|---|---|---|---|
+| mérite `log` (non écrêté) | `inf` | **322.99** | 324.34 | 325.68 | ↗ | 338.41 |
+| `log2` (NON CENTRÉ) | `inf` | **660.54** | 670.33 | 679.77 | ↗ | 764.74 |
+| cellules vides | ≥ 1 | 0 | 0 | 0 | | 0 |
+
+La direction de Newton visait `t = 1`, mais le modèle casse bien avant : les cellules commencent à mourir
+vers `t ≈ 0.126`. **Tout le segment admissible est donc sur la branche descendante** — le minimum du
+mérite est hors d'atteinte, et c'est la contrainte qui fixe le pas.
+
+**Et `log2` non centré ne change rien** : même forme, même seuil, même absence de minimum intérieur. Le
+centrage n'était pas la cause.
+
+### Près de la solution (itération 10) : un minimum intérieur net, contrainte inactive
+
+| `t` | 4.0 | 2.56 | 1.64 | 1.31 | **1.049** | 0.839 | 0.671 | … | 0.058 |
+|---|---|---|---|---|---|---|---|---|---|
+| mérite `log` | 19.50 | 10.46 | 4.23 | 1.93 | **0.2786** | 1.554 | 2.797 | ↗ | 7.53 |
+| aire min | 7.6e-06 | 8.7e-06 | 9.3e-06 | 9.4e-06 | 8.9e-06 | 7.9e-06 | 7.1e-06 | | 4.6e-06 |
+| cellules vides | 0 | 0 | 0 | 0 | 0 | 0 | 0 | | 0 |
+
+**Minimum à `t ≈ 1.05`** — le pas de Newton, comme il se doit — et **aucune cellule vide même à `t = 4`**,
+l'aire minimale restant à 7.6e-06 contre un plancher `eps ~ 4e-10`. La contrainte est totalement
+inactive, et le mérite choisit `t ≈ 1` tout seul. `log` et `log2` y coïncident à sept chiffres, parce que
+`moyenne(log x) → 0` près de la solution : c'est pourquoi le centrage ne pouvait rien changer.
+
+### Ce que ça explique enfin, sans invoquer la chance
+
+Les deux régimes sont le tableau classique — **contraint tôt, libre tard** — et ils expliquent d'un coup
+tous les échecs de recherche linéaire mesurés plus haut :
+
+* **tôt**, la contrainte est active : le pas optimal est **au bord**, donc il faut *calculer le bord*
+  (`α*`, par cellule, pour moins qu'un diagramme) et non chercher un minimum qui n'est pas là. C'est
+  pourquoi `merite, départ α*` fait 13 diagrammes et l'échelle dyadique 48 (§ 24.9) ;
+* **tard**, la contrainte est inactive et le minimum est à `t ≈ 1` : Newton le prend déjà. Il n'y a rien
+  à chercher non plus.
+
+**Dans aucun des deux régimes une recherche linéaire n'a de quoi gagner** — dans le premier parce que
+l'optimum est sur la frontière, dans le second parce qu'il est en `t = 1`. C'est la vraie raison, et elle
+remplace la formule retirée au § 24.8 (« la grossièreté nous protégeait »), qui n'expliquait rien.
+
+Ce qui resterait à essayer, et que ces profils désignent : la seule marge est entre `α*` (le plancher
+`eps`) et `t₀` (le vidage), soit 15 % en `t` pour 0.4 % de mérite à l'itération 0. Autrement dit il n'y a
+rien à gagner là non plus, et le pas est un problème **résolu** — ce qui reste est ailleurs (le § 22 pour
+la direction, le § 8 pour le multi-échelle).

@@ -647,7 +647,7 @@ int main( int argc, char **argv ) {
             const std::string v = val();
             o.newton.merite_res = v == "barriere" ? NewtonOptions::BARRIERE : v == "log" ? NewtonOptions::LOG
                                 : v == "puissance" ? NewtonOptions::PUISSANCE : v == "pire" ? NewtonOptions::PIRE
-                                : NewtonOptions::LIN;
+                                : v == "log2" ? NewtonOptions::LOG2 : NewtonOptions::LIN;
         }
         else if ( s == "--puis" )       o.newton.puis = std::atof( val() );
         else if ( s == "--bascule-residu" ) o.newton.bascule_residu = std::atof( val() );
@@ -735,7 +735,7 @@ int main( int argc, char **argv ) {
                 "  --puis P        puissance : g = ( x^P - 1 ) / P -- P = 1 EST lin, P = 0 EST log  (0.5)\n"
                 "  --bascule-residu R  repasser a lin des que max|a-nu|/nu <= R ( 0 : jamais ; inerte si --residu lin )  (2)\n"
                 "  --merite R      LE JUGE DE L'AMORTISSEMENT, separement de la direction : lin | barriere | log |\n"
-                "                  puissance | pire ( max|a-nu|/nu, le critere d.arret lui-meme )   ( defaut : comme --residu )\n"
+                "                  puissance | pire ( max|a-nu|/nu ) | log2 ( sum ( log x )^2, NON CENTRE )   ( defaut : comme --residu )\n"
                 "  --profil K      a l'iteration K, balayer t et imprimer LES TROIS merites le long de la direction, puis sortir\n"
                 "  --profil-nb N   nombre de pas du profil ( t = relax / ratio^k )              (24)\n"
                 "  --profil-ratio F   le rapport entre deux barreaux du profil ( 2 : dyadique )    (2)\n"
