@@ -6256,3 +6256,71 @@ Aucun des deux mécanismes ne peut avancer la bascule, parce que la transition n
 c'est le moment où le pas de Newton `log` devient admissible, donc une propriété de l'itéré. Pour
 l'atteindre en moins d'itérations il faut une meilleure **direction** (le § 22, qui fait 13 diagrammes)
 ou un meilleur **départ** (le § 8, multi-échelle). La bascule, elle, est déjà au bon endroit.
+
+## 24.12 Deux directions à la fois : `span{ Newton log, déplacement précédent }` (`--pas grille2`)
+
+Maintenant que le mérite `log` a un vrai minimum intérieur dans la phase `log` (§ 24.10), une recherche
+à **deux** variables a un sens qu'elle n'avait pas. L'instrument : `w + α d + β ( déplacement
+précédent )`, évalué sur une grille — `α = t / 2^k` sur les lignes, `β` symétrique autour de 0 sur les
+colonnes. Deux choix rendent la mesure lisible :
+
+* **la colonne `β = 0` EST l'algorithme actuel** (la descente dyadique le long de la direction de
+  Newton), donc la grille contient la référence et tout gain se lit comme un écart à cette colonne — un
+  argmin qui reste en `β = 0` est un négatif franc, pas une absence de résultat ;
+* la seconde direction est le **déplacement** précédent (`t_prec · d_prec`), pas la direction brute :
+  sa norme est celle d'un pas qui a été accepté, donc `β` est sans dimension.
+
+Coût : `g2_na × g2_nb` diagrammes par itération. C'est un instrument, personne ne propose ça en défaut.
+
+### Le garde-fou qu'il faut lire AVANT la matrice : le cosinus
+
+Si le déplacement précédent est colinéaire à la direction de Newton, `β` ne fait que réhausser `α` : le
+plan est un rayon et un argmin en `β = 0` ne veut rien dire. Le mode imprime donc `cos( d, précédent )`.
+Mesuré (2D lignes s0.005, itérations 1 à 6) : **0.989, 0.977, 0.906, 0.963, 0.902, 0.506**. Les deux
+directions sont donc **quasi colinéaires** en champ lointain. C'est la limite honnête du négatif 2D qui
+suit : il dit surtout que réhausser le pas ne sert pas, ce qu'on savait.
+
+### En 2D : rien, et pour une raison structurelle
+
+`β = 0` gagne à **toutes** les itérations de grille, sur les trois nuages 2D (uniforme, lignes s0.005,
+aires égales). Et toute la moitié `β > 0` est **refusée par le plancher d'aire**, à tous les `α`, y
+compris les plus petits. La raison n'est pas numérique : le pas précédent avait déjà été poussé jusqu'à
+**sa propre limite** (`α*`), donc en redemander empile deux déplacements dont le premier touchait déjà le
+bord. **Le déplacement précédent est inutilisable parce qu'il a déjà été utilisé à fond.**
+
+### En 3D il se passe quelque chose — mais ce n'est pas une meilleure descente
+
+3D plans s0.02, itération 3 (`cos = 0.981`), mérite `log` :
+
+| `α` | `β = −1` | `β = −0.5` | `β = 0` | `β = 0.5` |
+|---|---|---|---|---|
+| **1** | 39.53 | **25.88** | *refusé* | *refusé* |
+| 0.5 | 106.8 | 83.76 | 58.77 | *refusé* |
+| 0.25 | 137.1 | 115.7 | 92.97 | 69.06 |
+
+À `α = 1`, la colonne `β = 0` est **refusée** par le plancher d'aire — mais `β = −0.5` passe, et donne
+25.88 contre 58.77 pour le meilleur point admissible de la colonne : **un facteur 2.3**. Même effet à
+l'itération 1 (167.3 contre 202.1). Le mécanisme est donc clair, et ce n'est pas celui qu'on cherchait :
+**défaire une partie du déplacement précédent RELÂCHE la contrainte d'aire** et laisse passer un `α`
+plus long. La seconde direction ne sert pas de meilleure descente, elle sert de dégagement.
+
+### Le verdict, et ce qu'il désigne
+
+| cas | défaut (diag) | `grille2` (diag) | itérations |
+|---|---|---|---|
+| 2D uniforme | 7 | 11 | 6 → 6 |
+| 2D lignes s0.005 | 39 ( 19 avec limites ) | 161 | 14 → 12 |
+| 2D aires égales (dég.) | 74 | 219 | 16 → 13 |
+| 3D plans s0.02 | 17 | 86 | 9 → **9** |
+
+**Aucune itération gagnée là où la grille sort de la colonne** (3D : 9 contre 9), pour cinq fois les
+diagrammes. Les gains de mérite par itération, réels (×1.2 à ×2.3), ne se transforment pas en
+itérations — ce qui est cohérent avec le § 24.10 : gagner sur le mérite d'un pas contraint ne rapproche
+pas de la solution, il ne fait que mieux occuper le bord.
+
+Mais l'information est utile pour la suite, et elle est précise : **la seconde direction qui vaudrait
+quelque chose est celle qui LIBÈRE la contrainte**, pas celle qui descend mieux. Le déplacement
+précédent le fait par accident (en se défaisant) ; un span de directions de **résidus différents** le
+fait par construction, puisque chacune place la cible ailleurs — et c'est exactement le span du § 22,
+le seul essai qui ait atteint 13 diagrammes. Le prochain essai de direction est donc là, pas dans la
+mémoire du pas.

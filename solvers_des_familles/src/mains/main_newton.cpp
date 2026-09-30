@@ -584,6 +584,7 @@ int main( int argc, char **argv ) {
             o.newton.pas = v == "dyadique" ? NewtonOptions::DYADIQUE : v == "facteur" ? NewtonOptions::FACTEUR
                          : v == "tenseur" ? NewtonOptions::TENSEUR : v == "essai-limites" ? NewtonOptions::ESSAI_LIMITES
                          : v == "modele" ? NewtonOptions::MODELE : v == "merite" ? NewtonOptions::MERITE
+                         : v == "grille2" ? NewtonOptions::GRILLE2
                          : NewtonOptions::ESSAIS;
         }
         else if ( s == "--facteur" )    o.newton.facteur = std::atof( val() );
@@ -652,6 +653,10 @@ int main( int argc, char **argv ) {
         else if ( s == "--puis" )       o.newton.puis = std::atof( val() );
         else if ( s == "--bascule-residu" ) o.newton.bascule_residu = std::atof( val() );
         else if ( s == "--bascule-pas" ) o.newton.bascule_pas = std::atof( val() );
+        else if ( s == "--g2-na" )      o.newton.g2_na = std::atoi( val() );
+        else if ( s == "--g2-nb" )      o.newton.g2_nb = std::atoi( val() );
+        else if ( s == "--g2-bmax" )    o.newton.g2_bmax = std::atof( val() );
+        else if ( s == "--g2-muet" )    o.newton.g2_trace = false;
         else if ( s == "--profil" )     o.newton.profil = std::atoi( val() );
         else if ( s == "--combi" )      o.newton.combi = std::atoi( val() );
         else if ( s == "--modele" )     o.newton.modele = std::atoi( val() );
@@ -702,6 +707,8 @@ int main( int argc, char **argv ) {
                 "  --quiet         pas de trace par iteration\n"
                 "  --pas P         essais ( KMT, defaut ) | dyadique | facteur | tenseur | essai-limites ( 2D )\n"
                 "                  | merite : le pas qui MINIMISE le merite le long de la direction ( au lieu du premier qui passe )\n"
+                "                  | grille2 : RECHERCHE A DEUX VARIABLES, w + alpha d + beta ( deplacement precedent ) -- un INSTRUMENT\n"
+                "  --g2-na N --g2-nb N --g2-bmax B --g2-muet   grille2 : barreaux en alpha, en beta, amplitude de beta, silence   (5, 5, 1)\n"
                 "                  | modele ( 2D ) : le pas cherche dans le SPAN de plusieurs directions, sur le modele\n"
                 "                  polynomial d.aire -- aucun diagramme pour chercher, un seul pour verifier\n"
                 "  --mod-q Q       modele : le pas du simplexe cherche, 1/Q                        (4)\n"

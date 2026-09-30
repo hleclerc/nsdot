@@ -87,7 +87,7 @@ struct NewtonOptions {
     ///
     /// Attention, ca sort de la theorie KMT : celle-ci exige la decroissance `1 - t/2` d'une norme `l2`
     /// du residu, et minimiser n'est pas la meme condition. On n'exige plus qu'une decroissance stricte.
-    enum Pas : int { ESSAIS = 0, DYADIQUE, FACTEUR, TENSEUR, ESSAI_LIMITES, MODELE, MERITE };
+    enum Pas : int { ESSAIS = 0, DYADIQUE, FACTEUR, TENSEUR, ESSAI_LIMITES, MODELE, MERITE, GRILLE2 };
     /// MERITE : combien de barreaux de l'echelle on accepte de voir REMONTER avant de s'arreter ( le
     /// profil est unimodal, donc 1 suffit ).
     int  mer_patience = 1;
@@ -159,6 +159,23 @@ struct NewtonOptions {
     /// reparable, et il devient du bruit des qu'une seule ne l'est pas. Enjamber une poignee
     /// d'aberrantes garde la nature extremale du critere sans lui donner d'otage.
     TF   mod_hors   = 1e-4;
+    /// GRILLE2 : LA RECHERCHE A DEUX VARIABLES, `w + alpha d + beta ( t_prec d_prec )`.
+    ///
+    /// C'est un INSTRUMENT, pas un algorithme : la question est seulement de savoir si une seconde
+    /// direction a de l'interet. Le § 24.10 a montre que le merite `log` a un vrai minimum interieur
+    /// une fois la contrainte inactive, donc il y a enfin quelque chose de regulier a minimiser.
+    ///
+    /// La parametrisation est choisie pour que la GRILLE CONTIENNE L'ALGORITHME ACTUEL : la colonne
+    /// `beta = 0` est la descente dyadique le long de la direction de Newton, donc tout gain se lit
+    /// comme un ecart a cette colonne, et un argmin qui reste en `beta = 0` est un resultat NEGATIF
+    /// franc. La seconde direction est le DEPLACEMENT precedent ( `t_prec d_prec` ), pas la direction
+    /// brute : sa norme est celle d'un pas qui a ete accepte, donc `beta` est sans dimension.
+    ///
+    /// Cout : `g2_na * g2_nb` diagrammes par iteration. Personne ne propose ca comme defaut.
+    int  g2_na      = 5;       ///< GRILLE2 : barreaux en `alpha` ( `alpha = t / 2^k` )
+    int  g2_nb      = 5;       ///< GRILLE2 : barreaux en `beta` ( symetriques autour de 0 )
+    TF   g2_bmax    = 1;       ///< GRILLE2 : `beta` balaye `[ -g2_bmax, g2_bmax ]`
+    bool g2_trace   = true;    ///< GRILLE2 : imprimer la matrice des merites
     int  pas        = ESSAIS;  ///< comment choisir `t` ( voir en tete )
     TF   facteur    = 0.9;     ///< `t = facteur * alpha*` en mode FACTEUR
     TF   theta_mult = 5;       ///< TENSEUR : la cible partielle est `theta = theta_mult * alpha*`
@@ -495,6 +512,7 @@ struct Newton {
         std::vector<LimiteCellule> lim;
         std::vector<TF> ucel, u2, b2, d2, sflux, dgard, del;  // la passe CIBLE
         std::vector<char> touche, dumm;
+        std::vector<TF> d_pre;                       // GRILLE2 : le DEPLACEMENT precedent, `t_prec d_prec`
         std::vector<TF> d_sur;                       // LE FILET : la direction de Newton, avant
         std::vector<ModeleCellule> mods;             // ... son juge POLYNOME
         std::vector<SI> imod;
@@ -1682,6 +1700,87 @@ struct Newton {
             TF t_lim0 = t;
             w2.resize( n );
 
+            // ---- LA RECHERCHE A DEUX VARIABLES ( `--pas grille2` )
+            //
+            // `w + alpha d + beta ( deplacement precedent )`, sur une grille. La colonne `beta = 0`
+            // EST l'echelle dyadique le long de la direction de Newton, donc la grille contient
+            // l'algorithme actuel et le resultat se lit comme un ecart a cette colonne. Le premier
+            // tour ( pas de direction precedente ) se reduit a cette colonne.
+            //
+            // Comme la minimisation du merite ( § 24.10 ), ca n'a de sens QUE dans la phase `log` :
+            // apres la bascule le juge est `lin`, dont le § 21.1 a etabli qu'il est mauvais.
+            if ( o.pas == NewtonOptions::GRILLE2 && res_cur != NewtonOptions::LIN ) {
+                const bool avec = SI( d_pre.size() ) == n;
+                std::vector<TF> bs;                      // les `beta`, symetriques, `0` au milieu
+                if ( avec && o.g2_nb > 1 ) {
+                    const int m = o.g2_nb / 2;
+                    for ( int k = -m; k <= m; ++k ) bs.push_back( o.g2_bmax * k / TF( m ) );
+                } else
+                    bs.push_back( 0 );
+                const int nb = int( bs.size() );
+                std::vector<TF> mat( size_t( o.g2_na ) * nb, INFINI );
+                TF best = INFINI, al_b = 0, be_b = 0;
+                int essais = 0;
+                for ( int ia = 0; ia < o.g2_na; ++ia ) {
+                    const TF al = t / TF( SI( 1 ) << ia );
+                    if ( al < o.t_min ) break;
+                    for ( int ib = 0; ib < nb; ++ib ) {
+                        const TF be = bs[ ib ];
+                        for ( SI i = 0; i < n; ++i )
+                            w2[ i ] = w[ i ] + al * d[ i ] + ( be != 0 ? be * d_pre[ i ] : TF( 0 ) );
+                        w2[ 0 ] = 0;
+                        mesures_et_facettes( w2, a2, fa2, pda2 );
+                        ++essais;
+                        TF m2 = INFINI;
+                        for ( SI i = 0; i < n; ++i )
+                            if ( protegee[ i ] && a2[ i ] < m2 ) m2 = a2[ i ];
+                        const TF v = merite( a2 );
+                        const bool ok = ! plancher_actif() || m2 >= eps;
+                        mat[ size_t( ia ) * nb + ib ] = ok ? v : INFINI;
+                        if ( ok && v < best ) {
+                            best = v; al_b = al; be_b = be;
+                            wb = w2; ab = a2; fab = fa2;
+                        }
+                    }
+                }
+                if ( o.trace && o.g2_trace ) {
+                    // LE COSINUS EST LA MESURE QUI DIT SI LA GRILLE A DE LA RESOLUTION. Si le
+                    // deplacement precedent est colineaire a la direction de Newton, `beta` ne fait
+                    // que rehausser `alpha` : le plan est un rayon, et un argmin en `beta = 0` ne
+                    // veut rien dire. Il faut donc le lire AVANT la matrice.
+                    TF ps = 0, nd = 0, np = 0;
+                    if ( avec )
+                        for ( SI i = 0; i < n; ++i ) { ps += d[ i ] * d_pre[ i ]; nd += d[ i ] * d[ i ]; np += d_pre[ i ] * d_pre[ i ]; }
+                    const TF cos = avec && nd > 0 && np > 0 ? ps / std::sqrt( nd * np ) : TF( 0 );
+                    std::printf( "      GRILLE2 ( merite %s, depart %.6e, cos( d, precedent ) %.4f ) :"
+                                 " lignes alpha = t/2^k, colonnes beta\n        %-10s",
+                                 res_cur == NewtonOptions::LOG ? "log" : "?", double( nr ), double( cos ), "alpha" );
+                    for ( int ib = 0; ib < nb; ++ib ) std::printf( " %12.3g", double( bs[ ib ] ) );
+                    std::printf( "\n" );
+                    for ( int ia = 0; ia < o.g2_na; ++ia ) {
+                        const TF al = t / TF( SI( 1 ) << ia );
+                        if ( al < o.t_min ) break;
+                        std::printf( "        %-10.4g", double( al ) );
+                        for ( int ib = 0; ib < nb; ++ib ) {
+                            const TF v = mat[ size_t( ia ) * nb + ib ];
+                            if ( v == INFINI ) std::printf( " %12s", "refuse" );
+                            else std::printf( " %12.6g", double( v ) );
+                        }
+                        std::printf( "\n" );
+                    }
+                    std::printf( "        argmin : alpha %.4g, beta %.4g, merite %.6e%s\n",
+                                 double( al_b ), double( be_b ), double( best ),
+                                 be_b == 0 ? "   ( beta = 0 : RIEN A GAGNER )" : "   ( HORS de la colonne beta = 0 )" );
+                    std::fflush( stdout );
+                }
+                st.nb_recul += essais - 1;
+                if ( best < nr ) {
+                    w2.swap( wb ); a2.swap( ab ); fa2.swap( fab );
+                    t = al_b;
+                    pris = true;
+                }
+            }
+
             // ---- LE PAS QUI MINIMISE LE MERITE ( `--pas merite` )
             //
             // Le profil du § 21.2 montre que le merite `log` a un MINIMUM INTERIEUR le long de la
@@ -1818,6 +1917,10 @@ struct Newton {
                 return false;
             }
             t_prec = t;
+            if ( o.pas == NewtonOptions::GRILLE2 ) {     // le DEPLACEMENT reellement fait, melange compris
+                d_pre.resize( n );
+                for ( SI i = 0; i < n; ++i ) d_pre[ i ] = w2[ i ] - w[ i ];
+            }
             w.swap( w2 );
             a.swap( a2 );
             fa.swap( fa2 );
