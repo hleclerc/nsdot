@@ -172,9 +172,31 @@ struct NewtonOptions {
     /// brute : sa norme est celle d'un pas qui a ete accepte, donc `beta` est sans dimension.
     ///
     /// Cout : `g2_na * g2_nb` diagrammes par iteration. Personne ne propose ca comme defaut.
+    /// GRILLE2 : D'OU VIENT LA SECONDE DIRECTION.
+    ///
+    /// `PREC` : le deplacement precedent. Mesure au § 24.12 : quasi colineaire a `d` en champ
+    /// lointain ( cos 0.9 a 0.99 ), donc sans resolution, et sa moitie utile est refusee par le
+    /// plancher parce que ce deplacement avait deja ete pousse a sa limite.
+    ///
+    /// `SONDE` : la direction de Newton recalculee AU BOUT DU RAYON, en `w + t d` ou `t` est le pas
+    /// que l'amortissement s'apprete a prendre ( juste avant qu'une cellule casse ). Comme le
+    /// probleme est non lineaire, `d` n'est valable qu'au depart : `d_s - d` est une difference
+    /// finie de la direction le long du rayon, donc la COURBURE en `t`. La grille devient alors un
+    /// melange, `w + alpha ( d + beta ( d_s - d ) )` : `beta = 0` est Newton pur ( l'algorithme
+    /// actuel ), `beta = 1` est la direction de l'arrivee, et les deux axes sont sans dimension.
+    ///
+    /// Le point de sonde n'est pas gratuit mais il est BON MARCHE : son diagramme est celui du pas
+    /// qu'on allait prendre, et il ne reste qu'un assemblage et un solve de plus.
+    enum G2Dir : int { PREC = 0, SONDE };
+    int  g2_dir     = PREC;    ///< GRILLE2 : d'ou vient la seconde direction
     int  g2_na      = 5;       ///< GRILLE2 : barreaux en `alpha` ( `alpha = t / 2^k` )
     int  g2_nb      = 5;       ///< GRILLE2 : barreaux en `beta` ( symetriques autour de 0 )
     TF   g2_bmax    = 1;       ///< GRILLE2 : `beta` balaye `[ -g2_bmax, g2_bmax ]`
+    /// GRILLE2 : ne balayer que `beta >= 0`, donc `[ 0, g2_bmax ]`. Mesure ( § 24.13 ) : avec la
+    /// direction SONDEE le merite est monotone en `beta` et c'est le cote POSITIF qui gagne -- aller
+    /// vers la direction de l'arrivee, pas s'en eloigner. La moitie negative ne coute que des
+    /// diagrammes.
+    bool g2_bpos    = false;
     bool g2_trace   = true;    ///< GRILLE2 : imprimer la matrice des merites
     int  pas        = ESSAIS;  ///< comment choisir `t` ( voir en tete )
     TF   facteur    = 0.9;     ///< `t = facteur * alpha*` en mode FACTEUR
@@ -434,21 +456,23 @@ struct Newton {
     /// LE SECOND MEMBRE de Newton pour le residu `r` : `b_i = nu_i / g'( x_i ) ( c - g( x_i ) )`, avec
     /// `c` la moyenne ponderee qui le fait sommer a zero ( la jauge raye une ligne : sans ca elle
     /// porterait toute l'incoherence ). `r = LIN` redonne `nu - a`.
-    void membre( int r, TF p, std::vector<TF> &bb ) const {
-        const SI n = SI( a.size() );
+    void membre( int r, TF p, std::vector<TF> &bb ) const { membre_de( a, r, p, bb ); }
+    /// Le meme, pour des aires QUELCONQUES -- le second membre en un point de SONDE ( § 24.13 ).
+    void membre_de( const std::vector<TF> &A, int r, TF p, std::vector<TF> &bb ) const {
+        const SI n = SI( A.size() );
         bb.assign( n, TF( 0 ) );
         if ( r == NewtonOptions::LIN ) {
-            for ( SI i = 0; i < n; ++i ) bb[ i ] = nu[ i ] - a[ i ];
+            for ( SI i = 0; i < n; ++i ) bb[ i ] = nu[ i ] - A[ i ];
             return;
         }
         TF su = 0, sug = 0;
         for ( SI i = 0; i < n; ++i ) {
-            const TF x = a[ i ] / nu[ i ], u = nu[ i ] / gp_de( x, r, p );
+            const TF x = A[ i ] / nu[ i ], u = nu[ i ] / gp_de( x, r, p );
             su += u; sug += u * g_de( x, r, p );
         }
         const TF c = sug / su;
         for ( SI i = 0; i < n; ++i ) {
-            const TF x = a[ i ] / nu[ i ];
+            const TF x = A[ i ] / nu[ i ];
             bb[ i ] = nu[ i ] / gp_de( x, r, p ) * ( c - g_de( x, r, p ) );
         }
     }
@@ -512,7 +536,9 @@ struct Newton {
         std::vector<LimiteCellule> lim;
         std::vector<TF> ucel, u2, b2, d2, sflux, dgard, del;  // la passe CIBLE
         std::vector<char> touche, dumm;
-        std::vector<TF> d_pre;                       // GRILLE2 : le DEPLACEMENT precedent, `t_prec d_prec`
+        std::vector<TF> d_pre, bson, as_;            // GRILLE2 : la SECONDE DIRECTION, son second membre
+        std::vector<Facette> fas_;                   // ... et les mesures du point de SONDE
+        Laplacien Lson;                              // GRILLE2 SONDE : le laplacien au point de sonde
         std::vector<TF> d_sur;                       // LE FILET : la direction de Newton, avant
         std::vector<ModeleCellule> mods;             // ... son juge POLYNOME
         std::vector<SI> imod;
@@ -1710,51 +1736,92 @@ struct Newton {
             // Comme la minimisation du merite ( § 24.10 ), ca n'a de sens QUE dans la phase `log` :
             // apres la bascule le juge est `lin`, dont le § 21.1 a etabli qu'il est mauvais.
             if ( o.pas == NewtonOptions::GRILLE2 && res_cur != NewtonOptions::LIN ) {
+                const bool son = o.g2_dir == NewtonOptions::SONDE;
+                TF best = INFINI, al_b = 0, be_b = 0, al_s = 0;
+                int essais = 0;
+                std::vector<TF> mat0( size_t( o.g2_na ), INFINI );
+
+                // ---- 1. LA COLONNE `beta = 0` : c'est l'echelle de KMT le long de `d`, et son PREMIER
+                // POINT ADMISSIBLE est le point de sonde. L'ordre n'est pas un detail : sonder a `t`
+                // sans verifier l'admissibilite donne un point A CELLULES VIDES, dont le laplacien a
+                // des lignes nulles. Mesure en 3D, ou aucune passe de limites ne ramene `t` : le
+                // solveur y a passe 20032 iterations et 363 s avant d'echouer. Le bon point de sonde
+                // est juste AVANT le vidage -- et il est gratuit, c'est celui que l'amortissement
+                // allait prendre.
+                auto evalue = [ & ]( TF al, TF be ) {     // rend le merite, INFINI si le plancher refuse
+                    for ( SI i = 0; i < n; ++i )
+                        w2[ i ] = w[ i ] + al * ( d[ i ] + ( be != 0 && son ? be * d_pre[ i ] : TF( 0 ) ) )
+                                        + ( be != 0 && ! son ? be * d_pre[ i ] : TF( 0 ) );
+                    w2[ 0 ] = 0;
+                    mesures_et_facettes( w2, a2, fa2, pda2 );
+                    ++essais;
+                    TF m2 = INFINI;
+                    for ( SI i = 0; i < n; ++i )
+                        if ( protegee[ i ] && a2[ i ] < m2 ) m2 = a2[ i ];
+                    const TF v = merite( a2 );
+                    if ( plancher_actif() && m2 < eps ) return INFINI;
+                    if ( v < best ) {
+                        best = v; al_b = al; be_b = be;
+                        wb = w2; ab = a2; fab = fa2;
+                    }
+                    return v;
+                };
+                for ( int ia = 0; ia < o.g2_na; ++ia ) {
+                    const TF al = t / TF( SI( 1 ) << ia );
+                    if ( al < o.t_min ) break;
+                    mat0[ ia ] = evalue( al, 0 );
+                    if ( al_s == 0 && mat0[ ia ] < INFINI ) { al_s = al; as_ = a2; fas_ = fa2; }
+                }
+
+                // ---- 2. LA SECONDE DIRECTION
+                if ( son ) {
+                    d_pre.clear();
+                    if ( al_s > 0 ) {
+                        double ts0 = now();
+                        Lson.assemble( n, fas_ );
+                        st.t_asm += now() - ts0;
+                        membre_de( as_, res_cur, o.puis, bson );
+                        ts0 = now();
+                        if ( ! lin.resout( Lson, bson, d_pre ) ) d_pre.clear();
+                        else {                            // `d_s - d` : LA COURBURE de la direction en `t`
+                            for ( SI i = 0; i < n; ++i ) d_pre[ i ] -= d[ i ];
+                            d_pre[ 0 ] = 0;
+                        }
+                        st.t_lin += now() - ts0;
+                    }
+                }
                 const bool avec = SI( d_pre.size() ) == n;
-                std::vector<TF> bs;                      // les `beta`, symetriques, `0` au milieu
+
+                // ---- 3. LE BALAYAGE EN `beta`, aux memes `alpha`
+                std::vector<TF> bs;
                 if ( avec && o.g2_nb > 1 ) {
                     const int m = o.g2_nb / 2;
-                    for ( int k = -m; k <= m; ++k ) bs.push_back( o.g2_bmax * k / TF( m ) );
+                    for ( int k = o.g2_bpos ? 0 : -m; k <= m; ++k ) bs.push_back( o.g2_bmax * k / TF( m ) );
                 } else
                     bs.push_back( 0 );
                 const int nb = int( bs.size() );
                 std::vector<TF> mat( size_t( o.g2_na ) * nb, INFINI );
-                TF best = INFINI, al_b = 0, be_b = 0;
-                int essais = 0;
                 for ( int ia = 0; ia < o.g2_na; ++ia ) {
                     const TF al = t / TF( SI( 1 ) << ia );
                     if ( al < o.t_min ) break;
-                    for ( int ib = 0; ib < nb; ++ib ) {
-                        const TF be = bs[ ib ];
-                        for ( SI i = 0; i < n; ++i )
-                            w2[ i ] = w[ i ] + al * d[ i ] + ( be != 0 ? be * d_pre[ i ] : TF( 0 ) );
-                        w2[ 0 ] = 0;
-                        mesures_et_facettes( w2, a2, fa2, pda2 );
-                        ++essais;
-                        TF m2 = INFINI;
-                        for ( SI i = 0; i < n; ++i )
-                            if ( protegee[ i ] && a2[ i ] < m2 ) m2 = a2[ i ];
-                        const TF v = merite( a2 );
-                        const bool ok = ! plancher_actif() || m2 >= eps;
-                        mat[ size_t( ia ) * nb + ib ] = ok ? v : INFINI;
-                        if ( ok && v < best ) {
-                            best = v; al_b = al; be_b = be;
-                            wb = w2; ab = a2; fab = fa2;
-                        }
-                    }
+                    for ( int ib = 0; ib < nb; ++ib )
+                        mat[ size_t( ia ) * nb + ib ] = bs[ ib ] == 0 ? mat0[ ia ] : evalue( al, bs[ ib ] );
                 }
+
                 if ( o.trace && o.g2_trace ) {
-                    // LE COSINUS EST LA MESURE QUI DIT SI LA GRILLE A DE LA RESOLUTION. Si le
-                    // deplacement precedent est colineaire a la direction de Newton, `beta` ne fait
-                    // que rehausser `alpha` : le plan est un rayon, et un argmin en `beta = 0` ne
-                    // veut rien dire. Il faut donc le lire AVANT la matrice.
+                    // LE COSINUS DIT SI LA GRILLE A DE LA RESOLUTION. Si la seconde direction est
+                    // colineaire a `d`, `beta` ne fait que rehausser `alpha` : le plan est un rayon et
+                    // un argmin en `beta = 0` ne veut rien dire. A lire AVANT la matrice.
                     TF ps = 0, nd = 0, np = 0;
                     if ( avec )
                         for ( SI i = 0; i < n; ++i ) { ps += d[ i ] * d_pre[ i ]; nd += d[ i ] * d[ i ]; np += d_pre[ i ] * d_pre[ i ]; }
                     const TF cos = avec && nd > 0 && np > 0 ? ps / std::sqrt( nd * np ) : TF( 0 );
-                    std::printf( "      GRILLE2 ( merite %s, depart %.6e, cos( d, precedent ) %.4f ) :"
-                                 " lignes alpha = t/2^k, colonnes beta\n        %-10s",
-                                 res_cur == NewtonOptions::LOG ? "log" : "?", double( nr ), double( cos ), "alpha" );
+                    const TF rap = avec && nd > 0 ? std::sqrt( np / nd ) : TF( 0 );
+                    std::printf( "      GRILLE2 ( merite %s, depart %.6e, %s, sonde en %.4g, cos( d, e ) %.4f,"
+                                 " |e|/|d| %.3f, PART NEUVE |e_perp|/|d| %.3f ) : lignes alpha, colonnes beta\n        %-10s",
+                                 res_cur == NewtonOptions::LOG ? "log" : "?", double( nr ),
+                                 son ? "e = d( sonde ) - d" : "e = deplacement precedent", double( al_s ),
+                                 double( cos ), double( rap ), double( rap * std::sqrt( std::max( TF( 0 ), 1 - cos * cos ) ) ), "alpha" );
                     for ( int ib = 0; ib < nb; ++ib ) std::printf( " %12.3g", double( bs[ ib ] ) );
                     std::printf( "\n" );
                     for ( int ia = 0; ia < o.g2_na; ++ia ) {
@@ -1917,8 +1984,8 @@ struct Newton {
                 return false;
             }
             t_prec = t;
-            if ( o.pas == NewtonOptions::GRILLE2 ) {     // le DEPLACEMENT reellement fait, melange compris
-                d_pre.resize( n );
+            if ( o.pas == NewtonOptions::GRILLE2 && o.g2_dir == NewtonOptions::PREC ) {
+                d_pre.resize( n );                      // le DEPLACEMENT reellement fait, melange compris
                 for ( SI i = 0; i < n; ++i ) d_pre[ i ] = w2[ i ] - w[ i ];
             }
             w.swap( w2 );

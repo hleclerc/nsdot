@@ -6324,3 +6324,94 @@ précédent le fait par accident (en se défaisant) ; un span de directions de *
 fait par construction, puisque chacune place la cible ailleurs — et c'est exactement le span du § 22,
 le seul essai qui ait atteint 13 diagrammes. Le prochain essai de direction est donc là, pas dans la
 mémoire du pas.
+
+## 24.13 La direction SONDÉE au bout du rayon : la courbure, enfin une seconde direction qui sert
+
+Le § 24.12 a donné le critère : la seconde direction utile est celle qui **libère la contrainte**. Le
+déplacement précédent ne le fait que par accident. La bonne candidate vient de la non-linéarité
+elle-même : `d` est la direction de Newton **au départ**, et le problème est non linéaire, donc elle
+n'est plus la bonne au bout du pas. On recalcule donc Newton **au point de sonde** — juste avant qu'une
+cellule casse — et on prend
+
+`e = d( sonde ) − d`,
+
+qui est une différence finie de la direction le long du rayon, c'est-à-dire la **courbure en `t`**. La
+grille devient un mélange, `w + α ( d + β e )` : `β = 0` est Newton pur (l'algorithme actuel), `β = 1`
+est la direction de l'arrivée, et les deux axes sont sans dimension. (`--pas grille2 --g2-dir sonde`.)
+
+### Le point de sonde doit être ADMISSIBLE — un piège qui coûte 363 secondes
+
+Première version : sonder en `w + t d` avec `t` le pas courant. En 2D ça marche, parce que la passe des
+limites a déjà ramené `t` sous `α*`. **En 3D il n'y a pas de passe de limites**, donc `t = 1`, donc le
+point de sonde a des cellules vides — et le laplacien y a des lignes nulles. Mesure : le multigrille y
+a passé **20 032 itérations et 363 s** avant d'échouer, et le mode retombait silencieusement sur `β = 0`
+(`|e|/|d| = 0` dans la trace : le signe qui a permis de le voir).
+
+La correction n'est pas un rustine, c'est le bon ordre : on descend d'abord la colonne `β = 0`, qui est
+l'échelle de KMT, et **son premier point admissible EST le point de sonde**. Il devient alors gratuit :
+c'est le point que l'amortissement allait prendre de toute façon.
+
+### La mesure : `e` n'est pas colinéaire, et il est largement OPPOSÉ à `d`
+
+| | `cos( d, e )` | `|e|/|d|` | part neuve `|e_⊥|/|d|` |
+|---|---|---|---|
+| 2D lignes s0.005, it. 0 à 6 | −0.66 à **−0.93** | 0.17 à 0.78 | 0.13 à 0.27 |
+| 3D plans s0.02, it. 0 à 3 | −0.88 à **−0.97** | 0.56 à 0.70 | 0.16 à 0.26 |
+
+Au bout du rayon, Newton veut **revenir** : voilà la courbure, et elle est grosse. À comparer au
+déplacement précédent du § 24.12, colinéaire à 0.90–0.99. Attention cependant : comme `e` est presque
+antiparallèle à `d`, l'essentiel de `β` ne fait que **raccourcir le pas**, ce que `α` couvre déjà. La
+part réellement neuve est la composante orthogonale, `|e_⊥|/|d| ≈ 0.2` — modeste, et c'est elle qui
+mesure ce qu'il y a à gagner.
+
+### Ce qu'elle gagne : elle DÉBLOQUE le pas plein
+
+3D plans s0.02, itération 1, mérite `log` :
+
+| `α` | `β = 0` | `β = 0.5` | `β = 1` |
+|---|---|---|---|
+| **1** | *refusé* | *refusé* | **49.49** |
+| 0.5 | *refusé* | 105.1 | 122.8 |
+| 0.25 | 141.6 | 149.2 | 156.2 |
+
+Le meilleur point de la colonne `β = 0` est 141.6 à `α = 0.25` ; le mélange passe à `α = 1` et donne
+**49.49**, soit un **facteur 2.9**. Même effet aux itérations 2 (14.8 contre 36.1) et 3 (3.27 contre
+6.64). L'argmin sort de la colonne `β = 0` à **toutes** les itérations de la phase `log`.
+
+### Le bilan, honnête : la direction est réelle, la recherche coûte plus qu'elle ne rapporte
+
+Itérations et diagrammes, `--residu log` partout, référence = `essai-limites 0.9` :
+
+| variante | 2D uniforme | 2D lignes s0.005 | 2D aires égales (dég.) | 3D plans s0.02 |
+|---|---|---|---|---|
+| référence ( limites + log ) | 6 it / **7** | 12 it / **19** | 13 it / **53** | 9 it / **17** |
+| sonde, grille 5×5 | 6 it / 31 | **11** it / 180 | **12** it / 214 | **7** it / 104 |
+| sonde, `β ≥ 0` ∈ {0, ½, 1}, 3 `α` | — | **11** it / 68 | — | **7** it / 40 |
+| sonde, `β ≥ 0` ∈ {0, 1}, 3 `α` | — | 11 it / 47 | — | 8 it / 29 |
+| sonde, 1 `α` × 3 `β` | 6 it / 9 | 11 it / 26 | 12 it / 60 | 9 it / 21 |
+| précédent ( § 24.12 ), grille 5×5 | 6 it / 11 | 12 it / 161 | 13 it / 219 | 9 it / 86 |
+
+Trois lectures nettes :
+
+1. **la sonde gagne des itérations là où le précédent n'en gagnait aucune** : une en 2D dur, **deux sur
+   neuf en 3D** (7 contre 9) ;
+2. **il faut de la résolution en `β`** : retirer `β = 0.5` coûte une itération en 3D (8 au lieu de 7), et
+   se limiter à un seul `α` la perd entièrement (9 it) — ce qui explique aussi pourquoi les variantes
+   les moins chères ne gagnent rien en 3D ;
+3. **et la recherche coûte plus qu'elle ne rapporte** : le meilleur compromis mesuré fait 40 diagrammes
+   en 3D contre 17, pour 2 itérations économisées. Comme instrument c'est concluant ; comme algorithme
+   ce n'est pas encore un gain.
+
+### Ce que ça désigne, précisément
+
+Le coût est **entièrement** dans le balayage de `β` : chaque point d'essai est un diagramme. Or c'est
+exactement ce que le § 22 sait faire sans diagramme — `PolyMulti` donne le polynôme **exact** de l'aire
+de chaque cellule sur un span de directions, avec son rayon d'exactitude. Jusqu'ici on le nourrissait
+d'un span de **résidus** (`lin`, `log`, `barrière`) ; le § 24.13 fournit un span meilleur, mesuré
+non-colinéaire et dont on sait ce qu'il apporte. La suite est donc `span{ d, d( sonde ) }` évalué par le
+modèle polynomial, pas par des diagrammes.
+
+Deux remarques de coût qui vont dans le même sens : le solve de la sonde est **celui de l'itération
+suivante** quand `β = 0` gagne (même point, même laplacien, même second membre), donc son coût marginal
+n'est payé que lorsque le mélange sert ; et un `β` obtenu par le polynôme ne coûterait aucun diagramme
+du tout.

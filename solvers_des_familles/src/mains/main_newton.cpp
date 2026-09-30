@@ -653,10 +653,15 @@ int main( int argc, char **argv ) {
         else if ( s == "--puis" )       o.newton.puis = std::atof( val() );
         else if ( s == "--bascule-residu" ) o.newton.bascule_residu = std::atof( val() );
         else if ( s == "--bascule-pas" ) o.newton.bascule_pas = std::atof( val() );
+        else if ( s == "--g2-dir" ) {
+            const std::string v = val();
+            o.newton.g2_dir = v == "sonde" ? NewtonOptions::SONDE : NewtonOptions::PREC;
+        }
         else if ( s == "--g2-na" )      o.newton.g2_na = std::atoi( val() );
         else if ( s == "--g2-nb" )      o.newton.g2_nb = std::atoi( val() );
         else if ( s == "--g2-bmax" )    o.newton.g2_bmax = std::atof( val() );
         else if ( s == "--g2-muet" )    o.newton.g2_trace = false;
+        else if ( s == "--g2-bpos" )    o.newton.g2_bpos = true;
         else if ( s == "--profil" )     o.newton.profil = std::atoi( val() );
         else if ( s == "--combi" )      o.newton.combi = std::atoi( val() );
         else if ( s == "--modele" )     o.newton.modele = std::atoi( val() );
@@ -708,7 +713,9 @@ int main( int argc, char **argv ) {
                 "  --pas P         essais ( KMT, defaut ) | dyadique | facteur | tenseur | essai-limites ( 2D )\n"
                 "                  | merite : le pas qui MINIMISE le merite le long de la direction ( au lieu du premier qui passe )\n"
                 "                  | grille2 : RECHERCHE A DEUX VARIABLES, w + alpha d + beta ( deplacement precedent ) -- un INSTRUMENT\n"
+                "  --g2-dir D      grille2 : la seconde direction -- prec ( deplacement precedent ) | sonde ( Newton au bout du rayon )  (prec)\n"
                 "  --g2-na N --g2-nb N --g2-bmax B --g2-muet   grille2 : barreaux en alpha, en beta, amplitude de beta, silence   (5, 5, 1)\n"
+                "  --g2-bpos       grille2 : ne balayer que beta >= 0 ( avec la sonde, le cote negatif ne gagne jamais )\n"
                 "                  | modele ( 2D ) : le pas cherche dans le SPAN de plusieurs directions, sur le modele\n"
                 "                  polynomial d.aire -- aucun diagramme pour chercher, un seul pour verifier\n"
                 "  --mod-q Q       modele : le pas du simplexe cherche, 1/Q                        (4)\n"
