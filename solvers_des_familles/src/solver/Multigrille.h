@@ -276,6 +276,8 @@ struct Mg : Lineaire {
     int      refaire = 4;          ///< la hierarchie refaite toutes les `refaire` resolutions
     TF       omega   = TF( 0.7 );  ///< l'amortissement de Jacobi
     TF       tol     = TF( 1e-6 ); ///< residu RELATIF
+    TF tolerance() const override { return tol; }
+    void tolerance( TF v ) override { tol = v; }
     int      maxit   = 20000;
 
     /// `ids[ k ]` : l'identifiant du germe de rang `k` dans l'arbre. C'est `pd.ids`, et c'est la

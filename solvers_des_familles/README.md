@@ -6537,3 +6537,73 @@ propre** ; il ne survit pas aux germes quasi coïncidents. Le span `{ d, sonde }
 itérations sur neuf en 3D** — n'est donc **pas** récupérable par cette voie en l'état : il faudrait
 écrire le polynôme multi-directions du volume d'une cellule 3D. C'est la limite à connaître avant de
 choisir ce qu'on garde.
+
+## 24.15 Le pas SANS AUCUN DIAGRAMME — les deux leviers, et ce qu'il reste
+
+Correction d'abord, parce qu'elle change la structure : **il n'y a pas de « diagramme de
+vérification »**. Le diagramme au point choisi *est* celui de l'itération suivante, qu'on doit calculer
+de toute façon. Donc on est **optimiste** : on va au point que le modèle désigne, et on ne recule que si
+le vrai mérite n'y descend pas — un backtracking qui, mesuré, **n'arrive jamais** sur les nuages du banc.
+Et le point de sonde lui-même n'a pas besoin de diagramme : ses aires sortent du modèle, à connectivité
+fixe.
+
+Le pas se choisit donc **sans reconstruire une seule cellule** :
+
+1. le modèle à **une** direction, bâti là où `pd` est déjà (aux poids `w`) : `α*` sort des **racines**
+   (§ 7) et le modèle donne les **aires** au point de sonde — c'est le **levier 2**, et la passe de
+   limites globale disparaît ;
+2. le résidu en ce point se calcule depuis ces aires, et son système se résout avec **le même
+   laplacien** — donc sans assemblage et **sans nouvelle hiérarchie AMG** : 13 hiérarchies pour 13
+   itérations, pas 26. C'est ce qui remplace le levier 1 (voir plus bas) ;
+3. `e = d(sonde) − d` est la courbure, et le modèle à **deux** directions rend l'exploration de
+   `(α, β)` gratuite — grille puis descente de gradient ;
+4. on va à l'argmin, un diagramme, et c'est celui de l'itération suivante.
+
+### Ce que ça donne ( nuages PROPRES seulement )
+
+Les germes quasi coïncidents sont **sortis du banc** : ils sont agrégés avant la résolution (§ 23), donc
+les faire porter un jugement sur l'amortissement n'a pas de sens.
+
+| | itérations | diagrammes | temps | Krylov |
+|---|---|---|---|---|
+| 2D uniforme, référence | 6 | 7 | **1.11 s** | 226 |
+| 2D uniforme, **modèle** | **5** | **6** | 1.12 s | 221 |
+| 2D lignes s0.02, référence | **9** | 13 | **2.17 s** | 314 |
+| 2D lignes s0.02, **modèle** | 10 | **11** | 3.48 s | 556 |
+| 2D lignes s0.005, référence | **12** | 19 | **4.24 s** | 681 |
+| 2D lignes s0.005, **modèle** | 13 | **15** | 6.53 s | 1164 |
+
+**Les diagrammes passent sous la référence partout** (6 contre 7, 11 contre 13, 15 contre 19), avec
+**un seul diagramme par itération et zéro recul**. Sur l'uniforme le temps est maintenant à égalité
+(1.12 contre 1.11 s) pour une itération de moins. Sur les lignes il reste 60 % de retard, et la colonne
+Krylov dit exactement pourquoi : **le solve de la sonde double le travail linéaire** (1164 contre 681).
+
+### Deux négatifs mesurés, à ne pas répéter
+
+**Le levier 1 tel qu'il était conçu n'a plus d'objet.** « Réutiliser le solve de la sonde comme celui de
+l'itération suivante » supposait que le point de sonde soit un vrai point où l'on irait. Il n'en est plus
+un : c'est un point du modèle, et le point retenu est ailleurs (`w + α d + β e`). Ce qui reste, et qui
+marche, est la reprise de **hiérarchie** : le système de la sonde a le même laplacien, donc AMGCL ne
+remonte rien.
+
+**Une tolérance lâche pour la sonde ne sert à rien** — alors que l'idée est bonne (cette résolution ne
+sert qu'à définir une direction de recherche). Mesure : `--g2-tol` à 1e-10, 1e-3 et 1e-2 donnent
+**exactement** 1164 itérations de Krylov. La raison est dans `Lineaire.h` : AMGCL fige la tolérance dans
+l'objet solveur au moment où la hiérarchie est montée (`prm.solver.tol`), et `resout_encore` rappelle cet
+objet — changer `tol` après coup n'a aucun effet. Le crochet est en place (`Lineaire::tolerance`), mais
+il faudrait monter un second solveur sur la même hiérarchie pour que ça porte.
+
+**Et la précision de la sonde n'est PAS ce qui achetait les itérations.** Le témoin `--g2-sonde-reelle`
+(un vrai diagramme au point de sonde, donc `e` exact) est **moins bon** : 12 it / 21 diag contre 10 / 11
+sur s0.02, 15 / 27 contre 13 / 15 sur s0.005. Payer un diagramme pour une meilleure courbure est donc
+une perte sèche — ce qui contredit l'hypothèse que j'avais avancée, et c'est le témoin qui tranche.
+
+### Où en est le compte
+
+Le mode fait maintenant **moins de diagrammes que la référence** et le **meilleur compte d'itérations**
+sur l'uniforme, à temps égal. Ce qui l'empêche de gagner sur les cas durs est un poste unique et
+identifié : **un solve linéaire de plus par itération**. Les deux façons de l'attaquer, dans l'ordre de
+promesse : monter un second solveur AMGCL à tolérance lâche sur la hiérarchie existante (le crochet est
+là) ; ou obtenir `e` sans résoudre, par exemple en extrapolant la direction depuis l'itération précédente
+— mais le § 24.12 a mesuré que la mémoire du pas est colinéaire, donc cette seconde piste part avec un
+handicap connu.

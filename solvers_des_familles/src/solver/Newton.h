@@ -206,6 +206,13 @@ struct NewtonOptions {
     /// ( `PolyMulti::gradient` ). Le seul cout est la construction, un diagramme par iteration.
     bool g2_modele  = false;
     int  g2_desc    = 0;       ///< GRILLE2 MODELE : evaluations de DESCENTE DE GRADIENT ( 0 : aucune )
+    int  g2_back    = 4;       ///< GRILLE2 MODELE : divisions par deux permises si le vrai merite ne descend pas
+    /// GRILLE2 MODELE : prendre les aires du point de sonde d'un VRAI DIAGRAMME au lieu du modele.
+    ///
+    /// Un diagramme de plus par iteration, mais la direction sondee est alors exacte. C'est le
+    /// temoin qui dit si la precision de `e` est ce qui achetait les iterations ( § 24.15 ).
+    bool g2_sonde_reelle = false;
+    TF   g2_tol     = 1e-3;    ///< GRILLE2 MODELE : tolerance du solve de la SONDE ( 0 : la meme que le reste )
     bool g2_verif   = true;    ///< GRILLE2 MODELE : verifier l'argmin du modele par un vrai diagramme
     bool g2_trace   = true;    ///< GRILLE2 : imprimer la matrice des merites
     int  pas        = ESSAIS;  ///< comment choisir `t` ( voir en tete )
@@ -349,6 +356,7 @@ struct NewtonStats {
     TF     reste = 0;          ///< le `max_i |a_i - nu_i| / nu_i` atteint
     TF     reste0 = 0;         ///< le meme AU DEPART ( ce que vaut le point de depart )
     int    nb_iter = 0, nb_diag = 0, nb_recul = 0;
+    int    nb_back = 0;           ///< GRILLE2 MODELE : backtrackings ( le vrai merite n'a pas descendu )
     SI     nb_deborde = 0;     ///< cellules qui ont deborde `MaxNv`, en tout ( mesure fausse )
     SI     nb_cell_lim = 0;    ///< cellules calculees par la passe des limites, en tout
     int    nb_tenseur = 0;     ///< pas tensoriels tentes
@@ -546,6 +554,8 @@ struct Newton {
         std::vector<LimiteCellule> lim;
         std::vector<TF> ucel, u2, b2, d2, sflux, dgard, del;  // la passe CIBLE
         std::vector<char> touche, dumm;
+        std::vector<TF> aso;                         // MODELE : les aires MODELISEES au point de sonde
+        std::vector<TF> d_next;                      // la direction resolue AU POINT DE SONDE
         std::vector<PolyMulti> pm2;                  // GRILLE2 MODELE : le polynome par cellule
         std::vector<TF> d_pre, bson, as_;            // GRILLE2 : la SECONDE DIRECTION, son second membre
         std::vector<Facette> fas_;                   // ... et les mesures du point de SONDE
@@ -1459,7 +1469,10 @@ struct Newton {
                 st.t_cible += now() - tc0;
             }
 
+            // LEVIER 2 : en `grille2 --g2-modele`, `alpha*` sort des RACINES DU MODELE ( plus bas ),
+            // pas d'une passe de limites globale -- qui coutait 0.12 s par iteration.
             if ( o.pas != NewtonOptions::ESSAIS && o.pas != NewtonOptions::ESSAI_LIMITES
+                 && ( o.pas != NewtonOptions::GRILLE2 || ! o.g2_modele )
                  && ( o.pas != NewtonOptions::MODELE || o.mod_limites )
                  && ( o.pas != NewtonOptions::MERITE || o.mer_limites ) ) {
                 if constexpr ( PD::dim == 2 ) {
@@ -1746,8 +1759,34 @@ struct Newton {
             //
             // Comme la minimisation du merite ( § 24.10 ), ca n'a de sens QUE dans la phase `log` :
             // apres la bascule le juge est `lin`, dont le § 21.1 a etabli qu'il est mauvais.
-            if ( o.pas == NewtonOptions::GRILLE2 && res_cur != NewtonOptions::LIN ) {
+            if ( o.pas == NewtonOptions::GRILLE2 && ! o.g2_modele && res_cur != NewtonOptions::LIN ) {
                 const bool son = o.g2_dir == NewtonOptions::SONDE;
+
+                // ---- LEVIER 2 : `alpha*` PAR LES RACINES DU MODELE, pas par une passe de limites.
+                //
+                // Ici `pd` est encore aux poids `w` ( le diagramme du point accepte a la fin de
+                // l'iteration precedente ), donc un modele a UNE direction ne coute rien. Pour chaque
+                // cellule protegee, `A_i( t )` est une quadratique scalaire et le plus grand pas qui
+                // respecte le plancher est une RACINE ( § 7 ) : `alpha*` est leur minimum. Ca remplace
+                // la passe de limites globale, qui coutait 0.12 s par iteration.
+                if ( o.g2_modele ) {
+                    if constexpr ( PD::dim == 2 ) {
+                        const TF *dp1[ 1 ] = { d.data() };
+                        polynomes_multi( pd, P, w, dp1, 1, par, pm2 );
+                        TF am = INFINI;
+                        for ( SI i = 0; i < n; ++i ) {
+                            if ( ! protegee[ i ] || pm2[ i ].etat != PolyCellule::OK ) continue;
+                            PolyCellule sc;
+                            sc.a0 = pm2[ i ].c0; sc.a1 = pm2[ i ].g[ 0 ]; sc.a2 = pm2[ i ].q[ 0 ];
+                            am = std::min( am, sc.premiere_racine( eps ) );
+                        }
+                        if ( am < INFINI && am > 0 ) {
+                            alpha_lim = am;                // pour la trace
+                            t = std::min( o.t0, o.facteur * am );
+                        }
+                    }
+                }
+
                 TF best = INFINI, al_b = 0, be_b = 0, al_s = 0;
                 int essais = 0;
                 std::vector<TF> mat0( size_t( o.g2_na ), INFINI );
@@ -1790,6 +1829,7 @@ struct Newton {
                 }
 
                 // ---- 2. LA SECONDE DIRECTION
+                bool sonde_resolue = false;
                 if ( son ) {
                     d_pre.clear();
                     if ( al_s > 0 ) {
@@ -1798,8 +1838,9 @@ struct Newton {
                         st.t_asm += now() - ts0;
                         membre_de( as_, res_cur, o.puis, bson );
                         ts0 = now();
-                        if ( ! lin.resout( Lson, bson, d_pre ) ) d_pre.clear();
-                        else {                            // `d_s - d` : LA COURBURE de la direction en `t`
+                        if ( lin.resout( Lson, bson, d_next ) ) {
+                            sonde_resolue = true;
+                            d_pre = d_next;               // `d_s - d` : LA COURBURE de la direction en `t`
                             for ( SI i = 0; i < n; ++i ) d_pre[ i ] -= d[ i ];
                             d_pre[ 0 ] = 0;
                         }
@@ -1928,9 +1969,14 @@ struct Newton {
                                     h /= 2;
                             }
                         }
-                        // ---- LA VERIFICATION : UN seul vrai diagramme a l'argmin du modele
+                        // ---- LA VERIFICATION : ELLE N'EST PAS UN SURCOUT, c'est le diagramme de
+                        // l'etape d'apres. On est optimiste : on va au point que le modele designe, et
+                        // s'il ne passe pas on retombe sur le point de sonde -- deja calcule, deja
+                        // admissible -- donc le backtracking est GRATUIT. Et si l'argmin du modele EST
+                        // le point de sonde, il n'y a meme pas de second diagramme a faire.
                         TF v_reel = INFINI;
-                        if ( mb < INFINI ) {
+                        const bool argmin_sonde = t1b == al_s && t2b == 0;
+                        if ( mb < INFINI && ! argmin_sonde ) {
                             for ( SI i = 0; i < n; ++i ) w2[ i ] = w[ i ] + t1b * d[ i ] + t2b * d_pre[ i ];
                             w2[ 0 ] = 0;
                             mesures_et_facettes( w2, a2, fa2, pda2 );
@@ -2016,6 +2062,193 @@ struct Newton {
                     w2.swap( wb ); a2.swap( ab ); fa2.swap( fab );
                     t = al_b;
                     pris = true;
+                }
+            }
+
+            // ---- LE PAS SANS AUCUN DIAGRAMME ( `--pas grille2 --g2-modele`, 2D )
+            //
+            // Tout le choix du pas se fait a connectivite FIXE, donc sans reconstruire une seule
+            // cellule. Il ne reste qu'UN diagramme par iteration, celui du point ou l'on va -- qui est
+            // le diagramme de l'iteration suivante, pas une verification.
+            //
+            //   1. le modele a UNE direction, bati la ou `pd` est deja ( aux poids `w` ) : `alpha*`
+            //      sort des RACINES ( § 7 ), et le modele donne les AIRES au point de sonde ;
+            //   2. le residu en ce point se calcule depuis ces aires, et son systeme se resout avec
+            //      LE MEME laplacien -- donc sans assemblage et SANS nouvelle hierarchie AMG, la
+            //      seule depense etant les iterations de Krylov ;
+            //   3. `e = d( sonde ) - d` est la courbure ( § 24.13 ), et le modele a DEUX directions
+            //      rend l'exploration de `( alpha, beta )` gratuite ;
+            //   4. on va a l'argmin. Si le vrai merite ne descend pas la-bas, on divise le pas par
+            //      deux et on recommence -- un backtracking qui n'arrive pas en pratique.
+            if ( o.pas == NewtonOptions::GRILLE2 && o.g2_modele && res_cur != NewtonOptions::LIN ) {
+                if constexpr ( PD::dim == 2 ) {
+                    const int nth = std::max( 1, par.threads );
+                    int essais = 0;
+
+                    // ---- 1. LE MODELE A UNE DIRECTION : `alpha*` ET LES AIRES DU POINT DE SONDE
+                    const TF *dp1[ 1 ] = { d.data() };
+                    polynomes_multi( pd, P, w, dp1, 1, par, pm2 );
+                    TF am = INFINI;
+                    for ( SI i = 0; i < n; ++i ) {
+                        if ( ! protegee[ i ] || pm2[ i ].etat != PolyCellule::OK ) continue;
+                        PolyCellule sc;
+                        sc.a0 = pm2[ i ].c0; sc.a1 = pm2[ i ].g[ 0 ]; sc.a2 = pm2[ i ].q[ 0 ];
+                        am = std::min( am, sc.premiere_racine( eps ) );
+                    }
+                    const TF ts = am < INFINI && am > 0 ? std::min( o.t0, o.facteur * am ) : t;
+                    if ( am < INFINI && am > 0 ) alpha_lim = am;
+
+                    // ---- 2. LA DIRECTION SONDEE, SANS DIAGRAMME NI HIERARCHIE
+                    bool ok_s = false;
+                    {
+                        const TF tk[ 1 ] = { ts };
+                        aso.assign( n, 0 );
+                        if ( o.g2_sonde_reelle ) {        // le temoin : les aires EXACTES du point
+                            for ( SI i = 0; i < n; ++i ) w2[ i ] = w[ i ] + ts * d[ i ];
+                            w2[ 0 ] = 0;
+                            mesures_et_facettes( w2, a2, fa2, pda2 );
+                            ++essais;
+                            aso = a2;
+                            for ( SI i = 0; i < n; ++i ) aso[ i ] = std::max( aso[ i ], eps );
+                        } else
+                        for ( SI i = 0; i < n; ++i ) {
+                            const TF A = pm2[ i ].etat == PolyCellule::OK ? pm2[ i ]( tk, 1 ) : a[ i ];
+                            aso[ i ] = std::max( A, eps );
+                        }
+                        membre_de( aso, res_cur, o.puis, bson );
+                        const double ts0 = now();
+                        // LA SONDE NE SERT QU'A DEFINIR UNE DIRECTION : une tolerance lache suffit,
+                        // et c'etait la moitie du surcout du mode ( 1164 iterations de Krylov contre
+                        // 681 pour la reference, dont la moitie venait d'ici ).
+                        const TF tol0 = lin.tolerance();
+                        if ( o.g2_tol > 0 && tol0 > 0 ) lin.tolerance( o.g2_tol );
+                        if ( lin.sait_encore() ) { lin.resout_encore( bson, d_next ); ok_s = true; }
+                        else                       ok_s = lin.resout( L, bson, d_next );
+                        if ( o.g2_tol > 0 && tol0 > 0 ) lin.tolerance( tol0 );
+                        st.t_lin += now() - ts0;
+                    }
+
+                    // ---- 3. `e = d( sonde ) - d`, ET LE MODELE A DEUX DIRECTIONS
+                    TF cos_de = 0, rap_de = 0;
+                    if ( ok_s ) {
+                        d_pre = d_next;
+                        for ( SI i = 0; i < n; ++i ) d_pre[ i ] -= d[ i ];
+                        d_pre[ 0 ] = 0;
+                        TF ps = 0, nd = 0, np = 0;
+                        for ( SI i = 0; i < n; ++i ) { ps += d[ i ] * d_pre[ i ]; nd += d[ i ] * d[ i ]; np += d_pre[ i ] * d_pre[ i ]; }
+                        cos_de = nd > 0 && np > 0 ? ps / std::sqrt( nd * np ) : TF( 0 );
+                        rap_de = nd > 0 ? std::sqrt( np / nd ) : TF( 0 );
+                        const TF *dp2[ 2 ] = { d.data(), d_pre.data() };
+                        polynomes_multi( pd, P, w, dp2, 2, par, pm2 );
+                    }
+                    const int nk = ok_s ? 2 : 1;
+
+                    // ---- LE MERITE `log2` DU MODELE, POUR UNE LISTE DE POINTS, EN UN PASSAGE
+                    auto mods = [ & ]( const std::vector<TF> &pts, std::vector<TF> &s2,
+                                       std::vector<TF> &mn ) {
+                        const int np = int( pts.size() / nk );
+                        std::vector<TF> as2( size_t( nth ) * np, 0 ), amn( size_t( nth ) * np, INFINI );
+                        parallel_for( n, par, [ & ]( SI i, int th ) {
+                            const PolyMulti &q = pm2[ i ];
+                            if ( q.etat != PolyCellule::OK ) return;
+                            TF *ps = &as2[ size_t( th ) * np ], *pmn = &amn[ size_t( th ) * np ];
+                            for ( int p = 0; p < np; ++p ) {
+                                const TF A = q( &pts[ size_t( p ) * nk ], nk );
+                                if ( protegee[ i ] && A < pmn[ p ] ) pmn[ p ] = A;
+                                if ( A > 0 ) { const TF gg = std::log( A / nu[ i ] ); ps[ p ] += gg * gg; }
+                                else ps[ p ] = INFINI;
+                            }
+                        } );
+                        s2.assign( np, 0 ); mn.assign( np, INFINI );
+                        for ( int th = 0; th < nth; ++th )
+                            for ( int p = 0; p < np; ++p ) {
+                                const TF v = as2[ size_t( th ) * np + p ];
+                                s2[ p ] = s2[ p ] == INFINI || v == INFINI ? INFINI : s2[ p ] + v;
+                                mn[ p ] = std::min( mn[ p ], amn[ size_t( th ) * np + p ] );
+                            }
+                        for ( int p = 0; p < np; ++p ) s2[ p ] = s2[ p ] == INFINI ? INFINI : std::sqrt( s2[ p ] );
+                    };
+
+                    // ---- 4. L'EXPLORATION, GRATUITE : la grille puis la descente de gradient
+                    TF mb = INFINI, t1b = ts, t2b = 0;
+                    {
+                        std::vector<TF> pts;
+                        const int NA = std::max( o.g2_na, 1 ), NB = ok_s ? std::max( o.g2_nb, 1 ) : 1;
+                        for ( int ia = 0; ia < NA; ++ia ) {
+                            const TF al = ts / TF( SI( 1 ) << ia );
+                            if ( al < o.t_min ) break;
+                            for ( int ib = 0; ib < NB; ++ib ) {
+                                const TF be = NB == 1 ? TF( 0 )
+                                            : o.g2_bpos ? o.g2_bmax * ib / TF( std::max( NB - 1, 1 ) )
+                                                        : o.g2_bmax * ( 2 * ib - ( NB - 1 ) ) / TF( std::max( NB - 1, 1 ) );
+                                pts.push_back( al );
+                                if ( nk == 2 ) pts.push_back( al * be );
+                            }
+                        }
+                        std::vector<TF> s2, mn;
+                        mods( pts, s2, mn );
+                        for ( int p = 0; p < int( s2.size() ); ++p )
+                            if ( s2[ p ] < mb && ( ! plancher_actif() || mn[ p ] >= eps ) ) {
+                                mb = s2[ p ]; t1b = pts[ size_t( p ) * nk ];
+                                t2b = nk == 2 ? pts[ size_t( p ) * nk + 1 ] : TF( 0 );
+                            }
+                    }
+                    int nd_ok = 0;
+                    if ( o.g2_desc > 0 && mb < INFINI && nk == 2 ) {
+                        TF t1 = t1b, t2 = t2b, h = std::fabs( t1b ) / 4;
+                        for ( int k = 0; k < o.g2_desc && h > TF( 1e-12 ); ++k ) {
+                            const TF tk[ 2 ] = { t1, t2 };
+                            std::vector<TF> agr( size_t( nth ) * 2, 0 );
+                            parallel_for( n, par, [ & ]( SI i, int th ) {
+                                const PolyMulti &q = pm2[ i ];  // d( sum g^2 )/dt = 2 sum g / A dA/dt
+                                if ( q.etat != PolyCellule::OK ) return;
+                                const TF A = q( tk, 2 );
+                                if ( ! ( A > 0 ) ) return;
+                                TF da[ 2 ];
+                                q.gradient( tk, 2, da );
+                                const TF c = 2 * std::log( A / nu[ i ] ) / A;
+                                agr[ size_t( th ) * 2 ] += c * da[ 0 ];
+                                agr[ size_t( th ) * 2 + 1 ] += c * da[ 1 ];
+                            } );
+                            TF gr[ 2 ] = { 0, 0 };
+                            for ( int th = 0; th < nth; ++th ) { gr[ 0 ] += agr[ size_t( th ) * 2 ]; gr[ 1 ] += agr[ size_t( th ) * 2 + 1 ]; }
+                            const TF ng = std::max( std::fabs( gr[ 0 ] ), std::fabs( gr[ 1 ] ) );
+                            if ( ! ( ng > 0 ) ) break;
+                            const std::vector<TF> pts = { t1 - h * gr[ 0 ] / ng, t2 - h * gr[ 1 ] / ng };
+                            std::vector<TF> s2, mn;
+                            mods( pts, s2, mn );
+                            if ( s2[ 0 ] < mb && ( ! plancher_actif() || mn[ 0 ] >= eps ) ) {
+                                mb = s2[ 0 ]; t1 = pts[ 0 ]; t2 = pts[ 1 ]; t1b = pts[ 0 ]; t2b = pts[ 1 ]; ++nd_ok;
+                            } else
+                                h /= 2;
+                        }
+                    }
+
+                    // ---- 5. ON Y VA. Le diagramme est celui de l'iteration suivante ; le
+                    // backtracking ne sert que si le vrai merite ne descend pas.
+                    for ( int k = 0; k < std::max( o.g2_back, 1 ); ++k ) {
+                        const TF f = TF( 1 ) / TF( SI( 1 ) << k );
+                        for ( SI i = 0; i < n; ++i ) w2[ i ] = w[ i ] + f * ( t1b * d[ i ] + t2b * d_pre[ i ] );
+                        w2[ 0 ] = 0;
+                        mesures_et_facettes( w2, a2, fa2, pda2 );
+                        ++essais;
+                        TF m2 = INFINI;
+                        for ( SI i = 0; i < n; ++i )
+                            if ( protegee[ i ] && a2[ i ] < m2 ) m2 = a2[ i ];
+                        const TF v = merite( a2 );
+                        const bool ok = ( ! plancher_actif() || m2 >= eps ) && v < nr;
+                        if ( o.trace && o.g2_trace )
+                            std::printf( "      MODELE : alpha* %.3e, sonde en %.3e, cos( d, e ) %.4f,"
+                                         " |e|/|d| %.3f | argmin ( %.4g, %.4g ) apres %d pas de descente,"
+                                         " merite modele %.6e | facteur %.3g : merite REEL %.6e ( %s )\n",
+                                         double( am ), double( ts ), double( cos_de ), double( rap_de ),
+                                         double( f * t1b ), double( f * t2b ), nd_ok, double( mb ),
+                                         double( f ), double( v ), ok ? "PRIS" : "recule" );
+                        if ( ok ) { t = f * t1b; pris = true; break; }
+                        ++st.nb_back;
+                    }
+                    st.nb_recul += essais - 1;
+                    if ( o.trace && o.g2_trace ) std::fflush( stdout );
                 }
             }
 

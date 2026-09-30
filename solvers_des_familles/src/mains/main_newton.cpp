@@ -664,6 +664,9 @@ int main( int argc, char **argv ) {
         else if ( s == "--g2-bpos" )    o.newton.g2_bpos = true;
         else if ( s == "--g2-modele" )  o.newton.g2_modele = true;
         else if ( s == "--g2-desc" )    o.newton.g2_desc = std::atoi( val() );
+        else if ( s == "--g2-sonde-reelle" ) o.newton.g2_sonde_reelle = true;
+        else if ( s == "--g2-back" )    o.newton.g2_back = std::atoi( val() );
+        else if ( s == "--g2-tol" )     o.newton.g2_tol = std::atof( val() );
         else if ( s == "--g2-sans-verif" ) o.newton.g2_verif = false;
         else if ( s == "--profil" )     o.newton.profil = std::atoi( val() );
         else if ( s == "--combi" )      o.newton.combi = std::atoi( val() );
@@ -721,6 +724,8 @@ int main( int argc, char **argv ) {
                 "  --g2-bpos       grille2 : ne balayer que beta >= 0 ( avec la sonde, le cote negatif ne gagne jamais )\n"
                 "  --g2-modele     grille2 : evaluer la grille par le POLYNOME EXACT ( 2D ) au lieu de diagrammes -- la grille devient gratuite\n"
                 "  --g2-desc K     grille2 modele : K evaluations de DESCENTE DE GRADIENT apres la grille        (0)\n"
+                "  --g2-sonde-reelle  grille2 modele : aires du point de sonde par un VRAI diagramme ( temoin )\n"
+                "  --g2-back K     grille2 modele : divisions par deux permises si le vrai merite ne descend pas   (4)\n"
                 "                  | modele ( 2D ) : le pas cherche dans le SPAN de plusieurs directions, sur le modele\n"
                 "                  polynomial d.aire -- aucun diagramme pour chercher, un seul pour verifier\n"
                 "  --mod-q Q       modele : le pas du simplexe cherche, 1/Q                        (4)\n"

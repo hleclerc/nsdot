@@ -85,6 +85,12 @@ struct Lineaire {
     /// l'ordre de l'arbre ( `pd.ids` ), que seul le multigrille maison utilise : son agregation
     /// est la tranche de rangs, donc elle est GRATUITE -- mais encore faut-il lui donner les rangs.
     virtual void ordre( const std::int32_t *ids, SI nb ) { (void) ids; (void) nb; }
+
+    /// LIRE ET ECRIRE LA TOLERANCE. Toutes les resolutions n'ont pas besoin de la meme : celle qui
+    /// ne sert qu'a DEFINIR UNE DIRECTION de recherche ( la sonde du § 24.15 ) n'a aucun besoin de
+    /// `1e-10`, et c'est la moitie du cout du mode.
+    virtual TF tolerance() const { return 0; }
+    virtual void tolerance( TF v ) { (void) v; }
 };
 
 #ifdef SF_AMGCL
@@ -92,6 +98,8 @@ struct Amg : Lineaire {
     enum Variante : int { SA_SPAI0 = 0, SA_GS = 1, RS_GS = 2 };
     int      variante = SA_SPAI0;
     TF       tol      = 1e-10;     ///< residu RELATIF
+    TF tolerance() const override { return tol; }
+    void tolerance( TF v ) override { tol = v; }
     int      maxit    = 20000;
     // LA HIERARCHIE PEUT SERVIR PLUSIEURS FOIS. Entre deux iterations de Newton la hessienne
     // change, mais son graphe bouge a peine -- quelques aretes. Or un PRECONDITIONNEUR n'a pas

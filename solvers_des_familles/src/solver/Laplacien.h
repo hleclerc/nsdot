@@ -48,6 +48,11 @@ struct Laplacien {
     std::vector<TF> c;
     std::vector<TF> dia;           ///< `L_ii`, la somme de la ligne
 
+    /// echanger deux laplaciens sans recopier ( le levier 1 du § 24.15 reprend celui de la sonde )
+    void swap( Laplacien &o ) {
+        std::swap( n, o.n ); row.swap( o.row ); col.swap( o.col ); c.swap( o.c ); dia.swap( o.dia );
+    }
+
     void assemble( SI nb, const std::vector<Facette> &fa ) {
         n = nb;
         row.assign( n + 1, 0 );
