@@ -41,6 +41,9 @@
 #include "util/common.h"
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <sstream>
+#include <string>
 #include <vector>
 
 namespace sf {
@@ -191,5 +194,33 @@ struct Densite {
     static constexpr const TF *gx = NG == 8 ? gx8 : NG == 5 ? gx5 : gx4;
     static constexpr const TF *gw = NG == 8 ? gw8 : NG == 5 ? gw5 : gw4;
 };
+
+/// LE JEU DE GAUSSIENNES DES BANCS, EN UN SEUL ENDROIT. Il etait dans `main_densite.cpp` ; deux
+/// binaires qui mesurent le meme cas doivent porter la MEME densite, sinon leurs chiffres ne se
+/// comparent pas -- et `grossier` compare les siens a la reference de `densite`.
+///   `sigma` multiplie les largeurs du jeu, `nb_gauss` choisit 3 ou 4, `spec` ( "cx,cy,sigma,masse;..." )
+///   remplace le jeu, `plancher` est la fraction de la masse mise dans la densite uniforme.
+inline Densite densite_jeu( TF sigma, int nb_gauss, const std::string &spec, TF plancher ) {
+    Densite rho;
+    if ( ! spec.empty() ) {
+        std::stringstream ss( spec );
+        std::string item;
+        while ( std::getline( ss, item, ';' ) ) {
+            Gaussienne g;
+            if ( std::sscanf( item.c_str(), "%lf,%lf,%lf,%lf", &g.cx, &g.cy, &g.sigma, &g.masse ) == 4 )
+                rho.g.push_back( g );
+        }
+    } else if ( nb_gauss <= 3 ) {
+        rho.g = { { 0.30, 0.30, 1.0 * sigma, 0.4 }, { 0.72, 0.38, 0.7 * sigma, 0.3 }, { 0.42, 0.76, 1.3 * sigma, 0.3 } };
+    } else {
+        rho.g = { { 0.26, 0.30, 1.0 * sigma, 0.35 }, { 0.72, 0.26, 0.7 * sigma, 0.25 },
+                  { 0.34, 0.74, 1.3 * sigma, 0.25 }, { 0.76, 0.70, 1.0 * sigma, 0.15 } };
+    }
+    TF mt = 0;
+    for ( const Gaussienne &g : rho.g ) mt += g.masse;
+    for ( Gaussienne &g : rho.g ) g.masse *= ( 1 - plancher ) / mt;
+    rho.plancher = plancher;
+    return rho;
+}
 
 } // namespace sf

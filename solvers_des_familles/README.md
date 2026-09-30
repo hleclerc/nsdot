@@ -6682,3 +6682,98 @@ n'est pas une factorisation incomplète figée, c'est ce que notre solveur fait 
 hiérarchie, **rafraîchir le niveau fin**, et recycler le sous-espace. Et quand deux solves d'une même
 itération partagent la matrice, une factorisation directe bat tout le monde sur le second, là où elle
 tient en mémoire.
+
+## 24.17 Le Cholesky multi-échelle : 9 itérations de Krylov par résolution, et une factorisation scalaire qui ruine tout
+
+Le § 24.16 a mesuré qu'un IC(0) sur le motif brut perd un ordre de grandeur, et a nommé la cause : sans
+niveau grossier, une factorisation incomplète ne touche pas aux basses fréquences. Le Cholesky
+multi-échelle (**Chen, Schäfer, Huang, Desbrun, SIGGRAPH 2021**) est la réponse exacte à ce défaut —
+garder le remplissage **nul**, mais sur un motif **multi-échelle** et dans un ordre
+**fin-vers-grossier**. Implémenté dans `Multichol.h` (`--solver mchol`) :
+
+1. **l'ordre** : la structure de niveaux de l'ordre maximin inversé, par décimation — le niveau `k+1`
+   est un sous-ensemble maximal du niveau `k` dont les points sont à plus de `2^k` espacements l'un de
+   l'autre. **Le test se fait par un parcours du graphe du laplacien borné en distance euclidienne**,
+   pas par une grille de pas fixe : ce détail vaut un facteur 4 sur la qualité, parce qu'il suit la
+   densité et bâtit 10 à 12 niveaux au lieu de 5 ;
+2. **le motif** : `S = { (i,j) : dist(x_i,x_j) ≤ ρ · min(ℓ_i, ℓ_j) }`, union **tous** les non-nuls de
+   `A` — le papier interdit d'en perdre un seul ;
+3. **la factorisation** : Cholesky incomplet à remplissage nul sur ce motif, colonne par colonne. La
+   section que le papier consacre aux pivots négatifs ne nous concerne pas : notre matrice est une
+   **M-matrice** à diagonale dominante, classe sur laquelle l'IC ne casse pas (Meijerink–van der
+   Vorst). Le garde-fou est là et compte ses passages : **zéro** partout.
+
+Le motif est purement **géométrique** : il ne dépend que des positions des germes, qui ne bougent pas.
+Il est bâti **une fois** pour tout le solve, et chaque itération ne refait que les valeurs — le critère
+du § 24.16 que le `spai0` gelé d'AMGCL ne sait pas tenir.
+
+### La qualité : le papier a raison, et largement
+
+2D uniforme, `n = 1e5`, 6 résolutions, **itérations de Krylov par résolution** :
+
+| préconditionneur | Krylov / solve | termes / colonne |
+|---|---|---|
+| **mchol, ρ = 7** | **9** | 174 |
+| **mchol, ρ = 5** | **18** | 90 |
+| AMGCL agrégation+spai0 | 38 | — |
+| multigrille maison | 46 | — |
+| mchol, ρ = 2 | 281 | 16 |
+| **IC(0) du § 24.16** | **904** | 7 |
+
+**De 904 à 9 itérations par résolution — un facteur 100 — et quatre fois mieux qu'AMGCL.** Même
+remplissage nul, même type de factorisation : seuls l'ordre et le motif changent. Le diagnostic du
+§ 24.16 est confirmé de la façon la plus directe possible.
+
+### Le coût : la factorisation scalaire, et c'est exactement ce que le papier optimise
+
+| 2D uniforme | facto ( 6 ) | solve | TOTAL |
+|---|---|---|---|
+| AMGCL | 0.25 s | 0.53 s | **1.14 s** |
+| mchol ρ = 2 | 2.29 | 10.02 | 12.69 |
+| mchol ρ = 5 | 21.11 | 3.36 | 24.88 |
+| mchol ρ = 7 | **57.91** | 3.26 | 61.60 |
+
+À `ρ = 7` l'application n'est **plus** le problème : 54 itérations de Krylov en tout, 3.26 s. C'est la
+**factorisation** qui coûte, 9.6 s par itération de Newton pour 174 termes par colonne. Or c'est
+précisément là que le papier met son ingénierie : **supernœuds** (BLAS-3) et **coloriage multicolore**,
+dont je n'ai ni l'un ni l'autre — ici c'est une boucle colonne par colonne scalaire et séquentielle.
+La réserve était écrite dans l'en-tête de `Multichol.h` **avant** la mesure ; elle porte maintenant sur
+le seul poste qui reste.
+
+À noter que ça corrige mon attente : je prévoyais que la descente-remontée séquentielle serait le
+goulot (c'est ce qui avait tué l'IC(0)). À bon `ρ` elle ne l'est pas, parce qu'il y a **neuf**
+itérations à payer.
+
+### L'échelle `ℓ` : le point dur, et la mesure y contredit l'intuition
+
+Le papier donne pour `ℓ` un raccourci « quasi uniforme » : **une échelle uniforme par niveau**,
+`( volume / nb du niveau )^(1/d)`. Sur nos nuages **groupés** (cinq lignes à σ = 0.005) il explose,
+parce que l'espacement global surestime l'espacement local de plusieurs ordres :
+
+| 2D lignes s0.005 | Krylov / solve | termes / col | TOTAL |
+|---|---|---|---|
+| AMGCL | 57 | — | **4.15 s** |
+| mchol ρ = 2 | 150 | 121 | 126 s |
+| mchol ρ = 5 | 55 | **440** | 418 s |
+
+J'ai donc essayé une échelle **locale** — la distance maximin au plus proche germe de niveau au moins
+égal, littéralement le `ℓ_i` de l'article. Elle tient le remplissage **mais elle détruit la qualité** :
+sur l'uniforme, à 65 termes par colonne elle fait **242** itérations par résolution, quand l'échelle par
+niveau en fait **18** à 90 termes. **Un facteur 13 en faveur du papier**, à densité comparable.
+
+Ce n'est pas un détail d'implémentation : la théorie veut que le support colle à celui de l'ondelette
+**du niveau**, donc à une propriété de niveau ; la faire varier d'un point à l'autre casse l'uniformité
+de la multirésolution. Les deux options restent disponibles (`--mchol-ech 0 | 1`), défaut celle du
+papier.
+
+Reste donc un manque **précis** et non comblé : une échelle **uniforme par niveau** mais dont la
+constante est estimée **localement**. Aucune des deux variantes testées ne l'est.
+
+### Verdict
+
+La méthode fait ce que le papier annonce, et mieux que je ne l'attendais : **le meilleur
+préconditionneur du banc en nombre d'itérations, d'un facteur 4 sur AMGCL**. Elle n'est pas utilisable
+ici en l'état, pour deux raisons qu'il faut distinguer : une d'**ingénierie** — supernœuds et
+parallélisme, que le papier a et que je n'ai pas, et qui est tout l'écart sur le nuage uniforme — et une
+de **fond pour notre cas d'usage** — l'échelle sur un nuage non uniforme. Le code reste dans le banc
+comme instrument : c'est la seule mesure qui explique *pourquoi* l'IC(0) échouait.

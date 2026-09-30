@@ -74,28 +74,9 @@ struct Opts {
 };
 
 /// le jeu par defaut : des centres pas trop symetriques, des masses et des largeurs inegales
-Densite densite_de( const Opts &o ) {
-    Densite rho;
-    if ( ! o.gauss.empty() ) {
-        std::stringstream ss( o.gauss );
-        std::string item;
-        while ( std::getline( ss, item, ';' ) ) {
-            Gaussienne g;
-            if ( std::sscanf( item.c_str(), "%lf,%lf,%lf,%lf", &g.cx, &g.cy, &g.sigma, &g.masse ) == 4 )
-                rho.g.push_back( g );
-        }
-    } else if ( o.nb_gauss <= 3 ) {
-        rho.g = { { 0.30, 0.30, 1.0 * o.sigma, 0.4 }, { 0.72, 0.38, 0.7 * o.sigma, 0.3 }, { 0.42, 0.76, 1.3 * o.sigma, 0.3 } };
-    } else {
-        rho.g = { { 0.26, 0.30, 1.0 * o.sigma, 0.35 }, { 0.72, 0.26, 0.7 * o.sigma, 0.25 },
-                  { 0.34, 0.74, 1.3 * o.sigma, 0.25 }, { 0.76, 0.70, 1.0 * o.sigma, 0.15 } };
-    }
-    TF mt = 0;
-    for ( const Gaussienne &g : rho.g ) mt += g.masse;
-    for ( Gaussienne &g : rho.g ) g.masse *= ( 1 - o.plancher ) / mt;
-    rho.plancher = o.plancher;
-    return rho;
-}
+/// ( `Densite.h` : `densite_jeu`, partage avec `main_grossier.cpp` -- les deux binaires doivent
+///   porter la MEME densite pour que leurs chiffres se comparent )
+Densite densite_de( const Opts &o ) { return densite_jeu( o.sigma, o.nb_gauss, o.gauss, o.plancher ); }
 
 /// des germes tires SELON `rho` ( rejet )
 Nuage<2> nuage_selon( const Densite &rho, SI n, unsigned graine ) {

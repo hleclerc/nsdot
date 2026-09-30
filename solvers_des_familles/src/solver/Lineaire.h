@@ -91,6 +91,10 @@ struct Lineaire {
     /// LIRE ET ECRIRE LA TOLERANCE. Toutes les resolutions n'ont pas besoin de la meme : celle qui
     /// ne sert qu'a DEFINIR UNE DIRECTION de recherche ( la sonde du § 24.15 ) n'a aucun besoin de
     /// `1e-10`, et c'est la moitie du cout du mode.
+    /// LES POSITIONS DES GERMES, que seul le Cholesky multi-echelle utilise : son ordre et son
+    /// motif sont GEOMETRIQUES ( § 24.17 ), donc il lui faut les points, pas seulement la matrice.
+    virtual void positions( const TF *const *P, SI nb, int dim ) { (void) P; (void) nb; (void) dim; }
+
     virtual TF tolerance() const { return 0; }
     virtual void tolerance( TF v ) { (void) v; }
 };

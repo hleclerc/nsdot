@@ -18,6 +18,7 @@
 #include "bench/Trames.h"
 #include "solver/Agglo.h"
 #include "solver/Lineaire.h"
+#include "solver/Multichol.h"
 #include "solver/Multigrille.h"
 #include "solver/Newton.h"
 #include "solver/PremierOrdre.h"
@@ -51,7 +52,9 @@ struct Opts {
     // des CENTAINES de systemes voisins, il gagne ( 90.4 s contre 93.0 a n = 1e5 ) -- parce que
     // le recyclage de sous-espace y trouve de quoi vivre, ce qu'une poignee d'iterations de
     // Newton ne donne pas. C'est le REGIME qui decide, pas la dimension seule.
-    std::string   solver = "auto"; ///< auto ( mg en 3D, amg en 2D ) | mg | amg | chol
+    std::string   solver = "auto"; ///< auto ( mg en 3D, amg en 2D ) | mg | amg | chol | mchol
+    double        mchol_rho = 0;   ///< MCHOL : le `rho` du motif ( 0 : 7 en 2D, 3 en 3D )
+    int           mchol_ech = 0;   ///< MCHOL : l'echelle -- 0 uniforme par niveau ( le papier ), 1 locale
     // LES REGLAGES DU MULTIGRILLE MAISON. Les defauts viennent de `Multigrille.h`, ou ils ont ete
     // mesures EN 2D SUR UNE DENSITE IMAGE : `agreg 8` en particulier vaut ce que vaut son cas
     // d'usage, et il n'y a aucune raison qu'il tienne en 3D ou le graphe a deux fois plus de
@@ -95,6 +98,15 @@ std::unique_ptr<Lineaire> fabrique( const Opts &o ) {
     if ( sol == "chol" )
         return std::make_unique<Cholesky>();
 #endif
+    if ( sol == "mchol" ) {                              // le Cholesky multi-echelle ( § 24.17 )
+        auto p = std::make_unique<MultiChol>();
+        p->tol = o.lintol;
+        p->maxit = o.linmax;
+        if ( o.mchol_rho > 0 ) p->rho = TF( o.mchol_rho );
+        p->echelle = o.mchol_ech;
+        p->trace = o.mg_trace;
+        return p;
+    }
     if ( sol == "mg" ) {
         auto p = std::make_unique<Mg>();
         p->tol = o.lintol;
@@ -145,6 +157,7 @@ int lance( const Args &a, const Opts &o, const Nuage<PD::dim> &nu, Lineaire &lin
     const double t_arbre = now() - t0;
     // L'ORDRE DE L'ARBRE, pour qui sait s'en servir : c'est l'agregation du multigrille maison.
     lin.ordre( pd.ids.data(), n );
+    lin.positions( nu.P, n, PD::dim );                   // pour le Cholesky multi-echelle
 
 #ifdef _OPENMP
     // AMGCL est parallelise en OpenMP, le diagramme en `std::thread` : sans ca les deux moities
@@ -577,6 +590,8 @@ int main( int argc, char **argv ) {
         else if ( s == "--mg-tronque" ) o.mg_tronque = std::atof( val() );
         else if ( s == "--mg-trace" )   o.mg_trace = 1;
         else if ( s == "--amg-var" )    o.amgvar = std::atoi( val() );
+        else if ( s == "--mchol-rho" )  o.mchol_rho = std::atof( val() );
+        else if ( s == "--mchol-ech" )  o.mchol_ech = std::atoi( val() );
         else if ( s == "--ecrire" )     o.ecrire = val();
         else if ( s == "--quiet" )      o.newton.trace = false;
         else if ( s == "--pas" ) {
