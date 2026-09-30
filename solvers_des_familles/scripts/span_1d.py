@@ -191,6 +191,18 @@ class Cas:
         d[ 1: ] = np.linalg.solve( L[ 1:, 1: ], rhs[ 1: ] )   # la jauge raye la premiere ligne
         return d
 
+    def newton_gele( self, w, L0 ):
+        """LA DIRECTION DU RESIDU LOG SUR UN `L` GELE : le second membre est celui du point courant,
+        la matrice celle du point de base. C'est `lin.resout_encore` du banc 2D -- une re-resolution
+        sur la factorisation deja payee."""
+        a, _ = self.masses( w )
+        g = np.log( a / self.nu )
+        c = float( np.sum( a * g ) / np.sum( a ) )
+        rhs = a * ( c - g )
+        d = np.zeros( self.n )
+        d[ 1: ] = np.linalg.solve( L0[ 1:, 1: ], rhs[ 1: ] )
+        return d
+
     def alpha_max( self, w, d ):
         """LE PREMIER `alpha` OU UNE CELLULE SE VIDE, exact. Les bords sont affines en `alpha`, donc
         chaque longueur de cellule l'est : `len_i( alpha ) = len_i( 0 ) + alpha * pente_i`, et on
@@ -232,32 +244,23 @@ class Cas:
         return w, maxit
 
     def grossier( self ):
-        """LE NIVEAU GROSSIER, puis LA PROJECTION PAR COPIE : un germe par agregat ( au barycentre,
-        de cible la somme des cibles ), resolu avec le meme code ; puis le meme poids a tous les
-        germes fins de l'agregat.
-
-        La copie est le point du schema : `w_prol` est constant par morceaux, donc le pincement se
-        concentre aux INTERFACES d'agregats -- `n/R` cellules sur `n`, un support structure. Une
-        prolongation lissee ( MLS ) repartirait l'erreur sur toutes les cellules.
-        """
+        """LE NIVEAU GROSSIER : un germe par agregat, au barycentre, de cible la somme des cibles,
+        resolu avec le meme code. Rend `( w_grossier, positions_grossieres, iterations )` -- la
+        PROJECTION est un choix a part ( `prolonge` )."""
         pg = np.array( [ self.p[ self.paquet == k ].mean() for k in range( self.nb_paquets ) ] )
         cg = Cas.__new__( Cas )
-        cg.n, cg.R, cg.rho = len( pg ), 1, self.rho
+        cg.n, cg.R, cg.rho, cg.germes = len( pg ), 1, self.rho, "grossier"
         cg.p, cg.dp = pg, np.diff( pg )
         cg.nu = np.array( [ self.nu[ self.paquet == k ].sum() for k in range( self.nb_paquets ) ] )
         cg.paquet = np.arange( cg.n )
         cg.nb_paquets, cg.interfaces = cg.n, np.arange( cg.n - 1 )
         wg, itg = cg.resout( np.zeros( cg.n ) )
-        return wg[ self.paquet ].copy(), itg
+        return wg, pg, itg
 
     def lisse( self, w, m = 1 ):
-        """`m` passes de moyenne `( w_{i-1} + 2 w_i + w_{i+1} ) / 4` ( bords reflechis ).
-
-        POURQUOI CA COMPTE. `alpha* = 2 h^2 / saut` : ce qui borne la prolongation n'est pas son
-        amplitude mais la DIFFERENCE SECONDE qu'elle porte a l'echelle de la cellule. Une passe de
-        moyenne remplace un saut par une pente sur trois germes, donc divise la difference seconde
-        -- c'est `alpha*` qu'on attaque, pas le nombre de directions.
-        """
+        """`m` passes de moyenne `( w_{i-1} + 2 w_i + w_{i+1} ) / 4` ( bords reflechis ). La longueur
+        de diffusion est `sqrt( m )` germes : a `m = R^2` le lissage couvre exactement un agregat, et
+        c'est la que `alpha*` passe au-dessus de 1."""
         w = np.array( w, dtype = float )
         for _ in range( m ):
             g = np.concatenate( ( [ w[ 0 ] ], w[ :-1 ] ) )
@@ -265,18 +268,31 @@ class Cas:
             w = 0.25 * ( g + 2 * w + d )
         return w
 
-    # ---- le span
-    def bornes( self, w, d ):
-        """L'INTERVALLE ADMISSIBLE en `alpha` autour de `w`, le long de `+d` et de `-d`. C'est la seule
-        echelle qui ait un sens pour chercher un coefficient : elle varie de plusieurs ordres de
-        grandeur d'une direction a l'autre ( ~1e-3 pour une prolongation par copie, ~1e-2 pour une
-        direction de Newton ), donc une grille commune ne visite jamais le domaine admissible -- et
-        c'etait le defaut de la premiere version de `span_min`."""
-        d = np.asarray( d, dtype = float )
-        return -self.alpha_max( w, -d ), self.alpha_max( w, d )
+    def prolonge( self, wg, pg, mode = "copie", lissages = 0 ):
+        """LA PROJECTION du grossier sur les germes fins. Ce qui distingue les modes n'est pas leur
+        amplitude mais la DIFFERENCE SECONDE qu'ils portent a l'echelle de la cellule, puisque
+        `alpha* = 2 h^2 / ( difference seconde )` :
+
+          `copie`   un poids constant par agregat. La difference seconde est le SAUT entier aux
+                    interfaces -- inadmissible au premier ordre, `alpha* = O( h / R )`.
+          `affine`  l'interpolation lineaire entre les germes grossiers. En 1D c'est EXACTEMENT la
+                    prolongation harmonique du § 8.2, `C^0` avec un PLI sur chaque representant : la
+                    difference seconde y vaut `h H w''` au lieu de `h^2 w''`, donc `alpha* = O( 1/R )`.
+                    C'est la forme qui se generalise le plus simplement en nD ( barycentrique sur une
+                    triangulation des germes grossiers ).
+          `lissages` passes de `( 1, 2, 1 )/4` par-dessus : a `m = R^2` la longueur de diffusion
+                    couvre un agregat et le resultat est `C^1`, donc `alpha* = O( 1 )`.
+        """
+        if mode == "copie":
+            w = wg[ self.paquet ].astype( float ).copy()
+        elif mode == "affine":
+            w = np.interp( self.p, pg, wg )               # extrapolation constante aux bords
+        else:
+            raise ValueError( f"mode de prolongation inconnu : {mode}" )
+        return self.lisse( w, lissages ) if lissages else w
 
     # ---- le gradient, et Gauss-Newton dans l'espace des alpha
-    def jacobien_span( self, w, dirs ):
+    def jacobien_span( self, w, dirs, L_gel = None ):
         """`( J, g )` avec `g_i = log( a_i / nu_i )` et `J_ik = d g_i / d alpha_k = ( L d_k )_i / a_i`.
 
         EXACT A CONNECTIVITE FIXE : les bords sont affines en `alpha`, donc `a_i( alpha )` est
@@ -285,15 +301,18 @@ class Cas:
         dans l'objectif, donc une recherche de pas ne peut pas franchir le bord.
         """
         a, _ = self.masses( w )
-        L = self.laplacien( w )
+        # `L_gel` : la variante du schema propose, ou `L` n'est PAS refait. `J` devient approche ( `L`
+        # depend de `alpha` par les longueurs de facettes ), mais reste une direction de descente -- et
+        # en 2D ca fait toute la difference, un `L` refait etant un diagramme de plus.
+        L = self.laplacien( w ) if L_gel is None else L_gel
         J = np.empty( ( self.n, len( dirs ) ) )
         for k, d in enumerate( dirs ):
             J[ :, k ] = ( L @ np.asarray( d, dtype = float ) ) / a
         return J, np.log( a / self.nu )
 
-    def gradient_span( self, w, dirs ):
+    def gradient_span( self, w, dirs, L_gel = None ):
         """`d log2 / d alpha_k = 2 ( J^T g )_k`."""
-        J, g = self.jacobien_span( w, dirs )
+        J, g = self.jacobien_span( w, dirs, L_gel )
         return 2.0 * ( J.T @ g )
 
     def verifie_gradient( self, w0, dirs, h = 1e-7 ):
@@ -309,7 +328,7 @@ class Cas:
             num[ k ] = ( self.log2( w0 + ( al + e ) @ W ) - self.log2( w0 + ( al - e ) @ W ) ) / ( 2 * h )
         return float( np.max( np.abs( ana - num ) / np.maximum( np.abs( num ), 1e-300 ) ) ), ana, num
 
-    def span_min( self, w0, dirs, itmax = 80, tol = 1e-13, trace = False ):
+    def span_min( self, w0, dirs, itmax = 80, tol = 1e-13, trace = False, gel = False ):
         """MINIMISE `log2` SUR `w0 + sum_k alpha_k dirs[ k ]` PAR GAUSS-NEWTON dans l'espace des
         `alpha` : `log2` etant une somme de carres, le bon pas resout `min | g + J da |^2`, et c'est
         un solve `k x k` puisque `k` est petit.
@@ -328,9 +347,10 @@ class Cas:
         f = self.log2( en( al ) )
         if not np.isfinite( f ):
             raise ValueError( "le point de depart n'est pas admissible" )
+        L0 = self.laplacien( w0 ) if gel else None       # `L` GELE au point de base, une fois pour tout
         it = 0
         for it in range( 1, itmax + 1 ):
-            J, g = self.jacobien_span( en( al ), dirs )
+            J, g = self.jacobien_span( en( al ), dirs, L0 )
             da, *_ = np.linalg.lstsq( J, -g, rcond = None )
             t, f2, pris = 1.0, np.inf, False
             for _ in range( 80 ):
@@ -346,7 +366,7 @@ class Cas:
             f = f2
             if trace:
                 print( f"      gn {it:3d}  t {t:.3e}  log2 {f:.12e}  |grad| "
-                       f"{np.linalg.norm( self.gradient_span( en( al ), dirs ) ):.3e}" )
+                       f"{np.linalg.norm( self.gradient_span( en( al ), dirs, L0 ) ):.3e}" )
             if fini:
                 break
         return al, en( al ), f, it, float( np.linalg.norm( self.gradient_span( en( al ), dirs ) ) )
@@ -386,16 +406,15 @@ class Cas:
 
 
 # ---------------------------------------------------------------- les figures
-def figures( cas, sortie, lissages = 0 ):
+def figures( cas, sortie, lissages = 0, mode = "copie" ):
     import matplotlib
     matplotlib.use( "Agg" )
     import matplotlib.pyplot as plt
 
     n = cas.n
     w_sain = np.zeros( n )                          # le depart SAIN : Voronoi
-    w_prol, it_g = cas.grossier()
-    if lissages:
-        w_prol = cas.lisse( w_prol, lissages )      # la copie lissee sur ~une largeur d'agregat
+    wg, pg, it_g = cas.grossier()
+    w_prol = cas.prolonge( wg, pg, mode, lissages )
     w_prol = w_prol - w_prol[ 0 ]                   # la jauge, pour que les figures se comparent
     d_prol = w_prol - w_sain
     w_ref, it_ref = cas.resout( w_sain )
@@ -498,7 +517,7 @@ def figures( cas, sortie, lissages = 0 ):
     return a0, al1, l_span, it_span, it_ref
 
 
-def balaye_k( cas, kmax, lissages = 0 ):
+def balaye_k( cas, kmax, lissages = 0, gel = False, mode = "copie" ):
     """LA QUESTION : quand on ajoute des directions, jusqu'ou `alpha_0` va-t-il ?
 
     Le schema exactement tel qu'il est propose : au meilleur point du span courant, on resout le
@@ -508,9 +527,8 @@ def balaye_k( cas, kmax, lissages = 0 ):
     sens, et le nombre d'iterations qui restent -- la metrique.
     """
     w_sain = np.zeros( cas.n )
-    w_prol, it_g = cas.grossier()
-    if lissages:
-        w_prol = cas.lisse( w_prol, lissages )
+    wg, pg, it_g = cas.grossier()
+    w_prol = cas.prolonge( wg, pg, mode, lissages )
     w_prol = w_prol - w_prol[ 0 ]
     d_prol = w_prol - w_sain
     a_lim = cas.alpha_max( w_sain, d_prol )
@@ -519,21 +537,23 @@ def balaye_k( cas, kmax, lissages = 0 ):
     _, it_ref = cas.resout( w_sain )
     print( f"  n = {cas.n}, R = {cas.R}, germes {cas.germes}  ;  grossier {it_g} it  ;"
            f"  reference depuis Voronoi {it_ref} it  ;  log2 Voronoi {l0:.6e}" )
-    print( f"  lissages {lissages}  ;  saut aux interfaces {saut:.4e}  ;"
+    print( f"  prolongation {mode}, lissages {lissages}  ;  saut aux interfaces {saut:.4e}  ;"
            f"  alpha*_0 = {a_lim:.4e}  ;  alpha* x saut = {a_lim * saut:.4e}  ( 2h^2 = {2.0 / cas.n ** 2:.4e} )" )
     ec, _, _ = cas.verifie_gradient( w_sain, [ d_prol ] )
     print( f"  gradient analytique contre differences finies centrees : ecart relatif {ec:.2e}" )
     print( "   k |        log2 |   gain rel |    alpha_0 | alpha_0/alpha*_0 | gn it |    |grad| | it restantes" )
+    L0_base = cas.laplacien( w_sain ) if gel else None
     dirs, al = [ d_prol ], None
     for k in range( 1, kmax + 1 ):
-        al, w_opt, lk, gn, ng = cas.span_min( w_sain, dirs )
+        al, w_opt, lk, gn, ng = cas.span_min( w_sain, dirs, gel = gel )
         _, it_k = cas.resout( w_opt )
         print( f"  {k:2d} | {lk:11.5e} | {1 - lk / l0:10.3e} | {al[ 0 ]:10.4e} |"
                f" {al[ 0 ] / a_lim:16.4f} | {gn:5d} | {ng:9.2e} | {it_k:12d}" )
         if k == kmax:
             break
         # « ce qui manque » : la direction du residu log au meilleur point, mesuree depuis `w_sain`
-        d = cas.newton( w_opt )
+        # « ce qui manque » : sur le `L` GELE aussi, si on gele -- c'est `resout_encore` en 2D
+        d = cas.newton_gele( w_opt, L0_base ) if gel else cas.newton( w_opt )
         dirs.append( ( w_opt + d ) - w_sain )
     return al
 
@@ -551,6 +571,10 @@ def main():
                      help = "regulier : ( i + 1/2 ) / n, pour que la paire la plus serree ne decide pas tout" )
     ap.add_argument( "-k", type = int, default = 0,
                      help = "> 0 : balayer le nombre de directions du span, et ne pas faire les figures" )
+    ap.add_argument( "--prol", default = "copie", choices = [ "copie", "affine" ],
+                     help = "copie ( constante par agregat ) | affine ( interpolation lineaire )" )
+    ap.add_argument( "--gel", action = "store_true",
+                     help = "geler `L` au point de base ( le schema propose ) au lieu de le refaire" )
     ap.add_argument( "--lisse", type = int, default = 0,
                      help = "passes de moyenne sur la prolongation par copie ( attaque alpha*, pas k )" )
     ap.add_argument( "--sortie", default = None, help = "dossier des figures ( defaut : ../figures )" )
@@ -559,9 +583,9 @@ def main():
     os.makedirs( sortie, exist_ok = True )
     cas = Cas( o.n, o.R, o.sigma, o.plancher, o.graine, o.germes )
     if o.k > 0:
-        balaye_k( cas, o.k, o.lisse )
+        balaye_k( cas, o.k, o.lisse, o.gel, o.prol )
         return
-    figures( cas, sortie, o.lisse )
+    figures( cas, sortie, o.lisse, o.prol )
     print( f"  figures dans {os.path.normpath( sortie )}/span_1d_*.png" )
 
 
