@@ -45,7 +45,9 @@
 #  include <amgcl/coarsening/ruge_stuben.hpp>
 #  include <amgcl/coarsening/smoothed_aggregation.hpp>
 #  include <amgcl/make_solver.hpp>
+#  include <amgcl/relaxation/as_preconditioner.hpp>
 #  include <amgcl/relaxation/gauss_seidel.hpp>
+#  include <amgcl/relaxation/ilu0.hpp>
 #  include <amgcl/relaxation/spai0.hpp>
 #  include <amgcl/solver/cg.hpp>
 #endif
@@ -95,7 +97,12 @@ struct Lineaire {
 
 #ifdef SF_AMGCL
 struct Amg : Lineaire {
-    enum Variante : int { SA_SPAI0 = 0, SA_GS = 1, RS_GS = 2 };
+    /// `ILU0` : PAS de multigrille du tout -- une factorisation INCOMPLETE sans nouveaux termes
+    /// ( le motif de `L`, rien de plus ) comme unique preconditionneur du CG. Sur une matrice SPD
+    /// c'est l'IC(0). Elle se refait a chaque iteration, ce qui est bon marche ( ni ordonnancement
+    /// ni analyse symbolique ), et c'est la variante qui compte : geler le NIVEAU FIN est
+    /// justement ce que la note de `refaire` ci-dessous a mesure comme un echec.
+    enum Variante : int { SA_SPAI0 = 0, SA_GS = 1, RS_GS = 2, ILU0 = 3 };
     int      variante = SA_SPAI0;
     TF       tol      = 1e-10;     ///< residu RELATIF
     TF tolerance() const override { return tol; }
@@ -127,7 +134,8 @@ struct Amg : Lineaire {
 
     const char *nom() const override {
         return variante == RS_GS ? "AMGCL Ruge-Stuben+GS"
-             : variante == SA_GS ? "AMGCL agregation+GS" : "AMGCL agregation+spai0";
+             : variante == SA_GS ? "AMGCL agregation+GS"
+             : variante == ILU0  ? "AMGCL CG + IC(0) sans nouveaux termes" : "AMGCL agregation+spai0";
     }
 
     /// UNE RESOLUTION DE PLUS sur la derniere hierarchie : la matrice a change, pas ses voisinages,
@@ -188,6 +196,7 @@ struct Amg : Lineaire {
         using SaSpai = amgcl::make_solver<amgcl::amg<Back, amgcl::coarsening::smoothed_aggregation, amgcl::relaxation::spai0>, amgcl::solver::cg<Back>>;
         using SaGs   = amgcl::make_solver<amgcl::amg<Back, amgcl::coarsening::smoothed_aggregation, amgcl::relaxation::gauss_seidel>, amgcl::solver::cg<Back>>;
         using RsGs   = amgcl::make_solver<amgcl::amg<Back, amgcl::coarsening::ruge_stuben, amgcl::relaxation::gauss_seidel>, amgcl::solver::cg<Back>>;
+        using Ilu0   = amgcl::make_solver<amgcl::relaxation::as_preconditioner<Back, amgcl::relaxation::ilu0>, amgcl::solver::cg<Back>>;
         if ( avec_A && n == n_prec && depuis < std::max( refaire, 1 ) ) {
             const double ta = now();
             std::tie( it, err ) = avec_A( ptr, col, val, rb, sol );
@@ -196,6 +205,7 @@ struct Amg : Lineaire {
         } else {
             if      ( variante == SA_GS ) lance( std::type_identity<SaGs>{} );
             else if ( variante == RS_GS ) lance( std::type_identity<RsGs>{} );
+            else if ( variante == ILU0 )  lance( std::type_identity<Ilu0>{} );
             else                          lance( std::type_identity<SaSpai>{} );
             depuis = 1;
             n_prec = n;

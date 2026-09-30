@@ -2085,18 +2085,23 @@ struct Newton {
                     const int nth = std::max( 1, par.threads );
                     int essais = 0;
 
-                    // ---- 1. LE MODELE A UNE DIRECTION : `alpha*` ET LES AIRES DU POINT DE SONDE
-                    const TF *dp1[ 1 ] = { d.data() };
-                    polynomes_multi( pd, P, w, dp1, 1, par, pm2 );
-                    TF am = INFINI;
+                    // ---- 1. LE POINT DE SONDE AU PREMIER ORDRE : GRATUIT, sans modele du tout.
+                    //
+                    // Le systeme resolu est `L d = b` ( cf. `membre` ), et `L` est exactement la
+                    // derivee des aires : `da = L d`. Donc `A_i( alpha ) = a_i + alpha b_i` au premier
+                    // ordre, avec le second membre DEJA calcule -- pas un produit matrice-vecteur a
+                    // faire. Et le `alpha*` du premier ordre se lit de la meme facon : le plus grand
+                    // `alpha` tel que `a_i + alpha b_i >= eps` pour tout `i`.
+                    //
+                    // Ca supprime la construction a UNE direction, qui ne servait qu'a ces deux
+                    // choses et coutait plus qu'un diagramme ( § 24.16 ).
+                    TF a1 = INFINI;
                     for ( SI i = 0; i < n; ++i ) {
-                        if ( ! protegee[ i ] || pm2[ i ].etat != PolyCellule::OK ) continue;
-                        PolyCellule sc;
-                        sc.a0 = pm2[ i ].c0; sc.a1 = pm2[ i ].g[ 0 ]; sc.a2 = pm2[ i ].q[ 0 ];
-                        am = std::min( am, sc.premiere_racine( eps ) );
+                        if ( ! protegee[ i ] || ! ( b[ i ] < 0 ) ) continue;
+                        const TF r = ( eps - a[ i ] ) / b[ i ];
+                        if ( r > 0 ) a1 = std::min( a1, r );
                     }
-                    const TF ts = am < INFINI && am > 0 ? std::min( o.t0, o.facteur * am ) : t;
-                    if ( am < INFINI && am > 0 ) alpha_lim = am;
+                    const TF ts = a1 < INFINI && a1 > 0 ? std::min( o.t0, o.facteur * a1 ) : t;
 
                     // ---- 2. LA DIRECTION SONDEE, SANS DIAGRAMME NI HIERARCHIE
                     bool ok_s = false;
@@ -2111,10 +2116,9 @@ struct Newton {
                             aso = a2;
                             for ( SI i = 0; i < n; ++i ) aso[ i ] = std::max( aso[ i ], eps );
                         } else
-                        for ( SI i = 0; i < n; ++i ) {
-                            const TF A = pm2[ i ].etat == PolyCellule::OK ? pm2[ i ]( tk, 1 ) : a[ i ];
-                            aso[ i ] = std::max( A, eps );
-                        }
+                            for ( SI i = 0; i < n; ++i )
+                                aso[ i ] = std::max( a[ i ] + ts * b[ i ], eps );
+                        (void) tk;
                         membre_de( aso, res_cur, o.puis, bson );
                         const double ts0 = now();
                         // LA SONDE NE SERT QU'A DEFINIR UNE DIRECTION : une tolerance lache suffit,
@@ -2140,8 +2144,23 @@ struct Newton {
                         rap_de = nd > 0 ? std::sqrt( np / nd ) : TF( 0 );
                         const TF *dp2[ 2 ] = { d.data(), d_pre.data() };
                         polynomes_multi( pd, P, w, dp2, 2, par, pm2 );
+                    } else {
+                        const TF *dp1[ 1 ] = { d.data() };
+                        polynomes_multi( pd, P, w, dp1, 1, par, pm2 );
                     }
                     const int nk = ok_s ? 2 : 1;
+
+                    // ---- `alpha*` EXACT, tire du meme modele restreint a `beta = 0`. Le premier
+                    // ordre a servi a placer la sonde ; l'echelle, elle, part du vrai `alpha*`.
+                    TF am = INFINI;
+                    for ( SI i = 0; i < n; ++i ) {
+                        if ( ! protegee[ i ] || pm2[ i ].etat != PolyCellule::OK ) continue;
+                        PolyCellule sc;
+                        sc.a0 = pm2[ i ].c0; sc.a1 = pm2[ i ].g[ 0 ]; sc.a2 = pm2[ i ].q[ 0 ];
+                        am = std::min( am, sc.premiere_racine( eps ) );
+                    }
+                    const TF th = am < INFINI && am > 0 ? std::min( o.t0, o.facteur * am ) : ts;
+                    if ( am < INFINI && am > 0 ) alpha_lim = am;
 
                     // ---- LE MERITE `log2` DU MODELE, POUR UNE LISTE DE POINTS, EN UN PASSAGE
                     auto mods = [ & ]( const std::vector<TF> &pts, std::vector<TF> &s2,
@@ -2170,12 +2189,12 @@ struct Newton {
                     };
 
                     // ---- 4. L'EXPLORATION, GRATUITE : la grille puis la descente de gradient
-                    TF mb = INFINI, t1b = ts, t2b = 0;
+                    TF mb = INFINI, t1b = th, t2b = 0;
                     {
                         std::vector<TF> pts;
                         const int NA = std::max( o.g2_na, 1 ), NB = ok_s ? std::max( o.g2_nb, 1 ) : 1;
                         for ( int ia = 0; ia < NA; ++ia ) {
-                            const TF al = ts / TF( SI( 1 ) << ia );
+                            const TF al = th / TF( SI( 1 ) << ia );
                             if ( al < o.t_min ) break;
                             for ( int ib = 0; ib < NB; ++ib ) {
                                 const TF be = NB == 1 ? TF( 0 )
@@ -2238,10 +2257,10 @@ struct Newton {
                         const TF v = merite( a2 );
                         const bool ok = ( ! plancher_actif() || m2 >= eps ) && v < nr;
                         if ( o.trace && o.g2_trace )
-                            std::printf( "      MODELE : alpha* %.3e, sonde en %.3e, cos( d, e ) %.4f,"
+                            std::printf( "      MODELE : alpha* %.3e ( 1er ordre %.3e ), sonde en %.3e, cos( d, e ) %.4f,"
                                          " |e|/|d| %.3f | argmin ( %.4g, %.4g ) apres %d pas de descente,"
                                          " merite modele %.6e | facteur %.3g : merite REEL %.6e ( %s )\n",
-                                         double( am ), double( ts ), double( cos_de ), double( rap_de ),
+                                         double( am ), double( a1 ), double( ts ), double( cos_de ), double( rap_de ),
                                          double( f * t1b ), double( f * t2b ), nd_ok, double( mb ),
                                          double( f ), double( v ), ok ? "PRIS" : "recule" );
                         if ( ok ) { t = f * t1b; pris = true; break; }

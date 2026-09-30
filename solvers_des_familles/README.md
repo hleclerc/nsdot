@@ -6607,3 +6607,78 @@ promesse : monter un second solveur AMGCL à tolérance lâche sur la hiérarchi
 là) ; ou obtenir `e` sans résoudre, par exemple en extrapolant la direction depuis l'itération précédente
 — mais le § 24.12 a mesuré que la mémoire du pas est colinéaire, donc cette seconde piste part avec un
 handicap connu.
+
+## 24.16 Le coût du solve de plus : ce qui marche, et le Cholesky incomplet qui ne marche pas
+
+### Une seule construction de modèle par itération
+
+La construction à **une** direction ne servait qu'à deux choses : `α*` et les aires du point de sonde.
+Les deux sortent gratuitement de ce qu'on a déjà. Le système résolu est `L d = b`, et `L` **est** la
+dérivée des aires (`da = L d`) — donc au premier ordre
+
+`A_i( α ) = a_i + α b_i`,
+
+avec le second membre **déjà calculé** : pas même un produit matrice-vecteur. Et le `α*` du premier ordre
+se lit de la même façon, `min_i ( eps − a_i ) / b_i` sur les `b_i < 0`. Le `α*` exact, lui, sort ensuite
+du modèle à deux directions restreint à `β = 0`.
+
+Le gain est **plus petit que je ne l'avais annoncé** : `reste` passe de 1.60 à 1.39 s sur 2D lignes
+s0.005, pas de 1.60 à 0.8. La construction `nk = 1` était bon marché ; ce qui coûte, c'est la
+construction `nk = 2` **et** la recherche, ensemble ~0.09 s par itération — un diagramme en vaut 0.07.
+Et le point de sonde au premier ordre est moins précis : avec AMGCL et Cholesky on passe de 13 à 14
+itérations. Le multigrille maison, lui, garde **12 itérations / 13 diagrammes**.
+
+### Le solveur change tout, parce qu'on résout DEUX FOIS LA MEME MATRICE
+
+Le solve de la sonde porte exactement le même `L`. Trois façons d'en profiter, mesurées (2D lignes
+s0.005, `job -b`) :
+
+| | it | diag | total | `lin` | Krylov |
+|---|---|---|---|---|---|
+| référence, AMGCL | 12 | 19 | 4.24 s | 1.72 | 681 |
+| référence, **Cholesky** | 12 | 19 | **3.75 s** | **0.85** | — |
+| modèle, AMGCL | 14 | 16 | 7.22 s | 3.57 | — |
+| modèle, **mg maison `recycle 8`** | **12** | **13** | 5.49 s | 3.24 | — |
+| modèle, **Cholesky** | 14 | 16 | **5.04 s** | **1.06** | — |
+
+* **Cholesky rend le solve de plus presque gratuit** : 13 factorisations pour 13 itérations et **26**
+  descentes-remontées, donc `lin` 1.06 s pour 26 solves contre 0.85 s pour 12. Le surcoût du second
+  solve tombe à **+0.21 s** au lieu de +1.17. C'est la bonne réponse à « mettre en commun la
+  préparation » : quand le coût est dans la factorisation et qu'on l'utilise deux fois, il est amorti.
+* **Le recyclage de sous-espace de notre multigrille donne le meilleur compte d'itérations** (12 / 13
+  contre 14 / 16). Il garde les `recycle` dernières solutions et démarre sur la projection de Galerkin
+  sur leur span ; le mode modèle enchaîne désormais **deux systèmes corrélés par itération**, donc il a
+  enfin de quoi vivre — ce que l'en-tête de `main_newton.cpp` avait prédit : « c'est le RÉGIME qui
+  décide ». `recycle 8` vaut mieux que le défaut 2 (5.49 s contre 6.23).
+* Réserve : « Cholesky est le bon solveur » serait faux. En 3D il met **790 s** contre 7.4 pour le
+  multigrille maison. Ce qui est général, c'est le principe, pas le solveur.
+
+### Le Cholesky incomplet sans nouveaux termes : essayé, et il perd d'un ordre de grandeur
+
+Ça n'avait jamais été testé. C'est fait (`--solver amg --amg-var 3` : CG préconditionné par un IC(0) sur
+le motif de `L`, sans aucun terme de remplissage, refait à chaque itération) :
+
+| ( 8 fils ) | AMG agrégation+spai0 | **CG + IC(0)** | mg maison |
+|---|---|---|---|
+| 2D uniforme | 1.09 s, **226** Krylov | 7.82 s, **5 424** | 1.57 s, 277 |
+| 2D lignes s0.005 | 4.50 s, **681** | 29.17 s, **22 642** | 4.60 s, 937 |
+| 3D plans s0.02 | 8.20 s, **212** | 11.91 s, **2 141** | 7.44 s, 334 |
+
+**De 10 à 33 fois plus d'itérations de Krylov.** Et la raison n'est pas le coût de construction — la
+montée de l'IC(0) est comparable à celle de l'AMG (0.66 s contre 0.87 sur le cas dur) : c'est que sans
+correction grossière, une factorisation incomplète ne touche pas aux **basses fréquences**. Le
+conditionnement reste en `h^-2`, donc le nombre d'itérations croît comme `n^(1/2)` en 2D. C'est
+exactement ce que le multigrille est fait pour éviter, et pourquoi il est optimal ici.
+
+Ce constat ne dépend pas du fait de le garder « du début à la fin » : l'échec est l'absence de niveau
+grossier, pas l'obsolescence des coefficients. Sur ce second point d'ailleurs la mesure existait déjà,
+dans la note de `Lineaire::refaire` : **geler le préconditionneur d'AMGCL entre itérations coûte +79 %
+d'itérations de CG**, parce que son `spai0` du niveau fin reste celui de l'ancienne matrice et qu'aucune
+API ne permet de le rafraîchir seul — alors que le `rebranche` de notre multigrille **recalcule** les
+coefficients du niveau fin sur les nouvelles valeurs et n'y perd que **11 %**.
+
+Conclusion sur la question posée : la bonne façon d'exploiter « beaucoup de systèmes qui se ressemblent »
+n'est pas une factorisation incomplète figée, c'est ce que notre solveur fait déjà — garder la
+hiérarchie, **rafraîchir le niveau fin**, et recycler le sous-espace. Et quand deux solves d'une même
+itération partagent la matrice, une factorisation directe bat tout le monde sur le second, là où elle
+tient en mémoire.
