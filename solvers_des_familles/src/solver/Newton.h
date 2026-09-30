@@ -1831,39 +1831,70 @@ struct Newton {
                             if ( pm2[ i ].etat != PolyCellule::OK ) ++sans;
                             else rmin = std::min( rmin, pm2[ i ].rayon );
                         }
-                        // le merite `log2` du modele, son aire minimale, et ce qui sort du rayon
-                        auto mod = [ & ]( TF t1, TF t2, TF *pmin, SI *pdeh ) {
-                            const TF tk[ 2 ] = { t1, t2 };
-                            const TF tinf = std::max( std::fabs( t1 ), std::fabs( t2 ) );
-                            TF s2 = 0, mn = INFINI;
-                            SI deh = 0;
-                            for ( SI i = 0; i < n; ++i ) {
+                        // ---- LE MERITE `log2` DU MODELE, POUR UNE LISTE DE POINTS, EN UN SEUL PASSAGE
+                        //
+                        // En mono-thread ca coutait plus cher que les diagrammes qu'on economisait :
+                        // 126 points x 100000 cellules, mesure a 1.69 s sur 8.32 s de total. Donc un
+                        // seul `parallel_for` sur les cellules, avec un accumulateur par ( fil, point )
+                        // -- le motif du § 22 -- et une seule traversee de `pm2` pour toute la grille.
+                        const int nth = std::max( 1, par.threads );
+                        auto mods = [ & ]( const std::vector<TF> &pts, std::vector<TF> &s2,
+                                           std::vector<TF> &mn, std::vector<SI> &deh ) {
+                            const int np = int( pts.size() / 2 );
+                            std::vector<TF> as2( size_t( nth ) * np, 0 ), amn( size_t( nth ) * np, INFINI );
+                            std::vector<SI> adh( size_t( nth ) * np, 0 );
+                            parallel_for( n, par, [ & ]( SI i, int th ) {
                                 const PolyMulti &q = pm2[ i ];
-                                if ( q.etat != PolyCellule::OK ) continue;
-                                if ( q.rayon < tinf ) ++deh;
-                                const TF A = q( tk, 2 );
-                                if ( protegee[ i ] && A < mn ) mn = A;
-                                if ( ! ( A > 0 ) ) { s2 = INFINI; break; }
-                                const TF gg = std::log( A / nu[ i ] );
-                                s2 += gg * gg;
-                            }
-                            if ( pmin ) *pmin = mn;
-                            if ( pdeh ) *pdeh = deh;
-                            return s2 == INFINI ? INFINI : std::sqrt( s2 );
+                                if ( q.etat != PolyCellule::OK ) return;
+                                TF *ps = &as2[ size_t( th ) * np ], *pm = &amn[ size_t( th ) * np ];
+                                SI *pd = &adh[ size_t( th ) * np ];
+                                for ( int p = 0; p < np; ++p ) {
+                                    const TF tk[ 2 ] = { pts[ 2 * p ], pts[ 2 * p + 1 ] };
+                                    if ( q.rayon < std::max( std::fabs( tk[ 0 ] ), std::fabs( tk[ 1 ] ) ) ) ++pd[ p ];
+                                    const TF A = q( tk, 2 );
+                                    if ( protegee[ i ] && A < pm[ p ] ) pm[ p ] = A;
+                                    if ( A > 0 ) { const TF gg = std::log( A / nu[ i ] ); ps[ p ] += gg * gg; }
+                                    else ps[ p ] = INFINI;
+                                }
+                            } );
+                            s2.assign( np, 0 ); mn.assign( np, INFINI ); deh.assign( np, 0 );
+                            for ( int th = 0; th < nth; ++th )
+                                for ( int p = 0; p < np; ++p ) {
+                                    const TF v = as2[ size_t( th ) * np + p ];
+                                    s2[ p ] = s2[ p ] == INFINI || v == INFINI ? INFINI : s2[ p ] + v;
+                                    mn[ p ] = std::min( mn[ p ], amn[ size_t( th ) * np + p ] );
+                                    deh[ p ] += adh[ size_t( th ) * np + p ];
+                                }
+                            for ( int p = 0; p < np; ++p ) s2[ p ] = s2[ p ] == INFINI ? INFINI : std::sqrt( s2[ p ] );
                         };
-                        // ---- LA GRILLE FINE, gratuite
+                        auto mod = [ & ]( TF t1, TF t2, TF *pmin, SI *pdeh ) {
+                            const std::vector<TF> pts = { t1, t2 };
+                            std::vector<TF> s2, mn; std::vector<SI> deh;
+                            mods( pts, s2, mn, deh );
+                            if ( pmin ) *pmin = mn[ 0 ];
+                            if ( pdeh ) *pdeh = deh[ 0 ];
+                            return s2[ 0 ];
+                        };
+                        // ---- LA GRILLE FINE : tous ses points en UN passage
                         TF mb = INFINI, t1b = 0, t2b = 0;
                         const int NA = std::max( o.g2_na, 1 ), NB = std::max( o.g2_nb, 1 );
-                        for ( int ia = 0; ia < NA; ++ia ) {
-                            const TF al = t / TF( SI( 1 ) << ia );
-                            if ( al < o.t_min ) break;
-                            for ( int ib = 0; ib < NB; ++ib ) {
-                                const TF be = o.g2_bpos ? o.g2_bmax * ib / TF( std::max( NB - 1, 1 ) )
-                                                        : o.g2_bmax * ( 2 * ib - ( NB - 1 ) ) / TF( std::max( NB - 1, 1 ) );
-                                TF mn;
-                                const TF v = mod( al, al * be, &mn, nullptr );
-                                if ( v < mb && ( ! plancher_actif() || mn >= eps ) ) { mb = v; t1b = al; t2b = al * be; }
+                        {
+                            std::vector<TF> pts;
+                            for ( int ia = 0; ia < NA; ++ia ) {
+                                const TF al = t / TF( SI( 1 ) << ia );
+                                if ( al < o.t_min ) break;
+                                for ( int ib = 0; ib < NB; ++ib ) {
+                                    const TF be = o.g2_bpos ? o.g2_bmax * ib / TF( std::max( NB - 1, 1 ) )
+                                                            : o.g2_bmax * ( 2 * ib - ( NB - 1 ) ) / TF( std::max( NB - 1, 1 ) );
+                                    pts.push_back( al ); pts.push_back( al * be );
+                                }
                             }
+                            std::vector<TF> s2, mn; std::vector<SI> deh;
+                            mods( pts, s2, mn, deh );
+                            for ( int p = 0; p < int( s2.size() ); ++p )
+                                if ( s2[ p ] < mb && ( ! plancher_actif() || mn[ p ] >= eps ) ) {
+                                    mb = s2[ p ]; t1b = pts[ 2 * p ]; t2b = pts[ 2 * p + 1 ];
+                                }
                         }
                         const TF m_grille = mb;
                         // ---- LA DESCENTE DE GRADIENT sur le modele, depuis l'argmin de la grille
@@ -1873,16 +1904,19 @@ struct Newton {
                             for ( int k = 0; k < o.g2_desc && h > TF( 1e-12 ); ++k ) {
                                 TF gr[ 2 ] = { 0, 0 };
                                 const TF tk[ 2 ] = { t1, t2 };
-                                for ( SI i = 0; i < n; ++i ) {  // d( sum g^2 ) / dt = 2 sum g / A dA/dt
-                                    const PolyMulti &q = pm2[ i ];
-                                    if ( q.etat != PolyCellule::OK ) continue;
+                                std::vector<TF> agr( size_t( nth ) * 2, 0 );
+                                parallel_for( n, par, [ & ]( SI i, int th ) {
+                                    const PolyMulti &q = pm2[ i ];   // d( sum g^2 )/dt = 2 sum g / A dA/dt
+                                    if ( q.etat != PolyCellule::OK ) return;
                                     const TF A = q( tk, 2 );
-                                    if ( ! ( A > 0 ) ) continue;
+                                    if ( ! ( A > 0 ) ) return;
                                     TF da[ 2 ];
                                     q.gradient( tk, 2, da );
                                     const TF c = 2 * std::log( A / nu[ i ] ) / A;
-                                    gr[ 0 ] += c * da[ 0 ]; gr[ 1 ] += c * da[ 1 ];
-                                }
+                                    agr[ size_t( th ) * 2 ] += c * da[ 0 ];
+                                    agr[ size_t( th ) * 2 + 1 ] += c * da[ 1 ];
+                                } );
+                                for ( int th = 0; th < nth; ++th ) { gr[ 0 ] += agr[ size_t( th ) * 2 ]; gr[ 1 ] += agr[ size_t( th ) * 2 + 1 ]; }
                                 const TF ng = std::max( std::fabs( gr[ 0 ] ), std::fabs( gr[ 1 ] ) );
                                 if ( ! ( ng > 0 ) ) break;
                                 const TF n1 = t1 - h * gr[ 0 ] / ng, n2 = t2 - h * gr[ 1 ] / ng;

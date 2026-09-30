@@ -6416,16 +6416,16 @@ suivante** quand `β = 0` gagne (même point, même laplacien, même second memb
 n'est payé que lorsque le mélange sert ; et un `β` obtenu par le polynôme ne coûterait aucun diagramme
 du tout.
 
-## 24.14 Le modèle polynomial sur le span `{ d, d(sonde) }` : l'exploration devient gratuite
+## 24.14 Le modèle polynomial sur le span `{ d, d(sonde) }` : l'exploration devient négligeable — mais le TEMPS ne suit pas
 
 Le § 24.13 avait localisé le coût : chaque point d'essai en `(α, β)` était un diagramme. Or à
 **connectivité fixe** l'aire de chaque cellule est un polynôme exact du déplacement (§ 22), donc
 l'exploration ne coûte plus rien. `--g2-modele` construit `PolyMulti` sur le span `{ d, e }` et évalue
 le mérite `log2` depuis les aires modélisées ; `--g2-desc K` ajoute une **descente de gradient** par
-`PolyMulti::gradient`. Coût total : une construction de l'ordre d'**un** diagramme — c'est
-ce que le § 22 avait mesuré, et la trace la donne au même ordre — plus **un** diagramme de vérification
-à l'argmin. Elle est comptée comme un diagramme dans les chiffres ci-dessous ; la comparaison en temps
-de paroi demande un `job -b` et n'est pas encore faite.
+`PolyMulti::gradient`. Coût en diagrammes : une construction de l'ordre d'**un**
+diagramme — c'est ce que le § 22 avait mesuré — plus **un** diagramme de vérification à l'argmin. Elle
+est comptée comme un diagramme ci-dessous. **En temps de paroi le mode perd quand même de 31 à 75 %**,
+et la sous-section « le temps de paroi » dit exactement pourquoi : ce n'est pas l'exploration.
 
 Deux détails qui font toute la différence sur le coût :
 
@@ -6479,6 +6479,57 @@ modèle **classe** bien avant de **chiffrer** juste.
 
 Et il devient juste là où on en aurait le moins besoin : à 0.9 % près à l'itération 5, juste avant la
 bascule. Sa zone de validité est la **fin** de la phase `log`, pas le début.
+
+### Le temps de paroi, qui tranche ( `job -b` )
+
+Les diagrammes ne disent pas tout, et ici ils mentent par omission.
+
+| | itérations | diagrammes | **temps** |
+|---|---|---|---|
+| 2D uniforme, défaut ( KMT + log ) | 6 | 7 | **1.10 s** |
+| 2D uniforme, référence ( limites ) | 6 | 7 | 1.14 s |
+| 2D uniforme, **modèle + sonde** | **5** | 8 | 1.49 s ( **+31 %** ) |
+| 2D lignes s0.005, défaut | 14 | 39 | 6.40 s |
+| 2D lignes s0.005, référence | 12 | 19 | **4.30 s** |
+| 2D lignes s0.005, **modèle + sonde** | **10** à 11 | 23 à 24 | 7.4 à 7.7 s ( **+75 %** ) |
+| 2D aires égales, référence | 13 | 53 | **7.55 s** |
+| 2D aires égales, **modèle + sonde** | **12** | 58 | 11.85 s ( +57 % ) |
+
+**Le meilleur compte d'itérations jamais mesuré sur ce banc** (10 contre 12 sur le cas dur, 5 contre 6
+sur l'uniforme) et pourtant une **perte de 31 à 75 % en temps**. Le détail dit où, et ce n'est pas là
+qu'on l'attendait (2D lignes s0.005, contre la référence) :
+
+| poste | référence | modèle | écart |
+|---|---|---|---|
+| diagrammes | 1.29 s | 1.18 s | **≈ 0** |
+| résolution | 2.74 | 3.79 | +1.05 |
+| limites | 0.07 | 1.30 | +1.24 |
+| reste ( construction + grille + descente ) | 0.06 | 1.11 | +1.05 |
+| TOTAL | **4.36** | 7.66 | +3.30 |
+
+**Les diagrammes coûtent exactement la même chose** — le pari est tenu de ce côté. Le surcoût est
+**trois postes à peu près égaux** : la construction du modèle, la passe de limites globale qui donne
+`α*` à chaque itération, et le **solve linéaire supplémentaire de la sonde** (17 hiérarchies AMG au lieu
+de 12, 956 itérations linéaires au lieu de 681).
+
+L'évaluation, elle, n'est plus un sujet, et ça s'est mérité : en mono-thread elle coûtait 1.69 s. Un
+seul `parallel_for` sur les cellules avec un accumulateur par ( fil, point ) — le motif du § 22, une
+seule traversée de `pm2` pour toute la grille — la ramène à 1.11 s. Et surtout, **réduire la grille de
+126 points à 6 ne change plus le temps** (7.68 s contre 7.43 s) : la preuve que l'exploration est
+devenue négligeable. Ce qui laisse deux leviers identifiés et **non faits** :
+
+* quand `β = 0` gagne, le solve de la sonde **est** celui de l'itération suivante (même point, même
+  laplacien, même second membre) : il est réutilisable au lieu d'être refait ;
+* `α*` peut sortir des **racines scalaires du modèle** (c'est ce que fait le § 22.3) au lieu d'une passe
+  de limites globale.
+
+Ces deux-là valent environ les deux tiers du surcoût. Sans eux, le mode reste un instrument.
+
+### Une remarque au passage sur le `--pas modele` du § 22
+
+Le même banc le fait sortir de route sur le nuage dégénéré : **40 itérations, 619 diagrammes, 70 s**
+contre 13 / 53 / 7.6 pour la référence. Son score de 13 diagrammes du § 22.3 est un score de **nuage
+propre** ; il ne survit pas aux germes quasi coïncidents. Le span `{ d, sonde }`, lui, y tient (12 / 58).
 
 ### Portée : 2D seulement
 
