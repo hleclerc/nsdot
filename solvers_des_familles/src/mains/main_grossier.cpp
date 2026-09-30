@@ -42,6 +42,7 @@
 
 #include "bench/Dispatch.h"
 #include "solver/Densite.h"
+#include "solver/Ecrasement.h"
 #include "solver/Lineaire.h"
 #include "solver/Newton.h"
 #include "solver/Prolongation.h"
@@ -84,6 +85,14 @@ struct Opts {
     bool        fin = true;             ///< enchainer le Newton fin apres la prolongation
     bool        balaye = false;         ///< juger la prolongation a CHAQUE `s`, pas seulement au dernier
     bool        sans_zero = false;      ///< ne PAS finir la liste a s = 0 ( ou la densite a des zeros )
+    // PAS DE GARDE D'ADMISSIBILITE PAR DEFAUT, et c'est le point : avec le residu `log` la barriere est
+    // DANS l'objectif ( `a_i -> 0` donne `+inf` ), donc le minimum du merite ne peut pas affamer une
+    // cellule. Il n'y a rien a interdire de l'exterieur. ( `--span-garde F > 0` ajoute quand meme un
+    // plancher relatif a la base, utile seulement pour mesurer en `lin`, ou la barriere n'existe pas. )
+    int         span_grille = 33;        ///< span : points de la grille 1-D par coordonnee et par balayage
+    TF          span_garde = 0.5;
+    int         span = 0;               ///< `--span K` : minimiser le merite sur un span de 1..K directions, `L` gele
+    bool        reste = false;          ///< LA METRIQUE : combien d'iterations restent depuis `alpha_0 * w_prol`
     bool        echelle = false;        ///< balayer `alpha_0` : le verdict de `alpha_0 * w_prol`, alpha_0 = 1, 1/2, ...
 };
 
@@ -412,7 +421,234 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu0, Lineaire &lin ) {
     prolonge_et_juge( "PROLONGATION" );
     if ( ! prol_ok ) { std::printf( "  prolongation inconnue : %s\n", o.prol.c_str() ); return 1; }
 
-    // ---- 5. JUSQU'OU LA DIRECTION PORTE ( `--echelle` ). C'est le `t` de la correction `retrait`
+    // ---- 5. LE SPAN A DIAGRAMME ET `L` GELES ( `--span K` )
+    if ( o.span > 0 ) {
+    // =====================================================================================
+    // LE SPAN A DIAGRAMME ET `L` GELES ( `--span K` ) -- inclus par `main_grossier.cpp`.
+    //
+    // LE SCHEMA MESURE, exactement celui demande et rien de plus : on part d'un point ADMISSIBLE
+    // ( Voronoi ), on paie UN diagramme et UNE factorisation, et on ne les refait plus. On minimise le
+    // merite sur le span, on regarde ce qui manque, on en fait une direction de plus ( orthogonalisee ),
+    // et on recommence. La question est le COMPORTEMENT QUAND `k` MONTE, pas le cout.
+    //
+    // CE QUI EST GELE, ET CE QUI NE PEUT PAS L'ETRE. `L` est gele : chaque direction ajoutee est une
+    // re-resolution sur la MEME factorisation ( `lin.resout_encore` ), pas une factorisation de plus.
+    // En revanche le MERITE est evalue avec les vraies masses : `PolyMulti` donne l'aire exacte sur le
+    // span ( les sommets sont affines dans les coefficients, donc l'aire est quadratique ), mais la
+    // MASSE sous des gaussiennes n'en est pas un polynome ( § 9.7 ) -- minimiser le residu d'AIRE serait
+    // minimiser autre chose que ce qu'on veut. On paie donc une mesure par evaluation. Ca ne change pas
+    // la reponse a la question posee, seulement son prix, et le prix est le sujet d'apres.
+    //
+    // LE RAYON DE VALIDITE est rapporte parce qu'il est deja calcule : `PolyMulti::rayon` est le plus
+    // grand `|t|inf` sous lequel aucune arete ne s'annule, donc le domaine ou le modele gele est exact.
+    // =====================================================================================
+
+    // la moyenne retiree : les poids sont definis a une constante pres, autant que les directions le soient
+    auto centre = [ & ]( std::vector<TF> &v ) {
+        TF m = 0;
+        for ( SI i = 0; i < n; ++i ) m += v[ i ];
+        m /= TF( n );
+        for ( SI i = 0; i < n; ++i ) v[ i ] -= m;
+    };
+    auto pscal = [ & ]( const std::vector<TF> &u, const std::vector<TF> &v ) {
+        TF s = 0;
+        for ( SI i = 0; i < n; ++i ) s += u[ i ] * v[ i ];
+        return s;
+    };
+
+    // ---- LE POINT DE BASE : Voronoi, a la densite du dernier `s`. UN diagramme.
+    nw.res_cur = o.newton.residu;            // sinon le merite reste `lin` : `res_cur` n'est pose que dans `resout`
+    std::vector<TF> wb( n, TF( 0 ) ), ab;
+    std::vector<Facette> fab;
+    nw.mesures_et_facettes( wb, ab, fab );
+    Laplacien L;
+    L.assemble( n, fab );
+    TF amin_base = INFINI, plancher_span = 0;
+        {
+            TF ax = 0;
+            for ( SI i = 0; i < n; ++i ) { amin_base = std::min( amin_base, ab[ i ] / nw.nu[ i ] ); ax = std::max( ax, ab[ i ] / nw.nu[ i ] ); }
+            plancher_span = o.span_garde * amin_base;   // 0 par defaut : seul `a_i > 0` est exige
+            std::printf( "  base = Voronoi a s = %g : merite %.4e, min a/nu %.3e, max a/nu %.1f  ( plancher du span %.3e )\n",
+                         double( rho.s ), double( nw.merite( ab ) ), double( amin_base ), double( ax ), double( plancher_span ) );
+        }
+
+    // ---- LA PREMIERE DIRECTION : la prolongation grossiere. LA DEUXIEME : Newton au point de base, sur
+    //      la factorisation qu'on garde pour tout le reste.
+    std::vector<std::vector<TF>> D;
+    {
+        std::vector<TF> d0 = w;                              // `w` porte la prolongation ( § 3 )
+        for ( SI i = 0; i < n; ++i ) d0[ i ] -= wb[ i ];
+        centre( d0 );
+        D.push_back( d0 );
+    }
+    std::vector<TF> b, dn( n );
+    nw.membre_de( ab, nw.res_cur, nw.o.puis, b );
+    const bool fact_ok = lin.resout( L, b, dn );
+    if ( ! fact_ok ) { std::printf( "  la factorisation a echoue\n" ); return 1; }
+    std::printf( "  factorisation faite ( %s ), re-resolutions possibles : %s\n",
+                 lin.nom(), lin.sait_encore() ? "oui" : "NON ( chaque direction coutera une factorisation )" );
+
+    // le COSINUS entre la direction grossiere et celle de Newton -- le garde-fou du § 24.12, a lire avant
+    // tout le reste : deux directions colineaires ne font pas un span.
+    {
+        std::vector<TF> dc = dn;
+        centre( dc );
+        const TF c = pscal( D[ 0 ], dc ) / std::sqrt( std::max( pscal( D[ 0 ], D[ 0 ] ) * pscal( dc, dc ), TF( 1e-300 ) ) );
+        std::printf( "  COSINUS( w_prol , d_newton ) = %+.4f\n", double( c ) );
+    }
+
+    // ---- L'EVALUATION : le merite vrai en `wb + sum t_k D_k`, et l'admissibilite. Un point non
+    //      admissible est REFUSE ( merite infini ) : le schema ne quitte jamais l'admissible.
+    std::vector<TF> wt( n ), at;
+    std::vector<Facette> fat;
+    int nb_eval = 0;
+    auto evalue = [ & ]( const std::vector<TF> &t, TF &amin, TF &amax ) {
+        for ( SI i = 0; i < n; ++i ) {
+            TF v = wb[ i ];
+            for ( size_t k = 0; k < t.size(); ++k ) v += t[ k ] * D[ k ][ i ];
+            wt[ i ] = v;
+        }
+        ++nb_eval;
+        // LE RESIDU, REPOSE A CHAQUE FOIS. `nw.resout` ( le temoin `k = 0`, et le « il reste combien »
+        // de chaque `k` ) ecrase `res_cur`, et la bascule `log -> lin` du defaut ( § 24.5 ) le laisse a
+        // `lin` des que le solve converge. Sans ca les lignes du tableau ne sont pas sur la meme echelle.
+        nw.res_cur = o.newton.residu;
+        nw.mesures_et_facettes( wt, at, fat );
+        amin = INFINI; amax = 0;
+        for ( SI i = 0; i < n; ++i ) {
+            const TF x = at[ i ] / nw.nu[ i ];
+            amin = std::min( amin, x );
+            amax = std::max( amax, x );
+        }
+        return amin > 0 && amin >= plancher_span ? nw.merite( at ) : INFINI;
+    };
+
+    // ---- LA MINIMISATION SUR LE SPAN : des recherches 1-D cycliques. Le merite sur le span n'est pas
+    //      quadratique ( la masse ne l'est pas ), donc pas de formule : on balaye, on raffine, on cycle.
+    std::vector<TF> t;
+    // LA MINIMISATION : une GRILLE FINE, coordonnee par coordonnee, resserree a chaque balayage. Rien
+    // de malin -- pas de gradient, justement parce qu'en `lin` avec un plancher dur l'optimum est SUR
+    // le bord du domaine admissible, et qu'un gradient n'y mene pas. Le premier balayage couvre
+    // `[ -0.5, 1.5 ]` ( `alpha_0 = 1` est dedans ), les suivants raffinent autour du meilleur point.
+    // Les points non admissibles sont refuses : le blocage se fait AVANT que la cellule se vide.
+    auto minimise = [ & ]( int sweeps ) {
+        const int N = o.span_grille;
+        TF amin, amax;
+        TF best = evalue( t, amin, amax );
+        for ( int s = 0; s < sweeps; ++s ) {
+            const TF demi = TF( 1 ) / std::pow( TF( 4 ), TF( s ) );     // 1, 1/4, 1/16 ...
+            for ( size_t k = 0; k < t.size(); ++k ) {
+                const TF c = t[ k ], lo = s == 0 ? TF( -0.5 ) : c - demi, hi = s == 0 ? TF( 1.5 ) : c + demi;
+                TF meilleur = c;
+                for ( int j = 0; j < N; ++j ) {
+                    t[ k ] = lo + ( hi - lo ) * TF( j ) / TF( N - 1 );
+                    const TF m = evalue( t, amin, amax );
+                    if ( m < best ) { best = m; meilleur = t[ k ]; }
+                }
+                t[ k ] = meilleur;
+            }
+        }
+        return best;
+    };
+
+    // ---- LA BOUCLE SUR `k`
+    // LE TEMOIN, `k = 0` : Newton depuis la base elle-meme, au meme `s`, dans le meme binaire.
+        {
+            nw.st = NewtonStats{};
+            const double t0 = now();
+            nw.resout( wb );
+            std::printf( "  TEMOIN k=0 ( Newton depuis la base ) : %d it, %d diag ( %d reculs ), %.2f s, reste %.2e, %s\n",
+                         nw.st.nb_iter, nw.st.nb_diag, nw.st.nb_recul, now() - t0, double( nw.st.reste ), nw.st.fin );
+        }
+        std::printf( "  k  |  merite         |  min a/nu   |  max a/nu  |  coef w_prol  |  actives  |  diag  ||  IT RESTANTES  |  diag ( reculs )  |  reste  |  fin\n" );
+    for ( int k = 1; k <= o.span && k <= int( PolyMulti::KMAX ); ++k ) {
+        if ( int( D.size() ) < k ) break;
+        t.resize( k, TF( 0 ) );
+        nb_eval = 0;
+        const TF mer = minimise( 2 );
+        // l'etat au minimum : les masses, et le rayon de validite du modele gele sur CE span
+        TF amin, amax;
+        evalue( t, amin, amax );
+        const std::vector<TF> w_opt = wt, a_opt = at;
+        // LES CONTRAINTES ACTIVES : les cellules posees sur le plancher. C'est ce qui dit si « projeter
+        // sur le bord » est une projection ( quelques contraintes ) ou un programme lineaire ( des
+        // milliers ) -- et donc si un span de quelques directions peut suivre ce bord.
+        SI actives = 0;
+        for ( SI i = 0; i < n; ++i ) actives += a_opt[ i ] / nw.nu[ i ] <= TF( 1.05 ) * plancher_span;
+        TF rayon = INFINI, pave = 0, tinf = 0;
+        {
+            std::vector<const TF *> dp( k );
+            for ( int j = 0; j < k; ++j ) dp[ j ] = D[ j ].data();
+            std::vector<PolyMulti> pm;
+            polynomes_multi( pd, nu0.P, wb, dp.data(), k, a.par, pm );
+            // L'ECART DE PAVAGE, qui est la BONNE mesure de l'erreur du modele gele : une arete qui
+            // meurt ne change RIEN a l'aire ( une facette de longueur nulle contribue zero ), donc un
+            // rayon par arete flague des evenements qui ne coutent rien. Les cellules PAVENT le carre,
+            // donc `sum_i a_i^poly = 1` exactement si le modele est juste ; tout ecart est la somme des
+            // recouvrements, c'est-a-dire son erreur `L1` -- et de signe connu, puisque le modele
+            // ignore des coupes et SURESTIME. Gratuit, et sans un diagramme.
+            std::vector<TF> tt( k );
+            for ( int j = 0; j < k; ++j ) { tt[ j ] = t[ j ]; tinf = std::max( tinf, std::fabs( t[ j ] ) ); }
+            for ( const PolyMulti &p : pm ) {
+                if ( p.etat != PolyCellule::OK ) continue;
+                rayon = std::min( rayon, p.rayon );
+                pave += p( tt.data(), k );
+            }
+            pave -= 1;
+        }
+        (void) rayon; (void) tinf;
+        // ET LA SEULE METRIQUE : ce que Newton coute DEPUIS CE POINT.
+        nw.st = NewtonStats{};
+        const double t0 = now();
+        nw.resout( w_opt );
+        std::printf( "  %d  |  %.6e  |  %9.3e  |  %8.1f  |  %+9.4f  |  %+8.1e  |  %5d  ||  %4d  |  %4d ( %3d )  |  %.2e  |  %s\n",
+                     k, double( mer ), double( amin ), double( amax ), double( t[ 0 ] ), double( actives ), nb_eval,
+                     nw.st.nb_iter, nw.st.nb_diag, nw.st.nb_recul, double( nw.st.reste ), nw.st.fin );
+
+        // ---- CE QUI MANQUE : la direction de Newton AU MINIMUM, sur la factorisation GELEE, puis
+        //      orthogonalisee contre le span ( sinon elle n'apporte rien de neuf ).
+        if ( k == o.span || k == int( PolyMulti::KMAX ) ) break;
+        nw.membre_de( a_opt, nw.res_cur, nw.o.puis, b );
+        std::vector<TF> dnk( n );
+        if ( lin.sait_encore() ) lin.resout_encore( b, dnk );
+        else                     lin.resout( L, b, dnk );
+        centre( dnk );
+        for ( int j = 0; j < int( D.size() ); ++j ) {
+            const TF c = pscal( dnk, D[ j ] ) / std::max( pscal( D[ j ], D[ j ] ), TF( 1e-300 ) );
+            for ( SI i = 0; i < n; ++i ) dnk[ i ] -= c * D[ j ][ i ];
+        }
+        const TF nrm = std::sqrt( pscal( dnk, dnk ) );
+        if ( ! ( nrm > 0 ) ) { std::printf( "    la direction ajoutee est DANS le span ( norme nulle ) : rien a ajouter\n" ); break; }
+        std::printf( "    direction %d ajoutee : norme apres orthogonalisation %.3e\n", int( D.size() ) + 1, double( nrm ) );
+        D.push_back( dnk );
+    }
+    return 0;
+
+    }
+
+    // ---- 6. LA SEULE METRIQUE QUI COMPTE : COMBIEN D'ITERATIONS RESTE-T-IL ( `--reste` ).
+    //          Ni `alpha_0`, ni les cellules sous un plancher, ni le merite : ce que Newton coute
+    //          depuis ce depart. `alpha_0 = 0` EST Voronoi, donc le temoin est dans le meme tableau, au
+    //          meme `s`, dans le meme binaire. Le second temoin est l'etape de la continuation elle-meme
+    //          ( qui part de la solution du `s` precedent, bien meilleure que Voronoi ).
+    if ( o.reste ) {
+        std::printf( "  Newton depuis `alpha_0 * w_prol` a s = %g -- ce qu'il RESTE\n", double( rho.s ) );
+        std::printf( "    alpha_0  |  it  |  diag ( reculs )  |  temps  |  reste  |  fin\n" );
+        std::vector<TF> wa( n );
+        const TF fs[] = { 0, 0.35, 0.6, 0.8, 1.0 };
+        for ( TF f : fs ) {
+            for ( SI i = 0; i < n; ++i ) wa[ i ] = f * w[ i ];
+            nw.st = NewtonStats{};
+            const double t = now();
+            nw.resout( wa );
+            std::printf( "    %7.3f  |  %3d  |  %4d ( %3d )  |  %6.2f s  |  %.2e  |  %s\n",
+                         double( f ), nw.st.nb_iter, nw.st.nb_diag, nw.st.nb_recul, now() - t,
+                         double( nw.st.reste ), nw.st.fin );
+        }
+        return 0;
+    }
+
+    // ---- 7. JUSQU'OU LA DIRECTION PORTE ( `--echelle` ). C'est le `t` de la correction `retrait`
     //         du § 8.1, remesure sur une densite : le plus grand `alpha_0` tel que
     //         `alpha_0 * w_prol` soit encore admissible. Si ce `alpha_0` est minuscule, aucun span
     //         de deux ou trois directions ne le remontera a 1 -- le deficit de la prolongation est
@@ -432,7 +668,7 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu0, Lineaire &lin ) {
         return 0;
     }
 
-    // ---- 6. LE NEWTON FIN, le seul chiffre qui tranche
+    // ---- 8. LE NEWTON FIN, le seul chiffre qui tranche
     if ( ! o.fin ) return 0;
     nw.st = NewtonStats{};
     t0 = now();
@@ -478,6 +714,10 @@ int main( int argc, char **argv ) {
         else if ( s == "--balaye" )     { o.balaye = true; o.fin = false; }
         else if ( s == "--echelle" )    { o.echelle = true; o.fin = false; }
         else if ( s == "--sans-zero" )  o.sans_zero = true;
+        else if ( s == "--reste" )      { o.reste = true; o.fin = false; }
+        else if ( s == "--span" )       { o.span = std::atoi( val() ); o.fin = false; }
+        else if ( s == "--span-garde" ) o.span_garde = std::atof( val() );
+        else if ( s == "--span-grille" ) o.span_grille = std::atoi( val() );
         else if ( s == "--solver" )     o.solver = val();
         else if ( s == "--amg-var" )    o.amgvar = std::atoi( val() );
         else if ( s == "--newton-tol" ) o.newton.tol = std::atof( val() );
@@ -511,6 +751,13 @@ int main( int argc, char **argv ) {
                 "  --balaye        juger la prolongation a CHAQUE etape en s : OU est le mur\n"
                 "  --sans-zero     la liste s'arrete a --conv-min, PAS a s = 0 ( les zeros de la densite\n"
                 "                  rendent le residu et le log indefinis sur la plupart des cellules )\n"
+                "  --span-garde F  span : un point n'est admissible que si min a/nu >= F * ( celui de la\n"
+                "                  base ) -- le blocage AVANT que les cellules se vident        (0.5)\n"
+                "  --span-grille N points de la grille 1-D, par coordonnee et par balayage       (33)\n"
+                "  --span K        minimiser le merite sur un span de 1..K directions, a DIAGRAMME et `L`\n"
+                "                  GELES : w_prol d'abord, puis « ce qui manque » orthogonalise, K <= 4\n"
+                "  --reste         LA METRIQUE : Newton depuis alpha_0 * w_prol, et combien d'iterations\n"
+                "                  il reste -- `alpha_0 = 0` est Voronoi, donc le temoin est dans le tableau\n"
                 "  --echelle       balayer alpha_0 dans `alpha_0 * w_prol` : JUSQU'OU la direction porte\n"
                 "  --pas P         essais ( KMT ) | essai-limites                      (essais)\n"
                 "  --residu R      lin | barriere | log                                   (lin)\n"
