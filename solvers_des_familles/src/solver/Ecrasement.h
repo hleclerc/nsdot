@@ -566,6 +566,54 @@ struct OptionsLimites {
     TF   plancher = 1e-9;       ///< ... ce plancher, en fraction de l'horizon
 };
 
+/// LES MESURES A CONNECTIVITE FIGEE : la cellule de chaque germe REFAITE EXACTEMENT en
+/// `w + alpha d`, mais en ne coupant QUE par les voisins deja connus ( `vois` ) -- sans parcours de
+/// l'arbre, donc sans aucune exploration.
+///
+/// POURQUOI. Deux limitations se confondent quand on suit une direction loin : le POLYNOME, qui
+/// laisse l'aire devenir NEGATIVE au lieu de prendre les parties positives ( le polygone se replie a
+/// combinatoire figee ), et LA CONNECTIVITE elle-meme, qui finit par etre fausse. Refaire les coupes
+/// exactement avec la seule liste de voisins separe les deux : ce qui reste d'erreur ici est
+/// imputable a la connectivite, et a rien d'autre.
+///
+/// `mesure( cel )` rend ce qu'on veut mesurer ( `PD::mesure` pour l'aire, `rho.mesure` pour la
+/// masse ). Rend le nombre de cellules vides, et `res` par IDENTIFIANT.
+template<class PD, class Mesure>
+SI mesures_connectivite_figee( const PD &pd, const TF *const *P, const std::vector<TF> &w,
+                               const std::vector<TF> &d, TF alpha, const Voisinage &vois,
+                               const Parallel &par, Mesure &&mesure, std::vector<TF> &res ) {
+    static_assert( PD::dim == 2, "2D seulement" );
+    static_assert( std::is_same_v<SI, d2::SI32>, "le CSR se lit tel quel" );
+    using Cell = typename PD::Cell;
+    using TK   = typename PD::TKernel;
+    const SI n = pd.n;
+    const auto &arbre = pd.arbre;
+
+    std::vector<TF> dt( n );
+    for ( SI k = 0; k < n; ++k ) dt[ k ] = d[ arbre.order[ k ] ];
+    std::vector<WMajT<2>> dm( arbre.nodes.size() );
+    parallel_for( SI( arbre.nodes.size() ), par, [ & ]( SI m, int ) {
+        const auto &nd = arbre.nodes[ m ];
+        dm[ m ] = weight_majorant<2>( nd.beg, nd.end, [ & ]( SI k, Vec<2> &q, TF &v ) {
+            q[ 0 ] = arbre.p[ 0 ][ k ]; q[ 1 ] = arbre.p[ 1 ][ k ]; v = dt[ k ];
+        } );
+    } );
+
+    res.assign( n, TF( 0 ) );
+    std::atomic<SI> vides{ 0 };
+    parallel_for( n, par, [ & ]( SI i, int ) {
+        Cell cel;
+        d2::FournisseurAlpha<TK> f( &arbre, dm.data(), dt.data(), P, w.data(), d.data(), alpha,
+                                    d2::SI32( i ), vois.col + vois.row[ i ],
+                                    int( vois.row[ i + 1 ] - vois.row[ i ] ) );
+        f.parcours = false;                              // LES PLANS CHAUDS SEULS : aucune exploration
+        d2::moteur<TK>( &f, &cel );
+        if ( cel.nb <= 0 ) { ++vides; return; }
+        res[ i ] = mesure( cel );
+    } );
+    return vides.load();
+}
+
 /// LA PASSE « predire, verifier, corriger », sur toutes les cellules. `pd` doit porter les poids
 /// `w` ( `set_weights( w )` ). Rend `lim[ id ]`.
 ///

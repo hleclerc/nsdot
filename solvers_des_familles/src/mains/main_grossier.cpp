@@ -95,9 +95,14 @@ struct Opts {
     // plancher relatif a la base, utile seulement pour mesurer en `lin`, ou la barriere n'existe pas. )
     int         prol_lisse = 0;          ///< passes de Jacobi amorti SUR la prolongation ( `lisse_jacobi` )
     int         span_grille = 33;        ///< span : points de la grille 1-D par coordonnee et par balayage
-    TF          span_garde = 0.5;
+    // ZERO PAR DEFAUT, ET C'EST UNE CORRECTION : a `0.5` cette garde exigeait `min a/nu >= 0.5 x` celui
+    // de la base, et elle REFUSAIT des points parfaitement sains -- `alpha_0 = 0.96` y tombait a 0.35 par
+    // recul, 84 iterations au lieu de 13. Le diagramme reel n'y a aucune cellule vide ; c'etait ma garde
+    // qui mentait, pas la realite. Seul `min a/nu > 0` est exige.
+    TF          span_garde = 0;
     TF          pave_tol = 1e-3;         ///< continuation : on s'arrete quand |somme A_i - 1| depasse ca
     std::string rho_gel = "interp";       ///< interp | plateau | cellule | germe ( cf. --help )
+    bool        fige = false;            ///< `--fige` : jusqu'ou la CONNECTIVITE FIXE emmene, le long de w_prol
     int         poly = 0;                ///< `--poly K` : la recherche SUR LES POLYNOMES, puis un recul scalaire
     TF          pas0 = 0.05;             ///< continuation en `alpha_0` : le pas MAXIMAL
     int         alpha0 = 0;              ///< `--alpha0 K` : continuation en `alpha_0`, compagnes = increments de lissage
@@ -715,6 +720,49 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu0, Lineaire &lin, con
                          double( ana ), double( num ), double( std::fabs( ana - num ) / std::max( std::fabs( num ), TF( 1e-300 ) ) ) );
             (void) k; (void) ff_r;
         }
+        // ============ JUSQU'OU LA CONNECTIVITE FIXE EMMENE ( `--fige` ) ============
+        if ( o.fige ) {
+            Voisinage vois;
+            vois.row = Lvor.row.data();
+            vois.col = Lvor.col.data();                  // le voisinage de Voronoi = celui de la base
+            std::vector<PolyMulti> pm1;
+            const TF *dp1[ 1 ] = { D[ 0 ].data() };
+            polynomes_multi( pd, nu0.P, wb, dp1, 1, a.par, pm1 );
+            std::printf( "  JUSQU'OU LA CONNECTIVITE FIXE EMMENE, le long de w_prol\n" );
+            std::printf( "   alpha  | min A poly |  min A fige | vides fige | min a/nu vrai | vides vrais |"
+                         " ecart masse fige/vraie\n" );
+            std::vector<TF> af, am_f, av;
+            std::vector<Facette> ff;
+            for ( int j = 0; j <= 25; ++j ) {
+                const TF al = TF( 1.25 ) * TF( j ) / TF( 25 );
+                // 1. LE POLYNOME
+                TF mp = INFINI;
+                for ( SI i = 0; i < n; ++i )
+                    if ( pm1[ i ].etat == PolyCellule::OK ) mp = std::min( mp, pm1[ i ]( &al, 1 ) );
+                // 2. LA CELLULE REFAITE, connectivite figee : l'aire, puis la masse
+                const SI vf = mesures_connectivite_figee( pd, nu0.P, wb, D[ 0 ], al, vois, a.par,
+                                                          []( const typename PD::Cell &c ) { return PD::mesure( c ); }, af );
+                mesures_connectivite_figee( pd, nu0.P, wb, D[ 0 ], al, vois, a.par,
+                                            [ & ]( const typename PD::Cell &c ) { return rho.mesure( c, []( int, TF ) {} ); }, am_f );
+                TF mf = INFINI;
+                for ( SI i = 0; i < n; ++i ) mf = std::min( mf, af[ i ] );
+                // 3. LA VRAIE CELLULE
+                std::vector<TF> wa( n );
+                for ( SI i = 0; i < n; ++i ) wa[ i ] = wb[ i ] + al * D[ 0 ][ i ];
+                nw.mesures_et_facettes( wa, av, ff );
+                TF mv = INFINI, ec = 0;
+                SI vv = 0;
+                for ( SI i = 0; i < n; ++i ) {
+                    mv = std::min( mv, av[ i ] / nw.nu[ i ] );
+                    vv += ! ( av[ i ] > 0 );
+                    ec = std::max( ec, std::fabs( am_f[ i ] - av[ i ] ) / std::max( av[ i ], TF( 1e-300 ) ) );
+                }
+                std::printf( "  %6.3f  | %10.3e | %11.3e | %10d | %13.3e | %11d | %.3e\n",
+                             double( al ), double( mp ), double( mf ), int( vf ), double( mv ), int( vv ), double( ec ) );
+            }
+            return 0;
+        }
+
         // ============ LA RECHERCHE SUR LES POLYNOMES, PUIS UN RECUL SCALAIRE ( `--poly K` ) ============
         //
         // LA CONCEPTION, et c'est elle qui rend le schema bon marche. Calculer les cellules coute cher,
@@ -1298,6 +1346,7 @@ int main( int argc, char **argv ) {
         else if ( s == "--pas0" )       o.pas0 = std::atof( val() );
         else if ( s == "--poly" )       { o.poly = std::atoi( val() ); o.span = std::max( o.span, 1 ); o.fin = false; }
         else if ( s == "--rho-gel" )    o.rho_gel = val();
+        else if ( s == "--fige" )       { o.fige = true; o.span = std::max( o.span, 1 ); o.fin = false; }
         else if ( s == "--pave-tol" )   o.pave_tol = std::atof( val() );
         else if ( s == "--span-garde" ) o.span_garde = std::atof( val() );
         else if ( s == "--span-grille" ) o.span_grille = std::atoi( val() );
@@ -1372,6 +1421,12 @@ int main( int argc, char **argv ) {
                 "                             attache `rho` a UNE configuration, et pres de `w_prol` beaucoup de\n"
                 "                             cellules fines sont degenerees -- donc la quantite n'a plus de sens\n"
                 "                    germe    la densite analytique au germe, `rho( p_i )`\n"
+                "  --fige          JUSQU'OU LA CONNECTIVITE FIXE EMMENE. Le long de `w_prol`, on compare trois\n"
+                "                  choses : le POLYNOME ( qui laisse l'aire devenir negative au lieu de prendre\n"
+                "                  les parties positives -- le polygone se replie ), la cellule REFAITE\n"
+                "                  EXACTEMENT mais en ne coupant QUE par les voisins connus ( aucune\n"
+                "                  exploration, pas d'AaBsp ), et la VRAIE cellule. Ce qui separe l'erreur du\n"
+                "                  modele de celle de la connectivite\n"
                 "  --poly K        LA RECHERCHE SUR LES POLYNOMES ( § 22 ), et c'est la version bon marche :\n"
                 "                  UN diagramme par `k` construit le modele, toute la recherche est ensuite\n"
                 "                  GRATUITE ( `A_i( t )` en forme close ), et on ne paie de vrais diagrammes que\n"
