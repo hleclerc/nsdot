@@ -719,6 +719,7 @@ int main( int argc, char **argv ) {
         else if ( s == "--span-desc" )  o.newton.span_desc = std::atoi( val() );
         else if ( s == "--span-mode" )  o.newton.span_mode = std::atoi( val() );
         else if ( s == "--span-grille" ) o.newton.span_grille = std::atoi( val() );
+        else if ( s == "--span-carte" ) o.newton.span_carte = true;
         else if ( s == "--profil" )     o.newton.profil = std::atoi( val() );
         else if ( s == "--combi" )      o.newton.combi = std::atoi( val() );
         else if ( s == "--modele" )     o.newton.modele = std::atoi( val() );

@@ -7359,6 +7359,60 @@ sommets — `V = (1/6) Σ_f ε_f ( v_o − g ) · S_f` avec `S_f` quadratique. `
 termes cubiques, et le coût de l'expansion limite le span utile à `K = 2` ou 3 — ce qui tombe bien,
 puisque c'est là que le gain est (−38 % à `K = 2` sur l'itération 7).
 
+## 24.25 Pourquoi la descente échouait : le gradient est EXACT, le domaine est une bande
+
+Hypothèse de l'utilisateur après le § 24.24 : si la grille bat la descente sur un problème « assez
+régulier », c'est probablement que **la dérivée était fausse**. Les deux diagnostics sont faits
+(`--span-carte`), et ils départagent.
+
+### Le gradient est exact
+
+Analytique contre différence finie centrée sur `Σ g²` :
+
+| | analytique | différence finie | écart relatif |
+|---|---|---|---|
+| `K = 1`, `k = 0` | −9.707685e+04 | −9.707685e+04 | **3.5e-09** |
+| `K = 2`, `k = 0` | 8.182176e+04 | 8.182652e+04 | 5.8e-05 |
+| `K = 2`, `k = 1` | 7.141108e+04 | 7.143863e+04 | 3.9e-04 |
+
+Donc ni la chaîne `d(Σg²)/dt = Σ 2g (1/A) dA/dt`, ni `PolyMulti::gradient`, ne sont en cause. (Les
+écarts à `K = 2` sont ceux d'une différence finie près d'une région `+∞`, pas une erreur.)
+
+### La carte montre la bizarrerie, et elle est franche
+
+`log2` sur la grille, itération 5, `K = 2` (colonnes = `t₂` de −0.382 à +0.382) :
+
+```
+t1=0.382      inf   inf   inf   inf     inf     inf     inf   inf   inf
+t1=0.2865     inf   inf   inf   inf     inf     inf     inf   inf   inf
+t1=0.191      inf   inf   inf   inf     184   158.1     inf   inf   inf
+t1=0.1432     inf   inf   inf   inf     197   170.3   147.4   inf   inf
+t1=0.09549    inf   inf   inf   inf   210.8   183.1   159.5   inf   inf
+t1=0.04774    inf   inf   inf   inf   225.6   196.6   172.1   inf   inf
+```
+
+Le domaine admissible est une **bande diagonale étroite**, bordée de `+∞` (une cellule se vide), et
+`log2` décroît fortement **en travers** de la bande : 210.8 → 183.1 → 159.5. L'optimum, `( 0.086,
+0.2865 )`, est au bout.
+
+**L'échec de la descente est donc structurel, pas numérique.** Partant de `( 0.191, 0 )`, tout pas de
+gradient sort de la bande et se fait refuser ; `h` se divise par deux, et comme il ne **recroît jamais**
+dans mon implémentation, la descente rampe dans une vallée à parois infinies. Deux défauts de méthode,
+pas de dérivée : pas de croissance du pas, et un gradient projeté sans traitement de la contrainte.
+
+### Et la bonne lecture : on minimise une BARRIÈRE
+
+Ces parois ne sont pas une contrainte extérieure, c'est **l'objectif lui-même** : `log2` vaut `+∞` là où
+une cellule se vide (§ 21.1, § 24.10). On minimise donc une barrière sur un domaine mince — un paysage
+où la descente de gradient est connue pour échouer, et où la méthode classique est **Newton** : la
+hessienne de la barrière est énorme en travers de la vallée et petite le long, donc elle rééchelonne
+exactement ce qu'il faut.
+
+Elle est à portée, et c'est la suite : `K ≤ 4`, le modèle est polynomial, donc la hessienne de `Σ g²`
+sur les coefficients du span est **analytique** et le système à résoudre est `4 × 4`. Elle remplacerait
+la grille partout — y compris à `K = 3` et 4, où une grille est hors de portée — et c'est une nécessité
+pour la 3D, où le modèle est trop cher pour qu'on se paie 1681 points par itération.
+
 ## 25.1 Le prix du niveau grossier, et la zone dure ne bouge pas
 
 `densite --pas essai-limites --conv 0.5 --conv-ratio 1.414 --sigma 0.02`, `job -b`, 8 fils :

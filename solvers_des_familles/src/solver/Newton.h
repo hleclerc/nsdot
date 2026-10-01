@@ -314,6 +314,7 @@ struct NewtonOptions {
     /// variante B ( les derivees de `w( t )` au depart, UNE construction de modele ).
     int  span_mode  = 0;
     int  span_grille = 0;      ///< SPAN : cote d'une grille de controle de la minimisation ( 0 : aucune )
+    bool span_carte = false;   ///< SPAN : imprimer la carte de `log2` et le controle du gradient
     int  modele     = -1;      ///< >= 0 : a CETTE iteration, batir le modele multi-directions et le
                                ///< confronter a l'evaluateur exact PUIS au vrai diagramme
     int  combi      = -1;      ///< >= 0 : a CETTE iteration, balayer le SIMPLEXE des trois directions ( lin, log, barriere )
@@ -1100,13 +1101,64 @@ struct Newton {
                                     mg = s2[ p ];
                                     for ( int k = 0; k < K; ++k ) bg[ k ] = pts[ size_t( p ) * K + k ];
                                 }
-                            std::printf( "      grille %d^%d sur [ 0, %.4g ] x +/- : min %.6e%s\n",
-                                         NG, K, double( t1m ), double( mg ),
+                            std::printf( "      grille %d^%d sur [ 0, %.4g ] x +/- : min %.6e en ( %.4g, %.4g )%s\n",
+                                         NG, K, double( t1m ), double( mg ), double( bg[ 0 ] ),
+                                         double( K > 1 ? bg[ 1 ] : TF( 0 ) ),
                                          mg < mb ? "  ( MIEUX que le depart de la descente )" : "" );
+                            // ---- LA CARTE, pour VOIR le paysage : si `log2` est lisse et unimodal,
+                            // une descente correcte doit y arriver, et l'echec est dans la descente.
+                            if ( K == 2 && o.span_carte ) {
+                                std::printf( "        carte log2 ( lignes t1 croissant, colonnes t2 de -%.3g a %.3g )\n",
+                                             double( t1m ), double( t1m ) );
+                                const int SP = 8;
+                                for ( int i1 = NG; i1 >= 1; i1 -= std::max( 1, NG / SP ) ) {
+                                    std::printf( "        t1=%-8.4g", double( t1m * i1 / TF( NG ) ) );
+                                    for ( int i2 = 0; i2 <= NG; i2 += std::max( 1, NG / SP ) ) {
+                                        const int p = ( i1 - 1 ) * ( NG + 1 ) + i2;
+                                        const TF v = s2[ p ];
+                                        if ( v == INFINI ) std::printf( " %9s", "inf" );
+                                        else std::printf( " %9.4g", double( v ) );
+                                    }
+                                    std::printf( "\n" );
+                                }
+                            }
                             if ( mg < mb ) { mb = mg; best = bg; }
                         }
 
                         cur = best;
+                        // ---- LE CONTROLE DU GRADIENT : analytique contre difference finie centree.
+                        // S'ils ne tombent pas, la derivee est fausse et l'echec de la descente vient
+                        // de la ; s'ils tombent, c'est la descente elle-meme qu'il faut accuser.
+                        if ( o.span_carte ) {
+                            std::vector<TF> agr( size_t( nth ) * K, 0 );
+                            parallel_for( n, par, [ & ]( SI i, int th ) {
+                                const PolyMulti &q = pm[ i ];
+                                if ( q.etat != PolyCellule::OK ) return;
+                                const TF A = q( cur.data(), K );
+                                if ( ! ( A > 0 ) ) return;
+                                TF da[ PolyMulti::KMAX ];
+                                q.gradient( cur.data(), K, da );
+                                const TF c = 2 * std::log( A / nu[ i ] ) / A;
+                                for ( int k = 0; k < K; ++k ) agr[ size_t( th ) * K + k ] += c * da[ k ];
+                            } );
+                            std::vector<TF> gra( K, 0 );
+                            for ( int th = 0; th < nth; ++th )
+                                for ( int k = 0; k < K; ++k ) gra[ k ] += agr[ size_t( th ) * K + k ];
+                            // la difference finie sur `sum g^2`, donc sur le CARRE du merite
+                            std::printf( "        gradient de sum g^2 : analytique / difference finie\n" );
+                            for ( int k = 0; k < K; ++k ) {
+                                const TF ek = std::max( std::fabs( cur[ k ] ), TF( 1e-3 ) ) * TF( 1e-5 );
+                                std::vector<TF> pp( cur ), pq( cur ), ss, nn;
+                                pp[ k ] += ek; pq[ k ] -= ek;
+                                std::vector<TF> pts( pp );
+                                pts.insert( pts.end(), pq.begin(), pq.end() );
+                                mods( K, pts, ss, nn );
+                                const TF df = ( ss[ 0 ] * ss[ 0 ] - ss[ 1 ] * ss[ 1 ] ) / ( 2 * ek );
+                                std::printf( "          k=%d  %-14.6e %-14.6e  ecart relatif %.2e\n",
+                                             k, double( gra[ k ] ), double( df ),
+                                             double( df != 0 ? std::fabs( gra[ k ] - df ) / std::fabs( df ) : TF( 0 ) ) );
+                            }
+                        }
                         // la descente de gradient projetee, sur le modele : rien ne coute un diagramme
                         TF h = std::fabs( best[ 0 ] ) / 4 + TF( 1e-12 );
                         for ( int pas = 0; pas < o.span_desc && h > TF( 1e-14 ); ++pas ) {
