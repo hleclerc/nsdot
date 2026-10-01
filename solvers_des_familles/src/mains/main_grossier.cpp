@@ -97,7 +97,7 @@ struct Opts {
     int         span_grille = 33;        ///< span : points de la grille 1-D par coordonnee et par balayage
     TF          span_garde = 0.5;
     TF          pave_tol = 1e-3;         ///< continuation : on s'arrete quand |somme A_i - 1| depasse ca
-    std::string rho_gel = "cellule";      ///< plateau ( par cellule grossiere ) | cellule ( moyenne fine ) | germe ( rho( p_i ) )
+    std::string rho_gel = "interp";       ///< interp | plateau | cellule | germe ( cf. --help )
     int         poly = 0;                ///< `--poly K` : la recherche SUR LES POLYNOMES, puis un recul scalaire
     TF          pas0 = 0.05;             ///< continuation en `alpha_0` : le pas MAXIMAL
     int         alpha0 = 0;              ///< `--alpha0 K` : continuation en `alpha_0`, compagnes = increments de lissage
@@ -753,14 +753,32 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu0, Lineaire &lin, con
                 nw.mesures_et_facettes( wb, ab2, fb2 );      // les MASSES a la base
                 pd.set_weights( wb.data(), a.par );
                 pd.measures( aire_base, a.par );             // les AIRES de Lebesgue a la base
-                if ( o.rho_gel == "plateau" ) {
+                if ( o.rho_gel == "plateau" || o.rho_gel == "interp" ) {
+                    // `rho_r = nu_r / |C_r|` : la masse cible de la cellule grossiere sur son volume de
+                    // LEBESGUE, donc la densite moyenne qui y regne. C'est une propriete de la DENSITE.
                     std::vector<TF> ac;
                     pdc.set_weights( wc.data(), a.par );
-                    pdc.measures( ac, a.par );               // les aires des cellules grossieres
+                    pdc.measures( ac, a.par );
                     const TF M2 = rho.masse_carre();
-                    for ( SI i = 0; i < n; ++i ) {
-                        const SI r = pq.paquet[ i ];
-                        rho_fige[ i ] = part_c[ r ] * M2 / std::max( ac[ r ], TF( 1e-300 ) );
+                    std::vector<TF> lrc( nc );
+                    for ( SI r = 0; r < nc; ++r )
+                        lrc[ r ] = std::log( std::max( part_c[ r ] * M2 / std::max( ac[ r ], TF( 1e-300 ) ), TF( 1e-300 ) ) );
+                    if ( o.rho_gel == "plateau" ) {
+                        for ( SI i = 0; i < n; ++i ) rho_fige[ i ] = std::exp( lrc[ pq.paquet[ i ] ] );
+                    } else {
+                        // INTERPOLE aux germes fins, sur `log rho` ( positivite, et `rho` s'etale sur des
+                        // ordres de grandeur ). Le MLS de degre 2 du § 8.2, qui est le meilleur
+                        // interpolant du depot -- et ce qui disparait ainsi, ce sont les SAUTS du plateau
+                        // aux bords d'agregats, exactement la pathologie qui lui coute un facteur 540.
+                        Laplacien Lcv;
+                        laplacien_de( pdc, Pc, nullptr, a.par, Lcv );   // le graphe de Voronoi grossier
+                        std::vector<TF> lrf;
+                        const SI retombes = prolonge_mls<2>( nu0.P, pq, Pc, Lcv, lrc, a.par, lrf,
+                                                             o.mls_anneaux, o.mls_largeur );
+                        for ( SI i = 0; i < n; ++i ) rho_fige[ i ] = std::exp( lrf[ i ] );
+                        if ( retombes )
+                            std::printf( "    ( interpolation de log rho : %d germes retombes sur le lineaire"
+                                         " ou la copie )\n", int( retombes ) );
                     }
                 } else if ( o.rho_gel == "germe" ) {
                     for ( SI i = 0; i < n; ++i ) rho_fige[ i ] = rho.rho( nu0.P[ 0 ][ i ], nu0.P[ 1 ][ i ] );
@@ -1342,10 +1360,17 @@ int main( int argc, char **argv ) {
                 "                  la somme des recouvrements, c'est-a-dire son erreur L1 -- gratuit, sans un\n"
                 "                  diagramme, et sans passer par les aretes ( une arete qui meurt ne change\n"
                 "                  RIEN a l'aire, donc le rayon par arete flague ce qui ne coute pas )  (1e-3)\n"
-                "  --rho-gel M     la DENSITE GELEE qui rend la masse polynomiale :\n"
-                "                    plateau  un rho par cellule GROSSIERE, `nu_r / |C_r|`\n"
-                "                    cellule  la moyenne de la cellule FINE a la base, `a_i / A_i` -- le modele\n"
-                "                             est alors EXACT en t = 0 par construction               (defaut)\n"
+                "  --rho-gel M     la DENSITE GELEE qui rend la masse polynomiale ( `masse_i( t ) = rho_i A_i( t )`\n"
+                "                  est un polynome si `rho_i` est fixe, donc on compare `A_i( t )` a la CIBLE\n"
+                "                  D'AIRE `nu_i / rho_i` et on retombe sur du Lebesgue pondere ) :\n"
+                "                    interp   `nu_r / |C_r|` par cellule GROSSIERE, puis INTERPOLE ( MLS sur\n"
+                "                             `log rho` ) aux germes fins. C'est le bon objet : une densite, pas\n"
+                "                             une propriete d'une configuration de cellules            (defaut)\n"
+                "                    plateau  le meme, mais constant par agregat -- les SAUTS aux bords\n"
+                "                             d'agregats lui coutent un facteur 540 sur la masse predite\n"
+                "                    cellule  `a_i / A_i` par cellule FINE a la base : exact en t = 0, mais ca\n"
+                "                             attache `rho` a UNE configuration, et pres de `w_prol` beaucoup de\n"
+                "                             cellules fines sont degenerees -- donc la quantite n'a plus de sens\n"
                 "                    germe    la densite analytique au germe, `rho( p_i )`\n"
                 "  --poly K        LA RECHERCHE SUR LES POLYNOMES ( § 22 ), et c'est la version bon marche :\n"
                 "                  UN diagramme par `k` construit le modele, toute la recherche est ensuite\n"
