@@ -7413,6 +7413,59 @@ sur les coefficients du span est **analytique** et le système à résoudre est 
 la grille partout — y compris à `K = 3` et 4, où une grille est hors de portée — et c'est une nécessité
 pour la 3D, où le modèle est trop cher pour qu'on se paie 1681 points par itération.
 
+## 24.26 Newton sur la barrière : le span bat DEUX itérations de Newton, et la limite devient le modèle
+
+Le § 24.25 avait établi le diagnostic : `log2` est une **barrière** (infinie dès qu'une cellule se vide)
+sur un domaine en **bande étroite**, donc une descente de gradient rampe, et l'outil classique est la
+hessienne. Elle est analytique, puisque le modèle est polynomial. Avec `F = Σ g²` et
+`g_i = log( A_i / ν_i )` :
+
+      dF/dt_k      = Σ_i 2 g_i A'_k / A_i
+      d²F/dt_k dt_l = Σ_i 2 [ ( 1 − g_i ) A'_k A'_l / A_i² + g_i A''_kl / A_i ]
+
+avec `A''_kk = 2 q_kk` et `A''_kl = q_kl`. Un passage parallèle sur les cellules donne le gradient et
+les dix coefficients de la hessienne ; le système est `K × K` avec `K ≤ 4`, résolu par Gauss avec
+pivot, régularisé à la Levenberg-Marquardt, **et la recherche linéaire fait croître le pas** — l'autre
+défaut du § 24.25.
+
+### Les chiffres : `log2` du modèle, puis la VÉRITÉ par vrai diagramme
+
+| | `K=1` | `K=2` | `K=3` | `K=4` | pour mémoire : grille + descente |
+|---|---|---|---|---|---|
+| it 0 | 664.74 | 654.08 | 652.83 | **651.18** | 664.66 |
+| it 3 | 297.67 | 296.25 | 292.77 | **276.95** | 295.34 |
+| it 5 | 183.79 | 163.49 | 159.68 | 142.82 | **124.02** |
+| it 7 | 33.69 | 20.55 | 10.09 | **4.95** | 18.55 |
+
+À l'itération 7, `log2` vaut **100.93** au départ. Le span à `K = 4` atteint **4.95**, soit **−95 %**,
+quand une itération de Newton complète vaut −66 % (100.9 → 33.7). **Le span fait donc mieux que deux
+itérations de Newton** — pour trois solves et trois constructions de modèle, et **aucun diagramme**.
+
+Et l'itération 0, où la contrainte est active et où ni la grille ni la descente ne donnaient rien
+(664.66 contre 664.69), descend maintenant à **651.18** : la hessienne sait suivre la bande, ce qu'aucune
+des deux autres méthodes ne faisait.
+
+### Deux réserves, et la seconde est maintenant la limite
+
+**Le modèle sort de son domaine.** À `K = 4` sur l'itération 7, il annonce 4.02 pour une vérité de
+**4.95** : **+23 % d'erreur**, parce que `‖t‖∞ = 1.5`. À `K = 3` l'écart n'est encore que de −2 %
+(`‖t‖∞ = 1.48`). Le § 22 l'avait mesuré : au-delà de `‖t‖∞ ≈ 0.5` le polynôme à connectivité fixe ne
+vaut plus rien. **Ce n'est donc plus l'optimiseur qui borne le gain, c'est la validité du modèle** — et
+l'erreur est du bon côté (le modèle est optimiste ici, donc à surveiller : contrairement au § 24.14 où
+il majorait, il minore).
+
+**Le paysage est multimodal.** À l'itération 5 la grille trouve encore mieux que la hessienne (124.0
+contre 142.8) : Newton ne descend que dans le bassin où il part. La carte du § 24.25 le laissait voir —
+une bande coudée, pas une cuvette. Un redémarrage depuis quelques points, ou la grille à `K = 2` suivie
+de la hessienne au-delà, serait la combinaison raisonnable ; ce n'est pas fait.
+
+### Ce que ça pose pour la 3D
+
+Le gain est maintenant assez grand pour que l'échange « diagrammes contre solves » soit clairement
+favorable là où le diagramme est cher — la 3D. Et la minimisation par hessienne y est **indispensable** :
+la grille 40 × 40 du § 24.24 n'y serait pas tenable, et elle est de toute façon hors de portée à `K = 3`
+et 4, où l'essentiel du gain se trouve (it 7 : 10.09 à `K = 3`, 4.95 à `K = 4`, contre 20.55 à `K = 2`).
+
 ## 25.1 Le prix du niveau grossier, et la zone dure ne bouge pas
 
 `densite --pas essai-limites --conv 0.5 --conv-ratio 1.414 --sigma 0.02`, `job -b`, 8 fils :

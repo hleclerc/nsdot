@@ -315,6 +315,7 @@ struct NewtonOptions {
     int  span_mode  = 0;
     int  span_grille = 0;      ///< SPAN : cote d'une grille de controle de la minimisation ( 0 : aucune )
     bool span_carte = false;   ///< SPAN : imprimer la carte de `log2` et le controle du gradient
+    int  span_hess  = 20;      ///< SPAN : pas de NEWTON sur la barriere ( 0 : aucun, cf. § 24.26 )
     int  modele     = -1;      ///< >= 0 : a CETTE iteration, batir le modele multi-directions et le
                                ///< confronter a l'evaluateur exact PUIS au vrai diagramme
     int  combi      = -1;      ///< >= 0 : a CETTE iteration, balayer le SIMPLEXE des trois directions ( lin, log, barriere )
@@ -1123,6 +1124,114 @@ struct Newton {
                                 }
                             }
                             if ( mg < mb ) { mb = mg; best = bg; }
+                        }
+
+                        // ---- LA MINIMISATION PAR NEWTON SUR LA BARRIERE ( `span_hess` )
+                        //
+                        // Le § 24.25 a montre pourquoi une descente de gradient echoue ici : le
+                        // domaine admissible est une BANDE etroite bordee de `+infini`, et ces parois
+                        // ne sont pas une contrainte exterieure -- c'est l'objectif lui-meme, `log2`
+                        // valant l'infini des qu'une cellule se vide. On minimise donc une BARRIERE
+                        // sur un domaine mince, le cas d'ecole ou le gradient seul rampe et ou la
+                        // hessienne rattrape tout : elle est enorme EN TRAVERS de la vallee et petite
+                        // LE LONG, donc elle reechelonne exactement ce qu'il faut.
+                        //
+                        // Avec `F = sum g^2` et `g_i = log( A_i / nu_i )` :
+                        //
+                        //      dF/dt_k    = sum_i 2 g_i A'_k / A_i
+                        //      d2F/dt_kdt_l = sum_i 2 [ ( 1 - g_i ) A'_k A'_l / A_i^2 + g_i A''_kl / A_i ]
+                        //
+                        // avec `A''_kk = 2 q_kk` et `A''_kl = q_kl`. Tout est analytique, le systeme
+                        // est `K x K` avec `K <= 4`, et la recherche lineaire FAIT CROITRE le pas --
+                        // l'autre defaut du § 24.25.
+                        if ( o.span_hess > 0 ) {
+                            const int NQ2 = PolyMulti::KMAX * PolyMulti::KMAX;
+                            TF lam = 0;
+                            for ( int pas = 0; pas < o.span_hess; ++pas ) {
+                                std::vector<TF> acc( size_t( nth ) * ( K + NQ2 ), 0 );
+                                parallel_for( n, par, [ & ]( SI i, int th ) {
+                                    const PolyMulti &q = pm[ i ];
+                                    if ( q.etat != PolyCellule::OK ) return;
+                                    const TF A = q( best.data(), K );
+                                    if ( ! ( A > 0 ) ) return;
+                                    TF da[ PolyMulti::KMAX ];
+                                    q.gradient( best.data(), K, da );
+                                    const TF g = std::log( A / nu[ i ] );
+                                    TF *gr = &acc[ size_t( th ) * ( K + NQ2 ) ];
+                                    TF *he = gr + K;
+                                    for ( int k = 0; k < K; ++k ) gr[ k ] += 2 * g * da[ k ] / A;
+                                    for ( int k = 0; k < K; ++k )
+                                        for ( int l = 0; l <= k; ++l ) {
+                                            const TF d2 = k == l ? 2 * q.q[ k * ( k + 1 ) / 2 + k ]
+                                                                 : q.q[ k * ( k + 1 ) / 2 + l ];
+                                            he[ k * PolyMulti::KMAX + l ] +=
+                                                2 * ( ( 1 - g ) * da[ k ] * da[ l ] / ( A * A ) + g * d2 / A );
+                                        }
+                                } );
+                                TF gr[ PolyMulti::KMAX ] = {}, H[ PolyMulti::KMAX ][ PolyMulti::KMAX ] = {};
+                                for ( int th = 0; th < nth; ++th ) {
+                                    const TF *src = &acc[ size_t( th ) * ( K + NQ2 ) ];
+                                    for ( int k = 0; k < K; ++k ) gr[ k ] += src[ k ];
+                                    for ( int k = 0; k < K; ++k )
+                                        for ( int l = 0; l <= k; ++l )
+                                            H[ k ][ l ] += src[ K + k * PolyMulti::KMAX + l ];
+                                }
+                                for ( int k = 0; k < K; ++k )
+                                    for ( int l = k + 1; l < K; ++l ) H[ k ][ l ] = H[ l ][ k ];
+                                TF ng = 0;
+                                for ( int k = 0; k < K; ++k ) ng = std::max( ng, std::fabs( gr[ k ] ) );
+                                if ( ! ( ng > 0 ) ) break;
+
+                                // `H + lam diag( H )` puis Gauss : la regularisation de
+                                // Levenberg-Marquardt, qui ramene vers le gradient si Newton derape
+                                bool pris_un = false;
+                                for ( int essai = 0; essai < 24 && ! pris_un; ++essai ) {
+                                    TF M[ PolyMulti::KMAX ][ PolyMulti::KMAX + 1 ];
+                                    for ( int k = 0; k < K; ++k ) {
+                                        for ( int l = 0; l < K; ++l ) M[ k ][ l ] = H[ k ][ l ];
+                                        M[ k ][ k ] += lam * ( std::fabs( H[ k ][ k ] ) + TF( 1e-30 ) );
+                                        M[ k ][ K ] = -gr[ k ];
+                                    }
+                                    bool ok_lin = true;
+                                    for ( int c = 0; c < K && ok_lin; ++c ) {
+                                        int piv = c;
+                                        for ( int r = c + 1; r < K; ++r )
+                                            if ( std::fabs( M[ r ][ c ] ) > std::fabs( M[ piv ][ c ] ) ) piv = r;
+                                        if ( ! ( std::fabs( M[ piv ][ c ] ) > 0 ) ) { ok_lin = false; break; }
+                                        if ( piv != c ) for ( int l = 0; l <= K; ++l ) std::swap( M[ c ][ l ], M[ piv ][ l ] );
+                                        for ( int r = 0; r < K; ++r ) {
+                                            if ( r == c ) continue;
+                                            const TF f = M[ r ][ c ] / M[ c ][ c ];
+                                            for ( int l = c; l <= K; ++l ) M[ r ][ l ] -= f * M[ c ][ l ];
+                                        }
+                                    }
+                                    if ( ! ok_lin ) { lam = lam > 0 ? 4 * lam : TF( 1e-3 ); continue; }
+                                    TF de[ PolyMulti::KMAX ];
+                                    for ( int k = 0; k < K; ++k ) de[ k ] = M[ k ][ K ] / M[ k ][ k ];
+                                    // LA RECHERCHE LINEAIRE, QUI FAIT CROITRE LE PAS
+                                    TF mu = 1;
+                                    for ( int j = 0; j < 40; ++j ) {
+                                        std::vector<TF> pts( K );
+                                        for ( int k = 0; k < K; ++k ) pts[ k ] = best[ k ] + mu * de[ k ];
+                                        mods( K, pts, s2, mn );
+                                        if ( s2[ 0 ] < mb ) {
+                                            // mieux : on essaye PLUS LOIN avant d'accepter
+                                            std::vector<TF> pg( K );
+                                            for ( int k = 0; k < K; ++k ) pg[ k ] = best[ k ] + 2 * mu * de[ k ];
+                                            std::vector<TF> sg, ng2;
+                                            mods( K, pg, sg, ng2 );
+                                            if ( sg[ 0 ] < s2[ 0 ] && mu < TF( 64 ) ) { mu *= 2; continue; }
+                                            mb = s2[ 0 ]; best = pts; pris_un = true;
+                                            lam = lam > TF( 1e-12 ) ? lam / 4 : TF( 0 );
+                                            break;
+                                        }
+                                        mu /= 2;
+                                        if ( mu < TF( 1e-12 ) ) break;
+                                    }
+                                    if ( ! pris_un ) lam = lam > 0 ? 4 * lam : TF( 1e-3 );
+                                }
+                                if ( ! pris_un ) break;
+                            }
                         }
 
                         cur = best;
