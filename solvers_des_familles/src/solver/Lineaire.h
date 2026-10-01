@@ -383,4 +383,271 @@ struct CholeskySuper : Lineaire {
 };
 #endif
 
+// =====================================================================================
+// = UNE FACTORISATION GELEE COMME PRECONDITIONNEUR ( `CholPrec` )
+//
+// LE REGIME, enonce proprement : on ne resout pas UN systeme, on en resout des centaines qui se
+// ressemblent -- meme graphe a quelques aretes pres, valeurs qui derivent lentement. Un solveur
+// dont la PREPARATION est chere mais dont les RESOLUTIONS sont tres rapides est alors le bon
+// candidat, a condition de ne preparer qu'une fois et d'amortir.
+//
+// Une factorisation exacte de la matrice de l'iteration `k`, utilisee comme preconditionneur d'un
+// CG sur la matrice de l'iteration `k + j`, a deux proprietes que n'avait aucun des essais
+// precedents :
+//
+//   * le CG voit la VRAIE matrice courante, donc la solution reste exacte quel que soit l'age du
+//     preconditionneur -- seul le NOMBRE d'iterations se degrade. C'est ce qui manquait a la
+//     reprise de hierarchie d'AMGCL ( § 24.16 ), dont le `spai0` gele faussait le preconditionneur
+//     sans qu'aucune API ne permette de le rafraichir seul ;
+//
+//   * et comme ce n'est QU'UN preconditionneur, on peut geler SON MOTIF AUSSI. Les aretes
+//     apparues depuis sont simplement absentes du preconditionneur ; elles restent dans la matrice
+//     que voit le CG. Ca supprime l'analyse symbolique de toutes les iterations sauf la premiere --
+//     et en 3D l'analyse symbolique coute PLUS que la factorisation numerique ( § 24.18 : 8.9 s
+//     contre 6.2 ).
+//
+// `refaire` dit tous les combien on refait la factorisation NUMERIQUE sur le motif gele ( `0` :
+// une seule fois pour tout le solve ). `cg_max` est le garde-fou : si le CG depasse ce compte, le
+// preconditionneur a trop vieilli et on le refait a la resolution suivante.
+// =====================================================================================
+#ifdef SF_EIGEN
+struct CholPrec : Lineaire {
+    using SpM = Eigen::SparseMatrix<double>;
+
+    TF   tol     = 1e-10;
+    int  maxit   = 2000;
+    int  refaire = 0;              ///< factorisation numerique toutes les `refaire` resolutions ( 0 : une )
+    int  cg_max  = 24;             ///< au-dela, le preconditionneur a vieilli : on le refait
+    bool super   = true;           ///< le supernodal de CHOLMOD plutot que le simplicial d'Eigen
+    bool compense = true;          ///< retrancher de la diagonale les hors-diagonaux jetes ( somme de ligne )
+    /// la fraction de termes HORS MOTIF au-dela de laquelle on refait l'analyse symbolique. `1` :
+    /// jamais ( le motif reste celui de la premiere resolution ), ce qui est la variante mesuree
+    /// comme intenable au § 24.19.
+    TF   seuil_motif = TF( 0.01 );
+    int  trace   = 0;
+
+    const char *nom() const override {
+        return super ? "CG + Cholesky SUPERNODAL gele ( motif et valeurs )"
+                     : "CG + Cholesky simplicial gele ( motif et valeurs )";
+    }
+    TF tolerance() const override { return tol; }
+    void tolerance( TF v ) override { tol = v; }
+
+    bool sait_encore() const override { return pret; }
+    void resout_encore( const std::vector<TF> &b, std::vector<TF> &d ) override {
+        const double t0 = now();
+        pcg( b, d );
+        st.t_res += now() - t0;
+    }
+
+    bool resout( const Laplacien &L, const std::vector<TF> &b, std::vector<TF> &d ) override {
+        double t0 = now();
+        m = L.n - 1;
+        L.crs_reduit( ptr, col, val );
+        st.t_forme += now() - t0;
+
+        t0 = now();
+        // LE MOTIF NE SE GELE PAS, ET C'EST LA MESURE QUI LE DIT ( § 24.19 ) : apres trois
+        // iterations, 20 a 30 % des termes du laplacien sont NOUVEAUX. Les valeurs derivent
+        // lentement -- avec le bon motif, la factorisation de l'iteration precedente fait converger
+        // le CG en une a quarante iterations -- mais le motif, lui, bouge beaucoup. On refait donc
+        // l'analyse symbolique quand la fraction manquante depasse `seuil_motif`, et seulement la
+        // factorisation numerique quand ce sont les valeurs qui ont vieilli.
+        const double manque = pret ? double( compte_manque() ) / double( std::max<SI>( fp[ m ], 1 ) ) : 1;
+        if ( ! pret || manque > seuil_motif ) {
+            fige_motif();
+            if ( ! analyse() || ! numerique() ) { st.t_hier += now() - t0; return false; }
+            pret = true; depuis = 0; vieux = false;
+        } else if ( vieux || ( refaire > 0 && ++depuis >= refaire ) ) {
+            if ( ! numerique() ) { st.t_hier += now() - t0; return false; }
+            vieux = false; depuis = 0;
+        }
+        st.t_hier += now() - t0;
+
+        t0 = now();
+        const bool ok = pcg( b, d );
+        st.t_res += now() - t0;
+        return ok;
+    }
+
+private:
+    SI m = 0;
+    bool pret = false, vieux = false;
+    int depuis = 0, nb_num = 0;
+    SI  nb_jete = 0;               ///< termes du triangle bas absents du motif gele ( par resolution )
+    std::vector<int>    ptr, col;
+    std::vector<double> val;
+    std::vector<int>    fp, fi;
+    std::vector<double> fx;
+    SpM P_;
+    Eigen::SimplicialLDLT<SpM, Eigen::Lower, Eigen::AMDOrdering<int>> sim;
+#ifdef SF_CHOLMOD
+    Eigen::CholmodSupernodalLLT<SpM, Eigen::Lower> sup;
+#endif
+    std::vector<TF> r_, z_, p_, q_, x_;
+    Eigen::VectorXd er_, ez_;
+
+    void fige_motif() {
+        fp.assign( m + 1, 0 );
+        for ( SI i = 0; i < m; ++i ) {
+            int k = 0;
+            for ( int e = ptr[ i ]; e < ptr[ i + 1 ]; ++e ) k += col[ e ] <= i;
+            fp[ i + 1 ] = k;
+        }
+        for ( SI i = 0; i < m; ++i ) fp[ i + 1 ] += fp[ i ];
+        fi.resize( fp[ m ] ); fx.assign( fp[ m ], 0 );
+        for ( SI i = 0; i < m; ++i ) {
+            int k = fp[ i ];
+            for ( int e = ptr[ i ]; e < ptr[ i + 1 ]; ++e ) if ( col[ e ] <= i ) fi[ k++ ] = col[ e ];
+        }
+    }
+
+    /// LES VALEURS COURANTES PROJETEES SUR LE MOTIF GELE : deux listes triees, une fusion.
+    ///
+    /// ET LA COMPENSATION DIAGONALE, qui n'est pas un detail. Laisser simplement tomber un
+    /// hors-diagonal `-c_ij` tout en gardant la diagonale ( qui vaut la somme de la ligne, `c_ij`
+    /// compris ) rend le preconditionneur FAUSSEMENT dominant : la ligne ne somme plus a ce qu'elle
+    /// doit, et pour un laplacien c'est exactement l'erreur qui coute le plus. On retranche donc de
+    /// la diagonale ce qu'on a jete, ce qui preserve la somme de ligne -- le `modified ILU` des
+    /// classiques. `compense = false` pour mesurer la difference.
+    void projette() {
+        std::fill( fx.begin(), fx.end(), 0.0 );
+        nb_jete = 0;
+        for ( SI i = 0; i < m; ++i ) {
+            int a = fp[ i ], e = ptr[ i ], dia = -1;
+            double jete = 0;
+            while ( e < ptr[ i + 1 ] ) {
+                while ( a < fp[ i + 1 ] && fi[ a ] < col[ e ] ) ++a;
+                if ( a < fp[ i + 1 ] && fi[ a ] == col[ e ] ) {
+                    fx[ a ] = val[ e ];
+                    if ( fi[ a ] == int( i ) ) dia = a;
+                    ++a;
+                } else if ( col[ e ] <= int( i ) ) {     // un terme du triangle bas, ABSENT du motif
+                    jete += val[ e ];
+                    ++nb_jete;
+                }
+                ++e;
+            }
+            if ( compense && dia >= 0 && jete != 0 ) fx[ dia ] += jete;
+        }
+    }
+
+    /// combien de termes du triangle bas COURANT manquent au motif gele -- une fusion, sans ecrire
+    SI compte_manque() const {
+        SI nb = 0;
+        for ( SI i = 0; i < m; ++i ) {
+            int a = fp[ i ];
+            for ( int e = ptr[ i ]; e < ptr[ i + 1 ]; ++e ) {
+                if ( col[ e ] > int( i ) ) continue;
+                while ( a < fp[ i + 1 ] && fi[ a ] < col[ e ] ) ++a;
+                if ( a < fp[ i + 1 ] && fi[ a ] == col[ e ] ) ++a; else ++nb;
+            }
+        }
+        return nb;
+    }
+
+    void bati() {
+        projette();
+        std::vector<Eigen::Triplet<double>> tri;
+        tri.reserve( fp[ m ] );
+        for ( SI i = 0; i < m; ++i )
+            for ( int a = fp[ i ]; a < fp[ i + 1 ]; ++a ) tri.emplace_back( int( i ), fi[ a ], fx[ a ] );
+        P_.resize( m, m );
+        P_.setFromTriplets( tri.begin(), tri.end() );
+    }
+
+    bool analyse() {
+        bati();
+#ifdef SF_CHOLMOD
+        if ( super ) {
+            sup.analyzePattern( P_ );
+            if ( sup.info() != Eigen::Success ) return false;
+            ++st.nb_hier;
+            return true;
+        }
+#else
+        super = false;
+#endif
+        sim.analyzePattern( P_ );
+        if ( sim.info() != Eigen::Success ) return false;
+        ++st.nb_hier;
+        return true;
+    }
+
+    bool numerique() {
+        bati();
+        ++nb_num;
+#ifdef SF_CHOLMOD
+        if ( super ) { sup.factorize( P_ ); return sup.info() == Eigen::Success; }
+#endif
+        sim.factorize( P_ );
+        return sim.info() == Eigen::Success;
+    }
+
+    void applique( const std::vector<TF> &r, std::vector<TF> &z ) {
+        er_.resize( m );
+        for ( SI i = 0; i < m; ++i ) er_[ i ] = double( r[ i ] );
+#ifdef SF_CHOLMOD
+        if ( super ) ez_ = sup.solve( er_ ); else ez_ = sim.solve( er_ );
+#else
+        ez_ = sim.solve( er_ );
+#endif
+        z.resize( m );
+        for ( SI i = 0; i < m; ++i ) z[ i ] = TF( ez_[ i ] );
+    }
+
+    void matvec( const std::vector<TF> &x, std::vector<TF> &y ) const {
+#ifdef _OPENMP
+#       pragma omp parallel for schedule( static )
+#endif
+        for ( SI i = 0; i < m; ++i ) {
+            TF s = 0;
+            for ( int e = ptr[ i ]; e < ptr[ i + 1 ]; ++e ) s += TF( val[ e ] ) * x[ col[ e ] ];
+            y[ i ] = s;
+        }
+    }
+
+    bool pcg( const std::vector<TF> &b, std::vector<TF> &d ) {
+        r_.assign( m, 0 ); x_.assign( m, 0 ); q_.assign( m, 0 );
+        TF nb2 = 0;
+        for ( SI i = 0; i < m; ++i ) { r_[ i ] = b[ i + 1 ]; nb2 += r_[ i ] * r_[ i ]; }
+        if ( ! ( nb2 > 0 ) ) { d.assign( m + 1, 0 ); return true; }
+        applique( r_, z_ );
+        p_ = z_;
+        TF rz = 0;
+        for ( SI i = 0; i < m; ++i ) rz += r_[ i ] * z_[ i ];
+        const TF cible = tol * tol * nb2;
+        TF rr = nb2;
+        int it = 0;
+        for ( ; it < maxit && rr > cible; ++it ) {
+            matvec( p_, q_ );
+            TF pq = 0;
+            for ( SI i = 0; i < m; ++i ) pq += p_[ i ] * q_[ i ];
+            if ( ! ( pq > 0 ) ) break;
+            const TF al = rz / pq;
+            rr = 0;
+            for ( SI i = 0; i < m; ++i ) { x_[ i ] += al * p_[ i ]; r_[ i ] -= al * q_[ i ]; rr += r_[ i ] * r_[ i ]; }
+            if ( rr <= cible ) { ++it; break; }
+            applique( r_, z_ );
+            TF rz2 = 0;
+            for ( SI i = 0; i < m; ++i ) rz2 += r_[ i ] * z_[ i ];
+            const TF be = rz2 / rz;
+            rz = rz2;
+            for ( SI i = 0; i < m; ++i ) p_[ i ] = z_[ i ] + be * p_[ i ];
+        }
+        d.assign( m + 1, 0 );
+        for ( SI i = 0; i < m; ++i ) d[ i + 1 ] = x_[ i ];
+        st.nb_iter += it;
+        st.pire = std::max( st.pire, TF( std::sqrt( rr / nb2 ) ) );
+        if ( it > cg_max ) vieux = true;
+        if ( trace )
+            std::printf( "      CHOLPREC : %d iterations de CG, %d factorisations numeriques,"
+                         " %d termes hors motif ( %.2f %% )%s\n", it, nb_num, int( nb_jete ),
+                         100.0 * double( nb_jete ) / double( std::max<SI>( fp[ m ], 1 ) ),
+                         vieux ? " ( a rafraichir )" : "" );
+        return it < maxit;
+    }
+};
+#endif
+
 } // namespace sf

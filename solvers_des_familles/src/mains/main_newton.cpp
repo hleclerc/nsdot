@@ -54,6 +54,11 @@ struct Opts {
     // Newton ne donne pas. C'est le REGIME qui decide, pas la dimension seule.
     std::string   solver = "auto"; ///< auto ( mg en 3D, amg en 2D ) | mg | amg | chol | chsup | mchol
     double        mchol_rho = 0;   ///< MCHOL : le `rho` du motif ( 0 : 7 en 2D, 3 en 3D )
+    int           cp_refaire = 0;  ///< CHPREC : factorisation numerique toutes les K resolutions ( 0 : une )
+    int           cp_cgmax = 0;    ///< CHPREC : au-dela de ce compte de CG, on rafraichit ( 0 : le defaut )
+    bool          cp_super = true; ///< CHPREC : supernodal plutot que simplicial
+    bool          cp_comp = true;  ///< CHPREC : compensation diagonale des termes hors motif
+    double        cp_seuil = -1;   ///< CHPREC : fraction hors motif au-dela de laquelle on re-analyse
     int           mchol_ech = 0;   ///< MCHOL : l'echelle -- 0 uniforme par niveau ( le papier ), 1 locale
     // LES REGLAGES DU MULTIGRILLE MAISON. Les defauts viennent de `Multigrille.h`, ou ils ont ete
     // mesures EN 2D SUR UNE DENSITE IMAGE : `agreg 8` en particulier vaut ce que vaut son cas
@@ -94,6 +99,20 @@ struct Opts {
 template<int D>
 std::unique_ptr<Lineaire> fabrique( const Opts &o ) {
     const std::string sol = o.solver == "auto" ? ( D == 3 ? "mg" : "amg" ) : o.solver;
+#ifdef SF_EIGEN
+    if ( sol == "chprec" ) {                             // la factorisation GELEE comme preconditionneur
+        auto p = std::make_unique<CholPrec>();
+        p->tol = o.lintol;
+        p->maxit = o.linmax;
+        p->refaire = o.cp_refaire;
+        if ( o.cp_cgmax > 0 ) p->cg_max = o.cp_cgmax;
+        p->super = o.cp_super;
+        p->compense = o.cp_comp;
+        if ( o.cp_seuil >= 0 ) p->seuil_motif = TF( o.cp_seuil );
+        p->trace = o.mg_trace;
+        return p;
+    }
+#endif
 #ifdef SF_CHOLMOD
     if ( sol == "chsup" )                                // le supernodal ( § 24.18 )
         return std::make_unique<CholeskySuper>();
@@ -595,6 +614,11 @@ int main( int argc, char **argv ) {
         else if ( s == "--mg-trace" )   o.mg_trace = 1;
         else if ( s == "--amg-var" )    o.amgvar = std::atoi( val() );
         else if ( s == "--mchol-rho" )  o.mchol_rho = std::atof( val() );
+        else if ( s == "--cp-refaire" ) o.cp_refaire = std::atoi( val() );
+        else if ( s == "--cp-cgmax" )   o.cp_cgmax = std::atoi( val() );
+        else if ( s == "--cp-simplicial" ) o.cp_super = false;
+        else if ( s == "--cp-sans-compense" ) o.cp_comp = false;
+        else if ( s == "--cp-seuil" )   o.cp_seuil = std::atof( val() );
         else if ( s == "--mchol-ech" )  o.mchol_ech = std::atoi( val() );
         else if ( s == "--ecrire" )     o.ecrire = val();
         else if ( s == "--quiet" )      o.newton.trace = false;
@@ -717,7 +741,11 @@ int main( int argc, char **argv ) {
             std::printf( "usage: newton [options]\n" );
             Args::usage();
             std::printf(
-                "  --solver S      auto ( defaut : mg en 3D, amg en 2D ) | mg | amg | chol\n"
+                "  --solver S      auto ( defaut : mg en 3D, amg en 2D ) | mg | amg | chol | chsup ( supernodal )\n"
+                "                  | chprec ( factorisation GELEE en preconditionneur d.un CG, § 24.19 )\n"
+                "                  | mchol ( Cholesky multi-echelle, § 24.17 )\n"
+                "  --cp-refaire K --cp-cgmax K --cp-simplicial   chprec : refaire la factorisation tous les K solves,\n"
+                "                  le compte de CG au-dela duquel on rafraichit, et le simplicial au lieu du supernodal\n"
                 "  --mg-agreg S --mg-nu N --mg-lisseur 0|1|2 --mg-recycle K --mg-cheb R\n"
                 "  --mg-tronque T --mg-trace   les reglages du multigrille maison\n"
                 "  --amg-var V     0 = agregation+spai0 | 1 = agregation+GS | 2 = Ruge-Stuben+GS  (0)\n"

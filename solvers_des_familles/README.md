@@ -6890,3 +6890,86 @@ seul nuage de lignes.
 * Et l'observation qui compte pour la suite : **le seul solveur que nous possédons est le multigrille
   maison**, et c'est aussi celui qui gagne en 3D. C'est donc la pièce qu'on peut porter sur GPU sans
   contrainte de licence ni dépendance externe.
+
+## 24.19 Une factorisation gelée comme préconditionneur : les VALEURS dérivent lentement, le MOTIF non
+
+Le cadrage, posé proprement : on ne résout pas un système, on en résout des centaines qui se
+ressemblent. Un solveur à **préparation chère et résolutions très rapides** est alors le bon candidat,
+à condition d'amortir la préparation. Et comme il ne sert que de **préconditionneur**, le CG voit la
+**vraie matrice courante** : la solution reste exacte quel que soit l'âge du préconditionneur, seul le
+nombre d'itérations se dégrade. C'est précisément ce qui manquait à la reprise de hiérarchie d'AMGCL
+(§ 24.16), dont le `spai0` gelé faussait le préconditionneur sans qu'aucune API ne permette de le
+rafraîchir seul.
+
+`CholPrec` (`--solver chprec`) fait ça : une factorisation de Cholesky (supernodale par défaut) gardée
+d'une itération sur l'autre, préconditionnant un CG sur la matrice du jour.
+
+### La première moitié de l'hypothèse est VRAIE, et spectaculairement
+
+Nombre d'itérations de CG **pour tout le solve** (pas par résolution) :
+
+| | itérations de Newton | CG au total | temps des résolutions |
+|---|---|---|---|
+| 2D uniforme, préconditionneur rafraîchi chaque fois | 6 | **6** | **0.095 s** |
+| 2D lignes s0.02, idem | 9 | **9** | **0.123 s** |
+| 2D lignes s0.005, idem | 12 | **14** | **0.193 s** |
+| 3D plans s0.02, idem | 9 | **11** | **0.577 s** |
+
+**Une à deux itérations de CG par résolution.** Une factorisation vieille d'un pas de Newton est donc
+un préconditionneur quasi parfait : les valeurs dérivent assez lentement pour ça. À comparer aux
+résolutions des solveurs itératifs : 1.81 s pour AMGCL sur 2D s0.005, 1.94 s pour le direct — le
+préconditionnement par factorisation gelée divise le temps de résolution par **4 à 10**.
+
+### La seconde moitié est FAUSSE : 20 à 30 % des termes sont neufs
+
+En gelant aussi le **motif** (variante `--cp-seuil 1`), la trace donne la mesure, 2D lignes s0.005 :
+
+| itération | 0 | 1 | 2 | 3 | 4 | … | 8 |
+|---|---|---|---|---|---|---|---|
+| termes hors motif | 0 % | 0 % | 0 % | **20.6 %** | 23.3 % | ↗ | **30.4 %** |
+| itérations de CG | **1** | 20 | 39 | **914** | 1233 | ↗ | 3948 puis **ÉCHEC** |
+
+La lecture est sans appel. Tant que le motif est exact, la factorisation gelée fait converger le CG en
+**1 à 39** itérations malgré la dérive des valeurs. Dès que le graphe de Laguerre gagne des arêtes — et
+il en gagne **un cinquième à un tiers** — le préconditionneur s'écroule, et refaire la factorisation
+*numérique* n'y change rien (à l'itération 8, 151 itérations de CG avec une factorisation fraîche en 3D).
+Ce ne sont donc pas les valeurs qui vieillissent, c'est la **structure** qui change.
+
+> **Et la compensation diagonale n'y fait rien.** Retrancher de la diagonale les hors-diagonaux jetés
+> pour préserver la somme de ligne — le `modified ILU` des classiques, qui est la cure habituelle pour
+> un laplacien — donne **34 itérations de CG contre 34**. Les termes manquants ne nuisent donc pas par
+> leur masse mais par leur **place**. Négatif net, et contraire à ce que j'attendais.
+
+### Donc le motif doit être réanalysé, et c'est ça qui mange le gain
+
+`--cp-seuil F` refait l'analyse symbolique dès que la fraction hors motif dépasse `F`. Totaux
+(seuls comparables : la colonne « prépa » de `chprec` contient aussi les factorisations numériques,
+alors que pour les autres la factorisation numérique est dans « solve ») :
+
+| | 2D uniforme | 2D s0.02 | 2D s0.005 | 3D plans |
+|---|---|---|---|---|
+| AMGCL | **1.20 s** | **2.13** | **4.29** | 8.31 |
+| multigrille maison | 1.24 | 2.27 | 4.63 | **7.25** |
+| `chsup` direct | 1.91 | 2.99 | 4.75 | 21.5 |
+| **`chprec`, seuil 1 %** | 1.91 | 2.97 | 4.72 | **18.8** |
+| `chprec`, seuil 5 % | 1.83 | 6.07 | 8.82 | 18.3 |
+| `chprec`, rafraîchi chaque fois | 2.09 | 3.31 | 5.10 | 21.4 |
+
+Au seuil de 1 %, **dix réanalyses sur douze itérations** : le motif change presque à chaque pas, donc
+la préparation ne s'amortit pas. Et tolérer plus de dérive ne marche pas non plus — à 5 % le CG repart
+(378 itérations) et le total **double**. Il n'y a pas de bon compromis : la dégradation est brutale.
+
+### Ce que ça vaut, et le seul verrou qui reste
+
+Le bilan est donc : `chprec` égale `chsup` partout et reste derrière AMGCL et notre multigrille. Mais
+**le plafond de l'idée est réel et attirant**, et il se chiffre. Sur 2D s0.005, si la préparation
+n'était faite qu'**une** fois, le travail linéaire tomberait à ≈ 0.25 s (une préparation) + 0.19 s
+(douze résolutions) ≈ **0.45 s**, contre **2.65 s** pour AMGCL (0.84 d'analyse + 1.81 de résolutions).
+Le total passerait de 4.29 à environ **2.1 s** — divisé par deux.
+
+Tout tient donc à un seul verrou : **stabiliser le motif**. La piste que ces mesures désignent est
+précise : un motif **surensemble**, incluant les voisins à **deux sauts**. Les arêtes que le diagramme
+de Laguerre gagne relient des germes qui étaient *presque* voisins, donc à deux sauts dans le graphe de
+départ ; un tel motif serait stable et permettrait **une** analyse symbolique pour tout le solve. Le
+prix est du remplissage en plus, donc une factorisation et des descentes-remontées plus chères — et
+c'est exactement l'arbitrage qu'il faudrait mesurer.
