@@ -96,6 +96,8 @@ struct Opts {
     int         prol_lisse = 0;          ///< passes de Jacobi amorti SUR la prolongation ( `lisse_jacobi` )
     int         span_grille = 33;        ///< span : points de la grille 1-D par coordonnee et par balayage
     TF          span_garde = 0.5;
+    int         poly = 0;                ///< `--poly K` : la recherche SUR LES POLYNOMES, puis un recul scalaire
+    TF          pas0 = 0.05;             ///< continuation en `alpha_0` : le pas MAXIMAL
     int         alpha0 = 0;              ///< `--alpha0 K` : continuation en `alpha_0`, compagnes = increments de lissage
     int         span = 0;               ///< `--span K` : minimiser le merite sur un span de 1..K directions, `L` gele
     bool        reste = false;          ///< LA METRIQUE : combien d'iterations restent depuis `alpha_0 * w_prol`
@@ -389,6 +391,7 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu0, Lineaire &lin, con
     // cote GAVE, `max a/nu`. Les confondre, c'est ne pas savoir de quoi un depart souffre.
     //   `amin` = min a/nu ( la famine ),  `amax` = max a/nu ( le gavage ),  `gaves` = combien au-dela de 10.
     auto juge = [ & ]( const std::vector<TF> &ww, SI &mauv, TF &amin, TF &amax, SI &gaves, TF &pire, TF &mer ) {
+        nw.res_cur = o.newton.residu;        // sinon le merite reste `lin` ( `res_cur` n'est pose que dans `resout` )
         std::vector<TF> af;
         std::vector<Facette> fa;
         nw.mesures_et_facettes( ww, af, fa );
@@ -710,6 +713,211 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu0, Lineaire &lin, con
                          double( ana ), double( num ), double( std::fabs( ana - num ) / std::max( std::fabs( num ), TF( 1e-300 ) ) ) );
             (void) k; (void) ff_r;
         }
+        // ============ LA RECHERCHE SUR LES POLYNOMES, PUIS UN RECUL SCALAIRE ( `--poly K` ) ============
+        //
+        // LA CONCEPTION, et c'est elle qui rend le schema bon marche. Calculer les cellules coute cher,
+        // donc la recherche ne doit pas en calculer : `polynomes_multi` construit UNE FOIS, a la base,
+        // l'aire de chaque cellule comme POLYNOME des coefficients du span ( les sommets sont affines en
+        // `t`, donc l'aire est quadratique -- § 22 ), et tout se cherche dessus, gratuitement. On ne paie
+        // de vrais diagrammes que pour VERIFIER le `t` trouve.
+        //
+        // UNE AIRE POLYNOMIALE NEGATIVE EST L'ARTEFACT A GARDER, PAS UN BUG : a combinatoire figee le
+        // polygone peut SE REPLIER, et la formule de l'aire signee rend alors du negatif. C'est le
+        // critere d'inadmissibilite du modele, et il n'a rien a voir avec un changement de combinatoire.
+        //
+        // ET LE RECUL EST UN SCALAIRE : le `t` propose peut donner, EN REALITE, un diagramme a cellules
+        // malades. On cherche alors le plus grand `beta` tel que `beta t` soit sain -- un seul scalaire
+        // devant tout le vecteur, par bissection, donc une poignee de diagrammes -- pour avoir un depart
+        // sain qui avance quand meme.
+        if ( o.poly > 0 ) {
+            // ---- LA DENSITE GELEE, qui rend le modele utilisable sur une densite. `PolyMulti` donne
+            //      l'AIRE ; avec une densite l'objectif porte sur la MASSE, et la masse n'est pas un
+            //      polynome ( § 9.7 ) -- mesure : `log2` sur les aires vaut 20 a la base quand le vrai
+            //      merite vaut 6.9e4, donc le modele egaliserait les AIRES, pas les masses.
+            //
+            //      LE REMEDE : geler une densite CONSTANTE PAR MORCEAUX. Avec `rho_i` fixe par cellule
+            //      fine, `masse_i( t ) = rho_i A_i( t )` redevient un POLYNOME, et comparer `rho_i A_i` a
+            //      `nu_i` revient a comparer `A_i( t )` a une CIBLE D'AIRE `a^_i = nu_i / rho_i`. On
+            //      retombe donc exactement sur du Lebesgue pondere, cible par cible.
+            //
+            //      Et le `rho` naturel est celui que le solve grossier donne gratuitement : la cellule
+            //      grossiere `r` porte la masse `nu_r` sur l'aire `|C_r|`, donc `rho_r = nu_r / |C_r|` et
+            //      `a^_i = ( nu_i / nu_r ) |C_r|` -- la part d'aire de la cellule grossiere qui revient au
+            //      germe fin.
+            std::vector<TF> cible_aire( n );
+            {
+                std::vector<TF> ac;
+                pdc.set_weights( wc.data(), a.par );
+                pdc.measures( ac, a.par );               // les aires de LEBESGUE des cellules grossieres
+                const TF M2 = rho.masse_carre();
+                TF ecart = 0, aire_tot = 0;
+                for ( SI i = 0; i < n; ++i ) {
+                    const SI r = pq.paquet[ i ];
+                    const TF nur = part_c[ r ] * M2;     // la masse cible de la cellule grossiere
+                    const TF rho_r = nur / std::max( ac[ r ], TF( 1e-300 ) );
+                    cible_aire[ i ] = nw.nu[ i ] / std::max( rho_r, TF( 1e-300 ) );
+                    aire_tot += cible_aire[ i ];
+                }
+                // LE CONTROLE de l'approximation : la densite gelee predit la masse de chaque cellule
+                // fine comme `rho_i x aire reelle` ; on compare a la vraie masse, a la base.
+                std::vector<TF> ab2;
+                std::vector<Facette> fb2;
+                nw.mesures_et_facettes( wb, ab2, fb2 );
+                std::vector<TF> al2;
+                pd.set_weights( wb.data(), a.par );
+                pd.measures( al2, a.par );               // les aires de Lebesgue fines, a la base
+                for ( SI i = 0; i < n; ++i ) {
+                    const TF m_pred = nw.nu[ i ] * al2[ i ] / std::max( cible_aire[ i ], TF( 1e-300 ) );
+                    ecart = std::max( ecart, std::fabs( m_pred - ab2[ i ] ) / std::max( ab2[ i ], TF( 1e-300 ) ) );
+                }
+                std::printf( "  DENSITE GELEE depuis le grossier : somme des cibles d'aire %.6f ( le carre vaut 1 ),"
+                             "  ecart max masse predite / masse vraie %.2e\n", double( aire_tot ), double( ecart ) );
+            }
+            std::printf( "  RECHERCHE SUR LES POLYNOMES ( un diagramme par k, le reste gratuit )\n" );
+            std::printf( "   k | alpha_0 poly |  log2 poly  |  beta  | alpha_0 retenu |  min a/nu  |  IT RESTANTES  |  diag\n" );
+            std::vector<PolyMulti> pm;
+            std::vector<TF> tt;
+            for ( int k = 1; k <= o.poly && k <= int( PolyMulti::KMAX ); ++k ) {
+                // ---- UN diagramme : le modele du span courant
+                std::vector<const TF *> dp( k );
+                for ( int j = 0; j < k; ++j ) dp[ j ] = D[ j ].data();
+                polynomes_multi( pd, nu0.P, wb, dp.data(), k, a.par, pm );
+                SI hors = 0;
+                for ( const PolyMulti &q : pm ) hors += q.etat != PolyCellule::OK;
+
+                // ---- l'objectif SUR LE MODELE, et son jacobien ( tout est analytique )
+                auto modele = [ & ]( const std::vector<TF> &t2, TF &amin ) {
+                    TF s2 = 0, moy = 0;
+                    SI nb = 0;
+                    amin = INFINI;
+                    for ( SI i = 0; i < n; ++i ) {
+                        const PolyMulti &q = pm[ i ];
+                        if ( q.etat != PolyCellule::OK ) continue;
+                        const TF A = q( t2.data(), k );
+                        amin = std::min( amin, A / cible_aire[ i ] );
+                        if ( ! ( A > 0 ) ) return INFINI;        // l'aire NEGATIVE : le polygone se replie
+                        moy += std::log( A / cible_aire[ i ] );
+                        ++nb;
+                    }
+                    if ( ! nb ) return INFINI;
+                    moy /= TF( nb );
+                    for ( SI i = 0; i < n; ++i ) {
+                        const PolyMulti &q = pm[ i ];
+                        if ( q.etat != PolyCellule::OK ) continue;
+                        const TF e = std::log( q( t2.data(), k ) / cible_aire[ i ] ) - moy;
+                        s2 += e * e;
+                    }
+                    return s2;
+                };
+                // GAUSS-NEWTON sur les compagnes seules, `t[ 0 ]` fixe ( `libre0 = false` ) ou sur tout
+                auto gn_modele = [ & ]( std::vector<TF> &t2, bool libre0 ) {
+                    const int d0 = libre0 ? 0 : 1, kc = k - d0;
+                    if ( kc <= 0 ) return;
+                    TF amin;
+                    TF f = modele( t2, amin );
+                    for ( int it = 0; it < 60 && std::isfinite( double( f ) ); ++it ) {
+                        Eigen::MatrixXd A2( kc, kc );
+                        Eigen::VectorXd b2( kc );
+                        A2.setZero(); b2.setZero();
+                        TF moy = 0;
+                        SI nb = 0;
+                        for ( SI i = 0; i < n; ++i ) {
+                            if ( pm[ i ].etat != PolyCellule::OK ) continue;
+                            moy += std::log( pm[ i ]( t2.data(), k ) / cible_aire[ i ] ); ++nb;
+                        }
+                        moy /= TF( nb );
+                        TF gr[ PolyMulti::KMAX ];
+                        for ( SI i = 0; i < n; ++i ) {
+                            const PolyMulti &q = pm[ i ];
+                            if ( q.etat != PolyCellule::OK ) continue;
+                            const TF A = q( t2.data(), k );
+                            q.gradient( t2.data(), k, gr );
+                            const TF r = std::log( A / cible_aire[ i ] ) - moy;
+                            for ( int j = 0; j < kc; ++j ) {
+                                const TF Jj = gr[ j + d0 ] / A;
+                                b2( j ) -= Jj * r;
+                                for ( int l = 0; l <= j; ++l ) {
+                                    const TF v = Jj * gr[ l + d0 ] / A;
+                                    A2( j, l ) += v;
+                                    if ( l != j ) A2( l, j ) += v;
+                                }
+                            }
+                        }
+                        const Eigen::VectorXd dd = A2.ldlt().solve( b2 );
+                        const std::vector<TF> t0 = t2;
+                        TF pas = 1, f2 = INFINI;
+                        bool pris = false;
+                        for ( int e = 0; e < 50; ++e, pas /= 2 ) {
+                            for ( int j = 0; j < kc; ++j ) t2[ j + d0 ] = t0[ j + d0 ] + pas * TF( dd( j ) );
+                            f2 = modele( t2, amin );
+                            if ( f2 < f ) { pris = true; break; }
+                        }
+                        if ( ! pris ) { t2 = t0; break; }
+                        const bool fini = std::fabs( f - f2 ) <= TF( 1e-12 ) * std::fabs( f );
+                        f = f2;
+                        if ( fini ) break;
+                    }
+                };
+
+                // ---- LA CONTINUATION EN `t[ 0 ]`, sur le modele : gratuite, donc a pas fin
+                tt.assign( k, TF( 0 ) );
+                TF a0 = 0, amin_mod = 0;
+                int nb_pas = 0;
+                for ( TF cible = o.pas0; cible <= TF( 1 ) + 1e-12; cible += o.pas0 ) {
+                    const std::vector<TF> garde = tt;
+                    tt[ 0 ] = std::min( cible, TF( 1 ) );
+                    const TF f_av = modele( tt, amin_mod );
+                    gn_modele( tt, false );
+                    const TF f_ap = modele( tt, amin_mod );
+                    if ( ! std::isfinite( double( f_ap ) ) ) {
+                        std::printf( "       BLOQUE a cible %.5f ( pas %d ) : modele avant GN %.4e,"
+                                     " apres %.4e, min A/a^ %.3e\n",
+                                     double( cible ), nb_pas, double( f_av ), double( f_ap ), double( amin_mod ) );
+                        tt = garde;
+                        break;
+                    }
+                    a0 = tt[ 0 ];
+                    ++nb_pas;
+                }
+                const TF l2_mod = modele( tt, amin_mod );
+
+                // ---- UNE verification reelle, et le RECUL SCALAIRE si des cellules sont malades
+                TF beta = 1, am = 0, ax = 0;
+                std::vector<TF> coefs( k );
+                auto sain = [ & ]( TF b3 ) {
+                    for ( int j = 0; j < k; ++j ) coefs[ j ] = b3 * tt[ j ];
+                    const TF m2 = evalue( coefs, am, ax );
+                    return std::isfinite( double( m2 ) ) && am > 0;
+                };
+                if ( ! sain( 1 ) ) {
+                    TF lo = 0, hi = 1;
+                    for ( int it = 0; it < 20; ++it ) {
+                        const TF mi = TF( 0.5 ) * ( lo + hi );
+                        if ( sain( mi ) ) lo = mi; else hi = mi;
+                    }
+                    beta = lo;
+                    sain( beta );
+                }
+
+                // ---- LA METRIQUE
+                nw.st = NewtonStats{};
+                nw.resout( wt );
+                std::printf( "  %2d | %12.4f | %11.4e | %6.4f | %14.4f | %10.3e | %12d  | %5d%s\n",
+                             k, double( a0 ), double( l2_mod ), double( beta ), double( beta * a0 ),
+                             double( am ), nw.st.nb_iter, nw.st.nb_diag,
+                             hors ? ( "   ( " + std::to_string( hors ) + " cellules hors modele )" ).c_str() : "" );
+                if ( k == o.poly || k == int( PolyMulti::KMAX ) ) break;
+                std::vector<TF> ws = w;
+                SI m = 1;
+                for ( int j = 0; j <= k; ++j ) m *= 4;
+                lisse_jacobi( Lvor, int( m ), ws );
+                for ( SI i = 0; i < n; ++i ) ws[ i ] -= w[ i ];
+                D.push_back( ws );
+                t.resize( D.size(), TF( 0 ) );
+            }
+            return 0;
+        }
+
         // ================= LA CONTINUATION EN `alpha_0` ( `--alpha0 K` ) =================
         // Les compagnes sont les INCREMENTS DE LISSAGE de la prolongation, aux echelles 4, 16, 64 ... :
         //   `d_j = lisse_jacobi( Lvor, 4^j, w_prol ) - w_prol`.
@@ -797,7 +1005,7 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu0, Lineaire &lin, con
                 f = evalue( std::vector<TF>{ TF( 0 ) }, am0, ax0 );   // le merite^2 a la base
             }
             for ( int k = 1; k <= o.alpha0; ++k ) {
-                TF pas = TF( 0.05 );
+                TF pas = o.pas0;
                 while ( a0 < 1 && pas > TF( 1e-9 ) ) {
                     // LA TANGENTE de la variete des minimiseurs : `- ( Jc^T Jc )^-1 Jc^T j_0`
                     std::vector<TF> tang( al.size(), TF( 0 ) );
@@ -829,7 +1037,7 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu0, Lineaire &lin, con
                     std::vector<TF> al2 = al;
                     for ( size_t j = 0; j < al2.size(); ++j ) al2[ j ] += ( essai - a0 ) * tang[ j ];
                     TF f2 = INFINI;
-                    if ( corrige( essai, al2, f2 ) ) { a0 = essai; al = al2; f = f2; pas *= TF( 1.5 ); }
+                    if ( corrige( essai, al2, f2 ) ) { a0 = essai; al = al2; f = f2; pas = std::min( o.pas0, pas * TF( 1.5 ) ); }
                     else pas /= 2;
                 }
                 // LE POLISSAGE FINAL, et il faut le faire : la continuation s'arrete des qu'elle touche
@@ -964,14 +1172,18 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu0, Lineaire &lin, con
     if ( o.echelle ) {
         std::printf( "  alpha_0 : le verdict de `alpha_0 * w_prol` a s = %g\n", double( rho.s ) );
         std::vector<TF> wa( n );
-        std::printf( "    alpha_0  |  min a/nu ( famine )  |  max a/nu ( gavage )  |  cellules > 10 nu  |  PIRE  |  merite\n" );
-        const TF fs[] = { 1.4, 1.2, 1.1, 1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.45, 0.4, 0.35, 0.3, 0.25, 0.2, 0.15, 0.1, 0.05, 0.01, 0 };
+        std::printf( "    alpha_0  |  min a/nu ( famine )  |  max a/nu ( gavage )  |  cellules > 10 nu  |    PIRE  |  merite^2 ( %s )\n",
+                     o.newton.residu == NewtonOptions::LOG ? "log" : o.newton.residu == NewtonOptions::BARRIERE ? "barriere" : "lin" );
+        // UNE GRILLE FINE, de 0 a 1.25 : le profil doit se lire sans trou, sinon on confond un
+        // minimum local avec un pas de grille trop grand.
+        std::vector<TF> fs;
+        for ( int j = 0; j <= 50; ++j ) fs.push_back( TF( 1.25 ) * TF( j ) / TF( 50 ) );
         for ( TF f : fs ) {
             for ( SI i = 0; i < n; ++i ) wa[ i ] = f * w[ i ];
             SI mauv, gaves; TF amin, amax, pire, mer;
             juge( wa, mauv, amin, amax, gaves, pire, mer );
-            std::printf( "    %7.3f  |  %18.3e  |  %18.1f  |  %16d  |  %6.1f  |  %.4e\n",
-                         double( f ), double( amin ), double( amax ), int( gaves ), double( pire ), double( mer ) );
+            std::printf( "    %7.4f  |  %18.3e  |  %18.1f  |  %16d  |  %8.2f  |  %.6e\n",
+                         double( f ), double( amin ), double( amax ), int( gaves ), double( pire ), double( mer * mer ) );
         }
         return 0;
     }
@@ -1028,6 +1240,8 @@ int main( int argc, char **argv ) {
         else if ( s == "--reste" )      { o.reste = true; o.fin = false; }
         else if ( s == "--span" )       { o.span = std::atoi( val() ); o.fin = false; }
         else if ( s == "--alpha0" )     { o.alpha0 = std::atoi( val() ); o.span = std::max( o.span, 1 ); o.fin = false; }
+        else if ( s == "--pas0" )       o.pas0 = std::atof( val() );
+        else if ( s == "--poly" )       { o.poly = std::atoi( val() ); o.span = std::max( o.span, 1 ); o.fin = false; }
         else if ( s == "--span-garde" ) o.span_garde = std::atof( val() );
         else if ( s == "--span-grille" ) o.span_grille = std::atoi( val() );
         else if ( s == "--prol-lisse" ) o.prol_lisse = std::atoi( val() );
@@ -1084,6 +1298,16 @@ int main( int argc, char **argv ) {
                 "  --span-garde F  span : un point n'est admissible que si min a/nu >= F * ( celui de la\n"
                 "                  base ) -- le blocage AVANT que les cellules se vident        (0.5)\n"
                 "  --span-grille N points de la grille 1-D, par coordonnee et par balayage       (33)\n"
+                "  --poly K        LA RECHERCHE SUR LES POLYNOMES ( § 22 ), et c'est la version bon marche :\n"
+                "                  UN diagramme par `k` construit le modele, toute la recherche est ensuite\n"
+                "                  GRATUITE ( `A_i( t )` en forme close ), et on ne paie de vrais diagrammes que\n"
+                "                  pour VERIFIER le `t` propose -- avec un recul sur un SCALAIRE `beta` devant\n"
+                "                  tout le vecteur si des cellules sont malades. Une aire polynomiale NEGATIVE\n"
+                "                  est le polygone qui se replie a combinatoire fixe : c'est inadmissible\n"
+                "  --pas0 F        continuation : le pas MAXIMAL en `alpha_0`. Il faut partir de 0 et avancer\n"
+                "                  LISSEMENT : le profil de `log2` le long du rayon est un PLATEAU a rides de\n"
+                "                  0.2 % entre 0 et 0.25 ( mesure, grille fine ), et une methode de descente\n"
+                "                  s'y arrete sur une ride au lieu de traverser                      (0.05)\n"
                 "  --alpha0 K      LA CONTINUATION EN `alpha_0`, jusqu'a K directions. Les compagnes sont les\n"
                 "                  INCREMENTS DE LISSAGE de la prolongation, `lisse_jacobi( 4^j ) - w_prol` :\n"
                 "                  c'est a elles de lisser `w_prol` la ou il pince, et l'optimiseur trouve seul\n"
