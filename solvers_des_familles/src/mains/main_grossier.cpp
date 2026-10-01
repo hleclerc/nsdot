@@ -96,6 +96,7 @@ struct Opts {
     int         prol_lisse = 0;          ///< passes de Jacobi amorti SUR la prolongation ( `lisse_jacobi` )
     int         span_grille = 33;        ///< span : points de la grille 1-D par coordonnee et par balayage
     TF          span_garde = 0.5;
+    int         alpha0 = 0;              ///< `--alpha0 K` : continuation en `alpha_0`, compagnes = increments de lissage
     int         span = 0;               ///< `--span K` : minimiser le merite sur un span de 1..K directions, `L` gele
     bool        reste = false;          ///< LA METRIQUE : combien d'iterations restent depuis `alpha_0 * w_prol`
     bool        echelle = false;        ///< balayer `alpha_0` : le verdict de `alpha_0 * w_prol`, alpha_0 = 1, 1/2, ...
@@ -709,6 +710,161 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu0, Lineaire &lin, con
                          double( ana ), double( num ), double( std::fabs( ana - num ) / std::max( std::fabs( num ), TF( 1e-300 ) ) ) );
             (void) k; (void) ff_r;
         }
+        // ================= LA CONTINUATION EN `alpha_0` ( `--alpha0 K` ) =================
+        // Les compagnes sont les INCREMENTS DE LISSAGE de la prolongation, aux echelles 4, 16, 64 ... :
+        //   `d_j = lisse_jacobi( Lvor, 4^j, w_prol ) - w_prol`.
+        // Mesure en 1D : prendre « ce qui manque » comme direction de Newton au point bloque echoue
+        // structurellement -- la ou une cellule est a `1e-8 nu` les lignes de `J_ik = ( L d_k )_i / a_i`
+        // valent `1e8`, le moindre carre est domine par elles et la tangente sort a `1e+07`. Les
+        // increments de lissage sont bornes, bien conditionnes, et l'optimiseur trouve SEUL le profil.
+        if ( o.alpha0 > 0 ) {
+            // l'etat au point courant : `a`, `L`, et les colonnes du jacobien
+            auto etat = [ & ]( const std::vector<TF> &coefs, std::vector<TF> &aa, Laplacien &Lc2,
+                               std::vector<std::vector<TF>> &J, std::vector<TF> &r ) {
+                for ( SI i = 0; i < n; ++i ) {
+                    TF v = wb[ i ];
+                    for ( size_t j = 0; j < coefs.size(); ++j ) v += coefs[ j ] * D[ j ][ i ];
+                    wt[ i ] = v;
+                }
+                std::vector<Facette> ff;
+                nw.mesures_et_facettes( wt, aa, ff );
+                for ( SI i = 0; i < n; ++i ) if ( ! ( aa[ i ] > 0 ) ) return false;
+                Lc2.assemble( n, ff );
+                r.resize( n );
+                TF moy = 0;
+                for ( SI i = 0; i < n; ++i ) { r[ i ] = std::log( aa[ i ] / nw.nu[ i ] ); moy += r[ i ]; }
+                moy /= TF( n );
+                for ( SI i = 0; i < n; ++i ) r[ i ] -= moy;
+                J.assign( coefs.size(), {} );
+                std::vector<TF> col;
+                for ( size_t j = 0; j < coefs.size(); ++j ) {
+                    Lfois( Lc2, D[ j ], col );
+                    J[ j ].resize( n );
+                    for ( SI i = 0; i < n; ++i ) J[ j ][ i ] = col[ i ] / aa[ i ];
+                }
+                return true;
+            };
+            // GAUSS-NEWTON SUR LES COMPAGNES SEULES, `alpha_0` fixe
+            auto corrige = [ & ]( TF a0, std::vector<TF> &al, TF &f ) {
+                const int kc = int( al.size() );
+                std::vector<TF> coefs( kc + 1 ), aa, r;
+                Laplacien Lc2;
+                std::vector<std::vector<TF>> J;
+                coefs[ 0 ] = a0;
+                for ( int j = 0; j < kc; ++j ) coefs[ j + 1 ] = al[ j ];
+                TF amin, amax;
+                f = evalue( coefs, amin, amax );
+                if ( ! std::isfinite( double( f ) ) ) return false;
+                if ( kc == 0 ) return true;
+                for ( int it = 0; it < 40; ++it ) {
+                    if ( ! etat( coefs, aa, Lc2, J, r ) ) return false;
+                    Eigen::MatrixXd A( kc, kc );
+                    Eigen::VectorXd b2( kc );
+                    for ( int j = 0; j < kc; ++j ) {
+                        TF g = 0;
+                        for ( SI i = 0; i < n; ++i ) g += J[ j + 1 ][ i ] * r[ i ];
+                        b2( j ) = -g;
+                        for ( int l = 0; l <= j; ++l ) {
+                            TF v = 0;
+                            for ( SI i = 0; i < n; ++i ) v += J[ j + 1 ][ i ] * J[ l + 1 ][ i ];
+                            A( j, l ) = A( l, j ) = v;
+                        }
+                    }
+                    const Eigen::VectorXd dd = A.ldlt().solve( b2 );
+                    const std::vector<TF> c0 = coefs;
+                    TF pas = 1, f2 = INFINI;
+                    bool pris = false;
+                    for ( int e = 0; e < 40; ++e, pas /= 2 ) {
+                        for ( int j = 0; j < kc; ++j ) coefs[ j + 1 ] = c0[ j + 1 ] + pas * TF( dd( j ) );
+                        f2 = evalue( coefs, amin, amax );
+                        if ( f2 < f ) { pris = true; break; }
+                    }
+                    if ( ! pris ) { coefs = c0; break; }
+                    const bool fini = std::fabs( f - f2 ) <= TF( 1e-12 ) * std::fabs( f );
+                    f = f2;
+                    if ( fini ) break;
+                }
+                for ( int j = 0; j < kc; ++j ) al[ j ] = coefs[ j + 1 ];
+                return true;
+            };
+
+            std::printf( "  CONTINUATION EN alpha_0 ( compagnes = increments de lissage, alpha_0 plafonne a 1 )\n" );
+            std::printf( "   k |   alpha_0  |      merite^2  |  IT RESTANTES  |  diag  |  fin  | coefficients\n" );
+            std::vector<TF> al;                          // les coefficients des compagnes
+            TF a0 = 0, f = 0;
+            {
+                TF am0, ax0;
+                f = evalue( std::vector<TF>{ TF( 0 ) }, am0, ax0 );   // le merite^2 a la base
+            }
+            for ( int k = 1; k <= o.alpha0; ++k ) {
+                TF pas = TF( 0.05 );
+                while ( a0 < 1 && pas > TF( 1e-9 ) ) {
+                    // LA TANGENTE de la variete des minimiseurs : `- ( Jc^T Jc )^-1 Jc^T j_0`
+                    std::vector<TF> tang( al.size(), TF( 0 ) );
+                    if ( ! al.empty() ) {
+                        std::vector<TF> coefs( al.size() + 1 ), aa, r;
+                        Laplacien Lc2;
+                        std::vector<std::vector<TF>> J;
+                        coefs[ 0 ] = a0;
+                        for ( size_t j = 0; j < al.size(); ++j ) coefs[ j + 1 ] = al[ j ];
+                        if ( etat( coefs, aa, Lc2, J, r ) ) {
+                            const int kc = int( al.size() );
+                            Eigen::MatrixXd A( kc, kc );
+                            Eigen::VectorXd b2( kc );
+                            for ( int j = 0; j < kc; ++j ) {
+                                TF g = 0;
+                                for ( SI i = 0; i < n; ++i ) g += J[ j + 1 ][ i ] * J[ 0 ][ i ];
+                                b2( j ) = -g;
+                                for ( int l = 0; l <= j; ++l ) {
+                                    TF v = 0;
+                                    for ( SI i = 0; i < n; ++i ) v += J[ j + 1 ][ i ] * J[ l + 1 ][ i ];
+                                    A( j, l ) = A( l, j ) = v;
+                                }
+                            }
+                            const Eigen::VectorXd x = A.ldlt().solve( b2 );
+                            for ( int j = 0; j < kc; ++j ) tang[ j ] = TF( x( j ) );
+                        }
+                    }
+                    const TF essai = std::min( a0 + pas, TF( 1 ) );
+                    std::vector<TF> al2 = al;
+                    for ( size_t j = 0; j < al2.size(); ++j ) al2[ j ] += ( essai - a0 ) * tang[ j ];
+                    TF f2 = INFINI;
+                    if ( corrige( essai, al2, f2 ) ) { a0 = essai; al = al2; f = f2; pas *= TF( 1.5 ); }
+                    else pas /= 2;
+                }
+                // LE POLISSAGE FINAL, et il faut le faire : la continuation s'arrete des qu'elle touche
+                // `alpha_0 = 1` sans jamais reminimiser `log2` LIBREMENT. Mesure : sans lui, 42
+                // iterations ; le point lissee a la main ( qui est un point du meme span ) en donne 16.
+                // On relache donc TOUS les coefficients, `alpha_0` compris, depuis le point atteint.
+                t.assign( al.size() + 1, TF( 0 ) );
+                t[ 0 ] = a0;
+                for ( size_t j = 0; j < al.size(); ++j ) t[ j + 1 ] = al[ j ];
+                int gn_fin = 0;
+                TF ng_fin = 0;
+                const TF f_poli = minimise_gn( 60, gn_fin, ng_fin );
+                const std::vector<TF> coefs = t;
+                TF am, ax;
+                evalue( coefs, am, ax );
+                if ( f_poli < f ) f = f_poli;
+                nw.st = NewtonStats{};
+                nw.resout( wt );
+                std::printf( "  %2d | %10.4f | %14.6e | %12d  | %5d  | %s |", k, double( coefs[ 0 ] ), double( f ),
+                             nw.st.nb_iter, nw.st.nb_diag, nw.st.fin );
+                for ( size_t j = 1; j < coefs.size(); ++j ) std::printf( " %+.3f", double( coefs[ j ] ) );
+                std::printf( "\n" );
+                if ( a0 >= 1 || k == o.alpha0 ) break;
+                // UNE COMPAGNE DE PLUS : l'increment de lissage a l'echelle suivante
+                std::vector<TF> ws = w;
+                SI m = 1;
+                for ( int j = 0; j <= k; ++j ) m *= 4;
+                lisse_jacobi( Lvor, int( m ), ws );
+                for ( SI i = 0; i < n; ++i ) ws[ i ] -= w[ i ];
+                D.push_back( ws );
+                al.push_back( TF( 0 ) );
+                t.resize( D.size(), TF( 0 ) );
+            }
+            return 0;
+        }
         std::printf( "  ALPHA* le long de w_prol depuis la base = %.4e"
                      "   ( la mesure 1D dit : le seuil est 1 )\n", double( alpha_etoile( D[ 0 ] ) ) );
         std::printf( "  k  |  merite         |  min a/nu   |  max a/nu  |  coef w_prol  |  gn it |    |grad| |  diag  ||  IT RESTANTES  |  diag ( reculs )  |  reste  |  fin\n" );
@@ -871,6 +1027,7 @@ int main( int argc, char **argv ) {
         else if ( s == "--sans-zero" )  o.sans_zero = true;
         else if ( s == "--reste" )      { o.reste = true; o.fin = false; }
         else if ( s == "--span" )       { o.span = std::atoi( val() ); o.fin = false; }
+        else if ( s == "--alpha0" )     { o.alpha0 = std::atoi( val() ); o.span = std::max( o.span, 1 ); o.fin = false; }
         else if ( s == "--span-garde" ) o.span_garde = std::atof( val() );
         else if ( s == "--span-grille" ) o.span_grille = std::atoi( val() );
         else if ( s == "--prol-lisse" ) o.prol_lisse = std::atoi( val() );
@@ -927,6 +1084,11 @@ int main( int argc, char **argv ) {
                 "  --span-garde F  span : un point n'est admissible que si min a/nu >= F * ( celui de la\n"
                 "                  base ) -- le blocage AVANT que les cellules se vident        (0.5)\n"
                 "  --span-grille N points de la grille 1-D, par coordonnee et par balayage       (33)\n"
+                "  --alpha0 K      LA CONTINUATION EN `alpha_0`, jusqu'a K directions. Les compagnes sont les\n"
+                "                  INCREMENTS DE LISSAGE de la prolongation, `lisse_jacobi( 4^j ) - w_prol` :\n"
+                "                  c'est a elles de lisser `w_prol` la ou il pince, et l'optimiseur trouve seul\n"
+                "                  le profil. `alpha_0` est plafonne a 1 -- c'est une CIBLE, pas un maximand :\n"
+                "                  pousse au bord de l'admissible le point est pire que Voronoi ( § 1D )\n"
                 "  --span K        minimiser le merite sur un span de 1..K directions, a DIAGRAMME et `L`\n"
                 "                  GELES : w_prol d'abord, puis « ce qui manque » orthogonalise, K <= 4\n"
                 "  --reste         LA METRIQUE : Newton depuis alpha_0 * w_prol, et combien d'iterations\n"
