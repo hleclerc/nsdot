@@ -7139,6 +7139,82 @@ La suite est donc : **variante B, une construction pour tout le span**. Et alors
 linéaire devient le poste dominant — ce qui ramène au multigrille maison, seul solveur que nous
 possédions et seul à tolérer le changement de motif (§ 24.20).
 
+## 24.22 Variante B — les dérivées de `w(t)` : la direction est neuve, et le chemin de Newton est trop COURBÉ pour qu'elle serve
+
+### La dérivation, et son contrôle
+
+À connectivité fixe `A` est **exactement quadratique** en `w` : `A = a + L d + Q(d,d)`. Le long d'un
+chemin, `A' = L w'` et `A'' = L w'' + 2 Q(w', w')`, et `2 Q(w',w')` est exactement le coefficient
+quadratique du modèle à **une** direction. En imposant au résidu `log` de décroître linéairement,
+`r(t) = (1−t) r₀`, avec `u_i = g'(x_i)/ν_i = 1/A_i` pour le `log` :
+
+`u_i A'_i = cste` ⟹ `A''_i = −(u'_i/u_i) A'_i = (A'_i)² / A_i`
+
+et comme `A'_i = (L w')_i = b_i` au départ, il vient
+
+**`L w'' = b²/a − 2q`** — **une seule** construction de modèle, un solve de plus, zéro diagramme.
+
+Le contrôle qui valide les deux : `dA/dt` du modèle contre `L d₁ = b`, écart relatif **4.1e-11**,
+1.3e-10, 1.7e-09 aux itérations 0, 5, 7. Le coefficient linéaire du polynôme **est** le second membre
+de Newton. (La dérivée seconde n'est validée qu'indirectement — voir plus bas.)
+
+### La direction est franchement neuve, contrairement à la variante A
+
+| | `cos( w', w'' )` | `|w''| / |w'|` |
+|---|---|---|
+| itération 0 | **−0.447** | **144.4** |
+| itération 5 | +0.585 | 135.3 |
+| itération 7 | +0.644 | 18.6 |
+
+Là où la variante A rendait des directions à `cos = 0.98` puis **1.0000** (§ 24.21), la courbure donne
+une direction à 0.45–0.64. **Le span s'ouvre enfin.**
+
+### Et pourtant elle ne sert à rien, pour une raison chiffrable
+
+`log2` à `K = 2`, en partant **exactement** de l'optimum à `K = 1` (le span le contient, donc `log2` ne
+peut que descendre : ce qu'on lit est exactement ce que la direction ajoutée apporte) :
+
+| | `K = 1` | variante **A** à `K = 2` | variante **B** à `K = 2` | coefficient sur `w''` |
+|---|---|---|---|---|
+| it 0 | 664.6916 | 664.6722 ( −0.003 % ) | 664.6912 ( **−0.00006 %** ) | **−3.1e-08** |
+| it 5 | 183.9768 | 183.4217 ( −0.30 % ) | 183.9767 ( **0 %** ) | **+3.4e-07** |
+| it 7 | 34.1027 | 31.9856 ( **−6.2 %** ) | 34.1020 ( **0 %** ) | **+1.6e-05** |
+
+**La recherche dans le span refuse `w''`** : le coefficient qu'elle retient est numériquement nul. Et la
+raison est dans le rapport des normes. Le développement de Taylor vaut `w₀ + t w' + (t²/2) w''` ; au pas
+utile `t = 0.113`, le second terme pèse `(t²/2)·144 = 0.92` contre `t = 0.113` pour le premier — il est
+**huit fois plus gros**. Le chemin de Newton `log` tourne donc sur une échelle `t ≈ 1/144 ≈ 0.007`,
+**quinze fois plus courte que le pas qu'on prend**. Un développement d'ordre deux n'a aucune validité
+là où on en aurait besoin.
+
+> La dérivée seconde n'est validée que par cette absence : une erreur de signe se verrait comme un gros
+> coefficient de signe opposé, et les trois itérations donnent un coefficient nul des deux côtés
+> ( −3e-08, +3e-07, +1.6e-05 ). Le contrôle exact ne porte que sur l'ordre un.
+
+### Ce que ça explique rétroactivement, et c'est le vrai acquis
+
+La sonde du § 24.13 faisait, elle, une **différence finie sur tout le pas** : `e = d(sonde) − d` avec la
+sonde prise en `w + α* d`. Elle moyennait donc la courbure **sur le pas réellement parcouru**, au lieu de
+la lire au point de départ — et elle donnait `cos(d,e) ≈ −0.9` et débloquait `α = 1` en 3D (§ 24.13).
+
+**La différence finie en travers du pas bat la dérivée à l'origine**, et on sait maintenant pourquoi avec
+un chiffre : la courbure varie d'un facteur ~100 entre `t = 0` et `t = 0.11`, donc la dérivée locale ne
+dit rien de ce qui se passe au bout. C'était le bon instrument, et ce n'était pas un hasard.
+
+### Le bilan des deux variantes
+
+Aucune ne paie, et pour des raisons **opposées** :
+
+* **A** produit des directions presque colinéaires (le span reste collé à l'optimum de `K=1`, lui-même
+  sur la frontière d'admissibilité), gagne 0 à 6 %, et coûte **une construction de modèle par
+  direction** — soit l'équivalent d'un diagramme chacune ;
+* **B** produit une direction franchement neuve pour **une seule** construction, mais le chemin est trop
+  courbé pour qu'un ordre deux serve : coefficient nul.
+
+Ce qui reste donc de toute cette série est la sonde du § 24.13 — une différence finie en travers du pas,
+une construction, deux solves — et la limite mesurée reste celle du § 24.15 : elle gagne des itérations
+(deux sur neuf en 3D) et perd en temps de paroi, parce que la construction du modèle vaut un diagramme.
+
 ## 25.1 Le prix du niveau grossier, et la zone dure ne bouge pas
 
 `densite --pas essai-limites --conv 0.5 --conv-ratio 1.414 --sigma 0.02`, `job -b`, 8 fils :

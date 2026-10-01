@@ -310,6 +310,9 @@ struct NewtonOptions {
     int  span       = -1;      ///< >= 0 : a CETTE iteration, construire le span progressivement ( § 24.21 )
     int  span_k     = 4;       ///< SPAN : dimension maximale ( `PolyMulti::KMAX` )
     int  span_desc  = 80;      ///< SPAN : pas de descente de gradient par dimension
+    /// SPAN : `0` = variante A ( minimiser dans le span, puis Newton au point optimal ), `1` =
+    /// variante B ( les derivees de `w( t )` au depart, UNE construction de modele ).
+    int  span_mode  = 0;
     int  modele     = -1;      ///< >= 0 : a CETTE iteration, batir le modele multi-directions et le
                                ///< confronter a l'evaluateur exact PUIS au vrai diagramme
     int  combi      = -1;      ///< >= 0 : a CETTE iteration, balayer le SIMPLEXE des trois directions ( lin, log, barriere )
@@ -943,6 +946,59 @@ struct Newton {
                         for ( int p = 0; p < np; ++p ) s2[ p ] = s2[ p ] == INFINI ? INFINI : std::sqrt( s2[ p ] );
                     };
 
+                    // ---- VARIANTE B : LES DERIVEES DE `w( t )` AU DEPART, en UNE construction
+                    //
+                    // A connectivite fixe, `A` est EXACTEMENT quadratique en `w` : `A = a + L d + Q( d, d )`.
+                    // Le long d'un chemin, `A' = L w'` et `A'' = L w'' + 2 Q( w', w' )`, et le dernier
+                    // terme est exactement le coefficient quadratique du modele a UNE direction.
+                    //
+                    // On impose au residu `log` de decroitre lineairement, `r( t ) = ( 1 - t ) r_0`.
+                    // En derivant deux fois avec `u_i = g'( x_i ) / nu_i = 1 / A_i` ( le `log` ) :
+                    //
+                    //      u_i A'_i = cste   =>   A''_i = - ( u'_i / u_i ) A'_i = ( A'_i )^2 / A_i
+                    //
+                    // et comme `A'_i = ( L w' )_i = b_i` au depart, il vient
+                    //
+                    //      L w'' = b^2 / a - 2 q
+                    //
+                    // avec `q` le coefficient quadratique du modele a une direction. UNE construction,
+                    // un solve de plus, zero diagramme -- la ou la variante A demande une construction
+                    // par direction et rend des colineaires ( § 24.21 ).
+                    if ( o.span_mode == 1 ) {
+                        const TF *dp1[ 1 ] = { dd[ 0 ].data() };
+                        pd.set_weights( w.data(), par );
+                        polynomes_multi( pd, P, w, dp1, 1, par, pm );
+                        // CONTROLE : `dA/dt` du modele doit valoir `b` = `L d_1`. S'il ne tombe pas,
+                        // ou le modele ou la derivation est fausse, et rien de ce qui suit ne vaut.
+                        TF e1 = 0, n1 = 0;
+                        for ( SI i = 0; i < n; ++i ) {
+                            if ( pm[ i ].etat != PolyCellule::OK ) continue;
+                            e1 = std::max( e1, std::fabs( pm[ i ].g[ 0 ] - b[ i ] ) );
+                            n1 = std::max( n1, std::fabs( b[ i ] ) );
+                        }
+                        std::printf( "      controle dA/dt contre L d_1 : ecart max %.3e pour |b|max %.3e"
+                                     " ( relatif %.2e )\n", double( e1 ), double( n1 ),
+                                     double( n1 > 0 ? e1 / n1 : TF( 0 ) ) );
+                        std::vector<TF> rhs( n, 0 );
+                        for ( SI i = 0; i < n; ++i ) {
+                            const TF q2 = pm[ i ].etat == PolyCellule::OK ? 2 * pm[ i ].q[ 0 ] : TF( 0 );
+                            rhs[ i ] = b[ i ] * b[ i ] / std::max( a[ i ], eps ) - q2;
+                        }
+                        dd[ 1 ].assign( n, 0 );
+                        if ( lin.sait_encore() ) lin.resout_encore( rhs, dd[ 1 ] );
+                        else                     lin.resout( L, rhs, dd[ 1 ] );
+                        dd[ 1 ][ 0 ] = 0;
+                        TF ps = 0, na = 0, nb = 0;
+                        for ( SI i = 0; i < n; ++i ) {
+                            ps += dd[ 1 ][ i ] * dd[ 0 ][ i ];
+                            na += dd[ 1 ][ i ] * dd[ 1 ][ i ];
+                            nb += dd[ 0 ][ i ] * dd[ 0 ][ i ];
+                        }
+                        std::printf( "      w'' : cos( w', w'' ) %.4f, |w''|/|w'| %.3f\n",
+                                     double( na > 0 && nb > 0 ? ps / std::sqrt( na * nb ) : TF( 0 ) ),
+                                     double( nb > 0 ? std::sqrt( na / nb ) : TF( 0 ) ) );
+                    }
+
                     for ( int K = 1; K <= KM; ++K ) {
                         // ---- 1. le modele EXACT sur le span courant ( `pd` est aux poids `w` )
                         const TF *dp[ PolyMulti::KMAX ];
@@ -971,8 +1027,11 @@ struct Newton {
                             for ( int p = 0; p < int( s2.size() ); ++p )
                                 if ( s2[ p ] < mb ) { mb = s2[ p ]; best[ 0 ] = pts[ p ]; }
                         } else {
-                            // on repart LEGEREMENT EN DEDANS : l'optimum precedent est sur le bord
-                            for ( int k = 0; k + 1 < K; ++k ) best[ k ] = TF( 0.95 ) * tb[ k ];
+                            // ON REPART DE L'OPTIMUM PRECEDENT, EXACTEMENT. Le span le contient, donc
+                            // `log2` ne peut que descendre : ce qu'on lit a `K` est alors exactement ce
+                            // que la direction ajoutee APPORTE. Un depart en retrait ( j'avais mis
+                            // 0.95 ) melange deux effets et fait croire a une perte.
+                            for ( int k = 0; k + 1 < K; ++k ) best[ k ] = tb[ k ];
                             std::vector<TF> pts( best.begin(), best.end() );
                             mods( K, pts, s2, mn );
                             mb = s2[ 0 ];
@@ -1020,7 +1079,15 @@ struct Newton {
 
                         // ---- 4. la nouvelle direction : aires MODELISEES, second membre `log`, meme `L`
                         TF cosn = 0;
-                        if ( K < KM ) {
+                        if ( K < KM && o.span_mode == 1 ) {
+                            TF ps = 0, n1 = 0, n2 = 0;   // deja calculee : on ne fait que la mesurer
+                            for ( SI i = 0; i < n; ++i ) {
+                                ps += dd[ K ][ i ] * dd[ K - 1 ][ i ];
+                                n1 += dd[ K ][ i ] * dd[ K ][ i ];
+                                n2 += dd[ K - 1 ][ i ] * dd[ K - 1 ][ i ];
+                            }
+                            cosn = n1 > 0 && n2 > 0 ? ps / std::sqrt( n1 * n2 ) : TF( 0 );
+                        } else if ( K < KM ) {
                             aso.assign( n, 0 );
                             for ( SI i = 0; i < n; ++i ) {
                                 const TF A = pm[ i ].etat == PolyCellule::OK ? pm[ i ]( best.data(), K ) : a[ i ];
