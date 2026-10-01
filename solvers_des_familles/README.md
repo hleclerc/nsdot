@@ -7045,3 +7045,318 @@ dont la hiérarchie se garde en rafraîchissant le niveau fin (−11 % d'itérat
 dont le recyclage de sous-espace trouve de quoi vivre. Un préconditionneur **algébrique** tolère le
 changement de motif ; une factorisation, non. C'est la ligne de partage que cette série de mesures
 établit.
+
+---
+
+# 25. LE GROSSIER COMME DIRECTION, ET NON COMME DÉPART (`grossier`, `scripts/span_1d.py`)
+
+Le § 8 a fermé le multi-échelle classique : on résout sur `n/R` représentants, on prolonge, et le
+niveau fin **refait exactement le travail de Newton depuis Voronoï**. Le § 9 a montré que les densités
+méchantes, elles, coûtent 200 à 600 diagrammes par continuation en largeur. La question rouverte ici
+est le produit des deux, mais avec un changement de rôle : **la prolongation n'est pas un départ, c'est
+une DIRECTION**, et on cherche jusqu'où on peut la suivre.
+
+`src/mains/main_grossier.cpp` porte la mesure (`--reference`, `--balaye`, `--echelle`, `--reste`,
+`--span`, `--alpha0`, `--poly`, `--fige`), `scripts/span_1d.py` la boîte à outils 1D exacte (cellules =
+intervalles, masses = différences d'`erf`, `L` tridiagonale) qui a servi à tout comprendre avant de
+porter.
+
+## 25.1 Le prix du niveau grossier, et la zone dure ne bouge pas
+
+`densite --pas essai-limites --conv 0.5 --conv-ratio 1.414 --sigma 0.02`, `job -b`, 8 fils :
+
+| `n` | diagrammes | itérations | temps | **en équivalents fins** |
+|---|---|---|---|---|
+| 100 000 | 200 | 138 | 58.47 s | 200 |
+| 25 000 (`R = 4`) | 134 | 103 | 9.16 s | **31** |
+| 6 250 (`R = 16`) | **105** | 85 | **2.13 s** | **7.3** |
+
+Le compte de diagrammes tombe **aussi** (200 → 105), pas seulement le prix de chacun : à `R = 16` la
+phase grossière coûte **27 fois moins**, soit 3.6 % de la référence. Elle est donc négligeable, et tout
+le problème est dans ce qu'on fait ensuite.
+
+Et **la zone dure ne bouge pas avec l'espacement** : le pic est à `s = 0.031–0.044` pour les trois `n`
+(31, 16, 11 diagrammes à l'étape la plus chère). Le § 9.3 l'avait établi pour `σ` ; c'est vrai de `h`
+aussi. Le nuage grossier traverse la **même** zone dure — mêmes aiguilles, plus grasses.
+
+## 25.2 Quelle agrégation : la distorsion est le critère, et elle n'est pas un choix de goût
+
+Le critère n'est pas à inventer. Le § 23.12 donne la décomposition **exacte**
+
+```
+Σ_{i∈r} ∫_{C_i} |x − p_i|²  =  ∫_{C_r} |x − q|²  +  Σ_{i∈r} ν_i |p_i − q|²  −  2 Σ (p_i − q)·m_i
+```
+
+le terme croisé s'annulant au premier ordre parce que `q` est le barycentre pondéré par `ν`. **L'écart
+entre l'objectif grossier et l'objectif fin est donc exactement la distorsion de quantification**
+`Σ ν_i |p_i − q_r|²`. Et le § 8.2 identifie l'erreur de prolongation comme une erreur de courbure à
+l'échelle du paquet, `H_c²·w''` — la même quantité pondérée par `ν`.
+
+`R = 16`, `n = 10⁵`, `σ = 0.02`, prolongation `mls` :
+
+| `--paq` | distorsion (en `h²` local) | cellules sous le plancher | **PIRE résidu** |
+|---|---|---|---|
+| `bsp` (AaBsp, représentant = germe au centre) | 2.233 | 40.6 % | 1660 |
+| `bsp-bary` (même partition, barycentre pondéré) | 2.019 | 42.0 % | 1527 |
+| **`lloyd`** (quantification optimale pondérée) | **1.293** | **23.1 %** | **897** |
+
+La distorsion classe les trois bras **de façon monotone**, et le classement se transporte sur la
+qualité de la prolongation. Le barycentre seul ne vaut presque rien (2.23 → 2.02) : c'est la **forme**
+des paquets qui paie. Coût de Lloyd : 1.0 s à `n = 10⁵`, négligeable.
+
+## 25.3 Le mur : la prolongation cesse d'être utile là où les aiguilles naissent
+
+`--balaye` juge la prolongation à chaque `s` de la continuation (Lloyd + `mls`, `σ = 0.02`) :
+
+| `s` | sous le plancher | PIRE résidu, prolongé | PIRE résidu, Voronoï |
+|---|---|---|---|
+| 0.50 | 0.17 % | 9.7 | 4.5 |
+| **0.125** | 0.44 % | **12.3** | **12.3** |
+| **0.088** | 2.3 % | **17.7** | **20.6** |
+| 0.0626 | 6.2 % | 102 | 32 |
+| 0 | 23.1 % | 897 | 341 |
+
+La prolongation ne bat Voronoï que dans **une seule fenêtre, `s ≈ 0.09–0.12`** — et la zone dure
+commence à `s = 0.0626`. Or elle pèse 120 des 200 diagrammes. **Le mur est exactement au seuil de la
+zone dure**, donc la structure « continuation grossière jusqu'au bout, puis une prolongation » ne peut
+économiser que ce qui ne coûte rien.
+
+### Deux comptes qui ne mesurent pas ce qu'on croit
+
+**Les « cellules sous le plancher » ne mesurent pas le départ mais les ZÉROS de la densité.** À `s = 0`
+avec `--plancher 0`, Voronoï lui-même en a **90 692 sur 100 000** : la densité est nulle sur presque
+tout le carré, donc presque toutes les cellules ont une masse nulle. Le compte est inutilisable.
+
+**Et le résidu est un GAVAGE, pas une famine.** `min a/ν` vaut 0 à tous les `α₀`, y compris 0, et une
+cellule vide est bornée par 1 dans `max|a−ν|/ν` : tout ce qui dépasse 1 vient de `max a/ν`. Ce qui
+bloque est donc un **plafond**, et tout l'outillage du pas (§ 7, § 9.7) est construit sur le
+**plancher**. À `s = 0.0442` la population au-delà de `10 ν` fait 2702 cellules à Voronoï, 89 à
+`α₀ = 0.8`, 237 à `α₀ = 1` : quelques centaines, pas des dizaines de milliers.
+
+## 25.4 En 1D, la loi qui gouverne tout : `α* × saut = 2h²`
+
+`scripts/span_1d.py` donne la 1D exacte. La limite d'admissibilité le long d'une prolongation s'y lit
+en forme close, et elle obéit à une loi vérifiée à quatre chiffres (`n = 400`, `2h² = 1.2500e-05`) :
+
+| `R` | saut max aux interfaces | `α*` | `α* × saut` |
+|---|---|---|---|
+| 4 | 3.607e-3 | 3.466e-3 | 1.30e-5 |
+| 8 | 7.213e-3 | 1.733e-3 | **1.25e-5** |
+| 16 | 1.403e-2 | 8.910e-4 | 1.25e-5 |
+
+**Ce qui borne une prolongation n'est pas son amplitude, c'est la différence seconde qu'elle porte à
+l'échelle de la cellule.** La projection par **copie** met tout le défaut aux interfaces d'agrégats :
+un saut de `w` de 7.2e-3 entre deux germes distants de 2.5e-3 déplace le bissecteur de **576 largeurs
+de cellule**, d'où `α* = 1.7e-3`. Elle est donc inadmissible au premier ordre.
+
+L'**interpolation affine** remplace le saut par un **pli** sur chaque représentant (en 1D c'est
+exactement la prolongation harmonique du § 8.2) : la différence seconde passe de `saut` à `h·H·w''`,
+et `α*` gagne **un facteur 175** (1.73e-3 → 0.303). Ce n'est toujours pas 1.
+
+### Le seuil est `α* > 1`, et c'est une transition de phase
+
+| prolongation | `α*` | `α₀` atteint | **it restantes** (réf. 60) |
+|---|---|---|---|
+| copie | 1.73e-3 | 2.7e-5 | 60 |
+| affine | 0.303 | 0.168 | 53 |
+| affine + 4 lissages | 0.615 | 0.580 | 42 |
+| **affine + 16 lissages** | **1.067** | **0.963** | **10** |
+| copie + 64 lissages | 1.210 | 0.998 | 11 |
+
+`α* = 0.30` → 53 itérations, `0.62` → 42, `1.07` → **10**. Ce n'est pas un continuum. D'où une règle
+opérationnelle sans réglage à l'aveugle : **lisser jusqu'à ce que `α*` dépasse 1**, `α*` se calculant
+pour rien. Le lissage optimal est à `m ≈ R²` en 1D (longueur de diffusion `√m` = une largeur
+d'agrégat) et `R²/4` pour l'affine, qui a déjà supprimé le saut.
+
+## 25.5 `k > 1` est obligatoire, et les compagnes doivent LISSER
+
+Minimiser le mérite sur le span n'est qu'un **proxy** : son minimum peut être à `α₀` petit alors qu'un
+grand `α₀` est atteignable avec les bonnes compagnes. Ce qu'on veut est `α₀ → 1` sous contrainte
+d'admissibilité, les autres coefficients libres, par **continuation** en `α₀` avec enrichissement du
+span quand ça bloque. Sans aucun pré-lissage, `n = 400`, `R = 8`, référence 60 itérations :
+
+| `k` | `α₀` (copie) | it | `α₀` (affine) | it |
+|---|---|---|---|---|
+| 1 | 0.0017 | 60 | 0.3028 | 58 |
+| 2 | 0.0167 | 60 | 0.7715 | 43 |
+| 3 | 0.4116 | 45 | **1.0000** | **9** |
+| **4** | **1.0000** | **11** | — | — |
+
+**À `k = 1` il ne se passe rien** ; c'est l'enrichissement qui porte `α₀` d'un facteur 600.
+
+### Les compagnes sont des incréments de lissage, et c'est structurel
+
+Prendre « ce qui manque » comme **direction de Newton au point bloqué** échoue, et pas par maladresse :
+là où une cellule est à `1e-8 ν`, les lignes du jacobien `J_ik = (L d_k)_i / a_i` valent `1e8`, le
+moindre carré est entièrement dominé par elles, et la tangente de la variété des minimiseurs sort à
+**1.1e+07**. *La barrière qui protège détruit le conditionnement de toute algèbre linéaire à son
+voisinage.* On prend donc les compagnes **littéralement** comme des directions qui lissent,
+`d_j = lisse(w_prol, 4^j) − w_prol` — une échelle dyadique d'incréments, bien bornée et bien
+conditionnée.
+
+Et le contrôle qui rassure : à `k = 4`, les coefficients sont `(−0.002, +0.014, +0.988)` sur les
+échelles 4, 16, 64 — **tout sur 64, qui est `R²`.** L'optimiseur retrouve seul le lissage trouvé à la
+main, au même `log2` (54.4 contre 54.65). Le réglage deviné devient inutile.
+
+### `α₀ = 1` est une cible, pas un maximand
+
+Laissé monter jusqu'à 1.21 (le bord de l'admissible), le point a un `log2` de **2634** — pire que
+Voronoï (1888) — et il reste 41 itérations. Plafonné à 1 avec `log2` minimisé sur les compagnes :
+54.4 et **11** itérations. Maximiser `α₀` pousse exactement au mauvais endroit.
+
+### Gauss-Newton, et `α*` sort de la recherche
+
+`log2` étant une somme de carrés, le pas résout `min |g + J dα|²` avec `J_ik = (L d_k)_i / a_i` — exact
+à connectivité fixe, **vérifié à 1.71e-09** contre des différences finies centrées. La barrière du
+logarithme étant *dans* l'objectif, la recherche de pas ne peut pas franchir le bord : plus besoin de
+le clamper. La version à grille reste disponible et portait un défaut instructif — balayer `[−0.5, 1.5]`
+par pas de 0.05 quand `α*` vaut 1.7e-3 **ne visite jamais le domaine admissible**, et rendait
+`α₀ = 0` par artefact.
+
+## 25.6 Le portage 2D : la densité gelée, et ce qu'elle lève
+
+`PolyMulti` donne **l'aire** ; avec une densité l'objectif porte sur la **masse**, qui n'est pas un
+polynôme (§ 9.7). Mesure du désastre : `log2` sur les aires vaut **20** à la base quand le vrai mérite
+vaut **6.9e4** — le modèle égaliserait les aires.
+
+Le remède est de geler une densité **constante par morceaux** : avec `ρ_i` fixe, `masse_i(t) = ρ_i A_i(t)`
+redevient un polynôme, et comparer `ρ_i A_i` à `ν_i` revient à comparer `A_i(t)` à une **cible d'aire**
+`â_i = ν_i / ρ_i`. On retombe sur du Lebesgue pondéré, cible par cible. Quatre variantes,
+`n = 25600`, germes réguliers, écart max masse prédite / vraie **à la base** :
+
+| `--rho-gel` | écart | `α₀` poly | `α₀` retenu | it restantes |
+|---|---|---|---|---|
+| `plateau` (`ν_r/\|C_r\|` par cellule grossière) | 5.40e+02 | 0.96 | identique | identique |
+| `interp` (le même, interpolé par MLS) | 5.22e+02 | 0.96 | identique | identique |
+| `germe` (`ρ(p_i)`) | 2.55e-02 | 0.96 | identique | identique |
+| `cellule` (`a_i/A_i` à la base) | **1.10e-16** | 0.96 | identique | identique |
+
+**Le gel était nécessaire et n'est pas le verrou** : sur dix-huit ordres de grandeur de précision, le
+résultat ne bouge pas. La continuation bloque sur une aire polynomiale négative, purement géométrique,
+qui ignore `ρ`.
+
+Et l'interpolation ne répare pas le plateau (540 → 522), pour une raison structurelle : **à la solution
+grossière les cellules grossières ont toutes la même masse**, donc celles de la queue sont énormes et
+couvrent une plage de `ρ` d'un facteur plusieurs centaines. Le niveau grossier **sous-résout la densité
+précisément là où ses cellules sont grandes**, et interpoler entre des nœuds aussi espacés n'y change
+rien. La densité gelée doit s'évaluer **à l'échelle fine**.
+
+## 25.7 Jusqu'où la connectivité fixe emmène (`--fige`)
+
+Trois limitations se confondaient. `mesures_connectivite_figee` (`Ecrasement.h`) refait la cellule
+**exactement** mais en ne coupant QUE par les voisins connus (`FournisseurAlpha` avec
+`parcours = false` : aucune exploration, pas d'AaBsp), ce qui les sépare :
+
+| `α` | min A poly | min A **figée** | min a/ν vrai | vides vrais | écart masse figée/vraie |
+|---|---|---|---|---|---|
+| 0.50 | 1.086e-05 | 1.086e-05 | 1.797e-02 | 0 | 9.0e-02 |
+| 0.95 | 7.220e-07 | 7.259e-07 | 5.922e-03 | 0 | 5.8e-01 |
+| **1.00** | **−6.292e-06** | **+3.028e-07** | 0 | **1** | — |
+
+1. **Le polynôme EST l'aire à connectivité figée jusqu'à `α = 0.95`** — trois à quatre chiffres
+   identiques. Le **repliement** (les « parties positives » qui manquent au polynôme) ne mord qu'à
+   partir de `α = 1`.
+2. **La connectivité fixe tient jusqu'à `α ≈ 1`** : aucune cellule vide avant 1.05.
+3. **Et le diagramme réel est sain à `α = 0.95`.**
+
+## 25.8 La chaîne qui marche, et ce qu'elle coûte
+
+`σ = 0.05`, `plancher = 0.05`, pas de continuation en `s`, `n = 25600`, `R = 16`, germes réguliers.
+Grossier 56 it / 109 diag ; **témoin depuis Voronoï 98 it / 193 diag**. Et
+`cos(w_prol, d_newton) = +0.63` : la direction grossière porte enfin de l'information neuve (contre
++0.98 dans les régimes essayés d'abord).
+
+**`--poly 1 --rho-gel germe --span-garde 0`** : un diagramme construit le modèle, toute la recherche
+est gratuite, et une vérification confirme le point.
+
+```
+beta = 1.0000 ( aucun recul ),  alpha_0 = 0.9600,  min a/nu = 4.0e-03
+13 iterations / 20 diagrammes      contre      98 / 193
+```
+
+Bout à bout, le grossier valant 6.8 équivalents fins plus deux diagrammes : **≈ 29 contre 193, soit
+×6.7.** Et c'est mieux que le pré-lissage fait à la main (16 it / 26 diag).
+
+### `α₀( k )` en 2D, sur la copie brute
+
+| `k` | 1 | 2 | 3 | 4 |
+|---|---|---|---|---|
+| `α₀` | 0.0020 | 0.4760 | **0.8360** | 0.9860 |
+| **it restantes** | 97 | 80 | **31** | 50 |
+| `β` | 1.0 | 1.0 | 1.0 | 1.0 |
+
+Les compagnes portent `α₀` d'un facteur 500 et le diagramme réel accepte le point du modèle à chaque
+tour. Noter que le meilleur point réel est à `k = 3`, pas à `k = 4` où `α₀` est plus grand *et* le
+`log2` du modèle plus bas : **pousser `α₀` à 0.986 dépasse**, et l'objectif du modèle n'est pas
+parfaitement aligné sur la qualité réelle du départ.
+
+## 25.9 Ce qui résiste : le nuage de Poisson
+
+Tout ce qui précède est sur des germes **réguliers**. Sur un tirage, rien ne marche — et la loi est
+simple : **`α* ≈ (plus petit écart) / h`.** Balayage du bruit d'une grille (`n = 25600`) :
+
+| bruit | 0.05 h | 0.15 h | 0.25 h | 0.35 h | 0.50 h |
+|---|---|---|---|---|---|
+| `α*` | 0.990 | 0.803 | 0.637 | 0.511 | **0.079** |
+
+L'effondrement à 0.50 est le moment où deux voisins peuvent se rejoindre. Et ça recoupe Poisson : son
+plus petit écart vaut `O(h²)`, donc `α* ≈ h = 6.25e-3` — mesuré **8.6e-3**.
+
+**L'agglomération du § 23 aide et ne suffit pas** (`--agglo C`, en préalable de tout) :
+
+| `δ` | grappes / 25600 | taille max | `α*` |
+|---|---|---|---|
+| 0.25 h | 23 198 | 4 | 1.47e-1 |
+| **0.50 h** | 16 997 | 11 | **2.70e-1** |
+| 0.75 h | 9 484 | 39 | 4.36e-1 |
+| 1.00 h | 3 413 | **197** | 3.46e-1 |
+
+×31 à `δ = 0.5 h`, puis **ça retombe** : la fermeture transitive de « à moins de `δ` » **percole** dès
+que `δ` approche l'espacement, et les barycentres de grappes de 1 à 197 membres fabriquent leur propre
+irrégularité. C'est la limite structurelle du lien simple, et elle explique pourquoi le § 23.8
+l'employait à `δ = 3e-5` sur un nuage d'espacement 3e-3. **La voie demande donc un nuage régulier par
+construction (bruit ≤ 0.35 h), pas un nuage réparé.**
+
+## 25.10 Les pièges de mesure, et il y en a sept
+
+Cette section a coûté plus en faux diagnostics qu'en calcul. Les voici, pour ne pas les repayer.
+
+1. **`res_cur` n'est posé que dans `resout`.** Le mérite d'un span reste `lin` si on ne le pose pas
+   soi-même — et `resout` l'écrase ensuite, la bascule `log → lin` du § 24.5 le laissant à `lin` dès
+   que le solve converge. Deux tableaux sur des échelles différentes sans que rien ne le signale.
+2. **`nw.merite` rend la NORME, le jacobien du span dérive la SOMME DES CARRÉS.** Les mélanger fait un
+   facteur `2·mérite` : le contrôle par différences finies annonçait 5.5e+02 d'écart, ce qui ressemble
+   exactement à un jacobien faux. Objectif mis au carré, le contrôle passe à 4.6e-08.
+3. **`polynomes_multi` prend les CELLULES des poids que `pd` PORTE**, et les coefficients de `w` qu'on
+   lui passe. Entre deux tours, `nw.resout` laisse `pd` sur la solution convergée : le modèle du tour
+   `k` était construit sur les cellules du tour précédent. Le même `nk = 1` au même `α` donnait
+   `+3.24e-02` puis `−1.21e-01`, ce que j'avais pris pour une **dépendance en `nk` du noyau** — qui
+   n'existe pas (avec `t = (α, 0, …)` tous les termes supplémentaires portent un facteur nul, et après
+   `pd.set_weights(wb)` les valeurs sont bit à bit identiques de `nk = 1` à `4`).
+4. **Une garde d'admissibilité relative mentait.** Exiger `min a/ν ≥ 0.5 ×` celui de la base refusait
+   des points parfaitement sains : `α₀ = 0.96` y tombait à 0.35 par recul, 84 itérations au lieu de 13,
+   alors que le diagramme réel n'y a aucune cellule vide. **Seul `min a/ν > 0` est un critère.**
+5. **L'écart de pavage `Σ A_i(t) − 1` ne teste RIEN** : c'est une identité algébrique de l'aire signée,
+   qui fait s'annuler exactement recouvrements et replis dans la somme. Il vaut 9e-15 là où le modèle
+   se trompe d'un facteur 5. Et les −6 % à −88 % que j'avais rapportés mesuraient l'aire des cellules
+   **exclues** (`etat != OK`), pas une erreur de modèle.
+6. **`PolyMulti::rayon` en MINIMUM est inutilisable** : 5e-7 à 2e-5 là où le pas utile est 0.9, parce
+   qu'une seule cellule le fixe. Il faut un quantile. (Et l'objection « une arête qui meurt ne change
+   rien à l'aire » est juste sur la *valeur* — c'est au-delà que le polynôme continue avec une longueur
+   négative, ce qui est le repliement.)
+7. **Les germes tirés au hasard faussent `α*`** pour une raison étrangère au sujet (point 25.9), et une
+   grille de recherche mal échelonnée ne visite jamais le domaine admissible (§ 25.5).
+
+De tous les garde-fous essayés — pavage, `rayon`, écart de masse au pire cas, garde relative — **le
+seul qui ait tenu est `min a/ν > 0`**. L'écart modèle / vraie masse au point retenu vaut 16.9 et le
+point est excellent : l'erreur au pire cas n'est pas prédictive.
+
+## 25.11 Ce qui reste
+
+* le nuage de Poisson, qui résiste (§ 25.9) — et le remède que toutes les mesures désignent est de ne
+  pas raccourcir le pas **globalement** sur la pire cellule mais de **relever les cellules qui
+  bloquent**, c'est-à-dire l'enveloppe convexe inférieure du § 8.7.3, que le § 8.7.5 avait déjà nommée ;
+* l'objectif du modèle, qui n'est pas aligné sur la qualité réelle du départ au-delà de `α₀ ≈ 0.85` ;
+* et `main_grossier.cpp`, qui porte maintenant deux questions distinctes et devrait se couper en deux
+  (la qualité des agrégations d'un côté, la recherche dans le span de l'autre), contre la convention du
+  dépôt — un binaire par question.
