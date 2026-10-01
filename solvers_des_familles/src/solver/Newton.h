@@ -942,7 +942,7 @@ struct Newton {
             // descend `log2` loin sans toucher au diagramme, alors le solveur devient le poste
             // dominant et c'est lui qu'il faut rendre rapide.
             if ( it == o.span ) {
-                if constexpr ( PD::dim == 2 ) {
+                {
                     // EN MODE B ON NE DISPOSE QUE DE `w'` ET `w''` : l'ordre trois demanderait le
                     // terme croise `Q( w', w'' )`, donc une construction a deux directions, ce qui
                     // perdrait l'avantage de la variante. On plafonne donc a 2 -- sans ca la boucle
@@ -1160,13 +1160,13 @@ struct Newton {
                                     TF *gr = &acc[ size_t( th ) * ( K + NQ2 ) ];
                                     TF *he = gr + K;
                                     for ( int k = 0; k < K; ++k ) gr[ k ] += 2 * g * da[ k ] / A;
+                                    TF h2[ PolyMulti::KMAX * PolyMulti::KMAX ];
+                                    q.hessienne( best.data(), K, h2, PolyMulti::KMAX );
                                     for ( int k = 0; k < K; ++k )
-                                        for ( int l = 0; l <= k; ++l ) {
-                                            const TF d2 = k == l ? 2 * q.q[ k * ( k + 1 ) / 2 + k ]
-                                                                 : q.q[ k * ( k + 1 ) / 2 + l ];
+                                        for ( int l = 0; l <= k; ++l )
                                             he[ k * PolyMulti::KMAX + l ] +=
-                                                2 * ( ( 1 - g ) * da[ k ] * da[ l ] / ( A * A ) + g * d2 / A );
-                                        }
+                                                2 * ( ( 1 - g ) * da[ k ] * da[ l ] / ( A * A )
+                                                      + g * h2[ k * PolyMulti::KMAX + l ] / A );
                                 } );
                                 TF gr[ PolyMulti::KMAX ] = {}, H[ PolyMulti::KMAX ][ PolyMulti::KMAX ] = {};
                                 for ( int th = 0; th < nth; ++th ) {

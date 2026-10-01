@@ -7466,6 +7466,78 @@ favorable là où le diagramme est cher — la 3D. Et la minimisation par hessie
 la grille 40 × 40 du § 24.24 n'y serait pas tenable, et elle est de toute façon hors de portée à `K = 3`
 et 4, où l'essentiel du gain se trouve (it 7 : 10.09 à `K = 3`, 4.95 à `K = 4`, contre 20.55 à `K = 2`).
 
+## 24.27 Le polynôme multi-directions EN 3D : juste, instructif, et huit fois trop cher
+
+### Pourquoi cubique, et comment
+
+À connectivité fixe chaque plan garde sa normale et ne bouge que par son décalage, affine en `t`. Un
+sommet 3D est l'intersection de **ses trois coupes** — et `Cellule3D` porte exactement cette
+information (`vk0/vk1/vk2`, « les trois coupes du sommet, triées croissant ») — donc il reste **affine**
+en `t`, par Cramer sur la matrice fixe des trois normales. Mais le volume est une forme **cubique** des
+sommets :
+
+      V = ( 1/6 ) Σ_f ε_f Σ_e ε_ef det( v_o − g, v_a − v_o, v_b − v_o )
+
+alors que l'aire 2D n'en est qu'une forme quadratique. D'où les coefficients `c[]` ajoutés à
+`PolyMulti`, et une `hessienne()` qui devient une méthode (la dérivée seconde cesse d'être constante).
+Les signes d'orientation que `volume_et_faces` décide en chemin sont **figés à `t = 0`** : à
+connectivité fixe ils ne changent pas, et c'est ce qui rend l'expression polynomiale.
+
+### Deux contrôles, et ils passent
+
+* **`dA/dt` contre `L d₁` : écart relatif 1.53e-10.** Le coefficient linéaire du cubique **est** le
+  second membre de Newton. Ça valide d'un coup les dérivées de plans, le Cramer des sommets et
+  l'assemblage à l'ordre un.
+* **`log2` du modèle contre le réel : −0.13 % à `K = 1`, −0.26 % à `K = 2`**, à `‖t‖∞ ≈ 0.31`. Un terme
+  quadratique ou cubique faux se verrait là.
+
+Et la non-régression du `--pas modele` 2D est intacte (13 itérations, 14 diagrammes, § 22.3) : les
+coefficients cubiques restent nuls en 2D.
+
+### La surprise : en 3D le chemin est cent fois moins courbé
+
+| | `cos( w', w'' )` | `|w''| / |w'|` |
+|---|---|---|
+| 2D lignes s0.005 | −0.45 à +0.64 | **18 à 163** |
+| **3D plans s0.02** | −0.975 | **1.82** |
+
+En 2D le terme d'ordre deux écrasait l'ordre un au pas utile (§ 24.22), ce qui condamnait la variante B.
+En 3D il est **du même ordre** — donc le développement de Taylor y est valable, et **la variante B
+gagne : −10 % à `K = 2`** (146.09 → 131.45). Le même mécanisme, le verdict inversé par un rapport de
+normes. C'est, de toute la série, la mesure qui montre le mieux pourquoi il fallait écrire la 3D.
+
+### Variante A : un gain réel, puis un piège
+
+| 3D plans s0.02 | `K = 1` | `K = 2` | `K = 3` |
+|---|---|---|---|
+| it 2, `log2` réel | 146.09 | **126.41** ( −13.5 % ) | 117.87 — **aire min = 0** |
+| it 4, `log2` réel | 8.11 | modèle 4.30 / **réel 18.73** | idem |
+
+À l'itération 2 le gain est réel et vérifié. À l'itération 4 l'optimiseur sort du domaine de validité :
+`‖t‖∞ = 1.00`, le modèle annonce 4.30 et la vérité est **18.73** — **+335 %** — avec une **cellule
+vide** que le modèle prédisait pleine.
+
+**Et le sens de l'erreur s'inverse entre 2D et 3D.** Le § 24.14 avait mesuré qu'en 2D le modèle
+**majore** le mérite (une cellule dont la combinatoire casse voit son aire partir n'importe où, donc le
+critère explose, et la recherche fuit d'elle-même ces régions). En 3D il **minore** : il annonce mieux
+que la vérité, donc la recherche y **court**. C'est un danger que le 2D n'avait pas, et toute
+utilisation du modèle 3D doit s'accompagner d'une vérification par diagramme — ce que le diagnostic
+fait, mais qu'un algorithme devrait faire aussi.
+
+### Le coût, qui tranche pour l'instant
+
+`reste` vaut 9.6 s pour trois constructions, soit **≈ 3.2 s chacune**, quand un diagramme 3D coûte
+0.4 s. **Une construction vaut donc huit diagrammes** — et tout l'intérêt était d'échanger des
+diagrammes contre des constructions et des solves. En l'état, le span 3D coûte bien plus qu'il ne
+rapporte.
+
+Le coupable est identifié et c'est de l'implémentation, pas de la méthode : j'expanse `(K+1)³`
+déterminants **par paire ( arête, face )**, soit 2430 déterminants par cellule à `K = 2`. La bonne
+façon est celle de `volume_et_faces` lui-même : accumuler par face le vecteur d'aire `S_f` — quadratique
+en `t`, donc `O( K² )` coefficients — puis ne faire **qu'un** produit scalaire par face avec `v_o − g`.
+Le coût passerait de `O( K³ )` par paire à `O( K² )` par arête, soit un facteur de l'ordre de dix. C'est
+la suite évidente, et elle déciderait du sort du span 3D.
+
 ## 25.1 Le prix du niveau grossier, et la zone dure ne bouge pas
 
 `densite --pas essai-limites --conv 0.5 --conv-ratio 1.414 --sigma 0.02`, `job -b`, 8 fils :

@@ -204,10 +204,21 @@ struct ModeleCellule {
 struct PolyMulti {
     enum { KMAX = 4 };
     static constexpr int NQ = KMAX * ( KMAX + 1 ) / 2;
+    static constexpr int NC = KMAX * ( KMAX + 1 ) * ( KMAX + 2 ) / 6;
 
-    TF  c0 = 0;                     ///< l'aire en `t = 0`
+    /// l'indice du monome `t_k t_l t_m` avec `k >= l >= m`, dans `c`
+    static constexpr int ic( int k, int l, int m ) { return k * ( k + 1 ) * ( k + 2 ) / 6 + l * ( l + 1 ) / 2 + m; }
+
+    TF  c0 = 0;                     ///< la mesure en `t = 0`
     TF  g[ KMAX ] = {};             ///< `dA / dt_k` en zero
     TF  q[ NQ ] = {};               ///< le coefficient de `t_k t_l`, `k >= l`, a l'indice `k( k + 1 ) / 2 + l`
+    /// LE TERME CUBIQUE, QUI N'EXISTE QU'EN 3D. L'aire d'une cellule 2D a connectivite fixe est
+    /// exactement QUADRATIQUE : les sommets sont affines et l'aire est une forme quadratique des
+    /// sommets. En 3D les sommets restent affines ( chacun est l'intersection de ses trois coupes )
+    /// mais le volume est une forme CUBIQUE -- `V = ( 1/6 ) sum_f eps_f ( v_o - g ) . S_f` avec
+    /// `S_f` quadratique. D'ou `ordre`, et ce tableau.
+    TF  c[ NC ] = {};               ///< le coefficient de `t_k t_l t_m`, `k >= l >= m`, a `ic( k, l, m )`
+    int ordre = 2;                  ///< `2` en 2D, `3` en 3D
     TF  rayon = INFINI;             ///< sous `|t|inf < rayon`, aucune arete ne s'annule : le polynome est exact
     int nb_aretes = 0;
     int etat = PolyCellule::OK;
@@ -218,6 +229,11 @@ struct PolyMulti {
             v += t[ k ] * g[ k ];
             for ( int l = 0; l <= k; ++l ) v += q[ k * ( k + 1 ) / 2 + l ] * t[ k ] * t[ l ];
         }
+        if ( ordre >= 3 )
+            for ( int k = 0; k < nk; ++k )
+                for ( int l = 0; l <= k; ++l )
+                    for ( int m = 0; m <= l; ++m )
+                        v += c[ ic( k, l, m ) ] * t[ k ] * t[ l ] * t[ m ];
         return v;
     }
 
@@ -231,6 +247,42 @@ struct PolyMulti {
             }
             out[ k ] = s;
         }
+        if ( ordre < 3 ) return;
+        // `d/dt_u ( c_klm t_k t_l t_m )` : chaque occurrence de `u` parmi `k, l, m` donne un terme
+        for ( int k = 0; k < nk; ++k )
+            for ( int l = 0; l <= k; ++l )
+                for ( int m = 0; m <= l; ++m ) {
+                    const TF cc = c[ ic( k, l, m ) ];
+                    if ( cc == 0 ) continue;
+                    out[ k ] += cc * t[ l ] * t[ m ];
+                    out[ l ] += cc * t[ k ] * t[ m ];
+                    out[ m ] += cc * t[ k ] * t[ l ];
+                }
+    }
+
+    /// LA HESSIENNE en `t`, `nk x nk` stockee en ligne sur `pas` colonnes. Elle est constante a
+    /// l'ordre deux, mais plus en 3D : c'est pourquoi elle est une methode et non une lecture de `q`.
+    void hessienne( const TF *t, int nk, TF *out, int pas ) const {
+        for ( int k = 0; k < nk; ++k )
+            for ( int l = 0; l < nk; ++l ) {
+                const int a = std::max( k, l ), b = std::min( k, l );
+                out[ k * pas + l ] = ( k == l ? TF( 2 ) : TF( 1 ) ) * q[ a * ( a + 1 ) / 2 + b ];
+            }
+        if ( ordre < 3 ) return;
+        for ( int k = 0; k < nk; ++k )
+            for ( int l = 0; l <= k; ++l )
+                for ( int m = 0; m <= l; ++m ) {
+                    const TF cc = c[ ic( k, l, m ) ];
+                    if ( cc == 0 ) continue;
+                    // `d2/dt_u dt_v` : les paires d'occurrences distinctes parmi ( k, l, m )
+                    const int u[ 3 ] = { k, l, m };
+                    for ( int i = 0; i < 3; ++i )
+                        for ( int j = 0; j < 3; ++j ) {
+                            if ( i == j ) continue;
+                            const int w = u[ 3 - i - j ];   // l'indice restant
+                            out[ u[ i ] * pas + u[ j ] ] += cc * t[ w ];
+                        }
+                }
     }
 };
 
@@ -327,18 +379,229 @@ PolyMulti polynome_multi_cellule( const Cell &cel, SI i, const TF *const *P, con
     return q;
 }
 
+/// LE POLYNOME MULTI-DIRECTIONS D'UNE CELLULE 3D : son VOLUME, CUBIQUE en `t`.
+///
+/// Pourquoi cubique, et pas quadratique comme l'aire en 2D. A connectivite fixe, chaque plan garde sa
+/// normale et ne bouge que par son decalage, affine en `t`. Un sommet est l'intersection de SES TROIS
+/// COUPES -- `Cellule3D` porte exactement cette information, `vk0/vk1/vk2` -- donc il est AFFINE en
+/// `t`, par Cramer sur la matrice fixe des trois normales. Mais le volume est une forme CUBIQUE des
+/// sommets :
+///
+///      V = ( 1/6 ) sum_f eps_f sum_e eps_ef det( v_o - g, v_a - v_o, v_b - v_o )
+///
+/// alors que l'aire 2D n'en est qu'une forme quadratique. D'ou les termes `c[]` de `PolyMulti`.
+///
+/// LES SIGNES SE FIGENT AU DEPART. `volume_et_faces` decide des orientations en cours de route ( le
+/// `if ( sx*cx + ... < 0 )` et le `abs` final ) ; a connectivite fixe ces decisions ne changent pas
+/// pour un `t` raisonnable, donc on les prend UNE FOIS a `t = 0` et on les garde. C'est ce qui rend
+/// l'expression polynomiale.
+template<class Cell>
+PolyMulti polynome_multi_cellule_3d( const Cell &cel, SI i, const TF *const *P, const TF *w,
+                                     const TF *const *dirs, int nk ) {
+    PolyMulti q;
+    q.ordre = 3;
+    if ( cel.nv == 0 ) { q.etat = PolyCellule::VIDE_AU_DEPART; return q; }
+    if ( cel.nv < 4 )  { q.etat = PolyCellule::DEBORDE; return q; }
+    if ( cel.touche_artificielle() ) { q.etat = PolyCellule::DEBORDE; return q; }
+    const int nv = cel.nv, nc = cel.nc;
+    q.nb_aretes = nv;
+    (void) w;                                            // le decalage des plans ne sert pas : les
+                                                         // sommets a `t = 0` sont deja dans `cel`
+
+    // ---- les plans : normale FIXE, decalage affine en `t`
+    TF pn[ 3 ][ Cell::max_nc ];
+    TF dl[ PolyMulti::KMAX ][ Cell::max_nc ];
+    for ( int k = 0; k < nc; ++k ) {
+        const auto id = cel.cid[ k ];
+        if ( id >= 0 ) {
+            for ( int u = 0; u < 3; ++u ) pn[ u ][ k ] = P[ u ][ id ] - P[ u ][ i ];
+            for ( int j = 0; j < nk; ++j ) dl[ j ][ k ] = TF( 0.5 ) * ( dirs[ j ][ i ] - dirs[ j ][ id ] );
+        } else {
+            // les faces du domaine portent `-1 .. -6`, dans l'ordre `x=lo x=hi y=lo y=hi z=lo z=hi`
+            // ( `Cellule3D::init_boite` et `Noyau3D::moteur` ). Seul l'AXE compte : le decalage est
+            // nul, donc l'echelle et le signe de la ligne sont sans effet sur la derivee.
+            const int ax = ( -int( id ) - 1 ) / 2;
+            for ( int u = 0; u < 3; ++u ) pn[ u ][ k ] = ( u == ax ) ? TF( 1 ) : TF( 0 );
+            for ( int j = 0; j < nk; ++j ) dl[ j ][ k ] = 0;
+        }
+    }
+
+    // ---- les sommets : `v = v0 + sum_k t_k vk`, par Cramer sur les trois normales
+    TF v0[ 3 ][ Cell::max_nv ];
+    TF vk[ PolyMulti::KMAX ][ 3 ][ Cell::max_nv ];
+    for ( int a = 0; a < nv; ++a ) {
+        v0[ 0 ][ a ] = TF( cel.vx[ a ] );                // repere du germe : le volume est invariant
+        v0[ 1 ][ a ] = TF( cel.vy[ a ] );
+        v0[ 2 ][ a ] = TF( cel.vz[ a ] );
+        const int c3[ 3 ] = { cel.vk0[ a ], cel.vk1[ a ], cel.vk2[ a ] };
+        TF M[ 3 ][ 3 ];
+        for ( int r = 0; r < 3; ++r )
+            for ( int u = 0; u < 3; ++u ) M[ r ][ u ] = pn[ u ][ c3[ r ] ];
+        const TF det = M[0][0] * ( M[1][1]*M[2][2] - M[1][2]*M[2][1] )
+                     - M[0][1] * ( M[1][0]*M[2][2] - M[1][2]*M[2][0] )
+                     + M[0][2] * ( M[1][0]*M[2][1] - M[1][1]*M[2][0] );
+        if ( ! ( std::fabs( det ) > 0 ) ) { q.etat = PolyCellule::DEBORDE; return q; }
+        // l'inverse par la comatrice, une fois pour les `nk` seconds membres
+        TF inv[ 3 ][ 3 ];
+        inv[0][0] =  ( M[1][1]*M[2][2] - M[1][2]*M[2][1] ) / det;
+        inv[0][1] = -( M[0][1]*M[2][2] - M[0][2]*M[2][1] ) / det;
+        inv[0][2] =  ( M[0][1]*M[1][2] - M[0][2]*M[1][1] ) / det;
+        inv[1][0] = -( M[1][0]*M[2][2] - M[1][2]*M[2][0] ) / det;
+        inv[1][1] =  ( M[0][0]*M[2][2] - M[0][2]*M[2][0] ) / det;
+        inv[1][2] = -( M[0][0]*M[1][2] - M[0][2]*M[1][0] ) / det;
+        inv[2][0] =  ( M[1][0]*M[2][1] - M[1][1]*M[2][0] ) / det;
+        inv[2][1] = -( M[0][0]*M[2][1] - M[0][1]*M[2][0] ) / det;
+        inv[2][2] =  ( M[0][0]*M[1][1] - M[0][1]*M[1][0] ) / det;
+        for ( int j = 0; j < nk; ++j ) {
+            const TF b3[ 3 ] = { dl[ j ][ c3[ 0 ] ], dl[ j ][ c3[ 1 ] ], dl[ j ][ c3[ 2 ] ] };
+            for ( int u = 0; u < 3; ++u )
+                vk[ j ][ u ][ a ] = inv[ u ][ 0 ] * b3[ 0 ] + inv[ u ][ 1 ] * b3[ 1 ] + inv[ u ][ 2 ] * b3[ 2 ];
+        }
+    }
+
+    // ---- le barycentre des sommets, affine lui aussi
+    TF g0[ 3 ] = { 0, 0, 0 }, gk[ PolyMulti::KMAX ][ 3 ] = {};
+    for ( int a = 0; a < nv; ++a ) {
+        for ( int u = 0; u < 3; ++u ) g0[ u ] += v0[ u ][ a ];
+        for ( int j = 0; j < nk; ++j ) for ( int u = 0; u < 3; ++u ) gk[ j ][ u ] += vk[ j ][ u ][ a ];
+    }
+    for ( int u = 0; u < 3; ++u ) g0[ u ] /= nv;
+    for ( int j = 0; j < nk; ++j ) for ( int u = 0; u < 3; ++u ) gk[ j ][ u ] /= nv;
+
+    // ---- LA PREMIERE PASSE, A `t = 0` : le sommet de reference de chaque face, et LES SIGNES
+    int vref[ Cell::max_nc ];
+    TF  S[ 3 ][ Cell::max_nc ];
+    for ( int k = 0; k < nc; ++k ) { vref[ k ] = -1; S[0][k] = S[1][k] = S[2][k] = 0; }
+    for ( int a = nv - 1; a >= 0; --a ) {
+        vref[ cel.vk0[ a ] ] = a; vref[ cel.vk1[ a ] ] = a; vref[ cel.vk2[ a ] ] = a;
+    }
+    signed char sgn[ 6 * Cell::max_nv ];                 // le signe de chaque ( arete, face ), dans l'ordre
+    int ns = 0;
+    for ( int a = 0; a < nv; ++a ) {
+        const int kk[ 3 ] = { cel.vk0[ a ], cel.vk1[ a ], cel.vk2[ a ] };
+        const int wn[ 3 ] = { cel.vn0[ a ], cel.vn1[ a ], cel.vn2[ a ] };
+        for ( int j = 0; j < 3; ++j ) {
+            const int b = wn[ j ];
+            if ( b <= a ) continue;
+            int f0, f1;
+            Cell::faces_de( kk, j, f0, f1 );
+            for ( int r = 0; r < 2; ++r ) {
+                const int f = r ? f1 : f0, o = vref[ f ];
+                const TF ax = v0[0][a] - v0[0][o], ay = v0[1][a] - v0[1][o], az = v0[2][a] - v0[2][o];
+                const TF bx = v0[0][b] - v0[0][o], by = v0[1][b] - v0[1][o], bz = v0[2][b] - v0[2][o];
+                TF cx = ay * bz - az * by, cy = az * bx - ax * bz, cz = ax * by - ay * bx;
+                signed char e = 1;
+                if ( S[0][f] * cx + S[1][f] * cy + S[2][f] * cz < 0 ) { e = -1; cx = -cx; cy = -cy; cz = -cz; }
+                S[0][f] += cx; S[1][f] += cy; S[2][f] += cz;
+                sgn[ ns++ ] = e;
+            }
+        }
+    }
+    signed char sf[ Cell::max_nc ];
+    for ( int k = 0; k < nc; ++k ) {
+        const int o = vref[ k ];
+        sf[ k ] = 0;
+        if ( o < 0 ) continue;
+        const TF d = ( v0[0][o] - g0[0] ) * S[0][k] + ( v0[1][o] - g0[1] ) * S[1][k] + ( v0[2][o] - g0[2] ) * S[2][k];
+        sf[ k ] = d < 0 ? -1 : 1;
+    }
+
+    // ---- LA SECONDE PASSE : le polynome, avec les signes figes
+    //
+    // Chaque terme est `det` de trois vecteurs AFFINES ; on developpe sur les `( nk + 1 )^3`
+    // combinaisons de leurs coefficients, l'indice `0` valant « la constante ».
+    auto ajoute = [ & ]( const TF A[ PolyMulti::KMAX + 1 ][ 3 ], const TF B[ PolyMulti::KMAX + 1 ][ 3 ],
+                         const TF C[ PolyMulti::KMAX + 1 ][ 3 ], TF ech ) {
+        for ( int ia = 0; ia <= nk; ++ia )
+        for ( int ib = 0; ib <= nk; ++ib )
+        for ( int id = 0; id <= nk; ++id ) {
+            const TF d = A[ia][0] * ( B[ib][1]*C[id][2] - B[ib][2]*C[id][1] )
+                       - A[ia][1] * ( B[ib][0]*C[id][2] - B[ib][2]*C[id][0] )
+                       + A[ia][2] * ( B[ib][0]*C[id][1] - B[ib][1]*C[id][0] );
+            if ( d == 0 ) continue;
+            const TF v = ech * d;
+            int u[ 3 ], m = 0;                           // les indices NON NULS, donc les `t_k`
+            if ( ia ) u[ m++ ] = ia - 1;
+            if ( ib ) u[ m++ ] = ib - 1;
+            if ( id ) u[ m++ ] = id - 1;
+            if ( m == 0 ) { q.c0 += v; continue; }
+            if ( m == 1 ) { q.g[ u[0] ] += v; continue; }
+            if ( m == 2 ) {
+                const int k = std::max( u[0], u[1] ), l = std::min( u[0], u[1] );
+                q.q[ k * ( k + 1 ) / 2 + l ] += v;
+                continue;
+            }
+            int k = u[0], l = u[1], mm = u[2];           // trier decroissant
+            if ( k < l ) std::swap( k, l );
+            if ( l < mm ) std::swap( l, mm );
+            if ( k < l ) std::swap( k, l );
+            q.c[ PolyMulti::ic( k, l, mm ) ] += v;
+        }
+    };
+    const TF un_sixieme = TF( 1 ) / 6;
+    ns = 0;
+    for ( int a = 0; a < nv; ++a ) {
+        const int kk[ 3 ] = { cel.vk0[ a ], cel.vk1[ a ], cel.vk2[ a ] };
+        const int wn[ 3 ] = { cel.vn0[ a ], cel.vn1[ a ], cel.vn2[ a ] };
+        for ( int j = 0; j < 3; ++j ) {
+            const int b = wn[ j ];
+            if ( b <= a ) continue;
+            int f0, f1;
+            Cell::faces_de( kk, j, f0, f1 );
+            for ( int r = 0; r < 2; ++r ) {
+                const int f = r ? f1 : f0, o = vref[ f ];
+                const signed char e = sgn[ ns++ ];
+                if ( o < 0 || sf[ f ] == 0 ) continue;
+                TF A[ PolyMulti::KMAX + 1 ][ 3 ], B[ PolyMulti::KMAX + 1 ][ 3 ], C[ PolyMulti::KMAX + 1 ][ 3 ];
+                for ( int u = 0; u < 3; ++u ) {
+                    A[ 0 ][ u ] = v0[ u ][ o ] - g0[ u ];
+                    B[ 0 ][ u ] = v0[ u ][ a ] - v0[ u ][ o ];
+                    C[ 0 ][ u ] = v0[ u ][ b ] - v0[ u ][ o ];
+                    for ( int jj = 0; jj < nk; ++jj ) {
+                        A[ jj + 1 ][ u ] = vk[ jj ][ u ][ o ] - gk[ jj ][ u ];
+                        B[ jj + 1 ][ u ] = vk[ jj ][ u ][ a ] - vk[ jj ][ u ][ o ];
+                        C[ jj + 1 ][ u ] = vk[ jj ][ u ][ b ] - vk[ jj ][ u ][ o ];
+                    }
+                }
+                ajoute( A, B, C, un_sixieme * TF( sf[ f ] ) * TF( e ) );
+            }
+        }
+    }
+
+    // ---- LE RAYON : sous `|t|inf < rayon`, aucune arete presente ne s'annule. Meme esprit qu'en 2D.
+    for ( int a = 0; a < nv; ++a ) {
+        const int wn[ 3 ] = { cel.vn0[ a ], cel.vn1[ a ], cel.vn2[ a ] };
+        for ( int j = 0; j < 3; ++j ) {
+            const int b = wn[ j ];
+            if ( b <= a ) continue;
+            TF l0 = 0, sa = 0;
+            for ( int u = 0; u < 3; ++u ) { const TF d = v0[u][b] - v0[u][a]; l0 += d * d; }
+            l0 = std::sqrt( l0 );
+            for ( int jj = 0; jj < nk; ++jj ) {
+                TF d2 = 0;
+                for ( int u = 0; u < 3; ++u ) { const TF d = vk[jj][u][b] - vk[jj][u][a]; d2 += d * d; }
+                sa += std::sqrt( d2 );
+            }
+            if ( sa > 0 ) q.rayon = std::min( q.rayon, l0 / sa );
+        }
+    }
+    return q;
+}
+
 /// LES POLYNOMES MULTI-DIRECTIONS DE TOUTES LES CELLULES du diagramme `pd` ( aux poids `w` ).
 template<class PD>
 void polynomes_multi( const PD &pd, const TF *const *P, const std::vector<TF> &w,
                       const TF *const *dirs, int nk, const Parallel &par, std::vector<PolyMulti> &poly ) {
-    static_assert( PD::dim == 2, "le modele multi-directions n'est ecrit qu'en 2D pour l'instant" );
     using Cell = typename PD::Cell;
     const SI n = pd.n;
     poly.assign( n, PolyMulti{} );
     parallel_for( n, par, [ & ]( SI k, int ) {
         Cell cel;
         pd.cellule( k, cel );
-        poly[ pd.ids[ k ] ] = polynome_multi_cellule( cel, pd.ids[ k ], P, w.data(), dirs, nk );
+        if constexpr ( PD::dim == 2 )
+            poly[ pd.ids[ k ] ] = polynome_multi_cellule( cel, pd.ids[ k ], P, w.data(), dirs, nk );
+        else
+            poly[ pd.ids[ k ] ] = polynome_multi_cellule_3d( cel, pd.ids[ k ], P, w.data(), dirs, nk );
     } );
 }
 
