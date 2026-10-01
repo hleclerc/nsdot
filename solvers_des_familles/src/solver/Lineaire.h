@@ -424,6 +424,7 @@ struct CholPrec : Lineaire {
     /// jamais ( le motif reste celui de la premiere resolution ), ce qui est la variante mesuree
     /// comme intenable au § 24.19.
     TF   seuil_motif = TF( 0.01 );
+    int  sauts   = 2;              ///< le motif gele : 1 = le graphe, 2 = les voisins des voisins
     int  trace   = 0;
 
     const char *nom() const override {
@@ -487,19 +488,57 @@ private:
     std::vector<TF> r_, z_, p_, q_, x_;
     Eigen::VectorXd er_, ez_;
 
-    void fige_motif() {
-        fp.assign( m + 1, 0 );
-        for ( SI i = 0; i < m; ++i ) {
-            int k = 0;
-            for ( int e = ptr[ i ]; e < ptr[ i + 1 ]; ++e ) k += col[ e ] <= i;
-            fp[ i + 1 ] = k;
+    /// LE MOTIF A `sauts` ARETES : tous les `j <= i` atteignables en au plus `sauts` aretes du
+    /// graphe du laplacien, donc le support de `A` pour 1 et de `A + A^2` pour 2.
+    ///
+    /// POURQUOI DEUX SAUTS. Le § 24.19 a mesure que 20 a 30 % des termes sont neufs apres trois
+    /// iterations, et que c'est ce qui ruine l'amortissement. Mais une arete que le diagramme de
+    /// Laguerre GAGNE relie deux germes qui etaient DEJA presque voisins -- separes par une seule
+    /// cellule, donc a deux aretes dans le graphe de depart. Un motif a deux sauts devrait donc
+    /// les contenir d'avance, et rendre l'analyse symbolique valable pour tout le solve.
+    size_t boule_motif( SI i, std::vector<int> &marque, std::vector<int> &tmp, int &tampon ) const {
+        tmp.clear();
+        ++tampon;
+        marque[ i ] = tampon;
+        tmp.push_back( int( i ) );
+        size_t deb = 0;
+        for ( int h = 0; h < sauts; ++h ) {
+            const size_t fin = tmp.size();
+            for ( size_t u = deb; u < fin; ++u ) {
+                const int a = tmp[ u ];
+                for ( int e = ptr[ a ]; e < ptr[ a + 1 ]; ++e ) {
+                    const int j = col[ e ];
+                    if ( marque[ j ] == tampon ) continue;
+                    marque[ j ] = tampon;
+                    tmp.push_back( j );
+                }
+            }
+            deb = fin;
+            if ( deb == tmp.size() ) break;
         }
+        size_t k = 0;                                    // ne garder que le triangle bas
+        for ( size_t u = 0; u < tmp.size(); ++u ) if ( tmp[ u ] <= int( i ) ) tmp[ k++ ] = tmp[ u ];
+        tmp.resize( k );
+        return k;
+    }
+
+    void fige_motif() {
+        std::vector<int> marque( m, -1 ), tmp;
+        int tampon = 0;
+        fp.assign( m + 1, 0 );
+        for ( SI i = 0; i < m; ++i ) fp[ i + 1 ] = int( boule_motif( i, marque, tmp, tampon ) );
         for ( SI i = 0; i < m; ++i ) fp[ i + 1 ] += fp[ i ];
         fi.resize( fp[ m ] ); fx.assign( fp[ m ], 0 );
         for ( SI i = 0; i < m; ++i ) {
-            int k = fp[ i ];
-            for ( int e = ptr[ i ]; e < ptr[ i + 1 ]; ++e ) if ( col[ e ] <= i ) fi[ k++ ] = col[ e ];
+            boule_motif( i, marque, tmp, tampon );
+            std::sort( tmp.begin(), tmp.end() );
+            std::copy( tmp.begin(), tmp.end(), fi.begin() + fp[ i ] );
         }
+        if ( trace )
+            std::printf( "      CHOLPREC : motif a %d saut%s, %.1f termes par ligne"
+                         " ( %.2f x le laplacien )\n", sauts, sauts > 1 ? "s" : "",
+                         double( fp[ m ] ) / double( m ),
+                         2.0 * double( fp[ m ] ) / double( std::max( ptr[ m ], 1 ) ) );
     }
 
     /// LES VALEURS COURANTES PROJETEES SUR LE MOTIF GELE : deux listes triees, une fusion.

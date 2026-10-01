@@ -6973,3 +6973,75 @@ de Laguerre gagne relient des germes qui étaient *presque* voisins, donc à deu
 départ ; un tel motif serait stable et permettrait **une** analyse symbolique pour tout le solve. Le
 prix est du remplissage en plus, donc une factorisation et des descentes-remontées plus chères — et
 c'est exactement l'arbitrage qu'il faudrait mesurer.
+
+## 24.20 Le motif à DEUX SAUTS : il couvre 99 % de la dérive, et ça ne suffit pas
+
+Le § 24.19 avait désigné le verrou — 20 à 30 % des termes du laplacien sont neufs après trois
+itérations — et la piste : une arête que le diagramme de Laguerre **gagne** relie deux germes qui
+étaient déjà presque voisins, donc à **deux arêtes** dans le graphe de départ. Le motif gelé devient
+donc le support de `A + A²` (`--cp-sauts 2`).
+
+### Le diagnostic était juste : la dérive structurelle s'effondre
+
+2D lignes s0.005, fraction de termes hors motif :
+
+| | itération 3 | 4 | 5 | … | 8 | analyses symboliques |
+|---|---|---|---|---|---|---|
+| motif à **1 saut** | 20.6 % | 23.3 % | 25.9 % | ↗ | **30.4 %** | 10 sur 12 |
+| motif à **2 sauts** | **0.93 %** | 0.06 % | 0.15 % | ↗ | **0.28 %** | **2** sur 12 |
+
+**Facteur 100 sur la dérive**, et cinq fois moins d'analyses. L'intuition est donc confirmée : les
+arêtes neuves sont bien à deux sauts.
+
+### Et la qualité, quand le motif est vraiment un surensemble, est parfaite
+
+Avec `--cp-seuil 0 --cp-refaire 1` — on réanalyse dès qu'un seul terme manque, et on refait la
+factorisation à chaque pas — le préconditionneur est la factorisation **exacte** de la matrice du jour,
+et le CG le dit :
+
+| | itérations de Newton | CG au total | temps des résolutions |
+|---|---|---|---|
+| 2D uniforme | 6 | **6** | **0.168 s** |
+| 2D lignes s0.02 | 9 | **9** | 0.228 |
+| 2D lignes s0.005 | 12 | **15** | 0.363 |
+| 3D plans s0.02 | 9 | **9** | 1.163 |
+
+**Une itération de CG par résolution**, et un temps de résolution 5 à 10 fois sous celui d'AMGCL
+(1.75 s sur le cas dur). C'est aussi la preuve que l'implémentation est juste : un surensemble exact
+donne exactement un pas de CG.
+
+### Mais la préparation ne s'amortit toujours pas, et le 2 sauts l'aggrave
+
+| totaux | 2D uniforme | 2D s0.02 | 2D s0.005 | 3D plans |
+|---|---|---|---|---|
+| AMGCL | **1.11 s** | 2.14 | **4.27** | 8.29 |
+| multigrille maison | 1.46 | **2.09** | 4.53 | **7.51** |
+| `chsup` direct | 1.96 | 2.99 | 4.73 | 21.5 |
+| `chprec`, 1 saut, motif exact | 2.16 | 3.40 | 5.19 | 21.9 |
+| `chprec`, **2 sauts**, surensemble | 3.62 | 5.18 | 8.71 | **56.7** |
+
+Le motif à deux sauts **double à triple le coût de préparation** (2D s0.005 : 3.10 → 6.51 s ; 3D :
+14.8 → 49.2 s), parce qu'il est **3.1 fois plus dense** que le laplacien en 2D et bien davantage en 3D.
+Et le nombre d'analyses ne baisse presque pas dans ce réglage — 11 sur 12 au lieu de 12 — parce que
+l'exactitude exige de réanalyser dès qu'**un** terme manque, ce qui arrive presque à chaque pas même
+avec un motif généreux.
+
+### L'arbitrage est sans issue, et c'est ça le résultat
+
+On a mesuré les deux bouts, et il n'y a rien entre eux :
+
+* **motif exact** → 1 à 2 itérations de CG, mais une analyse symbolique par pas de Newton ;
+* **motif généreux gelé** (2 sauts, seuil 1 %) → 2 analyses seulement, mais le CG passe à **590**
+  itérations, parce que le résidu de 0.06 à 0.28 % de termes manquants suffit à multiplier le compte
+  par 20 à 70. Le § 24.19 avait déjà mesuré cette brutalité ; le 2 sauts la confirme à l'autre échelle.
+
+La raison de fond est structurelle, et elle vaut pour **toute** factorisation directe : une
+factorisation est attachée à **son** motif. Elle ne peut donc pas s'amortir sur une suite de matrices
+dont le motif change, et le nôtre change à chaque pas — couvrir 99 % de la dérive ne sert à rien
+puisque le dernier pourcent coûte un facteur 70.
+
+**Ce qui exploite vraiment le régime reste donc ce que nous possédons déjà** : le multigrille maison,
+dont la hiérarchie se garde en rafraîchissant le niveau fin (−11 % d'itérations seulement, § 24.16) et
+dont le recyclage de sous-espace trouve de quoi vivre. Un préconditionneur **algébrique** tolère le
+changement de motif ; une factorisation, non. C'est la ligne de partage que cette série de mesures
+établit.

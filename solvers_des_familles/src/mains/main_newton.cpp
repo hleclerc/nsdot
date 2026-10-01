@@ -59,6 +59,7 @@ struct Opts {
     bool          cp_super = true; ///< CHPREC : supernodal plutot que simplicial
     bool          cp_comp = true;  ///< CHPREC : compensation diagonale des termes hors motif
     double        cp_seuil = -1;   ///< CHPREC : fraction hors motif au-dela de laquelle on re-analyse
+    int           cp_sauts = 0;    ///< CHPREC : sauts du motif gele ( 0 : le defaut, 2 )
     int           mchol_ech = 0;   ///< MCHOL : l'echelle -- 0 uniforme par niveau ( le papier ), 1 locale
     // LES REGLAGES DU MULTIGRILLE MAISON. Les defauts viennent de `Multigrille.h`, ou ils ont ete
     // mesures EN 2D SUR UNE DENSITE IMAGE : `agreg 8` en particulier vaut ce que vaut son cas
@@ -109,6 +110,7 @@ std::unique_ptr<Lineaire> fabrique( const Opts &o ) {
         p->super = o.cp_super;
         p->compense = o.cp_comp;
         if ( o.cp_seuil >= 0 ) p->seuil_motif = TF( o.cp_seuil );
+        if ( o.cp_sauts > 0 ) p->sauts = o.cp_sauts;
         p->trace = o.mg_trace;
         return p;
     }
@@ -619,6 +621,7 @@ int main( int argc, char **argv ) {
         else if ( s == "--cp-simplicial" ) o.cp_super = false;
         else if ( s == "--cp-sans-compense" ) o.cp_comp = false;
         else if ( s == "--cp-seuil" )   o.cp_seuil = std::atof( val() );
+        else if ( s == "--cp-sauts" )   o.cp_sauts = std::atoi( val() );
         else if ( s == "--mchol-ech" )  o.mchol_ech = std::atoi( val() );
         else if ( s == "--ecrire" )     o.ecrire = val();
         else if ( s == "--quiet" )      o.newton.trace = false;
