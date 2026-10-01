@@ -6766,8 +6766,15 @@ Ce n'est pas un détail d'implémentation : la théorie veut que le support coll
 de la multirésolution. Les deux options restent disponibles (`--mchol-ech 0 | 1`), défaut celle du
 papier.
 
-Reste donc un manque **précis** et non comblé : une échelle **uniforme par niveau** mais dont la
-constante est estimée **localement**. Aucune des deux variantes testées ne l'est.
+Reste donc un manque **précis** : une échelle **uniforme par niveau** mais dont la constante est
+estimée **localement**. Aucune des deux variantes testées ne l'est.
+
+> **ET L'IMPLEMENTATION DE REFERENCE NE LE FAIT PAS NON PLUS.** Le code des auteurs est public
+> (`gitlab.inria.fr/geomerix/ichol`, GPL-3.0). Son `chol_level::calc_supp_scale` lit :
+> `h = sqrt( Vol / node_num ); l = sqrt( 2 ) * h * Ones( node_num )` en 2D, `cbrt` et `sqrt( 3 )` en
+> 3D. C'est **exactement** le raccourci global, le `sqrt( 2 )` ne faisant que redimensionner `rho`.
+> Donc la limite mesurée ici sur les nuages groupés est une limite **de la méthode publiée**, pas de
+> cette implémentation : ces nuages sont hors de son domaine validé. La question est close.
 
 ### Verdict
 
@@ -6777,3 +6784,26 @@ ici en l'état, pour deux raisons qu'il faut distinguer : une d'**ingénierie** 
 parallélisme, que le papier a et que je n'ai pas, et qui est tout l'écart sur le nuage uniforme — et une
 de **fond pour notre cas d'usage** — l'échelle sur un nuage non uniforme. Le code reste dans le banc
 comme instrument : c'est la seule mesure qui explique *pourquoi* l'IC(0) échouait.
+
+### Ce qui existe déjà, et sous quelle licence
+
+| brique | où | licence | état sur la machine |
+|---|---|---|---|
+| l'IC multi-échelle du papier, **supernœuds compris** | `gitlab.inria.fr/geomerix/ichol` | **GPL-3.0** | clonable ( `supernode.cc`, `ichol_pattern.h`, `ptree.cc`, `nanoflann` ) |
+| Cholesky **supernodal** complet | CHOLMOD + `Eigen/CholmodSupport` | **LGPL-2.1+** ( le GPL-2+ est CHOLMOD/GPU, SPQR, RBio ) | `libcholmod5` **installé**, en-têtes `libsuitesparse-dev` absentes |
+| HSC, « sparsify and compensate » | `github.com/dilipkay/hsc` | — | MATLAB + mex |
+| FSAI ( application par **matvec**, donc parallèle ) | hypre | Apache-2.0 / MIT | absent |
+| ISAI | Ginkgo | BSD-3 | absent |
+| BLR / HSS pour la 3D | MUMPS, STRUMPACK | CeCILL-C, BSD | absents |
+| Cholesky sparsifié pour laplaciens | `Laplacians.jl` ( `approxchol_lap` ) | MIT | Julia |
+| AMG, ILU(0), SPAI | AMGCL | MIT | **installé**, c'est notre défaut |
+
+Deux conséquences pratiques. D'abord la licence tranche avant la technique : notre dépôt n'a **aucun**
+fichier de licence, donc lier du GPL-3 engagerait l'ensemble ; lire `supernode.cc` pour savoir ce que
+coûterait une version supernodale de notre IC, non.
+
+Ensuite l'essai le plus rentable ne demande presque pas de code : le § 24.16 a mesuré que le **Cholesky
+complet est déjà le meilleur solveur 2D** ( linéaire 0.85 s contre 1.72 pour AMGCL ) et que son coût est
+sa **factorisation** ( 1.02 s ). Or notre Cholesky est `Eigen::SimplicialLDLT`, **scalaire**.
+`CholmodSupernodalLLT` attaque exactement ce poste, en quelques lignes et sous LGPL -- il ne manque que
+les en-têtes de développement.

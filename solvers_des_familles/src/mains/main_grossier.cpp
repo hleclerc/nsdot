@@ -96,6 +96,8 @@ struct Opts {
     int         prol_lisse = 0;          ///< passes de Jacobi amorti SUR la prolongation ( `lisse_jacobi` )
     int         span_grille = 33;        ///< span : points de la grille 1-D par coordonnee et par balayage
     TF          span_garde = 0.5;
+    TF          pave_tol = 1e-3;         ///< continuation : on s'arrete quand |somme A_i - 1| depasse ca
+    std::string rho_gel = "cellule";      ///< plateau ( par cellule grossiere ) | cellule ( moyenne fine ) | germe ( rho( p_i ) )
     int         poly = 0;                ///< `--poly K` : la recherche SUR LES POLYNOMES, puis un recul scalaire
     TF          pas0 = 0.05;             ///< continuation en `alpha_0` : le pas MAXIMAL
     int         alpha0 = 0;              ///< `--alpha0 K` : continuation en `alpha_0`, compagnes = increments de lissage
@@ -744,37 +746,45 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu0, Lineaire &lin, con
             //      grossiere `r` porte la masse `nu_r` sur l'aire `|C_r|`, donc `rho_r = nu_r / |C_r|` et
             //      `a^_i = ( nu_i / nu_r ) |C_r|` -- la part d'aire de la cellule grossiere qui revient au
             //      germe fin.
-            std::vector<TF> cible_aire( n );
+            std::vector<TF> cible_aire( n ), rho_fige( n ), aire_base;
             {
-                std::vector<TF> ac;
-                pdc.set_weights( wc.data(), a.par );
-                pdc.measures( ac, a.par );               // les aires de LEBESGUE des cellules grossieres
-                const TF M2 = rho.masse_carre();
-                TF ecart = 0, aire_tot = 0;
-                for ( SI i = 0; i < n; ++i ) {
-                    const SI r = pq.paquet[ i ];
-                    const TF nur = part_c[ r ] * M2;     // la masse cible de la cellule grossiere
-                    const TF rho_r = nur / std::max( ac[ r ], TF( 1e-300 ) );
-                    cible_aire[ i ] = nw.nu[ i ] / std::max( rho_r, TF( 1e-300 ) );
-                    aire_tot += cible_aire[ i ];
-                }
-                // LE CONTROLE de l'approximation : la densite gelee predit la masse de chaque cellule
-                // fine comme `rho_i x aire reelle` ; on compare a la vraie masse, a la base.
                 std::vector<TF> ab2;
                 std::vector<Facette> fb2;
-                nw.mesures_et_facettes( wb, ab2, fb2 );
-                std::vector<TF> al2;
+                nw.mesures_et_facettes( wb, ab2, fb2 );      // les MASSES a la base
                 pd.set_weights( wb.data(), a.par );
-                pd.measures( al2, a.par );               // les aires de Lebesgue fines, a la base
+                pd.measures( aire_base, a.par );             // les AIRES de Lebesgue a la base
+                if ( o.rho_gel == "plateau" ) {
+                    std::vector<TF> ac;
+                    pdc.set_weights( wc.data(), a.par );
+                    pdc.measures( ac, a.par );               // les aires des cellules grossieres
+                    const TF M2 = rho.masse_carre();
+                    for ( SI i = 0; i < n; ++i ) {
+                        const SI r = pq.paquet[ i ];
+                        rho_fige[ i ] = part_c[ r ] * M2 / std::max( ac[ r ], TF( 1e-300 ) );
+                    }
+                } else if ( o.rho_gel == "germe" ) {
+                    for ( SI i = 0; i < n; ++i ) rho_fige[ i ] = rho.rho( nu0.P[ 0 ][ i ], nu0.P[ 1 ][ i ] );
+                } else {
+                    // LA MOYENNE DE LA CELLULE FINE : `rho_i = a_i / A_i` a la base. Le modele
+                    // `masse_i( t ) = rho_i A_i( t )` est alors EXACT en `t = 0`, et son erreur ne croit
+                    // qu'avec le deplacement de la cellule -- contre un facteur 540 des le depart pour un
+                    // plateau par cellule grossiere.
+                    for ( SI i = 0; i < n; ++i )
+                        rho_fige[ i ] = ab2[ i ] / std::max( aire_base[ i ], TF( 1e-300 ) );
+                }
+                TF ecart = 0, aire_tot = 0;
                 for ( SI i = 0; i < n; ++i ) {
-                    const TF m_pred = nw.nu[ i ] * al2[ i ] / std::max( cible_aire[ i ], TF( 1e-300 ) );
+                    cible_aire[ i ] = nw.nu[ i ] / std::max( rho_fige[ i ], TF( 1e-300 ) );
+                    aire_tot += cible_aire[ i ];
+                    const TF m_pred = rho_fige[ i ] * aire_base[ i ];
                     ecart = std::max( ecart, std::fabs( m_pred - ab2[ i ] ) / std::max( ab2[ i ], TF( 1e-300 ) ) );
                 }
-                std::printf( "  DENSITE GELEE depuis le grossier : somme des cibles d'aire %.6f ( le carre vaut 1 ),"
-                             "  ecart max masse predite / masse vraie %.2e\n", double( aire_tot ), double( ecart ) );
+                std::printf( "  DENSITE GELEE ( %s ) : somme des cibles d'aire %.6f ( le carre vaut 1 ),"
+                             "  ecart max masse predite / vraie A LA BASE %.2e\n",
+                             o.rho_gel.c_str(), double( aire_tot ), double( ecart ) );
             }
             std::printf( "  RECHERCHE SUR LES POLYNOMES ( un diagramme par k, le reste gratuit )\n" );
-            std::printf( "   k | alpha_0 poly |  log2 poly  |  beta  | alpha_0 retenu |  min a/nu  |  IT RESTANTES  |  diag\n" );
+            std::printf( "   k | alpha_0 poly |  log2 poly  |  beta  | alpha_0 retenu |  min a/nu  | ecart mod |  IT RESTANTES  |  diag\n" );
             std::vector<PolyMulti> pm;
             std::vector<TF> tt;
             for ( int k = 1; k <= o.poly && k <= int( PolyMulti::KMAX ); ++k ) {
@@ -786,6 +796,13 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu0, Lineaire &lin, con
                 for ( const PolyMulti &q : pm ) hors += q.etat != PolyCellule::OK;
 
                 // ---- l'objectif SUR LE MODELE, et son jacobien ( tout est analytique )
+                // L'ECART DE PAVAGE, gratuit : `somme A_i( t ) - 1`
+                auto pavage = [ & ]( const std::vector<TF> &t2 ) {
+                    TF s2 = 0;
+                    for ( SI i = 0; i < n; ++i )
+                        if ( pm[ i ].etat == PolyCellule::OK ) s2 += pm[ i ]( t2.data(), k );
+                    return s2 - 1;
+                };
                 auto modele = [ & ]( const std::vector<TF> &t2, TF &amin ) {
                     TF s2 = 0, moy = 0;
                     SI nb = 0;
@@ -869,13 +886,18 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu0, Lineaire &lin, con
                     const TF f_av = modele( tt, amin_mod );
                     gn_modele( tt, false );
                     const TF f_ap = modele( tt, amin_mod );
-                    if ( ! std::isfinite( double( f_ap ) ) ) {
-                        std::printf( "       BLOQUE a cible %.5f ( pas %d ) : modele avant GN %.4e,"
-                                     " apres %.4e, min A/a^ %.3e\n",
-                                     double( cible ), nb_pas, double( f_av ), double( f_ap ), double( amin_mod ) );
+                    const TF pv = pavage( tt );
+                    if ( ! std::isfinite( double( f_ap ) ) || std::fabs( pv ) > o.pave_tol ) {
+                        std::printf( "       ARRET a cible %.5f ( pas %d ) : %s  ( modele %.4e,"
+                                     " min A/a^ %.3e, ecart de pavage %+.3e )\n",
+                                     double( cible ), nb_pas,
+                                     std::isfinite( double( f_ap ) ) ? "LE MODELE N'EST PLUS VALIDE ( pavage )"
+                                                                     : "aire polynomiale NEGATIVE",
+                                     double( f_ap ), double( amin_mod ), double( pv ) );
                         tt = garde;
                         break;
                     }
+                    (void) f_av;
                     a0 = tt[ 0 ];
                     ++nb_pas;
                 }
@@ -899,12 +921,27 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu0, Lineaire &lin, con
                     sain( beta );
                 }
 
+                // ---- LE CONTROLE DU MODELE AU POINT RETENU : c'est la que sa validite se juge, pas a
+                //      la base. `rho_i A_i( t )` contre la vraie masse, et l'ecart de pavage.
+                TF ec_pt = 0;
+                {
+                    std::vector<TF> aa2;
+                    pd.set_weights( wt.data(), a.par );
+                    pd.measures( aa2, a.par );               // les AIRES reelles au point retenu
+                    std::vector<TF> am2;
+                    std::vector<Facette> fm2;
+                    nw.mesures_et_facettes( wt, am2, fm2 );  // et les MASSES reelles
+                    for ( SI i = 0; i < n; ++i ) {
+                        const TF m_pred = rho_fige[ i ] * aa2[ i ];
+                        ec_pt = std::max( ec_pt, std::fabs( m_pred - am2[ i ] ) / std::max( am2[ i ], TF( 1e-300 ) ) );
+                    }
+                }
                 // ---- LA METRIQUE
                 nw.st = NewtonStats{};
                 nw.resout( wt );
-                std::printf( "  %2d | %12.4f | %11.4e | %6.4f | %14.4f | %10.3e | %12d  | %5d%s\n",
+                std::printf( "  %2d | %12.4f | %11.4e | %6.4f | %14.4f | %10.3e | %9.2e | %12d  | %5d%s\n",
                              k, double( a0 ), double( l2_mod ), double( beta ), double( beta * a0 ),
-                             double( am ), nw.st.nb_iter, nw.st.nb_diag,
+                             double( am ), double( ec_pt ), nw.st.nb_iter, nw.st.nb_diag,
                              hors ? ( "   ( " + std::to_string( hors ) + " cellules hors modele )" ).c_str() : "" );
                 if ( k == o.poly || k == int( PolyMulti::KMAX ) ) break;
                 std::vector<TF> ws = w;
@@ -1242,6 +1279,8 @@ int main( int argc, char **argv ) {
         else if ( s == "--alpha0" )     { o.alpha0 = std::atoi( val() ); o.span = std::max( o.span, 1 ); o.fin = false; }
         else if ( s == "--pas0" )       o.pas0 = std::atof( val() );
         else if ( s == "--poly" )       { o.poly = std::atoi( val() ); o.span = std::max( o.span, 1 ); o.fin = false; }
+        else if ( s == "--rho-gel" )    o.rho_gel = val();
+        else if ( s == "--pave-tol" )   o.pave_tol = std::atof( val() );
         else if ( s == "--span-garde" ) o.span_garde = std::atof( val() );
         else if ( s == "--span-grille" ) o.span_grille = std::atoi( val() );
         else if ( s == "--prol-lisse" ) o.prol_lisse = std::atoi( val() );
@@ -1298,6 +1337,16 @@ int main( int argc, char **argv ) {
                 "  --span-garde F  span : un point n'est admissible que si min a/nu >= F * ( celui de la\n"
                 "                  base ) -- le blocage AVANT que les cellules se vident        (0.5)\n"
                 "  --span-grille N points de la grille 1-D, par coordonnee et par balayage       (33)\n"
+                "  --pave-tol F    L'ECART DE PAVAGE qui arrete la continuation. Les cellules PAVENT le carre,\n"
+                "                  donc `somme_i A_i( t ) = 1` exactement si le modele est juste ; tout ecart est\n"
+                "                  la somme des recouvrements, c'est-a-dire son erreur L1 -- gratuit, sans un\n"
+                "                  diagramme, et sans passer par les aretes ( une arete qui meurt ne change\n"
+                "                  RIEN a l'aire, donc le rayon par arete flague ce qui ne coute pas )  (1e-3)\n"
+                "  --rho-gel M     la DENSITE GELEE qui rend la masse polynomiale :\n"
+                "                    plateau  un rho par cellule GROSSIERE, `nu_r / |C_r|`\n"
+                "                    cellule  la moyenne de la cellule FINE a la base, `a_i / A_i` -- le modele\n"
+                "                             est alors EXACT en t = 0 par construction               (defaut)\n"
+                "                    germe    la densite analytique au germe, `rho( p_i )`\n"
                 "  --poly K        LA RECHERCHE SUR LES POLYNOMES ( § 22 ), et c'est la version bon marche :\n"
                 "                  UN diagramme par `k` construit le modele, toute la recherche est ensuite\n"
                 "                  GRATUITE ( `A_i( t )` en forme close ), et on ne paie de vrais diagrammes que\n"
