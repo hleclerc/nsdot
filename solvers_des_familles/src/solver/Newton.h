@@ -313,6 +313,7 @@ struct NewtonOptions {
     /// SPAN : `0` = variante A ( minimiser dans le span, puis Newton au point optimal ), `1` =
     /// variante B ( les derivees de `w( t )` au depart, UNE construction de modele ).
     int  span_mode  = 0;
+    int  span_grille = 0;      ///< SPAN : cote d'une grille de controle de la minimisation ( 0 : aucune )
     int  modele     = -1;      ///< >= 0 : a CETTE iteration, batir le modele multi-directions et le
                                ///< confronter a l'evaluateur exact PUIS au vrai diagramme
     int  combi      = -1;      ///< >= 0 : a CETTE iteration, balayer le SIMPLEXE des trois directions ( lin, log, barriere )
@@ -1073,6 +1074,38 @@ struct Newton {
                             mods( K, pts, s2, mn );
                             mb = s2[ 0 ];
                         }
+                        // ---- LA GRILLE, quand elle est a portee ( `--span-grille N`, K <= 2 ).
+                        //
+                        // Le modele ne coute rien a evaluer, donc on peut verifier la descente par une
+                        // GRILLE COMPLETE : si elle trouve mieux, la descente etait piegee. C'est le
+                        // controle que la minimisation elle-meme n'est pas le probleme.
+                        if ( o.span_grille > 1 && K <= 2 ) {
+                            const int NG = o.span_grille;
+                            const TF t1m = std::fabs( best[ 0 ] ) > 0 ? 2 * std::fabs( best[ 0 ] ) : o.t0;
+                            std::vector<TF> pts;
+                            if ( K == 1 ) {
+                                for ( int i1 = 1; i1 <= NG; ++i1 ) pts.push_back( t1m * i1 / TF( NG ) );
+                            } else {
+                                for ( int i1 = 1; i1 <= NG; ++i1 )
+                                for ( int i2 = 0; i2 <= NG; ++i2 ) {
+                                    pts.push_back( t1m * i1 / TF( NG ) );
+                                    pts.push_back( t1m * ( 2 * i2 - NG ) / TF( NG ) );
+                                }
+                            }
+                            mods( K, pts, s2, mn );
+                            TF mg = INFINI;
+                            std::vector<TF> bg( K, 0 );
+                            for ( int p = 0; p < int( s2.size() ); ++p )
+                                if ( s2[ p ] < mg ) {
+                                    mg = s2[ p ];
+                                    for ( int k = 0; k < K; ++k ) bg[ k ] = pts[ size_t( p ) * K + k ];
+                                }
+                            std::printf( "      grille %d^%d sur [ 0, %.4g ] x +/- : min %.6e%s\n",
+                                         NG, K, double( t1m ), double( mg ),
+                                         mg < mb ? "  ( MIEUX que le depart de la descente )" : "" );
+                            if ( mg < mb ) { mb = mg; best = bg; }
+                        }
+
                         cur = best;
                         // la descente de gradient projetee, sur le modele : rien ne coute un diagramme
                         TF h = std::fabs( best[ 0 ] ) / 4 + TF( 1e-12 );

@@ -7290,6 +7290,75 @@ ferait basculer, c'est un régime où le diagramme coûte beaucoup plus que le s
 donc **le span n'est pas disponible là où il paierait**. C'est, à ce stade, le verrou le plus clairement
 identifié de toute la série.
 
+## 24.24 La GRILLE : ma descente était piégée, et le span vaut jusqu'à −46 %
+
+**Deuxième correction du même résultat, et c'est encore un doute de l'utilisateur qui l'a trouvée.**
+Le § 24.23 avait corrigé le conditionnement (il manquait l'orthogonalisation) ; il restait la question
+« est-ce qu'il y a un problème sur la minimisation elle-même ? Peut-on tester sur des grilles ? ».
+Réponse : oui, il y en avait un.
+
+### Ce que la grille trouve que la descente ne trouvait pas
+
+Le modèle ne coûte rien à évaluer, donc une **grille complète** sur les coefficients du span est à
+portée (`--span-grille N`, 40 × 40 ici, soit 1681 points × 100 000 cellules, parallélisé). Elle est
+sans appel sur deux points :
+
+* **itération 5, `K = 2`** : la descente donnait 153.90, la grille trouve **141.97** — et l'optimum est
+  en `( 0.086, 0.286 )`, donc **dominé par la seconde direction**. Ma descente, partant de
+  `( 0.191, 0 )` et ne sachant que descendre, n'a jamais atteint ce bassin ;
+* **itération 7, `K = 2`** : 30.59 pour la descente, **21.16** à `( 1.05, 0.067 )` — et `t₁ = 1.05`,
+  c'est-à-dire **le pas plein de Newton**, inatteignable depuis un départ à 0.699.
+
+Le défaut est donc structurel et pas un réglage : une descente monotone depuis l'optimum **contraint**
+de `K = 1` ne peut pas trouver un optimum qui demande d'**allonger** `t₁`.
+
+### Les chiffres corrigés
+
+`log2` par dimension du span (grille à `K ≤ 2`, puis descente ; écart modèle / réel de 0.01 à 2 %, donc
+tout est vérifié par de vrais diagrammes) :
+
+| | `K=1` | `K=2` | `K=3` | `K=4` | gain |
+|---|---|---|---|---|---|
+| it 0 ( contrainte ACTIVE ) | 664.69 | 664.68 | 664.66 | 664.66 | ~0 |
+| it 3 ( active ) | 297.65 | 297.61 | 297.56 | 295.34 | −0.8 % |
+| it 5 | 183.98 | **141.95** | 141.32 | **124.02** | **−33 %** |
+| it 7 | 34.10 | **21.16** | 19.00 | **18.55** | **−46 %** |
+
+Les trois états successifs de ma mesure sur l'itération 7, pour mémoire : **−6.2 %** (base dégénérée),
+**−29 %** (orthogonalisée, descente seule), **−46 %** (orthogonalisée + grille). Les deux corrections
+venaient d'un doute de l'utilisateur, et aucune des deux n'était un détail.
+
+### Ce que ça vaut, enfin
+
+Une itération de Newton divise `log2` par trois (it 7 : 100.9 → 34.1, soit −66 %). Le span à `K = 4` en
+rend **−46 %**, c'est-à-dire **70 % d'une itération** — pour trois solves et trois constructions de
+modèle, et **aucun diagramme**. Le partage du § 24.10 reste la frontière : là où la contrainte est
+active (it 0 et 3), le span ne donne rien, parce que l'optimum est collé au bord.
+
+### Et la variante B tient, maintenant pour de bon
+
+La même grille, appliquée au span `{ w', w'' }`, retrouve **exactement** la valeur de `K = 1` aux
+itérations 0, 5 et 7. Une recherche exhaustive ne trouve donc rien : l'échec de la direction de
+courbure n'était ni un conditionnement ni un piège de descente. C'est bien ce que le § 24.22 dit —
+`|w''|/|w'|` de 18 à 163, un chemin qui tourne 15 à 150 fois plus vite que le pas qu'on prend.
+
+**Donc : la direction utile s'obtient par différence finie EN TRAVERS du pas (variante A, § 24.13), pas
+par dérivation à l'origine (variante B).** Et elle vaut beaucoup plus que ce que j'avais mesuré.
+
+### Ce que ça change pour la suite
+
+Le verrou identifié au § 24.23 devient décisif : `polynomes_multi` est **2D seulement**, et c'est en 3D
+que l'échange serait favorable — un diagramme y coûte 0.38 s contre 0.12 pour un solve, alors qu'en 2D
+c'est 0.07 contre 0.15. Troquer des diagrammes contre des solves et des constructions n'a donc d'intérêt
+qu'en 3D. **Le polynôme multi-directions 3D est la suite, et il est maintenant clairement justifié.**
+
+Un fait mathématique à poser avant de l'écrire : en 3D le volume d'une cellule à connectivité fixe est
+**cubique** en `t`, pas quadratique. Les sommets restent affines (chacun est l'intersection de ses trois
+coupes, et `Cellule3D` porte justement cette information), mais le volume est une forme **cubique** des
+sommets — `V = (1/6) Σ_f ε_f ( v_o − g ) · S_f` avec `S_f` quadratique. `PolyMulti` devra donc porter des
+termes cubiques, et le coût de l'expansion limite le span utile à `K = 2` ou 3 — ce qui tombe bien,
+puisque c'est là que le gain est (−38 % à `K = 2` sur l'itération 7).
+
 ## 25.1 Le prix du niveau grossier, et la zone dure ne bouge pas
 
 `densite --pas essai-limites --conv 0.5 --conv-ratio 1.414 --sigma 0.02`, `job -b`, 8 fils :
