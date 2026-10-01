@@ -727,6 +727,7 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu0, Lineaire &lin, con
             vois.col = Lvor.col.data();                  // le voisinage de Voronoi = celui de la base
             std::vector<PolyMulti> pm1;
             const TF *dp1[ 1 ] = { D[ 0 ].data() };
+            pd.set_weights( wb.data(), a.par );
             polynomes_multi( pd, nu0.P, wb, dp1, 1, a.par, pm1 );
             std::printf( "  JUSQU'OU LA CONNECTIVITE FIXE EMMENE, le long de w_prol\n" );
             std::printf( "   alpha  | min A poly |  min A fige | vides fige | min a/nu vrai | vides vrais |"
@@ -857,9 +858,43 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu0, Lineaire &lin, con
                 // ---- UN diagramme : le modele du span courant
                 std::vector<const TF *> dp( k );
                 for ( int j = 0; j < k; ++j ) dp[ j ] = D[ j ].data();
+                // `polynomes_multi` prend les CELLULES des poids que `pd` PORTE, et les coefficients
+                // de `wb` : il faut donc remettre `wb` dans `pd`. Sans ca, le modele du tour `k` est
+                // construit sur les cellules de la SOLUTION du tour precedent ( `nw.resout` laisse `pd`
+                // dessus ) -- mesure : le meme `nk = 1` au meme `alpha` donnait +3.2e-02 au tour 1 et
+                // -1.2e-01 au tour 2, ce que j'avais pris pour une dependance en `nk`.
+                pd.set_weights( wb.data(), a.par );
                 polynomes_multi( pd, nu0.P, wb, dp.data(), k, a.par, pm );
                 SI hors = 0;
                 for ( const PolyMulti &q : pm ) hors += q.etat != PolyCellule::OK;
+                // CONTROLE : `A( alpha, 0, ..., 0 )` ne doit PAS dependre de `nk` ( tous les termes
+                // supplementaires portent un facteur `t_k = 0` ). On le verifie au lieu de le supposer.
+                {
+                    const TF als[] = { TF( 0.001 ), TF( 0.002 ), TF( 0.003 ), TF( 0.004 ) };
+                    std::printf( "  CONTROLE de l'independance en nk ( min A / cible, par cellule )\n" );
+                    for ( TF al : als ) {
+                        std::printf( "    alpha %7.4f :", double( al ) );
+                        for ( int nk = 1; nk <= k; ++nk ) {
+                                std::vector<const TF *> dpc( nk );
+                                for ( int j = 0; j < nk; ++j ) dpc[ j ] = D[ j ].data();
+                                std::vector<PolyMulti> pmc;
+                                polynomes_multi( pd, nu0.P, wb, dpc.data(), nk, a.par, pmc );
+                                std::vector<TF> tc( nk, TF( 0 ) );
+                                tc[ 0 ] = al;
+                                TF mn = INFINI;
+                                SI arg = -1, nb_ok = 0;
+                                for ( SI i = 0; i < n; ++i ) {
+                                    if ( pmc[ i ].etat != PolyCellule::OK ) continue;
+                                    ++nb_ok;
+                                    const TF v = pmc[ i ]( tc.data(), nk ) / cible_aire[ i ];
+                                    if ( v < mn ) { mn = v; arg = i; }
+                                }
+                                std::printf( "   nk=%d : %+.6e ( germe %d, %d cellules )", nk, double( mn ), int( arg ), int( nb_ok ) );
+                        }
+                        std::printf( "\n" );
+                    }
+                }
+
 
                 // ---- l'objectif SUR LE MODELE, et son jacobien ( tout est analytique )
                 // L'ECART DE PAVAGE, gratuit : `somme A_i( t ) - 1`
@@ -1199,6 +1234,7 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu0, Lineaire &lin, con
             std::vector<const TF *> dp( k );
             for ( int j = 0; j < k; ++j ) dp[ j ] = D[ j ].data();
             std::vector<PolyMulti> pm;
+            pd.set_weights( wb.data(), a.par );
             polynomes_multi( pd, nu0.P, wb, dp.data(), k, a.par, pm );
             // L'ECART DE PAVAGE, qui est la BONNE mesure de l'erreur du modele gele : une arete qui
             // meurt ne change RIEN a l'aire ( une facette de longueur nulle contribue zero ), donc un
