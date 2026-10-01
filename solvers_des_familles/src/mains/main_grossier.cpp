@@ -42,6 +42,7 @@
 
 #include "bench/Dispatch.h"
 #include "solver/Densite.h"
+#include "solver/Agglo.h"
 #include "solver/Ecrasement.h"
 #include "solver/Lineaire.h"
 #include "solver/Newton.h"
@@ -70,6 +71,8 @@ struct Opts {
     int         nb_gauss = 4;
     std::string gauss;
     TF          plancher = 0;
+    TF          bruit = 0.05;            ///< `--germes regulier` : amplitude du bruit, en fraction de `h`
+    TF          agglo = 0;               ///< > 0 : agglomerer les germes a moins de `agglo * h` ( § 23 )
     std::string germes = "aleatoire";    ///< aleatoire | regulier ( grille a peine bruitee )
     std::string diracs = "uniforme";    ///< uniforme | rho ( germes tires selon la densite )
     TF          conv0 = 0.5, conv_ratio = 2, conv_min = 0;
@@ -278,7 +281,7 @@ Bilan continuation( Newton<PD> &nw, Densite &rho, const std::vector<TF> &liste, 
 }
 
 template<class PD>
-int lance( const Args &a, const Opts &o, const Nuage<2> &nu0, Lineaire &lin ) {
+int lance( const Args &a, const Opts &o, const Nuage<2> &nu0, Lineaire &lin, const std::vector<TF> &part ) {
     constexpr int D = 2;
     const SI n = nu0.n;
     Densite rho = densite_jeu( o.sigma, o.nb_gauss, o.gauss, o.plancher );
@@ -293,7 +296,10 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu0, Lineaire &lin ) {
     pd.build( nu0.P, nullptr, n, a.leaf );
     Newton<PD> nw( pd, lin, nu0.P, a.par, o.newton );
     nw.rho = &rho;
-    const std::vector<TF> part_fin( n, TF( 1 ) / n );
+    // LES FRACTIONS DE CIBLE PAR GERME. Uniformes sans agglomeration ; apres `--agglo` un germe qui
+    // represente une grappe de `k` membres en porte `k` fois plus -- et `nw.nu` etant un vecteur, ca ne
+    // coute rien a la formulation ( § 23.10 ).
+    const std::vector<TF> part_fin = part.empty() ? std::vector<TF>( n, TF( 1 ) / n ) : part;
 
     // ---- LA REFERENCE : la continuation sur le nuage COMPLET, dans CE binaire ( deux binaires du
     //      meme code compiles differemment s'ecartent de 4 % -- la comparaison se fait ici )
@@ -400,7 +406,8 @@ int lance( const Args &a, const Opts &o, const Nuage<2> &nu0, Lineaire &lin ) {
 
     auto prolonge_et_juge = [ & ]( const char *quoi ) {
         const TF M = rho.masse_carre();
-        nw.nu.assign( n, M / n );
+        nw.nu.resize( n );
+        for ( SI i = 0; i < n; ++i ) nw.nu[ i ] = part_fin[ i ] * M;
         const double tp = now();
         Laplacien Lc, Llag;
         if ( o.prol == "ctransf" ) laplacien_de( pdc, Pc, wc.data(), a.par, Llag );  // le graphe de LAGUERRE grossier
@@ -844,6 +851,8 @@ int main( int argc, char **argv ) {
         else if ( s == "--plancher" )   o.plancher = std::atof( val() );
         else if ( s == "--diracs" )     o.diracs = val();
         else if ( s == "--germes" )     o.germes = val();
+        else if ( s == "--agglo" )      o.agglo = std::atof( val() );
+        else if ( s == "--bruit" )      o.bruit = std::atof( val() );
         else if ( s == "--conv" )       o.conv0 = std::atof( val() );
         else if ( s == "--conv-ratio" ) o.conv_ratio = std::atof( val() );
         else if ( s == "--conv-min" )   o.conv_min = std::atof( val() );
@@ -881,6 +890,14 @@ int main( int argc, char **argv ) {
                 "  --sigma S       l'echelle des largeurs du jeu de gaussiennes            (0.02)\n"
                 "  --nb-gauss N --gauss SPEC --plancher F    la densite ( voir densite --help )\n"
                 "  --diracs D      uniforme | rho ( germes tires selon la densite )   (uniforme)\n"
+                "  --bruit F       `--germes regulier` : le bruit, en fraction de `h`. Interpole entre la\n"
+                "                  grille ( 0 ) et un tirage ( ~0.5 ), donc mesure COMBIEN de regularite il\n"
+                "                  faut pour que `alpha*` depasse 1                               (0.05)\n"
+                "  --agglo C       AGGLOMERER les germes a moins de `C * h` les uns des autres avant tout le\n"
+                "                  reste ( `Agglo.h`, § 23 : hachage de grille + union-find, sans diagramme ).\n"
+                "                  UN germe par grappe, au barycentre pondere par `nu`, de cible `somme nu`.\n"
+                "                  C'est le PREALABLE du multi-echelle : `alpha*` est proportionnel au plus\n"
+                "                  petit ecart, donc une seule paire serree le plafonne pour tout le nuage  (0)\n"
                 "  --germes G      aleatoire | regulier : une grille a peine bruitee. `alpha*` est fixe par\n"
                 "                  la paire de germes la PLUS SERREE, et sur un tirage aleatoire le plus petit\n"
                 "                  ecart est `O( 1/n )` au lieu de `O( 1/sqrt n )` en 2D -- la pathologie du\n"
@@ -930,21 +947,50 @@ int main( int argc, char **argv ) {
         if ( ! o.sans_zero ) o.liste.push_back( 0 );
     }
     const Opts &oc = o;
-    const Nuage<2> nu = o.diracs == "rho" ? nuage_selon( densite_jeu( o.sigma, o.nb_gauss, o.gauss, o.plancher ), a.n, a.graine )
-                       : o.germes == "regulier" ? nuage_regulier( a.n, a.graine )
+    const Nuage<2> nu_brut = o.diracs == "rho" ? nuage_selon( densite_jeu( o.sigma, o.nb_gauss, o.gauss, o.plancher ), a.n, a.graine )
+                       : o.germes == "regulier" ? nuage_regulier( a.n, a.graine, o.bruit )
                                                 : nuage_uniforme<2>( a.n, a.graine, 0 );
+
+    // ---- L'AGGLOMERATION DU § 23, EN PREALABLE. `alpha*` le long d'une prolongation est
+    //      PROPORTIONNEL au plus petit ecart entre germes voisins : une seule paire serree le plafonne
+    //      pour tout le nuage, et sur un tirage aleatoire le plus petit ecart vaut `O( h^2 )` au lieu
+    //      de `O( h )`. Mesure : `alpha*` plafonne a 1.5e-2 sur un tirage contre 0.99 sur une grille.
+    //      La detection est celle du § 23.8 ( hachage de grille + union-find, sans diagramme ), la
+    //      reduction celle du § 23.10 ( un germe par grappe, au barycentre pondere par `nu` ).
+    Nuage<2> nu = nu_brut;
+    std::vector<TF> part;
+    if ( o.agglo > 0 ) {
+        const SI n0 = nu_brut.n;
+        const TF h = TF( 1 ) / std::sqrt( TF( n0 ) );
+        std::vector<SI> rep, vers, taille;
+        const SI perdus = grappes_proches<2>( nu_brut.P, n0, o.agglo * h, rep );
+        std::vector<TF> nu0v( n0, TF( 1 ) / TF( n0 ) ), Q[ 2 ], nur;
+        reduis<2>( nu_brut.P, nu0v, rep, Q, nur, vers, taille );
+        const SI m = SI( nur.size() );
+        nu = Nuage<2>{};
+        nu.nom = nu_brut.nom + " agglomere";
+        for ( int d = 0; d < 2; ++d ) nu.c[ d ] = Q[ d ];
+        nu.w.assign( m, TF( 0 ) );
+        nu.finish();
+        part = nur;                                      // deja `somme nu_i` par grappe, donc les fractions
+        SI tmax = 0;
+        for ( SI r = 0; r < m; ++r ) tmax = std::max( tmax, taille[ r ] );
+        std::printf( "  AGGLOMERATION ( § 23 ) : delta = %.3g h, %d germes -> %d grappes"
+                     " ( %d disparus, taille max %d )\n",
+                     double( o.agglo ), int( n0 ), int( m ), int( perdus ), int( tmax ) );
+    }
     return dispatch<2>( a, [ & ]( auto tag ) {
         using PD = typename decltype( tag )::type;
 #ifdef SF_EIGEN
         if ( oc.solver == "chol" ) {
             Cholesky lin;
-            return lance<PD>( a, oc, nu, lin );
+            return lance<PD>( a, oc, nu, lin, part );
         }
 #endif
 #ifdef SF_AMGCL
         Amg lin;
         lin.variante = oc.amgvar;
-        return lance<PD>( a, oc, nu, lin );
+        return lance<PD>( a, oc, nu, lin, part );
 #else
         std::printf( "  AMGCL absent : --solver chol\n" );
         return 1;
