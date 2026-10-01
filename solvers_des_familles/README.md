@@ -7061,6 +7061,84 @@ une DIRECTION**, et on cherche jusqu'où on peut la suivre.
 intervalles, masses = différences d'`erf`, `L` tridiagonale) qui a servi à tout comprendre avant de
 porter.
 
+## 24.21 Le span construit à connectivité gelée : il SATURE, et le coût est dans la construction
+
+### Le protocole, posé explicitement
+
+On est dans la phase `log`, densité fixe. Le diagramme du point de départ `w` donne les aires, le
+laplacien `L` et le polynôme **exact** des aires sur un span (§ 22). Ensuite, **plus aucun diagramme** :
+
+1. `d₁` = direction de Newton `log` en `w` ;
+2. sur le span courant `{ d₁ … d_k }`, on minimise `log2` **par le modèle** — descente de gradient, une
+   grille étant hors de portée des `K = 4` dimensions ;
+3. au point optimal, les aires **modélisées** donnent le second membre `log`, résolu avec **le même**
+   `L` : c'est `d_{k+1}`. Le span grandit, retour en 2.
+
+Deux approximations à connaître : `L` reste celui du départ (à connectivité fixe la vraie matrice y
+serait calculable, les longueurs de facette étant affines en `w`, mais ce n'est pas branché) ; et les
+aires de l'optimum viennent du modèle. `--span K` le fait et sort.
+
+### Le modèle est excellent à ces pas
+
+| itération | 0 | 3 | 5 | 7 |
+|---|---|---|---|---|
+| écart `log2` modèle / réel | **0.01 %** | 0.01 % | −0.13 % | −1.4 % |
+
+C'est bien meilleur que les −50 % du § 24.14, et la raison est instructive : là le point évalué était
+poussé à `α*` dans un **mélange** loin du départ ; ici `‖t‖∞ ≈ 0.11` et le polynôme tient. **À ces
+pas-là, la connectivité gelée n'est pas une approximation gênante.**
+
+### Mais le span SATURE : les directions sortent colinéaires
+
+`cos( d_{k+1}, d_k )` : **0.98** puis **1.0000** puis **1.0000**, sur les quatre itérations testées. La
+nouvelle direction est la précédente. La cause se lit dans les coefficients : l'optimum du span reste
+collé à celui de `K = 1` (0.1129 → 0.1088 + 0.0021 → 0.1042 + 0.0032 + 0.0012), donc le résidu y est
+presque le même, donc la direction de Newton y est presque la même. **Le span ne s'ouvre pas.**
+
+Et la raison pour laquelle l'optimum ne bouge pas est celle du § 24.10 : tôt dans la phase `log`, le
+minimum de `log2` le long de `d₁` est **sur la frontière d'admissibilité** (aire minimale 2.6e-09, une
+cellule au bord du vide). D'un point de bord, ajouter une direction ne sert qu'à raccourcir `t₁`.
+
+### D'où un gain qui suit exactement les deux régimes
+
+`log2` atteint, par dimension du span :
+
+| | `K = 1` | `K = 2` | `K = 3` | `K = 4` | aire min à `K=1` |
+|---|---|---|---|---|---|
+| it 0 ( contrainte ACTIVE ) | **664.7** | 665.7 | 666.8 | 668.0 | 2.6e-09 |
+| it 3 ( active ) | **297.7** | 297.8 | 298.0 | 298.1 | 5.2e-10 |
+| it 5 | 183.8 | 182.6 | 180.9 | **179.1** | 1.6e-07 |
+| it 7 ( contrainte INACTIVE ) | 33.7 | 31.3 | 28.5 | **25.6** | 2.4e-06 |
+
+**Tôt, le span fait PERDRE** (668.0 contre 664.7 : la contrainte mord, et chaque direction ajoutée ne
+fait que reculer sur `t₁`). **Tard, il gagne vraiment : −24 % sur `log2` à l'itération 7.** C'est le même
+partage que le § 24.10 — contrainte active tôt, inactive tard — et il décide ici aussi.
+
+### Ce que ça dit du solveur linéaire, et c'est la question posée
+
+Le coût d'une direction de plus, à connectivité gelée : **un solve linéaire + une construction de
+modèle**, zéro diagramme. Mais la construction de modèle coûte **environ un diagramme** (§ 22, § 24.14 :
+0.03 à 0.09 s contre 0.07 pour un diagramme en 2D), et il en faut **une par direction** — parce que
+`PolyMulti` a besoin de toutes les directions du span pour ses termes croisés, donc le span qui grandit
+force à rebâtir.
+
+**Donc la variante A ne gagne pas de diagrammes en net**, et ce n'est pas le solveur linéaire qui la
+bloque : c'est la reconstruction du modèle. Pour une itération de Newton ordinaire on paie 1 solve +
+1 diagramme et `log2` est divisé par trois (it 7 : 100.9 → 33.7) ; pour −24 % de plus la variante A
+demande 3 solves + 3 constructions. Le compte ne passe pas.
+
+**C'est la variante B qui a l'argument décisif, et le diagnostic le montre par la négative.** Les
+dérivées de `w(t)` se lisent dans les coefficients du **même** polynôme : `dA/dt = L d` et
+`d²A/dt² = ( dL/dt ) d`, or les coefficients **quadratiques** de `PolyMulti` sont exactement
+`d²A/dt²`. Un modèle à **une** direction — une seule construction — donne donc `d₁` **et** la direction
+de courbure `d₂ = L⁻¹ ( d²A/dt² )`, pour deux solves et aucun diagramme. C'est d'ailleurs ce que la
+sonde du § 24.13 approchait par différence finie, avec `cos( d, e ) ≈ −0.9` : une direction franchement
+neuve, là où la variante A rend des colinéaires.
+
+La suite est donc : **variante B, une construction pour tout le span**. Et alors, oui, le solveur
+linéaire devient le poste dominant — ce qui ramène au multigrille maison, seul solveur que nous
+possédions et seul à tolérer le changement de motif (§ 24.20).
+
 ## 25.1 Le prix du niveau grossier, et la zone dure ne bouge pas
 
 `densite --pas essai-limites --conv 0.5 --conv-ratio 1.414 --sigma 0.02`, `job -b`, 8 fils :

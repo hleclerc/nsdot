@@ -714,6 +714,9 @@ int main( int argc, char **argv ) {
         else if ( s == "--g2-back" )    o.newton.g2_back = std::atoi( val() );
         else if ( s == "--g2-tol" )     o.newton.g2_tol = std::atof( val() );
         else if ( s == "--g2-sans-verif" ) o.newton.g2_verif = false;
+        else if ( s == "--span" )       o.newton.span = std::atoi( val() );
+        else if ( s == "--span-k" )     o.newton.span_k = std::atoi( val() );
+        else if ( s == "--span-desc" )  o.newton.span_desc = std::atoi( val() );
         else if ( s == "--profil" )     o.newton.profil = std::atoi( val() );
         else if ( s == "--combi" )      o.newton.combi = std::atoi( val() );
         else if ( s == "--modele" )     o.newton.modele = std::atoi( val() );
@@ -812,6 +815,8 @@ int main( int argc, char **argv ) {
                 "  --bascule-pas T     repasser a lin des que le pas accepte atteint T -- la contrainte MESUREE ( 0 : inactive )\n"
                 "  --merite R      LE JUGE DE L'AMORTISSEMENT, separement de la direction : lin | barriere | log |\n"
                 "                  puissance | pire ( max|a-nu|/nu ) | log2 ( sum ( log x )^2, NON CENTRE )   ( defaut : comme --residu )\n"
+                "  --span K        a l'iteration K, CONSTRUIRE LE SPAN progressivement a connectivite gelee, puis sortir ( § 24.21 )\n"
+                "  --span-k N --span-desc N   span : dimension maximale ( <= 4 ) et pas de descente par dimension   (4, 80)\n"
                 "  --profil K      a l'iteration K, balayer t et imprimer LES TROIS merites le long de la direction, puis sortir\n"
                 "  --profil-nb N   nombre de pas du profil ( t = relax / ratio^k )              (24)\n"
                 "  --profil-ratio F   le rapport entre deux barreaux du profil ( 2 : dyadique )    (2)\n"

@@ -307,6 +307,9 @@ struct NewtonOptions {
                                ///< brute ( pas du simplexe `1/oracle` ). Borne superieure, pas un algorithme.
     bool oracle_pire = false;  ///< l'oracle choisit sur le VRAI critere d'arret, `max |a - nu| / nu`,
                                ///< au lieu du merite ( qui est un mauvais juge : cf. le profil )
+    int  span       = -1;      ///< >= 0 : a CETTE iteration, construire le span progressivement ( § 24.21 )
+    int  span_k     = 4;       ///< SPAN : dimension maximale ( `PolyMulti::KMAX` )
+    int  span_desc  = 80;      ///< SPAN : pas de descente de gradient par dimension
     int  modele     = -1;      ///< >= 0 : a CETTE iteration, batir le modele multi-directions et le
                                ///< confronter a l'evaluateur exact PUIS au vrai diagramme
     int  combi      = -1;      ///< >= 0 : a CETTE iteration, balayer le SIMPLEXE des trois directions ( lin, log, barriere )
@@ -874,6 +877,184 @@ struct Newton {
             //   * contre le VRAI diagramme : c'est l'erreur de combinatoire, la seule qui decide si
             //     le modele sert a quelque chose.
             //   * `rayon` contre `|t|inf` : la ou le modele est PROUVE exact.
+            // ---- LE SPAN CONSTRUIT PROGRESSIVEMENT, A CONNECTIVITE GELEE ( `--span K` )
+            //
+            // LE PROTOCOLE, pose explicitement parce que c'est lui qu'on mesure. On est dans la phase
+            // `log`, densite fixe. Le diagramme du point de depart `w` donne les aires, le laplacien
+            // `L`, et le polynome EXACT des aires sur un span de directions ( § 22 ). Ensuite, et
+            // jusqu'a la fin de la construction, PLUS AUCUN DIAGRAMME :
+            //
+            //   1. `d_1` est la direction de Newton `log` en `w` ;
+            //   2. sur le span courant `{ d_1 ... d_k }`, on minimise le merite `log2` PAR LE MODELE
+            //      -- descente de gradient, une grille etant hors de portee des K = 4 dimensions ;
+            //   3. au point optimal, les aires MODELISEES donnent le second membre `log`, qu'on
+            //      resout avec LE MEME laplacien : c'est `d_{k+1}`. Le span grandit, on retourne en 2.
+            //
+            // DEUX APPROXIMATIONS, a connaitre avant de lire les chiffres. Le laplacien reste celui du
+            // depart ( a connectivite fixe la vraie matrice y serait calculable, les longueurs de
+            // facette etant affines en `w`, mais ce n'est pas branche ) ; et les aires du point
+            // optimal viennent du modele, pas d'un diagramme. C'est exactement ce que faisait la sonde
+            // du § 24.15, ou `cos( d, e ) ~ -0.9` montrait que la direction obtenue est franchement
+            // neuve.
+            //
+            // CE QUE LA SORTIE DONNE, et pourquoi : `log2` atteignable par dimension du span, MODELE
+            // CONTRE VERITE ( un vrai diagramme au point retenu, pour le diagnostic seulement ), plus
+            // l'aire minimale et le cosinus de la nouvelle direction au span deja la. C'est ca qui dit
+            // ce qu'il faut attendre du solveur lineaire : si un span de trois ou quatre directions
+            // descend `log2` loin sans toucher au diagramme, alors le solveur devient le poste
+            // dominant et c'est lui qu'il faut rendre rapide.
+            if ( it == o.span ) {
+                if constexpr ( PD::dim == 2 ) {
+                    const int KM = std::max( 1, std::min( o.span_k, int( PolyMulti::KMAX ) ) );
+                    const int nth = std::max( 1, par.threads );
+                    std::vector<TF> dd[ PolyMulti::KMAX ];
+                    dd[ 0 ] = d;
+                    std::vector<PolyMulti> pm;
+                    std::vector<TF> tb( PolyMulti::KMAX, 0 ), aso, bb;
+                    w2.resize( n );
+                    const TF l2_0 = merite_de( a, NewtonOptions::LOG2 );
+                    std::printf( "    SPAN it %d, n %d, log2 au depart %.6e\n", it, int( n ), double( l2_0 ) );
+                    std::printf( "      %-3s %-11s %-12s %-12s %-9s %-10s %-8s %s\n", "K", "|t|inf",
+                                 "log2 modele", "log2 REEL", "ecart", "aire min", "cos", "coefficients" );
+
+                    // le merite `log2` du modele et l'aire minimale, pour `np` points de `K` coords
+                    auto mods = [ & ]( int K, const std::vector<TF> &pts, std::vector<TF> &s2,
+                                       std::vector<TF> &mn ) {
+                        const int np = int( pts.size() / K );
+                        std::vector<TF> as2( size_t( nth ) * np, 0 ), amn( size_t( nth ) * np, INFINI );
+                        parallel_for( n, par, [ & ]( SI i, int th ) {
+                            const PolyMulti &q = pm[ i ];
+                            if ( q.etat != PolyCellule::OK ) return;
+                            TF *ps = &as2[ size_t( th ) * np ], *pmn = &amn[ size_t( th ) * np ];
+                            for ( int p = 0; p < np; ++p ) {
+                                const TF A = q( &pts[ size_t( p ) * K ], K );
+                                if ( protegee[ i ] && A < pmn[ p ] ) pmn[ p ] = A;
+                                if ( A > 0 ) { const TF g = std::log( A / nu[ i ] ); ps[ p ] += g * g; }
+                                else ps[ p ] = INFINI;
+                            }
+                        } );
+                        s2.assign( np, 0 ); mn.assign( np, INFINI );
+                        for ( int th = 0; th < nth; ++th )
+                            for ( int p = 0; p < np; ++p ) {
+                                const TF v = as2[ size_t( th ) * np + p ];
+                                s2[ p ] = s2[ p ] == INFINI || v == INFINI ? INFINI : s2[ p ] + v;
+                                mn[ p ] = std::min( mn[ p ], amn[ size_t( th ) * np + p ] );
+                            }
+                        for ( int p = 0; p < np; ++p ) s2[ p ] = s2[ p ] == INFINI ? INFINI : std::sqrt( s2[ p ] );
+                    };
+
+                    for ( int K = 1; K <= KM; ++K ) {
+                        // ---- 1. le modele EXACT sur le span courant ( `pd` est aux poids `w` )
+                        const TF *dp[ PolyMulti::KMAX ];
+                        for ( int k = 0; k < K; ++k ) dp[ k ] = dd[ k ].data();
+                        // LE VRAI DIAGRAMME DE L'ETAPE 3 A DEPLACE `pd` : il faut le ramener en `w`,
+                        // sinon le modele est bati autour du point de verification et tout ce qui
+                        // suit est faux. Mesure avant correction : `log2` du modele a `inf` des
+                        // `K = 2`, et un span qui ne grandissait pas. Ce cout n'existe que parce
+                        // qu'on verifie ; l'algorithme, lui, ne verifierait qu'une fois.
+                        pd.set_weights( w.data(), par );
+                        polynomes_multi( pd, P, w, dp, K, par, pm );
+
+                        // ---- 2. minimiser `log2` sur le span. Depart : l'optimum precedent avec une
+                        // coordonnee neuve a zero ; pour `K = 1` une echelle dyadique depuis `t0`.
+                        // L'ADMISSIBILITE EST `A > 0`, PAS LE PLANCHER `eps`. Pour `log2` le merite
+                        // vaut l'infini des qu'une cellule se vide, donc le plancher est REDONDANT
+                        // ( § 21.1 et § 24.10 ) -- et l'imposer bloque tout : l'optimum a `K = 1` est
+                        // colle au plancher, et de la aucune direction de descente ne passe. Mesure :
+                        // avec `>= eps` le span ne grandissait pas du tout.
+                        std::vector<TF> cur( K, 0 ), best( K, 0 ), s2, mn;
+                        TF mb = INFINI;
+                        if ( K == 1 ) {
+                            std::vector<TF> pts;
+                            for ( int ia = 0; ia < 24; ++ia ) pts.push_back( o.t0 / TF( SI( 1 ) << ia ) );
+                            mods( 1, pts, s2, mn );
+                            for ( int p = 0; p < int( s2.size() ); ++p )
+                                if ( s2[ p ] < mb ) { mb = s2[ p ]; best[ 0 ] = pts[ p ]; }
+                        } else {
+                            // on repart LEGEREMENT EN DEDANS : l'optimum precedent est sur le bord
+                            for ( int k = 0; k + 1 < K; ++k ) best[ k ] = TF( 0.95 ) * tb[ k ];
+                            std::vector<TF> pts( best.begin(), best.end() );
+                            mods( K, pts, s2, mn );
+                            mb = s2[ 0 ];
+                        }
+                        cur = best;
+                        // la descente de gradient projetee, sur le modele : rien ne coute un diagramme
+                        TF h = std::fabs( best[ 0 ] ) / 4 + TF( 1e-12 );
+                        for ( int pas = 0; pas < o.span_desc && h > TF( 1e-14 ); ++pas ) {
+                            std::vector<TF> agr( size_t( nth ) * K, 0 );
+                            parallel_for( n, par, [ & ]( SI i, int th ) {
+                                const PolyMulti &q = pm[ i ];
+                                if ( q.etat != PolyCellule::OK ) return;
+                                const TF A = q( cur.data(), K );
+                                if ( ! ( A > 0 ) ) return;
+                                TF da[ PolyMulti::KMAX ];
+                                q.gradient( cur.data(), K, da );
+                                const TF c = 2 * std::log( A / nu[ i ] ) / A;
+                                for ( int k = 0; k < K; ++k ) agr[ size_t( th ) * K + k ] += c * da[ k ];
+                            } );
+                            std::vector<TF> gr( K, 0 );
+                            for ( int th = 0; th < nth; ++th )
+                                for ( int k = 0; k < K; ++k ) gr[ k ] += agr[ size_t( th ) * K + k ];
+                            TF ng = 0;
+                            for ( int k = 0; k < K; ++k ) ng = std::max( ng, std::fabs( gr[ k ] ) );
+                            if ( ! ( ng > 0 ) ) break;
+                            std::vector<TF> pts( K );
+                            for ( int k = 0; k < K; ++k ) pts[ k ] = cur[ k ] - h * gr[ k ] / ng;
+                            mods( K, pts, s2, mn );
+                            if ( s2[ 0 ] < mb ) { mb = s2[ 0 ]; cur = pts; best = pts; }
+                            else h /= 2;
+                        }
+
+                        // ---- 3. LA VERITE au point retenu : un vrai diagramme, pour le diagnostic
+                        for ( SI i = 0; i < n; ++i ) {
+                            TF v = w[ i ];
+                            for ( int k = 0; k < K; ++k ) v += best[ k ] * dd[ k ][ i ];
+                            w2[ i ] = v;
+                        }
+                        w2[ 0 ] = 0;
+                        mesures_et_facettes( w2, a2, fa2, pda2 );
+                        const TF l2_vrai = merite_de( a2, NewtonOptions::LOG2 );
+                        TF am = INFINI, tinf = 0;
+                        for ( SI i = 0; i < n; ++i ) if ( protegee[ i ] ) am = std::min( am, a2[ i ] );
+                        for ( int k = 0; k < K; ++k ) tinf = std::max( tinf, std::fabs( best[ k ] ) );
+
+                        // ---- 4. la nouvelle direction : aires MODELISEES, second membre `log`, meme `L`
+                        TF cosn = 0;
+                        if ( K < KM ) {
+                            aso.assign( n, 0 );
+                            for ( SI i = 0; i < n; ++i ) {
+                                const TF A = pm[ i ].etat == PolyCellule::OK ? pm[ i ]( best.data(), K ) : a[ i ];
+                                aso[ i ] = std::max( A, eps );
+                            }
+                            membre_de( aso, NewtonOptions::LOG, o.puis, bb );
+                            dd[ K ].assign( n, 0 );
+                            if ( lin.sait_encore() ) lin.resout_encore( bb, dd[ K ] );
+                            else                     lin.resout( L, bb, dd[ K ] );
+                            dd[ K ][ 0 ] = 0;
+                            TF ps = 0, n1 = 0, n2 = 0;   // contre la DERNIERE direction du span
+                            for ( SI i = 0; i < n; ++i ) {
+                                ps += dd[ K ][ i ] * dd[ K - 1 ][ i ];
+                                n1 += dd[ K ][ i ] * dd[ K ][ i ];
+                                n2 += dd[ K - 1 ][ i ] * dd[ K - 1 ][ i ];
+                            }
+                            cosn = n1 > 0 && n2 > 0 ? ps / std::sqrt( n1 * n2 ) : TF( 0 );
+                        }
+                        char co[ 96 ] = { 0 };
+                        int cp = 0;
+                        for ( int k = 0; k < K && cp < 80; ++k )
+                            cp += std::snprintf( co + cp, sizeof( co ) - cp, "%s%.4g", k ? " " : "", double( best[ k ] ) );
+                        std::printf( "      %-3d %-11.4g %-12.6e %-12.6e %-9.2f %-10.3e %-8.4f %s\n",
+                                     K, double( tinf ), double( mb ), double( l2_vrai ),
+                                     double( mb > 0 ? 100 * ( l2_vrai - mb ) / mb : TF( 0 ) ),
+                                     double( am ), double( cosn ), co );
+                        std::fflush( stdout );
+                        for ( int k = 0; k < K; ++k ) tb[ k ] = best[ k ];
+                    }
+                    st.fin = "SPAN";
+                    return false;
+                }
+            }
+
             if ( it == o.modele ) {
                 if constexpr ( PD::dim == 2 ) {
                     const int NR = 3;
