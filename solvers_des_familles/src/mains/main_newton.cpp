@@ -716,6 +716,17 @@ int main( int argc, char **argv ) {
                                           o.newton.span_juge = v == "pire" ? sf::NewtonOptions::PIRE : sf::NewtonOptions::LOG2; }
         else if ( s == "--span-motif" ) o.newton.span_motif = std::atoi( val() );
         else if ( s == "--g2-lin" )     o.newton.g2_lin = true;
+        else if ( s == "--g2-sonde-pas" ) o.newton.g2_sonde_pas = std::atof( val() );
+        else if ( s == "--g2-sonde-modele" ) o.newton.g2_sonde_modele = true;
+        else if ( s == "--g2-sonde-res" ) { const std::string v = val();
+                                            o.newton.g2_sonde_res = v == "lin" ? sf::NewtonOptions::LIN
+                                                                  : v == "log" ? sf::NewtonOptions::LOG
+                                                                  : v == "barriere" ? sf::NewtonOptions::BARRIERE
+                                                                  : v == "puissance" ? sf::NewtonOptions::PUISSANCE : -1; }
+        else if ( s == "--g2-bord" )    o.newton.g2_bord_pas = true;
+        else if ( s == "--bord" )       o.newton.bord = std::atoi( val() );
+        else if ( s == "--bord-nb" )    o.newton.bord_nb = std::atoi( val() );
+        else if ( s == "--bord-bmax" )  o.newton.bord_bmax = std::atof( val() );
         else if ( s == "--g2-juge" )    { const std::string v = val();
                                           o.newton.g2_juge = v == "pire" ? sf::NewtonOptions::PIRE : sf::NewtonOptions::LOG2; }
         else if ( s == "--g2-sonde-reelle" ) o.newton.g2_sonde_reelle = true;
@@ -792,6 +803,10 @@ int main( int argc, char **argv ) {
                 "  --g2-hess K     grille2 modele : K pas de NEWTON SUR LA BARRIERE apres la grille ( ce qui fait le mode ) (20)\n"
                 "  --g2-juge J     grille2 modele : sur quoi on choisit le point du span -- pire | log2        (pire)\n"
                 "  --g2-lin        grille2 modele : tourner AUSSI dans la phase lin ( exige --g2-juge pire )\n"
+                "  --g2-sonde-res R   grille2 modele : le residu de la SONDE -- lin | log | barriere ( defaut : celui de l.iteration )\n"
+                "  --g2-sonde-pas F --g2-sonde-modele   grille2 modele : fraction du pas de sonde, et aires de sonde par le POLYNOME EXACT\n"
+                "  --g2-bord       grille2 modele : chercher SUR LE BORD ( alpha*( beta ) par la racine ) au lieu d.une boite\n"
+                "  --bord IT --bord-nb N --bord-bmax B   longer LE BORD du domaine admissible dans le span, a l.iteration IT\n"
                 "  --span-juge J --span-motif K   span : minimiser pire | log2, et les tours de recherche a motif (log2, 60)\n"
                 "  --g2-sonde-reelle  grille2 modele : aires du point de sonde par un VRAI diagramme ( temoin )\n"
                 "  --g2-back K     grille2 modele : divisions par deux permises si le vrai merite ne descend pas   (4)\n"

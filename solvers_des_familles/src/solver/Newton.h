@@ -232,6 +232,67 @@ struct NewtonOptions {
     /// Avec `--g2-juge pire` elle ne l'est plus -- le juge EST le critere d'arret, dans les deux
     /// phases -- et le span peut servir partout. C'est ce que le § 24.28 mesure.
     bool g2_lin     = false;
+    /// GRILLE2 MODELE : le residu du SECOND MEMBRE DE LA SONDE. `-1` : celui de l'iteration.
+    ///
+    /// EN PHASE `lin` LE DEFAUT EST DEGENERE, ET C'EST ALGEBRIQUE. La sonde resout
+    /// `L d_s = membre( a + t_s b )` ou `a + t_s b` est le modele d'aire AU PREMIER ORDRE. Si le
+    /// residu est `lin`, le second membre vaut `nu - ( a + t_s b ) = ( 1 - t_s ) ( nu - a )`, donc
+    /// `d_s = ( 1 - t_s ) d` et `e = d_s - d = - t_s d` : EXACTEMENT COLINEAIRE. Mesure :
+    /// `cos( d, e ) = -1.0000` et `|e|/|d| = 1.000` des la premiere iteration `lin`. Le span
+    /// retombe a une dimension et il n'y a pas de bord a longer.
+    ///
+    /// Un residu NON AFFINE en les aires leve la degenerescence sans rien coûter -- meme sonde, meme
+    /// factorisation, un second membre different. C'est le § 24.29.
+    int  g2_sonde_res = -1;
+    /// GRILLE2 MODELE : la FRACTION du pas de sonde. `1` : le pas de sonde complet.
+    ///
+    /// EN PHASE `lin` LE PAS COMPLET EST DEGENERE, et la raison est plus profonde que le choix du
+    /// residu. La contrainte d'aire ne mord plus ( § 24.10 : regime inactif ), donc le premier ordre
+    /// ne borne rien et `t_s = t_0 = 1`. Or a `t_s = 1` le modele au premier ordre vaut
+    /// `a + b = nu` EXACTEMENT -- le point de sonde EST la cible. Tous les residus y sont donc nuls
+    /// ( `g( 1 ) = 0` pour chacun ), `d_sonde = 0`, et `e = -d`. Mesure : `cos( d, e ) = -1.0000` et
+    /// `|e|/|d| = 1.000` aux trois residus essayes.
+    ///
+    /// Sonder plus court leve la degenerescence POURVU QUE LE RESIDU NE SOIT PAS `lin` : celui-la est
+    /// affine en les aires, donc `nu - ( a + t_s b ) = ( 1 - t_s ) b` et la direction reste colineaire
+    /// a n'importe quel `t_s`. Avec `log` ou `barriere`, elle ne l'est plus.
+    TF   g2_sonde_pas = 1;
+    /// GRILLE2 MODELE : prendre les aires de sonde du POLYNOME EXACT ( une construction a une
+    /// direction ) au lieu du premier ordre. C'est l'autre facon de lever la degenerescence `lin`, et
+    /// la seule qui marche avec le residu `lin` lui-meme : le modele est QUADRATIQUE, donc
+    /// `nu - A( t_s )` n'est plus proportionnel a `b`. Le § 24.16 avait supprime cette construction
+    /// parce que le premier ordre suffisait EN PHASE LOG ; en phase `lin` elle redevient necessaire.
+    bool g2_sonde_modele = false;
+    /// >= 0 : a CETTE iteration, LONGER LE BORD du domaine admissible dans le span et imprimer ce
+    /// qu'on y trouve, puis s'arreter ( § 24.29 ). Exige `--pas grille2 --g2-modele`.
+    ///
+    /// POURQUOI LE BORD, ET POURQUOI SEULEMENT EN `lin`. En phase `log` le merite `log2` est une
+    /// BARRIERE : il vaut l'infini des qu'une cellule se vide, donc son minimum est INTERIEUR et le
+    /// plancher d'aire est redondant ( § 21.1 ). En phase `lin` il n'y a plus de barriere : le critere
+    /// decroit de facon monotone le long du rayon jusqu'a ce que le plancher morde ( § 21.2 ), donc le
+    /// meilleur point admissible est TOUJOURS sur le bord. Echantillonner une boite en `alpha` et
+    /// rejeter ce qui passe sous le plancher -- ce que fait la grille -- n'est alors pas la bonne
+    /// recherche : il faut PARAMETRER le bord. Et on peut, exactement : pour chaque rayon
+    /// `lambda = ( 1, beta )` du span, le modele se reduit a une quadratique SCALAIRE en `alpha`, donc
+    /// `alpha*( beta )` est une RACINE. Balayer `beta` balaye le bord.
+    /// GRILLE2 MODELE : CHERCHER SUR LE BORD du domaine admissible au lieu d'une boite en `alpha`.
+    ///
+    /// La grille essaye `alpha = alpha*( 0 ) / 2^k` pour chaque `beta` -- donc une BOITE, dont elle
+    /// rejette ce qui passe sous le plancher. Or le § 21.2 l'avait etabli : le critere decroit de
+    /// facon monotone le long du rayon jusqu'a ce que le plancher morde, donc le meilleur point d'un
+    /// rayon est TOUJOURS a son extremite admissible. La bonne recherche parametre donc le bord :
+    /// pour chaque rayon `lambda = ( 1, beta )` le modele se reduit a une quadratique SCALAIRE, donc
+    /// `alpha*( beta )` est une RACINE, et balayer `beta` balaye le bord sans un diagramme.
+    ///
+    /// CE QUE CA CHANGE, ET OU. `alpha*( beta )` peut etre BIEN PLUS GRAND que `alpha*( 0 )` : mesure
+    /// a la premiere iteration `lin`, 1.517 contre 0.942, ce qui autorise le pas plein que `beta = 0`
+    /// interdisait -- et le vrai critere y gagne 17 % ( 27 % sur le nuage degenere ). Mais des que la
+    /// contrainte cesse de mordre ( `alpha*( 0 ) > 1` ), `beta = 0` ecrase tout. Le critere d'utilite
+    /// du span est donc `alpha* < 1`, PAS la phase ( § 24.29 ).
+    bool g2_bord_pas = false;
+    int  bord       = -1;
+    int  bord_nb    = 13;      ///< BORD : valeurs de `beta` essayees
+    TF   bord_bmax  = 2;       ///< BORD : `beta` balaye `[ -bord_bmax, bord_bmax ]`
     int  g2_back    = 4;       ///< GRILLE2 MODELE : divisions par deux permises si le vrai merite ne descend pas
     /// GRILLE2 MODELE : prendre les aires du point de sonde d'un VRAI DIAGRAMME au lieu du modele.
     ///
@@ -1233,10 +1294,23 @@ struct Newton {
                         std::printf( "      controle dA/dt contre L d_1 : ecart max %.3e pour |b|max %.3e"
                                      " ( relatif %.2e )\n", double( e1 ), double( n1 ),
                                      double( n1 > 0 ? e1 / n1 : TF( 0 ) ) );
+                        // LE SECOND MEMBRE DEPEND DU RESIDU, et en `lin` il se simplifie entierement.
+                        // La derivation ci-dessus suppose `u_i = g'( x_i ) / nu_i` ; pour `log` c'est
+                        // `1 / A_i`, d'ou le terme `b^2 / a`. Pour `lin`, `g' = 1` donc `u_i = 1 / nu_i`
+                        // est CONSTANT, et `u_i A'_i = cste` donne directement `A''_i = 0`, c'est-a-dire
+                        //
+                        //      L w'' = - 2 q
+                        //
+                        // Donc `w'' = -2 L^-1 Q( d, d )` : en phase `lin` la SEULE direction neuve que
+                        // la connectivite figee autorise est la correction de courbure, et le chemin
+                        // d'ordre deux est `w + alpha d - alpha^2 L^-1 Q( d, d )`. Tout se joue alors
+                        // sur `|w''| / |w'|` -- s'il est petit, le probleme est devenu affine sur le pas
+                        // utile et le span n'a rien a apporter. C'est le § 24.29.
+                        const bool b_lin = res_cur == NewtonOptions::LIN;
                         std::vector<TF> rhs( n, 0 );
                         for ( SI i = 0; i < n; ++i ) {
                             const TF q2 = pm[ i ].etat == PolyCellule::OK ? 2 * pm[ i ].q[ 0 ] : TF( 0 );
-                            rhs[ i ] = b[ i ] * b[ i ] / std::max( a[ i ], eps ) - q2;
+                            rhs[ i ] = ( b_lin ? TF( 0 ) : b[ i ] * b[ i ] / std::max( a[ i ], eps ) ) - q2;
                         }
                         dd[ 1 ].assign( n, 0 );
                         if ( lin.sait_encore() ) lin.resout_encore( rhs, dd[ 1 ] );
@@ -2752,7 +2826,8 @@ struct Newton {
                         const TF r = ( eps - a[ i ] ) / b[ i ];
                         if ( r > 0 ) a1 = std::min( a1, r );
                     }
-                    const TF ts = a1 < INFINI && a1 > 0 ? std::min( o.t0, o.facteur * a1 ) : t;
+                    const TF ts = o.g2_sonde_pas
+                                * ( a1 < INFINI && a1 > 0 ? std::min( o.t0, o.facteur * a1 ) : t );
 
                     // ---- 2. LA DIRECTION SONDEE, SANS DIAGRAMME NI HIERARCHIE
                     bool ok_s = false;
@@ -2766,11 +2841,20 @@ struct Newton {
                             ++essais;
                             aso = a2;
                             for ( SI i = 0; i < n; ++i ) aso[ i ] = std::max( aso[ i ], eps );
+                        } else if ( o.g2_sonde_modele ) {
+                            // une construction a UNE direction, et les aires du modele y sont exactes
+                            // a combinatoire figee -- donc quadratiques, donc le residu `lin` lui-meme
+                            // cesse d'etre proportionnel a `b`
+                            const TF *dp1[ 1 ] = { d.data() };
+                            polynomes_multi( pd, P, w, dp1, 1, par, pm2 );
+                            for ( SI i = 0; i < n; ++i )
+                                aso[ i ] = pm2[ i ].etat == PolyCellule::OK
+                                         ? std::max( pm2[ i ]( tk, 1 ), eps )
+                                         : std::max( a[ i ] + ts * b[ i ], eps );
                         } else
                             for ( SI i = 0; i < n; ++i )
                                 aso[ i ] = std::max( a[ i ] + ts * b[ i ], eps );
-                        (void) tk;
-                        membre_de( aso, res_cur, o.puis, bson );
+                        membre_de( aso, o.g2_sonde_res < 0 ? res_cur : o.g2_sonde_res, o.puis, bson );
                         const double ts0 = now();
                         // LA SONDE NE SERT QU'A DEFINIR UNE DIRECTION : une tolerance lache suffit,
                         // et c'etait la moitie du surcout du mode ( 1164 iterations de Krylov contre
@@ -2886,9 +2970,124 @@ struct Newton {
                     };
                     const bool jpire = o.g2_juge == NewtonOptions::PIRE;
 
-                    // ---- 4. L'EXPLORATION, GRATUITE : la grille puis la descente de gradient
+                    // ---- LE BORD DU DOMAINE ADMISSIBLE, LONGE ( `--bord IT` )
+                    //
+                    // Pour chaque `beta`, le modele restreint au rayon `lambda = ( 1, beta )` est une
+                    // quadratique scalaire : `a0 = c0`, `a1 = g_0 + beta g_1`,
+                    // `a2 = q_00 + beta q_10 + beta^2 q_11`. Son `alpha*( beta )` est la premiere
+                    // racine au niveau `eps` -- la MEME fonction que le pas par les limites du § 7,
+                    // appliquee a un rayon oblique. Donc le bord se parcourt sans un diagramme, et on
+                    // ne paye un diagramme que pour DIRE LA VERITE a chaque point retenu.
+                    if ( it == o.bord && nk == 2 ) {
+                        const int NB = std::max( 3, o.bord_nb );
+                        const TF fr[] = { TF( 0.99 ), TF( 0.9 ), TF( 0.75 ), TF( 0.5 ), TF( 0.25 ) };
+                        const int NF = int( sizeof( fr ) / sizeof( fr[ 0 ] ) );
+                        std::printf( "    BORD it %d, n %d, residu %s : depart pire %.4e, merite %.6e, eps %.3e\n",
+                                     it, int( n ), res_cur == NewtonOptions::LIN ? "lin" : "log",
+                                     double( pire ), double( nr ), double( eps ) );
+                        const TF sin_de = std::sqrt( std::max( TF( 0 ), 1 - cos_de * cos_de ) );
+                        std::printf( "      cos( d, e ) %.6f, |e|/|d| %.4f, |e_perp|/|d| %.4e,"
+                                     " alpha*( 0 ) %.4e, t0 %.3g\n",
+                                     double( cos_de ), double( rap_de ), double( sin_de * rap_de ),
+                                     double( am ), double( o.t0 ) );
+                        std::printf( "      %-9s %-11s %-10s %-7s %-12s %-12s %-9s %-11s %-6s\n", "beta",
+                                     "alpha*(beta)", "|t|inf", "frac", "pire PREDIT", "pire REEL",
+                                     "ecart", "aire min", "vides" );
+                        for ( int ib = 0; ib < NB; ++ib ) {
+                            const TF be = o.bord_bmax * ( 2 * ib - ( NB - 1 ) ) / TF( NB - 1 );
+                            // `alpha*( beta )` : la racine du rayon oblique, sur les cellules protegees
+                            TF ab = INFINI;
+                            for ( SI i = 0; i < n; ++i ) {
+                                if ( ! protegee[ i ] || pm2[ i ].etat != PolyCellule::OK ) continue;
+                                const PolyMulti &q = pm2[ i ];
+                                PolyCellule sc;
+                                sc.a0 = q.c0;
+                                sc.a1 = q.g[ 0 ] + be * q.g[ 1 ];
+                                sc.a2 = q.q[ 0 ] + be * q.q[ 1 ] + be * be * q.q[ 2 ];
+                                ab = std::min( ab, sc.premiere_racine( eps ) );
+                            }
+                            if ( ! ( ab > 0 ) || ab == INFINI ) {
+                                std::printf( "      %-9.4g %-11s\n", double( be ), ab == INFINI ? "INFINI" : "ZERO" );
+                                continue;
+                            }
+                            // les fractions du bord, jugees PAR LE MODELE : gratuit
+                            std::vector<TF> pts;
+                            for ( int f = 0; f < NF; ++f ) {
+                                const TF al = std::min( o.t0, fr[ f ] * ab );
+                                pts.push_back( al ); pts.push_back( al * be );
+                            }
+                            std::vector<TF> pr, mn;
+                            pires( pts, pr, mn );
+                            int bf = 0;
+                            for ( int f = 1; f < NF; ++f ) if ( pr[ f ] < pr[ bf ] ) bf = f;
+                            // ... et LA VERITE au meilleur, par un vrai diagramme
+                            const TF al = pts[ size_t( bf ) * 2 ], bl = pts[ size_t( bf ) * 2 + 1 ];
+                            for ( SI i = 0; i < n; ++i ) w2[ i ] = w[ i ] + al * d[ i ] + bl * d_pre[ i ];
+                            w2[ 0 ] = 0;
+                            mesures_et_facettes( w2, a2, fa2, pda2 );
+                            TF pv = 0, mv = INFINI;
+                            SI nv = 0;
+                            for ( SI i = 0; i < n; ++i ) {
+                                pv = std::max( pv, std::fabs( nu[ i ] - a2[ i ] ) / nu[ i ] );
+                                if ( protegee[ i ] ) mv = std::min( mv, a2[ i ] );
+                                nv += ! ( a2[ i ] > 0 );
+                            }
+                            std::printf( "      %-9.4g %-11.4e %-10.4g %-7.4g %-12.6e %-12.6e %-9.2f %-11.4e %-6d%s\n",
+                                         double( be ), double( ab ),
+                                         double( std::max( std::fabs( al ), std::fabs( bl ) ) ), double( fr[ bf ] ),
+                                         double( pr[ bf ] ), double( pv ),
+                                         double( pr[ bf ] > 0 ? 100 * ( pv - pr[ bf ] ) / pr[ bf ] : TF( 0 ) ),
+                                         double( mv ), int( nv ), be == 0 ? "   <- la direction de Newton seule" : "" );
+                            std::fflush( stdout );
+                        }
+                        st.fin = "BORD";
+                        return false;
+                    }
+
+                    // ---- 4. L'EXPLORATION, GRATUITE : le bord, ou la grille puis la descente
                     TF mb = INFINI, t1b = th, t2b = 0;
-                    {
+                    if ( o.g2_bord_pas && nk == 2 ) {
+                        // LE BORD PARAMETRE : `alpha*( beta )` par la racine du rayon oblique, puis
+                        // les fractions de ce pas -- le motif des phases 1 et 2 de `--pas modele`
+                        // ( § 21.6 ), applique au span de la sonde.
+                        const TF fr[] = { TF( 0.99 ), TF( 0.9 ), TF( 0.75 ), TF( 0.5 ), TF( 0.25 ) };
+                        const int NF = std::min( std::max( o.mod_frac, 1 ),
+                                                 int( sizeof( fr ) / sizeof( fr[ 0 ] ) ) );
+                        const int NB = std::max( o.g2_nb, 1 );
+                        std::vector<TF> pts;
+                        for ( int ib = 0; ib < NB; ++ib ) {
+                            const TF be = NB == 1 ? TF( 0 )
+                                        : o.g2_bpos ? o.g2_bmax * ib / TF( std::max( NB - 1, 1 ) )
+                                                    : o.g2_bmax * ( 2 * ib - ( NB - 1 ) ) / TF( std::max( NB - 1, 1 ) );
+                            TF ab = INFINI;
+                            for ( SI i = 0; i < n; ++i ) {
+                                if ( ! protegee[ i ] || pm2[ i ].etat != PolyCellule::OK ) continue;
+                                const PolyMulti &q = pm2[ i ];
+                                PolyCellule sc;
+                                sc.a0 = q.c0;
+                                sc.a1 = q.g[ 0 ] + be * q.g[ 1 ];
+                                sc.a2 = q.q[ 0 ] + be * q.q[ 1 ] + be * be * q.q[ 2 ];
+                                ab = std::min( ab, sc.premiere_racine( eps ) );
+                            }
+                            if ( ! ( ab > 0 ) ) continue;
+                            if ( ab == INFINI ) ab = o.t0;   // le rayon ne mord jamais : le pas plein
+                            for ( int f = 0; f < NF; ++f ) {
+                                const TF al = std::min( o.t0, fr[ f ] * ab );
+                                if ( al < o.t_min ) continue;
+                                pts.push_back( al ); pts.push_back( al * be );
+                            }
+                        }
+                        if ( ! pts.empty() ) {
+                            std::vector<TF> s2, mn;
+                            if ( jpire ) pires( pts, s2, mn );
+                            else         mods( pts, s2, mn );
+                            for ( int p = 0; p < int( s2.size() ); ++p )
+                                if ( s2[ p ] < mb && ( ! plancher_actif() || mn[ p ] >= eps )
+                                     && ( ! jpire || mn[ p ] > 0 ) ) {
+                                    mb = s2[ p ]; t1b = pts[ size_t( p ) * 2 ]; t2b = pts[ size_t( p ) * 2 + 1 ];
+                                }
+                        }
+                    } else {
                         std::vector<TF> pts;
                         const int NA = std::max( o.g2_na, 1 ), NB = ok_s ? std::max( o.g2_nb, 1 ) : 1;
                         for ( int ia = 0; ia < NA; ++ia ) {

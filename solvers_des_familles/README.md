@@ -7674,6 +7674,124 @@ débloquer les pires cellules il faut un diagramme neuf.
 C'est la limite propre de l'idée, et elle est nette : **le span rend la recherche de pas gratuite, il ne
 remplace pas un diagramme.**
 
+## 24.29 La phase `lin` : la courbure y est morte, le BORD y vit une itération
+
+La question du § 24.28 se repose après la bascule : peut-on encore utiliser une direction **sans
+refaire le diagramme** ? Et la réponse ne pouvait pas être la même, pour une raison de régime — en
+phase `log` le mérite `log2` est une **barrière**, donc son optimum est intérieur et le plancher d'aire
+est redondant (§ 21.1) ; en phase `lin` il n'y a plus de barrière, le critère décroît de façon monotone
+le long du rayon jusqu'à ce que le plancher morde (§ 21.2), donc le meilleur point est **sur le bord**.
+Deux questions séparées, donc : qu'est-ce que le span **contient** après la bascule, et le **bord**
+se parcourt-il ?
+
+### Premier résultat : la sonde est EXACTEMENT dégénérée
+
+`cos( d, e ) = −1.0000`, `|e|/|d| = 1.000` dès la première itération `lin` : la direction sondée est
+**nulle**. Et ce n'est pas un réglage.
+
+En phase `lin` la contrainte ne mord plus (§ 24.10 : régime inactif), donc le premier ordre ne borne
+rien et `t_s = t_0 = 1`. Or à `t_s = 1` le modèle au premier ordre vaut `a + b = ν` **exactement** : le
+point de sonde *est* la cible. Tous les résidus y sont donc nuls — `g( 1 ) = 0` pour chacun — et c'est
+vérifié sur `lin`, `log` et `barrière`, qui donnent des chiffres identiques au quatrième décimal.
+
+Sonder plus court ne suffit pas non plus **avec le résidu `lin`** : celui-là est affine en les aires,
+donc `ν − ( a + t_s b ) = ( 1 − t_s ) b` et la direction reste colinéaire pour tout `t_s`. Il faut
+soit un autre résidu, soit un modèle d'aire non affine.
+
+### Ce que l'algèbre dit, et c'est la variante B
+
+À connectivité figée, `A( t d ) = a + t ( ν − a ) + t² Q( d, d )`. Donc
+
+      L d₂ = ν − A( t_s )    ⇒    e = d₂ − d = − t_s d − t_s² L⁻¹ Q( d, d )
+
+et la **seule** part neuve que la connectivité gelée autorise est `z = L⁻¹ Q( d, d )`, la correction de
+courbure. Le chemin d'ordre deux est `w + α d − α² z` — c'est exactement la variante B du § 24.21 avec
+le résidu `lin`, dont le second membre se simplifie entièrement : avec `g' = 1`, `u_i = 1 / ν_i` est
+constant, `u_i A'_i = cste` donne `A''_i = 0`, donc
+
+      L w'' = − 2 q
+
+Tout se joue alors sur **un seul nombre**, `|w''| / |w'|` — celui que le § 24.27 mesurait à 18–163 en
+`log` 2D et 1.82 en `log` 3D :
+
+| `\|w''\|/\|w'\|` | it 2 | it 4 | it 6 | **it 8** ( 1ʳᵉ `lin` ) | it 9 | it 10 |
+|---|---|---|---|---|---|---|
+| 2D lignes s0.005 | 156.5 | 156.4 | 60.3 | **0.070** | 0.006 | 0.000 |
+
+**Un facteur 2000 à la bascule.** En phase `lin`, à connectivité figée, l'application `Δw ↦ A` est
+affine à 7 % près dès la première itération et à 0.6 % ensuite. Il n'y a rien pour une seconde
+direction à capturer — et c'est précisément *pourquoi* la bascule marche. La même mesure se lit sur la
+part réellement neuve de la sonde, `|e⊥| / |d|` :
+
+| | résidu | `\|e⊥\|/\|d\|` | `α*( 0 )` | meilleur `β` | gain vrai sur le critère |
+|---|---|---|---|---|---|
+| it 4 | `log` | **3.76e−01** | 0.118 | −1 | −9 % |
+| it 6 | `log` | **3.52e−01** | 0.311 | +0.25 | −1.8 % |
+| **it 8** | **`lin`** | 1.84e−02 | **0.942** | **+0.25** | **−17 %** |
+| it 9 | `lin` | 2.14e−03 | 3.13 | 0 | — |
+| it 10 | `lin` | 1.92e−05 | 22.0 | 0 | — |
+| it 11 | `lin` | 6.79e−05 | 2375 | 0 | — |
+
+### Deuxième résultat : le bord, lui, vit — et une itération exactement
+
+Le bord se paramètre **exactement** et sans un diagramme : pour chaque rayon `λ = ( 1, β )` du span le
+modèle se réduit à une quadratique **scalaire** en `α` (`a₀ = c₀`, `a₁ = g₀ + β g₁`,
+`a₂ = q₀₀ + β q₁₀ + β² q₁₁`), donc `α*( β )` est une **racine** — la même fonction que le pas par les
+limites du § 7, appliquée à un rayon oblique. Balayer `β` balaye le bord. C'est ce que fait `--bord`
+pour le diagnostic et `--g2-bord` pour le pas.
+
+Et le gain est là où la contrainte mord. À l'itération 8, `α*( 0 ) = 0.942 < 1` : le pas plein est
+interdit. Or à `β = +0.25`, `α*( β ) = 1.517` — le plancher mord **plus tard sur le rayon oblique**, donc
+le pas plein redevient admissible, et le vrai critère y gagne **17 %** (0.542 contre 0.650 ; **27 %** sur
+le nuage dégénéré, 0.548 contre 0.755). C'est exactement « longer le bord avant que les cellules tombent
+malades ».
+
+Mais dès l'itération 9, `α*( 0 ) = 3.13 > 1` et `β = 0` écrase tout : 5.9e−02 contre 1.5e−01, puis
+5.1e−04 contre 1.4e−02, puis 3.8e−08 contre 1.3e−04. **Il n'y a plus de bord parce que les cellules ne
+sont plus près de tomber malades.**
+
+Donc le critère d'utilité du span **n'est pas la phase, c'est `α* < 1`** — et la bascule a une itération
+de retard sur lui. C'est cette itération-là qui rapporte.
+
+### Le bout à bout
+
+`--g2-bord` remplace la boîte dyadique par le bord paramétré, et `--g2-sonde-modele` prend les aires de
+sonde du polynôme exact (une construction à une direction) — la seule façon de rendre le span
+réellement bidimensionnel en `lin` avec le résidu `lin` lui-même. Le § 24.16 avait supprimé cette
+construction parce que le premier ordre suffisait **en phase `log`** ; après la bascule elle redevient
+nécessaire.
+
+| | référence it / diag | boîte, deux phases | **bord + sonde polynôme** | temps réf → bord |
+|---|---|---|---|---|
+| 2D uniforme | 6 / 7 | 5 / 6 | **5 / 6** | 1.16 → 2.13 s |
+| 2D lignes s0.02 | 9 / 13 | 9 / 10 | **9 / 10** | 2.15 → 4.25 s |
+| 2D lignes s0.005 | 12 / 19 | 12 / 13 | **11 / 12** | 4.29 → 7.65 s |
+| 2D aires égales ( dég. ) | 13 / 53 | 13 / 51 | **13 / 51** | 7.45 → 12.6 s |
+
+Sur le cas dur, **11 itérations et 12 diagrammes contre 12 et 19** : −8 % d'itérations et **−37 % de
+diagrammes**, et la phase `log` passe de 8 à 7 itérations. C'est le meilleur compte de diagrammes mesuré
+sur ce cas, le § 24.14 étant à 23–24 pour 10–11 itérations. Le bord est bien ce qui manquait : sans lui,
+la même configuration fait 12 / 13, et sans la sonde par polynôme elle régresse à 15 / 54 sur le nuage
+dégénéré.
+
+**Le temps de paroi reste perdu**, de +69 à +98 %, et pour la raison du § 24.14 aggravée d'un cran : il y
+a maintenant **deux** constructions de modèle par itération (une à une direction pour les aires de
+sonde, une à deux pour le span) plus la résolution linéaire de la sonde, et en 2D un diagramme ne coûte
+presque rien. L'échange ne devient favorable que là où le diagramme est cher — et en 3D il est bloqué par
+le coût de construction du § 24.27.
+
+### Les deux mécanismes, séparés
+
+C'est le résultat utile de ce paragraphe, parce qu'on les confondait :
+
+* **la courbure** — ce que le span capture par ses directions supplémentaires — est vivante en `log`
+  (`|w''|/|w'|` de 60 à 157) et **morte** en `lin` (0.07 puis 0.000) ;
+* **le bord** — où le plancher d'aire mord — est vivant partout où `α* < 1`, c'est-à-dire toute la phase
+  `log` **et la première itération `lin`**, et mort après.
+
+Les deux ne se recouvrent pas, et le § 24.28 ne mesurait que le premier. L'itération gagnée ici vient
+entièrement du second.
+
 ## 25.1 Le prix du niveau grossier, et la zone dure ne bouge pas
 
 `densite --pas essai-limites --conv 0.5 --conv-ratio 1.414 --sigma 0.02`, `job -b`, 8 fils :
