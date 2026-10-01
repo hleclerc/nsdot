@@ -7090,6 +7090,13 @@ pas-là, la connectivité gelée n'est pas une approximation gênante.**
 
 ### Mais le span SATURE : les directions sortent colinéaires
 
+> **CETTE SOUS-SECTION ET SA CONCLUSION SONT FAUSSES, voir le § 24.23.** La quasi-colinéarité est
+> réelle, mais elle ne réduit pas le span : `{ d₁, d₂ }` et `{ d₁, d₂ − proj( d₂ ) }` sont le **même**
+> span. Ce qu'elle fait, c'est le rendre très mal conditionné — et ma descente à pas unique, calée sur
+> l'échelle de `t₁`, affamait la seconde coordonnée. Il manquait une **orthogonalisation**. Avec elle,
+> la variante A gagne 16 à 29 % au lieu de 0.3 à 6 %. C'est une question de l'utilisateur qui l'a
+> trouvé.
+
 `cos( d_{k+1}, d_k )` : **0.98** puis **1.0000** puis **1.0000**, sur les quatre itérations testées. La
 nouvelle direction est la précédente. La cause se lit dans les coefficients : l'optimum du span reste
 collé à celui de `K = 1` (0.1129 → 0.1088 + 0.0021 → 0.1042 + 0.0032 + 0.0012), donc le résidu y est
@@ -7214,6 +7221,74 @@ Aucune ne paie, et pour des raisons **opposées** :
 Ce qui reste donc de toute cette série est la sonde du § 24.13 — une différence finie en travers du pas,
 une construction, deux solves — et la limite mesurée reste celle du § 24.15 : elle gagne des itérations
 (deux sur neuf en 3D) et perd en temps de paroi, parce que la construction du modèle vaut un diagramme.
+
+## 24.23 La SOUSTRACTION qui manquait : la variante A gagne 16 à 29 %, pas 0.3 %
+
+### D'où venait l'erreur
+
+Objection de l'utilisateur, et elle porte : au minimum de `log2`, il ne devrait y avoir aucun intérêt à
+aller vers les directions déjà dans le span — donc des directions qui ressortent colinéaires sentent le
+problème de soustraction.
+
+Deux choses à séparer. D'abord le point théorique, qui ne tient pas tout à fait : au minimum c'est le
+**gradient** de `log2` qui est orthogonal au span, et la direction que je calcule n'est pas ce gradient.
+`∇log2 ∝ L( g / A )` alors que `d = L⁻¹( A( c − g ) )` — le même résidu `g`, mais pondéré par `A` d'un
+côté et par `1/A` de l'autre, et dans une autre métrique. Rien ne force donc `d` hors du span. (Et aux
+itérations 0, 3 et 5 l'optimum est **sur la frontière** d'admissibilité, aire minimale 2.6e-09, donc le
+gradient n'y est même pas nul.)
+
+Mais l'intuition « problème de soustraction » était la bonne, et le défaut était dans **ma mesure**. La
+quasi-colinéarité ne réduit pas le span — `{ d₁, d₂ }` et `{ d₁, d₂ − proj( d₂ ) }` sont identiques —
+elle le rend **mal conditionné** : la part utile de la seconde direction ne vaut que quelques pour cent
+de sa norme, et une descente de gradient à **pas unique**, calé sur l'échelle de `t₁`, ne la fait
+pratiquement pas bouger. Il fallait orthogonaliser (Gram-Schmidt) et **renormaliser à la norme de `d₁`**,
+pour que les coordonnées soient comparables.
+
+### Ce que ça change : tout, pour la variante A
+
+`log2` par dimension du span, et `|d⊥|/|d|` = la fraction réellement neuve de la direction ajoutée
+(l'écart modèle / réel reste de 0.01 à 1.8 %, donc les gains sont vérifiés par de vrais diagrammes) :
+
+| | `K=1` | `K=2` | `K=3` | `K=4` | gain | `|d⊥|/|d|` des directions ajoutées |
+|---|---|---|---|---|---|---|
+| it 0 ( contrainte ACTIVE ) | 664.69 | 664.68 | 664.66 | 664.66 | ~0 | 0.205 → 0 |
+| it 5 | 183.98 | **153.90** | 150.84 | **150.55** | **−18 %** | **0.589** → 0.080 → 0.006 |
+| it 7 | 34.10 | 30.59 | 29.86 | **24.13** | **−29 %** | 0.134 → 0.008 → 0.0003 |
+
+Avant orthogonalisation les mêmes colonnes donnaient −0.003 %, −0.30 % et −6.2 %. **La soustraction
+valait un facteur 5 à 60 sur le gain.**
+
+Et la colonne `|d⊥|` dit où est la vraie saturation : la deuxième direction est neuve à 13–59 %, la
+troisième à 0.6–8 %, la quatrième à rien. **Le span sature après deux ou trois directions**, mais la
+première ajoutée vaut 16 à 18 % à elle seule. Ce qui reste vrai du § 24.21 est le seul cas de
+l'itération 0 : là l'optimum est sur la frontière, la contrainte mord, et aucune direction n'y change
+quoi que ce soit — le partage du § 24.10 tient.
+
+### La variante B, elle, résiste à la correction
+
+Avec la même orthogonalisation et la même renormalisation — donc des coordonnées comparables — le
+coefficient retenu sur `w''` reste **numériquement nul** : −4.2e-06, +1.2e-05, +4.0e-05, +2.3e-04 aux
+itérations 0, 3, 5, 7, pour un `log2` inchangé. Et pourtant `|d⊥|/|d|` y vaut **0.77 à 0.99** — bien plus
+neuf que les directions de la variante A.
+
+**Donc l'échec de B n'était pas un problème de conditionnement : c'est bien la courbure.** Une direction
+peut être presque entièrement neuve et ne porter aucune descente utile. Le chiffre du § 24.22 reste
+l'explication : `|w''|/|w'| = 18` à 163, donc le chemin tourne sur une échelle 15 à 150 fois plus courte
+que le pas qu'on prend, et la dérivée à l'origine ne dit rien du bout du pas.
+
+### Le compte, refait
+
+Une direction de plus coûte **un solve + une construction de modèle**, et la construction vaut environ
+un diagramme (0.03 à 0.09 s contre 0.07 en 2D). Une itération de Newton ordinaire divise `log2` par
+trois (it 7 : 100.9 → 34.1) pour un solve + un diagramme. La deuxième direction de la variante A vaut
+donc **16 à 18 %**, soit le tiers à la moitié de ce qu'apporte une itération, pour à peu près le même
+coût linéaire mais **sans diagramme**.
+
+En 2D c'est donc **à peu près l'équilibre** — et non la perte sèche que le § 24.21 annonçait. Ce qui
+ferait basculer, c'est un régime où le diagramme coûte beaucoup plus que le solve : la 3D, où il vaut
+0.38 s contre 0.12 pour un solve. Mais `polynomes_multi` porte un `static_assert( dim == 2 )` (§ 24.17),
+donc **le span n'est pas disponible là où il paierait**. C'est, à ce stade, le verrou le plus clairement
+identifié de toute la série.
 
 ## 25.1 Le prix du niveau grossier, et la zone dure ne bouge pas
 

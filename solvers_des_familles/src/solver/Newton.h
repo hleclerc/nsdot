@@ -473,6 +473,38 @@ struct Newton {
             return std::pow( x, p - 1 );
         return r == NewtonOptions::BARRIERE ? 1 + 1 / ( x * x ) : r == NewtonOptions::LOG ? 1 / x : 1;
     }
+    /// ORTHOGONALISER LA NOUVELLE DIRECTION CONTRE LE SPAN, ET LA RENORMALISER.
+    ///
+    /// C'est LA SOUSTRACTION QUI MANQUAIT, et ce n'est pas cosmetique. Mathematiquement
+    /// `{ d_1, d_2 }` et `{ d_1, d_2 - proj( d_2 ) }` sont le MEME span, donc l'orthogonalisation
+    /// ne change rien a ce qui est atteignable. Mais numeriquement elle change tout : avec une
+    /// base quasi degeneree ( `cos = 0.98`, § 24.21 ), la coordonnee utile de la seconde direction
+    /// ne vaut que quelques pour cent de sa norme, et une descente de gradient a PAS UNIQUE --
+    /// cale sur l'echelle de `t_1` -- l'affame. Apres Gram-Schmidt et renormalisation a la norme
+    /// de `d_1`, les coordonnees sont comparables et la descente les traite a egalite.
+    ///
+    /// Rend `|d_perp| / |d|` AVANT renormalisation : la fraction de la direction qui est
+    /// reellement neuve, qui est la grandeur a lire ( le cosinus, lui, devient nul par
+    /// construction ).
+    TF ortho( std::vector<TF> *dd, int K, TF n2_avant ) const {
+        const SI n = SI( dd[ 0 ].size() );
+        for ( int k = 0; k < K; ++k ) {
+            TF ps = 0, nk = 0;
+            for ( SI i = 0; i < n; ++i ) { ps += dd[ K ][ i ] * dd[ k ][ i ]; nk += dd[ k ][ i ] * dd[ k ][ i ]; }
+            if ( ! ( nk > 0 ) ) continue;
+            const TF c = ps / nk;
+            for ( SI i = 0; i < n; ++i ) dd[ K ][ i ] -= c * dd[ k ][ i ];
+        }
+        TF np = 0, n0 = 0;
+        for ( SI i = 0; i < n; ++i ) { np += dd[ K ][ i ] * dd[ K ][ i ]; n0 += dd[ 0 ][ i ] * dd[ 0 ][ i ]; }
+        const TF frac = n2_avant > 0 ? std::sqrt( np / n2_avant ) : TF( 0 );
+        if ( np > 0 && n0 > 0 ) {                        // a la norme de `d_1`, pour que les
+            const TF e = std::sqrt( n0 / np );           // coordonnees soient comparables
+            for ( SI i = 0; i < n; ++i ) dd[ K ][ i ] *= e;
+        }
+        return frac;
+    }
+
     /// `g( x )` et `g'( x )` du residu choisi, `x = a / nu` borne loin de zero
     TF g( TF x ) const { return g_de( x, res_cur, o.puis ); }
     TF gp( TF x ) const { return gp_de( x, res_cur, o.puis ); }
@@ -908,7 +940,12 @@ struct Newton {
             // dominant et c'est lui qu'il faut rendre rapide.
             if ( it == o.span ) {
                 if constexpr ( PD::dim == 2 ) {
-                    const int KM = std::max( 1, std::min( o.span_k, int( PolyMulti::KMAX ) ) );
+                    // EN MODE B ON NE DISPOSE QUE DE `w'` ET `w''` : l'ordre trois demanderait le
+                    // terme croise `Q( w', w'' )`, donc une construction a deux directions, ce qui
+                    // perdrait l'avantage de la variante. On plafonne donc a 2 -- sans ca la boucle
+                    // lisait un vecteur vide et plantait.
+                    const int KM = std::max( 1, std::min( o.span_mode == 1 ? 2 : o.span_k,
+                                                          int( PolyMulti::KMAX ) ) );
                     const int nth = std::max( 1, par.threads );
                     std::vector<TF> dd[ PolyMulti::KMAX ];
                     dd[ 0 ] = d;
@@ -918,7 +955,7 @@ struct Newton {
                     const TF l2_0 = merite_de( a, NewtonOptions::LOG2 );
                     std::printf( "    SPAN it %d, n %d, log2 au depart %.6e\n", it, int( n ), double( l2_0 ) );
                     std::printf( "      %-3s %-11s %-12s %-12s %-9s %-10s %-8s %s\n", "K", "|t|inf",
-                                 "log2 modele", "log2 REEL", "ecart", "aire min", "cos", "coefficients" );
+                                 "log2 modele", "log2 REEL", "ecart", "aire min", "|dperp|", "coefficients" );
 
                     // le merite `log2` du modele et l'aire minimale, pour `np` points de `K` coords
                     auto mods = [ & ]( int K, const std::vector<TF> &pts, std::vector<TF> &s2,
@@ -1080,13 +1117,9 @@ struct Newton {
                         // ---- 4. la nouvelle direction : aires MODELISEES, second membre `log`, meme `L`
                         TF cosn = 0;
                         if ( K < KM && o.span_mode == 1 ) {
-                            TF ps = 0, n1 = 0, n2 = 0;   // deja calculee : on ne fait que la mesurer
-                            for ( SI i = 0; i < n; ++i ) {
-                                ps += dd[ K ][ i ] * dd[ K - 1 ][ i ];
-                                n1 += dd[ K ][ i ] * dd[ K ][ i ];
-                                n2 += dd[ K - 1 ][ i ] * dd[ K - 1 ][ i ];
-                            }
-                            cosn = n1 > 0 && n2 > 0 ? ps / std::sqrt( n1 * n2 ) : TF( 0 );
+                            TF n1 = 0;                   // deja calculee : on l'orthogonalise
+                            for ( SI i = 0; i < n; ++i ) n1 += dd[ K ][ i ] * dd[ K ][ i ];
+                            cosn = ortho( dd, K, n1 );
                         } else if ( K < KM ) {
                             aso.assign( n, 0 );
                             for ( SI i = 0; i < n; ++i ) {
@@ -1098,13 +1131,9 @@ struct Newton {
                             if ( lin.sait_encore() ) lin.resout_encore( bb, dd[ K ] );
                             else                     lin.resout( L, bb, dd[ K ] );
                             dd[ K ][ 0 ] = 0;
-                            TF ps = 0, n1 = 0, n2 = 0;   // contre la DERNIERE direction du span
-                            for ( SI i = 0; i < n; ++i ) {
-                                ps += dd[ K ][ i ] * dd[ K - 1 ][ i ];
-                                n1 += dd[ K ][ i ] * dd[ K ][ i ];
-                                n2 += dd[ K - 1 ][ i ] * dd[ K - 1 ][ i ];
-                            }
-                            cosn = n1 > 0 && n2 > 0 ? ps / std::sqrt( n1 * n2 ) : TF( 0 );
+                            TF n1 = 0;
+                            for ( SI i = 0; i < n; ++i ) n1 += dd[ K ][ i ] * dd[ K ][ i ];
+                            cosn = ortho( dd, K, n1 );
                         }
                         char co[ 96 ] = { 0 };
                         int cp = 0;
