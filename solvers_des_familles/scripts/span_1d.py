@@ -328,7 +328,7 @@ class Cas:
             num[ k ] = ( self.log2( w0 + ( al + e ) @ W ) - self.log2( w0 + ( al - e ) @ W ) ) / ( 2 * h )
         return float( np.max( np.abs( ana - num ) / np.maximum( np.abs( num ), 1e-300 ) ) ), ana, num
 
-    def span_min( self, w0, dirs, itmax = 80, tol = 1e-13, trace = False, gel = False ):
+    def span_min( self, w0, dirs, itmax = 80, tol = 1e-13, trace = False, gel = False, al0 = None ):
         """MINIMISE `log2` SUR `w0 + sum_k alpha_k dirs[ k ]` PAR GAUSS-NEWTON dans l'espace des
         `alpha` : `log2` etant une somme de carres, le bon pas resout `min | g + J da |^2`, et c'est
         un solve `k x k` puisque `k` est petit.
@@ -338,7 +338,7 @@ class Cas:
         franchi, et l'optimum est atteint a la precision de la machine au lieu du pas d'une grille.
         Rend `( alphas, w, log2, iterations, |grad| )`.
         """
-        al = np.zeros( len( dirs ) )
+        al = np.zeros( len( dirs ) ) if al0 is None else np.array( al0, dtype = float )
         W = np.array( dirs )
 
         def en( a ):
@@ -346,7 +346,7 @@ class Cas:
 
         f = self.log2( en( al ) )
         if not np.isfinite( f ):
-            raise ValueError( "le point de depart n'est pas admissible" )
+            return al, en( al ), np.inf, 0, np.inf    # depart inadmissible : l'appelant decide
         L0 = self.laplacien( w0 ) if gel else None       # `L` GELE au point de base, une fois pour tout
         it = 0
         for it in range( 1, itmax + 1 ):
@@ -517,6 +517,107 @@ def figures( cas, sortie, lissages = 0, mode = "copie" ):
     return a0, al1, l_span, it_span, it_ref
 
 
+def monte_alpha0( cas, d0, kmax, amax = 1.0, trace = True, compagnes = "lissage" ):
+    """CONTINUATION EN `alpha_0`, LES COMPAGNES LIBRES -- la mesure qui repond a la question.
+
+    Minimiser `log2` sur le span n'est qu'un PROXY : son minimum peut etre a `alpha_0` petit alors
+    qu'un grand `alpha_0` est atteignable avec les bonnes compagnes. Ce qu'on veut est
+        max alpha_0  sous contrainte que le point reste ADMISSIBLE,
+    les autres coefficients libres. C'est le role des compagnes : ACCOMPAGNER `w_prol` en le lissant
+    la ou il pince, au lieu de le pre-lisser a la main avec un `m` devine.
+
+    LES COMPAGNES SONT DES INCREMENTS DE LISSAGE, et c'est le point. Prendre « ce qui manque » comme
+    direction de Newton au point bloque ne marche pas, et la raison est structurelle : la ou une
+    cellule est a `1e-8 nu`, les lignes du jacobien `J_ik = ( L d_k )_i / a_i` valent `1e8`, le moindre
+    carre est entierement domine par elles et la tangente sort a `1e+07` ( mesure ). La barriere qui
+    protege detruit le conditionnement de toute algebre lineaire a son voisinage.
+    On prend donc les compagnes LITTERALEMENT comme des directions qui LISSENT :
+        d_j = lisse( w_prol, 4^j ) - w_prol,     j = 0, 1, 2, ...
+    une echelle dyadique d'increments de lissage. Le span est alors
+        w = alpha_0 w_prol + sum_j alpha_j ( lisse_j( w_prol ) - w_prol )
+    et l'optimiseur choisit LUI-MEME le profil de lissage, au lieu qu'on devine un `m`. C'est bien
+    borne, bien conditionne, et ca generalise en nD ( `lisse_jacobi` sur le graphe de Voronoi ).
+
+    PREDICTEUR-CORRECTEUR, et il le faut : `log2` valant `+inf` hors de l'admissible, aucune methode
+    de descente ne peut y ENTRER -- une continuation naive reste bloquee au premier pas qui sort ( les
+    coefficients compagnons restent a zero, mesure ). On suit donc la VARIETE DES MINIMISEURS. A
+    l'optimum sur les compagnes, `d log2 / d alpha_j = 0` pour `j >= 1` ; en derivant par rapport a
+    `alpha_0`, la tangente est
+        d alpha_compagnes / d alpha_0 = - ( Jc^T Jc )^-1 Jc^T j_0
+    avec `Jc` les colonnes des compagnes et `j_0` celle de `w_prol` ( Gauss-Newton ). On predit par
+    cette tangente, on corrige par `span_min`, et on halve le pas quand ca ne passe pas.
+
+    Quand le pas ne peut plus croitre, on AJOUTE une direction -- « ce qui manque » au point courant,
+    c'est-a-dire la direction du residu log, qui releve exactement les cellules qui bloquent.
+    `amax = 1` ET NON PLUS : maximiser `alpha_0` est le MAUVAIS objectif, et c'est mesure -- pousse a
+    1.21 ( le bord de l'admissible ) le point a un `log2` de 2634, PIRE que Voronoi, et il reste 41
+    iterations ; plafonne a 1 avec `log2` minimise sur les compagnes, c'est le bon point. `alpha_0 = 1`
+    est une CIBLE, pas un maximand.
+    Rend la liste `( k, alpha_0 atteint, log2, iterations restantes )`.
+    """
+    w_sain = np.zeros( cas.n )
+    dirs, al = [], []
+    a0 = 0.0
+    f = cas.log2( w_sain )
+    hist = []
+
+    def point( a, coefs ):
+        w = w_sain + a * d0
+        for c, d in zip( coefs, dirs ):
+            w = w + c * d
+        return w
+
+    for k in range( 1, kmax + 1 ):
+        pas = max( 1e-4, 0.05 * amax )
+        while a0 < amax and pas > 1e-9:
+            # LA TANGENTE au point courant ( rien a predire s'il n'y a pas de compagne )
+            tang = np.zeros( len( dirs ) )
+            if dirs:
+                J, _ = cas.jacobien_span( point( a0, al ), [ d0 ] + dirs )
+                tang, *_ = np.linalg.lstsq( J[ :, 1: ], -J[ :, 0 ], rcond = None )
+            essai = min( a0 + pas, amax )
+            pred = list( np.array( al ) + ( essai - a0 ) * tang ) if dirs else []
+            base = w_sain + essai * d0
+            if dirs:
+                al2, w2, f2, _, _ = cas.span_min( base, dirs, al0 = pred )
+            else:
+                al2, f2 = [], cas.log2( base )
+            if np.isfinite( f2 ):
+                a0, al, f = essai, list( al2 ), f2
+                pas *= 1.5
+            else:
+                if trace and dirs and pas > 1e-6:
+                    print( f"       refus a alpha_0 {essai:.5f} ( pas {pas:.2e} ) :"
+                           f" tangente {np.array2string( tang, precision = 3 )},"
+                           f" predit {np.array2string( np.array( pred ), precision = 3 )}" )
+                pas /= 2
+        # LA METRIQUE : ce que Newton coute depuis le point atteint
+        try:
+            _, it_k = cas.resout( point( a0, al ) )
+        except ValueError:
+            it_k = -1
+        hist.append( ( k, a0, f, it_k ) )
+        if trace:
+            print( f"  {k:2d} | {a0:10.4f} | {f:12.5e} | {it_k:4d} | "
+                   + " ".join( f"{v:+.3f}" for v in al ) )
+        if a0 >= amax - 1e-9 or k == kmax:
+            break
+        w_bloc = point( a0, al )
+        a_bloc, _ = cas.masses( w_bloc )
+        if compagnes == "lissage":
+            d_new = cas.lisse( d0, 4 ** k ) - d0         # l'echelle dyadique : 4, 16, 64, ...
+        else:
+            d_new = cas.newton( w_bloc )
+        if trace:
+            print( f"       au point bloque : min a/nu {np.min( a_bloc / cas.nu ):.3e},"
+                   f" cellules < 0.01 nu : {int( np.sum( a_bloc < 0.01 * cas.nu ) )}"
+                   f"  ;  direction ajoutee |d|inf {np.max( np.abs( d_new ) ):.3e}"
+                   f" ( |w_prol|inf {np.max( np.abs( d0 ) ):.3e} ), finie : {np.all( np.isfinite( d_new ) )}" )
+        dirs.append( d_new )
+        al.append( 0.0 )
+    return hist
+
+
 def balaye_k( cas, kmax, lissages = 0, gel = False, mode = "copie" ):
     """LA QUESTION : quand on ajoute des directions, jusqu'ou `alpha_0` va-t-il ?
 
@@ -573,6 +674,10 @@ def main():
                      help = "> 0 : balayer le nombre de directions du span, et ne pas faire les figures" )
     ap.add_argument( "--prol", default = "copie", choices = [ "copie", "affine" ],
                      help = "copie ( constante par agregat ) | affine ( interpolation lineaire )" )
+    ap.add_argument( "--compagnes", default = "lissage", choices = [ "lissage", "newton" ],
+                     help = "lissage : d_j = lisse( w_prol, 4^j ) - w_prol | newton : le residu log" )
+    ap.add_argument( "--alpha0", type = int, default = 0,
+                     help = "> 0 : CONTINUATION EN alpha_0, les compagnes libres, jusqu'a K directions" )
     ap.add_argument( "--gel", action = "store_true",
                      help = "geler `L` au point de base ( le schema propose ) au lieu de le refaire" )
     ap.add_argument( "--lisse", type = int, default = 0,
@@ -582,6 +687,17 @@ def main():
     sortie = o.sortie or os.path.join( os.path.dirname( os.path.abspath( __file__ ) ), "..", "figures" )
     os.makedirs( sortie, exist_ok = True )
     cas = Cas( o.n, o.R, o.sigma, o.plancher, o.graine, o.germes )
+    if o.alpha0 > 0:
+        wg, pg, itg = cas.grossier()
+        w_prol = cas.prolonge( wg, pg, o.prol, o.lisse )
+        w_prol = w_prol - w_prol[ 0 ]
+        _, it_ref = cas.resout( np.zeros( cas.n ) )
+        print( f"  n = {cas.n}, R = {cas.R}, germes {cas.germes}, prolongation {o.prol}"
+               f" + {o.lisse} lissages  ;  grossier {itg} it  ;  reference {it_ref} it" )
+        print( f"  alpha* seul ( k = 1 ) = {cas.alpha_max( np.zeros( cas.n ), w_prol ):.4e}" )
+        print( "   k |   alpha_0  |        log2  |  it | coefficients des compagnes" )
+        monte_alpha0( cas, w_prol, o.alpha0, compagnes = o.compagnes )
+        return
     if o.k > 0:
         balaye_k( cas, o.k, o.lisse, o.gel, o.prol )
         return
