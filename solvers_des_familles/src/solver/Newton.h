@@ -206,6 +206,32 @@ struct NewtonOptions {
     /// ( `PolyMulti::gradient` ). Le seul cout est la construction, un diagramme par iteration.
     bool g2_modele  = false;
     int  g2_desc    = 0;       ///< GRILLE2 MODELE : evaluations de DESCENTE DE GRADIENT ( 0 : aucune )
+    /// GRILLE2 MODELE : pas de NEWTON SUR LA BARRIERE pour minimiser `log2` dans le span ( 0 : aucun ).
+    ///
+    /// LE DEFAUT EST VINGT, parce que c'est ce qui fait exister le mode. Le § 24.26 a mesure l'ecart :
+    /// sur le MEME span a deux directions, la grille plus descente de gradient ne descendait `log2`
+    /// que de quelques pour cent, la hessienne de 95 % -- mieux que deux iterations de Newton. La
+    /// raison est geometrique et elle est dans le § 24.25 : le domaine admissible est une bande
+    /// etroite bordee de `+infini`, le gradient y rampe, la hessienne y reechelonne.
+    int  g2_hess    = 20;
+    /// GRILLE2 MODELE : SUR QUOI on choisit le point du span. `LOG2` ( le merite ) ou `PIRE`
+    /// ( `max|a - nu|/nu`, au `mod_hors` pres ).
+    ///
+    /// LE DEFAUT EST `PIRE`, ET C'EST LE § 24.28 QUI L'A IMPOSE. Juger sur `log2` paraissait naturel --
+    /// c'est une norme lisse, et le modele la rend analytique avec sa hessienne. Mesure : le mode
+    /// descend `log2` de 293 a 2.7 en vingt iterations pendant que `max|a - nu|/nu` STAGNE ( 2159,
+    /// 838, 981, 791, ... ), donc la bascule `log -> lin` n'arrive qu'a l'iteration 21 au lieu de 5.
+    /// C'est la maladie du § 21.1, et elle ne tient pas a la phase : `log2` est une somme, le critere
+    /// est un maximum, et minimiser finement la somme achete le gros de la population en PAYANT les
+    /// quelques cellules qui decident. Plus le minimiseur est bon, plus il surpaye.
+    int  g2_juge    = PIRE;
+    /// GRILLE2 MODELE : tourner AUSSI dans la phase `lin`.
+    ///
+    /// Le mode etait cantonne a la phase `log`, et la raison etait son juge : minimiser `log2` apres
+    /// la bascule revient a sur-ajuster un substitut ( § 21.1 ), donc la barriere etait necessaire.
+    /// Avec `--g2-juge pire` elle ne l'est plus -- le juge EST le critere d'arret, dans les deux
+    /// phases -- et le span peut servir partout. C'est ce que le § 24.28 mesure.
+    bool g2_lin     = false;
     int  g2_back    = 4;       ///< GRILLE2 MODELE : divisions par deux permises si le vrai merite ne descend pas
     /// GRILLE2 MODELE : prendre les aires du point de sonde d'un VRAI DIAGRAMME au lieu du modele.
     ///
@@ -316,6 +342,13 @@ struct NewtonOptions {
     int  span_grille = 0;      ///< SPAN : cote d'une grille de controle de la minimisation ( 0 : aucune )
     bool span_carte = false;   ///< SPAN : imprimer la carte de `log2` et le controle du gradient
     int  span_hess  = 20;      ///< SPAN : pas de NEWTON sur la barriere ( 0 : aucun, cf. § 24.26 )
+    /// SPAN : SUR QUOI on minimise dans le span -- `LOG2` ( le merite ) ou `PIRE` ( le VRAI critere,
+    /// au `mod_hors` pres ). Le § 24.28 a montre que ce n'est pas un detail de reglage : le span
+    /// descend `log2` de 95 % sans que `max|a - nu|/nu` bouge, donc le gain sur le merite ne se paye
+    /// pas en iterations. `PIRE` n'a pas de derivee utilisable -- on le minimise par recherche a
+    /// motif ( compas ), ce que le modele rend gratuit.
+    int  span_juge  = LOG2;
+    int  span_motif = 60;      ///< SPAN, juge `PIRE` : tours de recherche a motif ( 0 : aucun )
     int  modele     = -1;      ///< >= 0 : a CETTE iteration, batir le modele multi-directions et le
                                ///< confronter a l'evaluateur exact PUIS au vrai diagramme
     int  combi      = -1;      ///< >= 0 : a CETTE iteration, balayer le SIMPLEXE des trois directions ( lin, log, barriere )
@@ -366,6 +399,11 @@ struct NewtonStats {
     TF     reste0 = 0;         ///< le meme AU DEPART ( ce que vaut le point de depart )
     int    nb_iter = 0, nb_diag = 0, nb_recul = 0;
     int    nb_back = 0;           ///< GRILLE2 MODELE : backtrackings ( le vrai merite n'a pas descendu )
+    /// L'ITERATION OU LA BASCULE `log -> lin` A EU LIEU ( `-1` : jamais ). C'est elle qui coupe la
+    /// resolution en deux, et c'est la SEULE moitie ou un pas dans un span peut changer quelque chose :
+    /// la phase `lin` est identique dans toutes les variantes. Sans ce chiffre, comparer des comptes
+    /// d'iterations TOTAUX melange ce qu'on fait varier et ce qu'on ne touche pas ( § 24.28 ).
+    int    it_bascule = -1;
     SI     nb_deborde = 0;     ///< cellules qui ont deborde `MaxNv`, en tout ( mesure fausse )
     SI     nb_cell_lim = 0;    ///< cellules calculees par la passe des limites, en tout
     int    nb_tenseur = 0;     ///< pas tensoriels tentes
@@ -384,6 +422,126 @@ struct NewtonStats {
                                ///< et elle est deja calculee -- la relire ne coute rien.
     double t_maj = 0, t_diag = 0, t_asm = 0, t_lin = 0, t_lim = 0, t_memo = 0;
 };
+
+/// MINIMISER `log2` SUR UN SPAN, PAR NEWTON SUR LA BARRIERE ( § 24.26 ).
+///
+/// Le § 24.25 a montre pourquoi une descente de gradient echoue ici : le domaine admissible est une
+/// BANDE etroite bordee de `+infini`, et ces parois ne sont pas une contrainte exterieure -- c'est
+/// l'objectif lui-meme, `log2` valant l'infini des qu'une cellule se vide. On minimise donc une
+/// BARRIERE sur un domaine mince, le cas d'ecole ou le gradient seul rampe et ou la hessienne
+/// rattrape tout : elle est enorme EN TRAVERS de la vallee et petite LE LONG, donc elle reechelonne
+/// exactement ce qu'il faut.
+///
+/// Avec `F = sum g^2` et `g_i = log( A_i / nu_i )` :
+///
+///      dF/dt_k      = sum_i 2 g_i A'_k / A_i
+///      d2F/dt_kdt_l = sum_i 2 [ ( 1 - g_i ) A'_k A'_l / A_i^2 + g_i A''_kl / A_i ]
+///
+/// Tout est analytique, le systeme est `K x K` avec `K <= KMAX`, et la recherche lineaire FAIT
+/// CROITRE le pas -- l'autre defaut du § 24.25.
+///
+/// `mods( pts, s2, mn )` evalue le merite du modele et l'aire minimale pour une liste de points de
+/// `K` coordonnees. `best` / `mb` entrent au point de depart et sortent a l'optimum trouve ; rend
+/// le nombre de pas de Newton acceptes.
+///
+/// DE DIAGNOSTIC ELLE EST DEVENUE LE PAS LUI-MEME : le § 24.28 l'appelle depuis `--pas grille2
+/// --g2-modele`, ou elle remplace la grille plus descente. C'est pour ca qu'elle est ici et non
+/// recopiee : les deux appelants doivent minimiser EXACTEMENT la meme chose, sinon le span mesure
+/// et le span utilise ne sont pas le meme objet.
+template<class MODS>
+int newton_barriere( const std::vector<PolyMulti> &pm, const std::vector<TF> &nu, SI n, int K,
+                     const Parallel &par, int nb_pas, std::vector<TF> &best, TF &mb, MODS &&mods ) {
+    const int nth = std::max( 1, par.threads );
+    const int NQ2 = PolyMulti::KMAX * PolyMulti::KMAX;
+    int nb_pris = 0;
+    TF lam = 0;
+    std::vector<TF> s2, mn;
+    for ( int pas = 0; pas < nb_pas; ++pas ) {
+        std::vector<TF> acc( size_t( nth ) * ( K + NQ2 ), 0 );
+        parallel_for( n, par, [ & ]( SI i, int th ) {
+            const PolyMulti &q = pm[ i ];
+            if ( q.etat != PolyCellule::OK ) return;
+            const TF A = q( best.data(), K );
+            if ( ! ( A > 0 ) ) return;
+            TF da[ PolyMulti::KMAX ];
+            q.gradient( best.data(), K, da );
+            const TF g = std::log( A / nu[ i ] );
+            TF *gr = &acc[ size_t( th ) * ( K + NQ2 ) ];
+            TF *he = gr + K;
+            for ( int k = 0; k < K; ++k ) gr[ k ] += 2 * g * da[ k ] / A;
+            TF h2[ PolyMulti::KMAX * PolyMulti::KMAX ];
+            q.hessienne( best.data(), K, h2, PolyMulti::KMAX );
+            for ( int k = 0; k < K; ++k )
+                for ( int l = 0; l <= k; ++l )
+                    he[ k * PolyMulti::KMAX + l ] +=
+                        2 * ( ( 1 - g ) * da[ k ] * da[ l ] / ( A * A )
+                              + g * h2[ k * PolyMulti::KMAX + l ] / A );
+        } );
+        TF gr[ PolyMulti::KMAX ] = {}, H[ PolyMulti::KMAX ][ PolyMulti::KMAX ] = {};
+        for ( int th = 0; th < nth; ++th ) {
+            const TF *src = &acc[ size_t( th ) * ( K + NQ2 ) ];
+            for ( int k = 0; k < K; ++k ) gr[ k ] += src[ k ];
+            for ( int k = 0; k < K; ++k )
+                for ( int l = 0; l <= k; ++l )
+                    H[ k ][ l ] += src[ K + k * PolyMulti::KMAX + l ];
+        }
+        for ( int k = 0; k < K; ++k )
+            for ( int l = k + 1; l < K; ++l ) H[ k ][ l ] = H[ l ][ k ];
+        TF ng = 0;
+        for ( int k = 0; k < K; ++k ) ng = std::max( ng, std::fabs( gr[ k ] ) );
+        if ( ! ( ng > 0 ) ) break;
+
+        // `H + lam diag( H )` puis Gauss : la regularisation de Levenberg-Marquardt, qui ramene
+        // vers le gradient si Newton derape
+        bool pris_un = false;
+        for ( int essai = 0; essai < 24 && ! pris_un; ++essai ) {
+            TF M[ PolyMulti::KMAX ][ PolyMulti::KMAX + 1 ];
+            for ( int k = 0; k < K; ++k ) {
+                for ( int l = 0; l < K; ++l ) M[ k ][ l ] = H[ k ][ l ];
+                M[ k ][ k ] += lam * ( std::fabs( H[ k ][ k ] ) + TF( 1e-30 ) );
+                M[ k ][ K ] = -gr[ k ];
+            }
+            bool ok_lin = true;
+            for ( int c = 0; c < K && ok_lin; ++c ) {
+                int piv = c;
+                for ( int r = c + 1; r < K; ++r )
+                    if ( std::fabs( M[ r ][ c ] ) > std::fabs( M[ piv ][ c ] ) ) piv = r;
+                if ( ! ( std::fabs( M[ piv ][ c ] ) > 0 ) ) { ok_lin = false; break; }
+                if ( piv != c ) for ( int l = 0; l <= K; ++l ) std::swap( M[ c ][ l ], M[ piv ][ l ] );
+                for ( int r = 0; r < K; ++r ) {
+                    if ( r == c ) continue;
+                    const TF f = M[ r ][ c ] / M[ c ][ c ];
+                    for ( int l = c; l <= K; ++l ) M[ r ][ l ] -= f * M[ c ][ l ];
+                }
+            }
+            if ( ! ok_lin ) { lam = lam > 0 ? 4 * lam : TF( 1e-3 ); continue; }
+            TF de[ PolyMulti::KMAX ];
+            for ( int k = 0; k < K; ++k ) de[ k ] = M[ k ][ K ] / M[ k ][ k ];
+            // LA RECHERCHE LINEAIRE, QUI FAIT CROITRE LE PAS
+            TF mu = 1;
+            for ( int j = 0; j < 40; ++j ) {
+                std::vector<TF> pts( K );
+                for ( int k = 0; k < K; ++k ) pts[ k ] = best[ k ] + mu * de[ k ];
+                mods( pts, s2, mn );
+                if ( s2[ 0 ] < mb ) {
+                    std::vector<TF> pg( K );             // mieux : on essaye PLUS LOIN avant d'accepter
+                    for ( int k = 0; k < K; ++k ) pg[ k ] = best[ k ] + 2 * mu * de[ k ];
+                    std::vector<TF> sg, ng2;
+                    mods( pg, sg, ng2 );
+                    if ( sg[ 0 ] < s2[ 0 ] && mu < TF( 64 ) ) { mu *= 2; continue; }
+                    mb = s2[ 0 ]; best = pts; pris_un = true; ++nb_pris;
+                    lam = lam > TF( 1e-12 ) ? lam / 4 : TF( 0 );
+                    break;
+                }
+                mu /= 2;
+                if ( mu < TF( 1e-12 ) ) break;
+            }
+            if ( ! pris_un ) lam = lam > 0 ? 4 * lam : TF( 1e-3 );
+        }
+        if ( ! pris_un ) break;
+    }
+    return nb_pris;
+}
 
 template<class PD, class Rho = Densite>
 struct Newton {
@@ -692,6 +850,7 @@ struct Newton {
             // monotone, et on ne veut pas revenir en arriere.
             if ( o.bascule_residu > 0 && res_cur != NewtonOptions::LIN && pire <= o.bascule_residu ) {
                 res_cur = NewtonOptions::LIN;
+                st.it_bascule = it;
                 if ( o.trace )
                     std::printf( "      bascule : residu -> lin ( max|a-nu|/nu %.3e <= %.3e )\n",
                                  double( pire ), double( o.bascule_residu ) );
@@ -700,6 +859,7 @@ struct Newton {
             // qu'elle n'a pas mordu, donc que `lin` est sans danger ( cf. `o.bascule_pas` ).
             if ( o.bascule_pas > 0 && res_cur != NewtonOptions::LIN && t_prec >= o.bascule_pas ) {
                 res_cur = NewtonOptions::LIN;
+                st.it_bascule = it;
                 if ( o.trace )
                     std::printf( "      bascule : residu -> lin ( pas precedent %.3e >= %.3e )\n",
                                  double( t_prec ), double( o.bascule_pas ) );
@@ -956,9 +1116,14 @@ struct Newton {
                     std::vector<TF> tb( PolyMulti::KMAX, 0 ), aso, bb;
                     w2.resize( n );
                     const TF l2_0 = merite_de( a, NewtonOptions::LOG2 );
+                    const SI khs = std::min<SI>( 256, std::max<SI>( 1, SI( o.mod_hors * TF( n ) ) ) );
+                    const bool jps = o.span_juge == NewtonOptions::PIRE;
                     std::printf( "    SPAN it %d, n %d, log2 au depart %.6e\n", it, int( n ), double( l2_0 ) );
-                    std::printf( "      %-3s %-11s %-12s %-12s %-9s %-10s %-8s %s\n", "K", "|t|inf",
-                                 "log2 modele", "log2 REEL", "ecart", "aire min", "|dperp|", "coefficients" );
+                    std::printf( "      juge : %s, pire au depart %.4e ( %d-ieme )\n",
+                                 jps ? "PIRE ( max|a-nu|/nu )" : "log2", double( pire ), int( khs ) );
+                    std::printf( "      %-3s %-11s %-12s %-12s %-9s %-11s %-10s %-8s %s\n", "K", "|t|inf",
+                                 "objectif mod", "log2 REEL", "ecart", "pire REEL", "aire min", "|dperp|",
+                                 "coefficients" );
 
                     // le merite `log2` du modele et l'aire minimale, pour `np` points de `K` coords
                     auto mods = [ & ]( int K, const std::vector<TF> &pts, std::vector<TF> &s2,
@@ -984,6 +1149,55 @@ struct Newton {
                                 mn[ p ] = std::min( mn[ p ], amn[ size_t( th ) * np + p ] );
                             }
                         for ( int p = 0; p < np; ++p ) s2[ p ] = s2[ p ] == INFINI ? INFINI : std::sqrt( s2[ p ] );
+                    };
+
+                    // le `khs`-ieme PIRE ECART predit, meme liste de points, meme passage unique
+                    auto prs = [ & ]( int K, const std::vector<TF> &pts, std::vector<TF> &pr,
+                                      std::vector<TF> &mn ) {
+                        const int np = int( pts.size() / K );
+                        std::vector<TF> tops( size_t( nth ) * np * size_t( khs ), TF( 0 ) ),
+                                        amn( size_t( nth ) * np, INFINI );
+                        std::vector<SI> cnb( size_t( nth ) * np, 0 );
+                        parallel_for( n, par, [ & ]( SI i, int th ) {
+                            const PolyMulti &q = pm[ i ];
+                            if ( q.etat != PolyCellule::OK ) return;
+                            const TF inv = TF( 1 ) / nu[ i ];
+                            TF *pmn = &amn[ size_t( th ) * np ];
+                            for ( int p = 0; p < np; ++p ) {
+                                const TF A = q( &pts[ size_t( p ) * K ], K );
+                                if ( protegee[ i ] && A < pmn[ p ] ) pmn[ p ] = A;
+                                const TF e = std::fabs( nu[ i ] - A ) * inv;
+                                TF *tp = &tops[ ( size_t( th ) * np + p ) * size_t( khs ) ];
+                                if ( e > tp[ khs - 1 ] ) {
+                                    SI j = khs - 1;
+                                    while ( j > 0 && tp[ j - 1 ] < e ) { tp[ j ] = tp[ j - 1 ]; --j; }
+                                    tp[ j ] = e;
+                                }
+                                ++cnb[ size_t( th ) * np + p ];
+                            }
+                        } );
+                        pr.assign( np, INFINI ); mn.assign( np, INFINI );
+                        std::vector<TF> fus;
+                        for ( int p = 0; p < np; ++p ) {
+                            fus.clear();
+                            for ( int t = 0; t < nth; ++t ) {
+                                const size_t ic = size_t( t ) * np + p;
+                                const SI m = std::min<SI>( khs, cnb[ ic ] );
+                                for ( SI j = 0; j < m; ++j ) fus.push_back( tops[ ic * size_t( khs ) + j ] );
+                                mn[ p ] = std::min( mn[ p ], amn[ ic ] );
+                            }
+                            if ( fus.empty() ) continue;
+                            const SI r = std::min<SI>( khs, SI( fus.size() ) ) - 1;
+                            std::nth_element( fus.begin(), fus.begin() + r, fus.end(), std::greater<TF>() );
+                            // une cellule vide rend le point INADMISSIBLE : le critere n'a plus de sens
+                            pr[ p ] = mn[ p ] > 0 ? fus[ r ] : INFINI;
+                        }
+                    };
+                    // l'objectif EFFECTIF du span : `log2` ou le pire ecart
+                    auto obj = [ & ]( int K, const std::vector<TF> &pts, std::vector<TF> &v,
+                                      std::vector<TF> &mn ) {
+                        if ( jps ) prs( K, pts, v, mn );
+                        else       mods( K, pts, v, mn );
                     };
 
                     // ---- VARIANTE B : LES DERIVEES DE `w( t )` AU DEPART, en UNE construction
@@ -1063,7 +1277,7 @@ struct Newton {
                         if ( K == 1 ) {
                             std::vector<TF> pts;
                             for ( int ia = 0; ia < 24; ++ia ) pts.push_back( o.t0 / TF( SI( 1 ) << ia ) );
-                            mods( 1, pts, s2, mn );
+                            obj( 1, pts, s2, mn );
                             for ( int p = 0; p < int( s2.size() ); ++p )
                                 if ( s2[ p ] < mb ) { mb = s2[ p ]; best[ 0 ] = pts[ p ]; }
                         } else {
@@ -1073,7 +1287,7 @@ struct Newton {
                             // 0.95 ) melange deux effets et fait croire a une perte.
                             for ( int k = 0; k + 1 < K; ++k ) best[ k ] = tb[ k ];
                             std::vector<TF> pts( best.begin(), best.end() );
-                            mods( K, pts, s2, mn );
+                            obj( K, pts, s2, mn );
                             mb = s2[ 0 ];
                         }
                         // ---- LA GRILLE, quand elle est a portee ( `--span-grille N`, K <= 2 ).
@@ -1094,7 +1308,7 @@ struct Newton {
                                     pts.push_back( t1m * ( 2 * i2 - NG ) / TF( NG ) );
                                 }
                             }
-                            mods( K, pts, s2, mn );
+                            obj( K, pts, s2, mn );
                             TF mg = INFINI;
                             std::vector<TF> bg( K, 0 );
                             for ( int p = 0; p < int( s2.size() ); ++p )
@@ -1144,95 +1358,57 @@ struct Newton {
                         // avec `A''_kk = 2 q_kk` et `A''_kl = q_kl`. Tout est analytique, le systeme
                         // est `K x K` avec `K <= 4`, et la recherche lineaire FAIT CROITRE le pas --
                         // l'autre defaut du § 24.25.
-                        if ( o.span_hess > 0 ) {
-                            const int NQ2 = PolyMulti::KMAX * PolyMulti::KMAX;
-                            TF lam = 0;
-                            for ( int pas = 0; pas < o.span_hess; ++pas ) {
-                                std::vector<TF> acc( size_t( nth ) * ( K + NQ2 ), 0 );
-                                parallel_for( n, par, [ & ]( SI i, int th ) {
-                                    const PolyMulti &q = pm[ i ];
-                                    if ( q.etat != PolyCellule::OK ) return;
-                                    const TF A = q( best.data(), K );
-                                    if ( ! ( A > 0 ) ) return;
-                                    TF da[ PolyMulti::KMAX ];
-                                    q.gradient( best.data(), K, da );
-                                    const TF g = std::log( A / nu[ i ] );
-                                    TF *gr = &acc[ size_t( th ) * ( K + NQ2 ) ];
-                                    TF *he = gr + K;
-                                    for ( int k = 0; k < K; ++k ) gr[ k ] += 2 * g * da[ k ] / A;
-                                    TF h2[ PolyMulti::KMAX * PolyMulti::KMAX ];
-                                    q.hessienne( best.data(), K, h2, PolyMulti::KMAX );
-                                    for ( int k = 0; k < K; ++k )
-                                        for ( int l = 0; l <= k; ++l )
-                                            he[ k * PolyMulti::KMAX + l ] +=
-                                                2 * ( ( 1 - g ) * da[ k ] * da[ l ] / ( A * A )
-                                                      + g * h2[ k * PolyMulti::KMAX + l ] / A );
-                                } );
-                                TF gr[ PolyMulti::KMAX ] = {}, H[ PolyMulti::KMAX ][ PolyMulti::KMAX ] = {};
-                                for ( int th = 0; th < nth; ++th ) {
-                                    const TF *src = &acc[ size_t( th ) * ( K + NQ2 ) ];
-                                    for ( int k = 0; k < K; ++k ) gr[ k ] += src[ k ];
-                                    for ( int k = 0; k < K; ++k )
-                                        for ( int l = 0; l <= k; ++l )
-                                            H[ k ][ l ] += src[ K + k * PolyMulti::KMAX + l ];
-                                }
-                                for ( int k = 0; k < K; ++k )
-                                    for ( int l = k + 1; l < K; ++l ) H[ k ][ l ] = H[ l ][ k ];
-                                TF ng = 0;
-                                for ( int k = 0; k < K; ++k ) ng = std::max( ng, std::fabs( gr[ k ] ) );
-                                if ( ! ( ng > 0 ) ) break;
+                        // ---- LA MINIMISATION PAR NEWTON SUR LA BARRIERE ( `span_hess` ), cf.
+                        // `newton_barriere` : c'est LE MEME code que celui du pas reel du § 24.28,
+                        // et c'est voulu -- le span mesure ici doit etre le span utilise la-bas.
+                        if ( o.span_hess > 0 && ! jps )
+                            newton_barriere( pm, nu, n, K, par, o.span_hess, best, mb,
+                                             [ & ]( const std::vector<TF> &pts, std::vector<TF> &q2,
+                                                    std::vector<TF> &qn ) { mods( K, pts, q2, qn ); } );
 
-                                // `H + lam diag( H )` puis Gauss : la regularisation de
-                                // Levenberg-Marquardt, qui ramene vers le gradient si Newton derape
-                                bool pris_un = false;
-                                for ( int essai = 0; essai < 24 && ! pris_un; ++essai ) {
-                                    TF M[ PolyMulti::KMAX ][ PolyMulti::KMAX + 1 ];
-                                    for ( int k = 0; k < K; ++k ) {
-                                        for ( int l = 0; l < K; ++l ) M[ k ][ l ] = H[ k ][ l ];
-                                        M[ k ][ k ] += lam * ( std::fabs( H[ k ][ k ] ) + TF( 1e-30 ) );
-                                        M[ k ][ K ] = -gr[ k ];
-                                    }
-                                    bool ok_lin = true;
-                                    for ( int c = 0; c < K && ok_lin; ++c ) {
-                                        int piv = c;
-                                        for ( int r = c + 1; r < K; ++r )
-                                            if ( std::fabs( M[ r ][ c ] ) > std::fabs( M[ piv ][ c ] ) ) piv = r;
-                                        if ( ! ( std::fabs( M[ piv ][ c ] ) > 0 ) ) { ok_lin = false; break; }
-                                        if ( piv != c ) for ( int l = 0; l <= K; ++l ) std::swap( M[ c ][ l ], M[ piv ][ l ] );
-                                        for ( int r = 0; r < K; ++r ) {
-                                            if ( r == c ) continue;
-                                            const TF f = M[ r ][ c ] / M[ c ][ c ];
-                                            for ( int l = c; l <= K; ++l ) M[ r ][ l ] -= f * M[ c ][ l ];
-                                        }
-                                    }
-                                    if ( ! ok_lin ) { lam = lam > 0 ? 4 * lam : TF( 1e-3 ); continue; }
-                                    TF de[ PolyMulti::KMAX ];
-                                    for ( int k = 0; k < K; ++k ) de[ k ] = M[ k ][ K ] / M[ k ][ k ];
-                                    // LA RECHERCHE LINEAIRE, QUI FAIT CROITRE LE PAS
-                                    TF mu = 1;
-                                    for ( int j = 0; j < 40; ++j ) {
-                                        std::vector<TF> pts( K );
-                                        for ( int k = 0; k < K; ++k ) pts[ k ] = best[ k ] + mu * de[ k ];
-                                        mods( K, pts, s2, mn );
-                                        if ( s2[ 0 ] < mb ) {
-                                            // mieux : on essaye PLUS LOIN avant d'accepter
-                                            std::vector<TF> pg( K );
-                                            for ( int k = 0; k < K; ++k ) pg[ k ] = best[ k ] + 2 * mu * de[ k ];
-                                            std::vector<TF> sg, ng2;
-                                            mods( K, pg, sg, ng2 );
-                                            if ( sg[ 0 ] < s2[ 0 ] && mu < TF( 64 ) ) { mu *= 2; continue; }
-                                            mb = s2[ 0 ]; best = pts; pris_un = true;
-                                            lam = lam > TF( 1e-12 ) ? lam / 4 : TF( 0 );
-                                            break;
-                                        }
-                                        mu /= 2;
-                                        if ( mu < TF( 1e-12 ) ) break;
-                                    }
-                                    if ( ! pris_un ) lam = lam > 0 ? 4 * lam : TF( 1e-3 );
-                                }
-                                if ( ! pris_un ) break;
+                        // ---- LA RECHERCHE A MOTIF, quand on minimise `pire` ( `--span-juge pire` )
+                        //
+                        // Le pire ecart est un MAXIMUM : il n'a ni gradient ni hessienne utilisables,
+                        // donc ni Newton ni descente. Mais le modele est gratuit a evaluer, et une
+                        // recherche a motif ( compas ) ne demande que des evaluations : a chaque tour
+                        // on essaye `+/- h e_k` sur chaque coordonnee, on prend la meilleure si elle
+                        // ameliore, on divise `h` par deux sinon. C'est lent en theorie et sans objet
+                        // ici -- `2 K` evaluations par tour sur un polynome, contre un diagramme.
+                        //
+                        // LE PAS EST PAR COORDONNEE, ET CE N'EST PAS UN DETAIL. Avec un pas commun
+                        // la recherche se bloquait a `beta = 0` sur trois iterations des cinq
+                        // essayees : la premiere coordonnee veut un pas de 0.4, les suivantes de
+                        // 0.01, donc le pas commun est soit trop grand pour elles soit trop petit
+                        // pour elle, et c'est toujours la plus grosse qui gagne l'arbitrage. Un pas
+                        // par coordonnee, divise SEULEMENT pour celle qui echoue, le leve.
+                        int nm_ok = 0;
+                        if ( o.span_motif > 0 && jps && mb < INFINI ) {
+                            std::vector<TF> hk( K, 0 );
+                            for ( int k = 0; k < K; ++k )
+                                hk[ k ] = std::fabs( best[ k ] ) / 4
+                                        + ( std::fabs( best[ 0 ] ) / 16 + TF( 1e-12 ) );
+                            for ( int tour = 0; tour < o.span_motif; ++tour ) {
+                                TF hm = 0;
+                                for ( int k = 0; k < K; ++k ) hm = std::max( hm, hk[ k ] );
+                                if ( ! ( hm > TF( 1e-13 ) ) ) break;
+                                std::vector<TF> pts;
+                                for ( int k = 0; k < K; ++k )
+                                    for ( int sg = -1; sg <= 1; sg += 2 )
+                                        for ( int l = 0; l < K; ++l )
+                                            pts.push_back( best[ l ] + ( l == k ? sg * hk[ k ] : TF( 0 ) ) );
+                                obj( K, pts, s2, mn );
+                                int bp = -1;
+                                for ( int p = 0; p < int( s2.size() ); ++p )
+                                    if ( s2[ p ] < mb ) { mb = s2[ p ]; bp = p; }
+                                if ( bp >= 0 ) {
+                                    for ( int l = 0; l < K; ++l ) best[ l ] = pts[ size_t( bp ) * K + l ];
+                                    hk[ bp / 2 ] *= 2;       // ca marche dans cette direction : plus loin
+                                    ++nm_ok;
+                                } else
+                                    for ( int k = 0; k < K; ++k ) hk[ k ] /= 2;
                             }
                         }
+                        (void) nm_ok;
 
                         cur = best;
                         // ---- LE CONTROLE DU GRADIENT : analytique contre difference finie centree.
@@ -1270,7 +1446,7 @@ struct Newton {
                         }
                         // la descente de gradient projetee, sur le modele : rien ne coute un diagramme
                         TF h = std::fabs( best[ 0 ] ) / 4 + TF( 1e-12 );
-                        for ( int pas = 0; pas < o.span_desc && h > TF( 1e-14 ); ++pas ) {
+                        for ( int pas = 0; pas < ( jps ? 0 : o.span_desc ) && h > TF( 1e-14 ); ++pas ) {
                             std::vector<TF> agr( size_t( nth ) * K, 0 );
                             parallel_for( n, par, [ & ]( SI i, int th ) {
                                 const PolyMulti &q = pm[ i ];
@@ -1304,8 +1480,11 @@ struct Newton {
                         w2[ 0 ] = 0;
                         mesures_et_facettes( w2, a2, fa2, pda2 );
                         const TF l2_vrai = merite_de( a2, NewtonOptions::LOG2 );
-                        TF am = INFINI, tinf = 0;
+                        TF am = INFINI, tinf = 0, pr_vrai = 0;
                         for ( SI i = 0; i < n; ++i ) if ( protegee[ i ] ) am = std::min( am, a2[ i ] );
+                        // LE VRAI CRITERE AU POINT RETENU. Il est GRATUIT -- le diagramme est deja
+                        // calcule -- et c'est lui qui decide des iterations, pas le merite ( § 24.28 ).
+                        for ( SI i = 0; i < n; ++i ) pr_vrai = std::max( pr_vrai, std::fabs( nu[ i ] - a2[ i ] ) / nu[ i ] );
                         for ( int k = 0; k < K; ++k ) tinf = std::max( tinf, std::fabs( best[ k ] ) );
 
                         // ---- 4. la nouvelle direction : aires MODELISEES, second membre `log`, meme `L`
@@ -1333,10 +1512,10 @@ struct Newton {
                         int cp = 0;
                         for ( int k = 0; k < K && cp < 80; ++k )
                             cp += std::snprintf( co + cp, sizeof( co ) - cp, "%s%.4g", k ? " " : "", double( best[ k ] ) );
-                        std::printf( "      %-3d %-11.4g %-12.6e %-12.6e %-9.2f %-10.3e %-8.4f %s\n",
+                        std::printf( "      %-3d %-11.4g %-12.6e %-12.6e %-9.2f %-11.4e %-10.3e %-8.4f %s\n",
                                      K, double( tinf ), double( mb ), double( l2_vrai ),
-                                     double( mb > 0 ? 100 * ( l2_vrai - mb ) / mb : TF( 0 ) ),
-                                     double( am ), double( cosn ), co );
+                                     double( mb > 0 ? 100 * ( ( jps ? pr_vrai : l2_vrai ) - mb ) / mb : TF( 0 ) ),
+                                     double( pr_vrai ), double( am ), double( cosn ), co );
                         std::fflush( stdout );
                         for ( int k = 0; k < K; ++k ) tb[ k ] = best[ k ];
                     }
@@ -2551,7 +2730,8 @@ struct Newton {
             //      rend l'exploration de `( alpha, beta )` gratuite ;
             //   4. on va a l'argmin. Si le vrai merite ne descend pas la-bas, on divise le pas par
             //      deux et on recommence -- un backtracking qui n'arrive pas en pratique.
-            if ( o.pas == NewtonOptions::GRILLE2 && o.g2_modele && res_cur != NewtonOptions::LIN ) {
+            if ( o.pas == NewtonOptions::GRILLE2 && o.g2_modele
+                 && ( res_cur != NewtonOptions::LIN || ( o.g2_lin && o.g2_juge == NewtonOptions::PIRE ) ) ) {
                 if constexpr ( PD::dim == 2 ) {
                     const int nth = std::max( 1, par.threads );
                     int essais = 0;
@@ -2659,6 +2839,53 @@ struct Newton {
                         for ( int p = 0; p < np; ++p ) s2[ p ] = s2[ p ] == INFINI ? INFINI : std::sqrt( s2[ p ] );
                     };
 
+                    // ---- LE JUGE `PIRE` : le `kh`-ieme pire ecart PREDIT, pour la meme liste de
+                    // points et en un passage. Meme motif que la phase 2 de `--pas modele` ( § 21.6 ) :
+                    // une liste des `kh` premiers PAR FIL, fusionnee a la fin, parce que le `kh`-ieme
+                    // pire du tout est forcement dans l'union des `kh` premiers de chaque fil.
+                    const SI kh = std::min<SI>( 256, std::max<SI>( 1, SI( o.mod_hors * TF( n ) ) ) );
+                    auto pires = [ & ]( const std::vector<TF> &pts, std::vector<TF> &pr,
+                                        std::vector<TF> &mn ) {
+                        const int np = int( pts.size() / nk );
+                        std::vector<TF> tops( size_t( nth ) * np * size_t( kh ), TF( 0 ) ),
+                                        amn( size_t( nth ) * np, INFINI );
+                        std::vector<SI> cnb( size_t( nth ) * np, 0 );
+                        parallel_for( n, par, [ & ]( SI i, int th ) {
+                            const PolyMulti &q = pm2[ i ];
+                            if ( q.etat != PolyCellule::OK ) return;
+                            const TF inv = TF( 1 ) / nu[ i ];
+                            TF *pmn = &amn[ size_t( th ) * np ];
+                            for ( int p = 0; p < np; ++p ) {
+                                const TF A = q( &pts[ size_t( p ) * nk ], nk );
+                                if ( protegee[ i ] && A < pmn[ p ] ) pmn[ p ] = A;
+                                const TF e = std::fabs( nu[ i ] - A ) * inv;
+                                TF *tp = &tops[ ( size_t( th ) * np + p ) * size_t( kh ) ];
+                                if ( e > tp[ kh - 1 ] ) {
+                                    SI j = kh - 1;
+                                    while ( j > 0 && tp[ j - 1 ] < e ) { tp[ j ] = tp[ j - 1 ]; --j; }
+                                    tp[ j ] = e;
+                                }
+                                ++cnb[ size_t( th ) * np + p ];
+                            }
+                        } );
+                        pr.assign( np, INFINI ); mn.assign( np, INFINI );
+                        std::vector<TF> fus;
+                        for ( int p = 0; p < np; ++p ) {
+                            fus.clear();
+                            for ( int t = 0; t < nth; ++t ) {
+                                const size_t ic = size_t( t ) * np + p;
+                                const SI m = std::min<SI>( kh, cnb[ ic ] );
+                                for ( SI j = 0; j < m; ++j ) fus.push_back( tops[ ic * size_t( kh ) + j ] );
+                                mn[ p ] = std::min( mn[ p ], amn[ ic ] );
+                            }
+                            if ( fus.empty() ) continue;
+                            const SI r = std::min<SI>( kh, SI( fus.size() ) ) - 1;
+                            std::nth_element( fus.begin(), fus.begin() + r, fus.end(), std::greater<TF>() );
+                            pr[ p ] = fus[ r ];
+                        }
+                    };
+                    const bool jpire = o.g2_juge == NewtonOptions::PIRE;
+
                     // ---- 4. L'EXPLORATION, GRATUITE : la grille puis la descente de gradient
                     TF mb = INFINI, t1b = th, t2b = 0;
                     {
@@ -2676,15 +2903,17 @@ struct Newton {
                             }
                         }
                         std::vector<TF> s2, mn;
-                        mods( pts, s2, mn );
+                        if ( jpire ) pires( pts, s2, mn );
+                        else         mods( pts, s2, mn );
                         for ( int p = 0; p < int( s2.size() ); ++p )
-                            if ( s2[ p ] < mb && ( ! plancher_actif() || mn[ p ] >= eps ) ) {
+                            if ( s2[ p ] < mb && ( ! plancher_actif() || mn[ p ] >= eps )
+                                 && ( ! jpire || mn[ p ] > 0 ) ) {
                                 mb = s2[ p ]; t1b = pts[ size_t( p ) * nk ];
                                 t2b = nk == 2 ? pts[ size_t( p ) * nk + 1 ] : TF( 0 );
                             }
                     }
                     int nd_ok = 0;
-                    if ( o.g2_desc > 0 && mb < INFINI && nk == 2 ) {
+                    if ( o.g2_desc > 0 && mb < INFINI && nk == 2 && ! jpire ) {
                         TF t1 = t1b, t2 = t2b, h = std::fabs( t1b ) / 4;
                         for ( int k = 0; k < o.g2_desc && h > TF( 1e-12 ); ++k ) {
                             const TF tk[ 2 ] = { t1, t2 };
@@ -2714,6 +2943,24 @@ struct Newton {
                         }
                     }
 
+                    // ---- 4 bis. LA MINIMISATION PAR NEWTON SUR LA BARRIERE ( `--g2-hess` )
+                    //
+                    // C'est le § 24.26 branche sur le PAS REEL. La grille ci-dessus ne sert plus
+                    // qu'a placer le depart ( le paysage est multimodal ), et la hessienne finit
+                    // le travail : dans la bande etroite que borde `log2 = +infini`, le gradient
+                    // rampe et elle, elle reechelonne. Meme fonction que le diagnostic `--span`,
+                    // appelee avec le meme modele a deux directions.
+                    int nh_ok = 0;
+                    if ( o.g2_hess > 0 && mb < INFINI && ! jpire ) {
+                        std::vector<TF> bst = { t1b, t2b };
+                        bst.resize( nk );
+                        nh_ok = newton_barriere( pm2, nu, n, nk, par, o.g2_hess, bst, mb,
+                                                 [ & ]( const std::vector<TF> &pts, std::vector<TF> &q2,
+                                                        std::vector<TF> &qn ) { mods( pts, q2, qn ); } );
+                        t1b = bst[ 0 ];
+                        t2b = nk == 2 ? bst[ 1 ] : TF( 0 );
+                    }
+
                     // ---- 5. ON Y VA. Le diagramme est celui de l'iteration suivante ; le
                     // backtracking ne sert que si le vrai merite ne descend pas.
                     for ( int k = 0; k < std::max( o.g2_back, 1 ); ++k ) {
@@ -2725,14 +2972,22 @@ struct Newton {
                         TF m2 = INFINI;
                         for ( SI i = 0; i < n; ++i )
                             if ( protegee[ i ] && a2[ i ] < m2 ) m2 = a2[ i ];
-                        const TF v = merite( a2 );
-                        const bool ok = ( ! plancher_actif() || m2 >= eps ) && v < nr;
+                        // LE BACKTRACKING JUGE SUR LA MEME CHOSE QUE LA RECHERCHE. Sinon le mode
+                        // cherche un point sur un critere et le fait valider par un autre, et c'est
+                        // le second qui decide en silence.
+                        TF v = merite( a2 ), ref = nr;
+                        if ( jpire ) {
+                            v = 0;
+                            for ( SI i = 0; i < n; ++i ) v = std::max( v, std::fabs( nu[ i ] - a2[ i ] ) / nu[ i ] );
+                            ref = pire;
+                        }
+                        const bool ok = ( ! plancher_actif() || m2 >= eps ) && v < ref;
                         if ( o.trace && o.g2_trace )
                             std::printf( "      MODELE : alpha* %.3e ( 1er ordre %.3e ), sonde en %.3e, cos( d, e ) %.4f,"
-                                         " |e|/|d| %.3f | argmin ( %.4g, %.4g ) apres %d pas de descente,"
+                                         " |e|/|d| %.3f | argmin ( %.4g, %.4g ) apres %d descente + %d hessienne,"
                                          " merite modele %.6e | facteur %.3g : merite REEL %.6e ( %s )\n",
                                          double( am ), double( a1 ), double( ts ), double( cos_de ), double( rap_de ),
-                                         double( f * t1b ), double( f * t2b ), nd_ok, double( mb ),
+                                         double( f * t1b ), double( f * t2b ), nd_ok, nh_ok, double( mb ),
                                          double( f ), double( v ), ok ? "PRIS" : "recule" );
                         if ( ok ) { t = f * t1b; pris = true; break; }
                         ++st.nb_back;

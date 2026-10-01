@@ -7538,6 +7538,142 @@ en `t`, donc `O( K² )` coefficients — puis ne faire **qu'un** produit scalair
 Le coût passerait de `O( K³ )` par paire à `O( K² )` par arête, soit un facteur de l'ordre de dix. C'est
 la suite évidente, et elle déciderait du sort du span 3D.
 
+## 24.28 `K = 2` contre le standard : le span n'économise pas d'itérations, et le juge était le coupable
+
+La question posée est celle de l'économie, pas du mérite : **à `K = 2` fixe, combien d'itérations
+gagne-t-on contre le standard ?** Le mode `--pas grille2 --g2-modele` est exactement ce test — un span
+`{ d, d(sonde) }` à connectivité gelée, exploré par le polynôme, un diagramme par itération — et il ne
+jouait que dans la phase `log`. Pour que le compte soit lisible, `NewtonStats` note désormais
+**l'itération de la bascule** : sans ce chiffre, un total mélange ce qu'on fait varier et ce qu'on ne
+touche pas.
+
+### D'abord l'échec, parce qu'il est instructif
+
+Le § 24.26 avait donné à la minimisation dans le span un outil beaucoup plus fort — Newton sur la
+barrière, `−95 %` sur `log2`. Branché sur le pas réel, il est **désastreux** :
+
+| 2D lignes s0.005 | it | dont log | diag | temps |
+|---|---|---|---|---|
+| référence ( limites + log ) | 12 | 8 | 19 | 4.14 s |
+| `K=2`, juge `log2` + grille/descente | 14 | 10 | 16 | 7.47 s |
+| `K=2`, juge `log2` + **hessienne** | **25** | **21** | 29 | 46.4 s |
+
+Vingt-et-une itérations de phase `log` au lieu de huit. La trace dit tout, et d'un coup d'œil :
+
+| itération | 0 | 2 | 4 | 6 | 8 | 10 | 12 | 14 | 16 | 18 | 20 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `\|r\|₂` ( le mérite `log` ) | 293 | 187 | 114 | 44 | 25 | 18 | 14 | 9.6 | 7.1 | 5.8 | 2.7 |
+| `max\|a−ν\|/ν` ( LE critère ) | 2159 | 1089 | 838 | 972 | 1043 | 791 | 618 | 329 | 186 | 83 | 6.3 |
+
+Le mérite descend magnifiquement pendant que **le critère d'arrêt stagne douze itérations**. Donc la
+bascule, qui attend `max|a−ν|/ν ≤ 2`, n'arrive qu'à l'itération 21. C'est la maladie du § 21.1, et elle
+ne tient pas à la phase : **`log2` est une somme, le critère est un maximum**. Minimiser finement la
+somme achète le gros des 100 000 cellules en payant les quelques-unes qui décident — et plus le
+minimiseur est bon, plus il surpaye. Le gain de `−95 %` du § 24.26 était réel et portait sur la
+mauvaise quantité.
+
+### Le juge corrigé : `--g2-juge pire`
+
+On juge donc le point du span sur `max|a−ν|/ν` lui-même, au `mod_hors` près — le motif de la phase 2 de
+`--pas modele` ( § 21.6 ) : une liste des `kh` premiers par fil, fusionnée à la fin. Un maximum n'a ni
+gradient ni hessienne, donc ni Newton ni descente ; mais le modèle est gratuit à évaluer, et la grille
+suffit. Le backtracking juge désormais sur **la même chose** que la recherche — sinon le mode cherche sur
+un critère et se fait valider par un autre, et c'est le second qui décide en silence.
+
+Sur le même span, 14 diagrammes au lieu de 16, et l'itération perdue récupérée. Le rang du juge, lui,
+n'est **pas** le sujet : `--mod-hors 0` ( le maximum strict ) donne exactement les mêmes comptes que le
+défaut à 1e-4 sur les quatre nuages.
+
+### La bascule n'est pas le levier, et le cadrage était faux
+
+Déplacer la coupure entre les deux phases ne cache aucun gain :
+
+| 2D lignes s0.005, diagrammes | R=100 ( tout lin ) | R=20 | R=5 | R=2 | R=0.5 | R=0.1 | jamais ( tout log ) |
+|---|---|---|---|---|---|---|---|
+| référence | 20 | 19 | 19 | 19 | 19 | 19 | 20 |
+| `K=2` juge `pire` | 20 | 17 | **14** | **14** | **14** | **14** | **14** |
+| itérations `log`, réf → `K=2` | 0→0 | 7→7 | 7→8 | 8→8 | 9→10 | 10→10 | 13→13 |
+
+Les deux lignes sont **plates** de `R = 5` à `R = 0.1`. En revanche la mesure corrige un cadrage : sous
+la bascule par défaut la phase `log` ne fait **une à deux itérations sur l'uniforme** et huit sur le cas
+dur — donc un mode cantonné au `log` ne peut presque rien gagner, et ce qu'on mesurait était surtout une
+phase `lin` qu'on ne touchait pas. Un cas le dit crûment : à bascule désactivée ( tout `log` ) sur le
+nuage dégénéré, la référence explose à **80 it / 1140 diag / 114 s** quand le `K=2` reste à **15 it /
+54 diag / 12.1 s**. Le span tient le rôle de garde-fou que la bascule tenait.
+
+### Ce que le span CONTIENT, mesuré à rang égal et vérifié par vrai diagramme
+
+`--span-juge pire` minimise le pire écart prédit dans le span de la variante A, par **recherche à motif**
+( compas ) — le pas est **par coordonnée**, et ce n'est pas un détail : avec un pas commun la recherche se
+bloquait à `β = 0` sur trois itérations des cinq essayées, la première coordonnée voulant 0.4 et les
+suivantes 0.01. Le vrai `max|a−ν|/ν` au point retenu est gratuit : le diagramme de vérification est déjà
+là.
+
+| `max\|a−ν\|/ν` | départ | `K=1` | `K=2` | `K=3` | `K=4` |
+|---|---|---|---|---|---|
+| it 0 | 1664.7 | 1165.7 | 991.1 | **934.0** | 934.0 |
+| it 2 | 754.5 | 316.7 | **275.3** | 275.3 | 275.3 |
+| it 4 | 210.0 | 114.5 | **89.0** | 89.0 | 89.0 |
+| it 6 | 25.30 | **3.319** | 3.319 | 3.319 | 3.319 |
+| it 8 | 0.824 | 0.314 | **0.204** | 0.213 | 0.214 |
+
+Et pour mémoire, le même span minimisé sur `log2`, jugé sur le critère : it 4 donne 114.6 à `K=1` puis
+177.7, 263.1 et **308.8**. **Agrandir le span dégrade le critère quand on le juge sur `log2`.** Mêmes
+directions, même modèle ; seul le juge change.
+
+Trois contrôles disent que ces chiffres sont la vérité du span et non un défaut d'outil :
+
+* **le modèle est juste sur le maximum** : à rang égal, l'écart modèle/vérité vaut 0.00, −0.07, 0.12,
+  0.00 et −0.00 % aux cinq itérations à `K = 1`. ( Mes « 575 % » d'erreur d'un premier passage venaient
+  de comparer le 9ᵉ pire prédit au maximum strict réel, pas du modèle. ) Il ne décroche qu'à l'it 8 pour
+  `K ≥ 2`, où `‖t‖∞ = 0.95` sort du domaine du § 22 ;
+* **la minimisation ne rate rien** : une grille complète `60²` ne trouve jamais mieux que la recherche à
+  motif, et celle-ci fait même mieux qu'elle ( 88.9 contre 93.4 à l'it 4 ) ;
+* **le rang du juge est neutre**, comme dit plus haut.
+
+Donc le verdict est sur le span lui-même : **`K = 2` vaut 15 à 20 % sur le critère, là où une itération de
+Newton vaut un facteur 2 à 3, et `K ≥ 3` ne vaut presque rien.** Un quart d'itération par direction
+ajoutée, et le prix d'une direction est une résolution linéaire.
+
+### La phase `lin` était le chaînon manquant
+
+Avec le juge `pire`, plus rien ne justifie de cantonner le span au `log` — c'était `log2` qui l'imposait,
+le juge étant maintenant le critère d'arrêt lui-même dans les deux phases. `--g2-lin` lève la barrière,
+et l'itération que le mode perdait revient :
+
+| | référence it / diag | `K=2` phase `log` | **`K=2` les deux phases** | temps réf → `K=2` |
+|---|---|---|---|---|
+| 2D uniforme | 6 / 7 | 5 / 6 | **5 / 6** | 1.11 → 1.27 s |
+| 2D lignes s0.02 | 9 / 13 | 10 / 11 | **9 / 10** | 2.28 → 3.05 s |
+| 2D lignes s0.005 | 12 / 19 | 13 / 14 | **12 / 13** | 4.24 → 5.96 s |
+| 2D aires égales ( dég. ) | 13 / 53 | 15 / 53 | **13 / 51** | 7.52 → 9.86 s |
+
+L'itération perdue n'était pas perdue dans le span : elle était laissée à une phase que le mode ne
+touchait pas.
+
+### La réponse, en trois lignes
+
+1. **Les itérations ne sont pas économisées.** Un cas sur quatre en gagne une ; les trois autres égalent
+   la référence. Le span à connectivité gelée ne remplace pas une itération de Newton.
+2. **Les diagrammes le sont** : −14 %, −23 %, −32 %, −4 %. C'est le résultat du § 24.14, confirmé et
+   amélioré par le juge.
+3. **Le temps de paroi est toujours perdu**, de +15 à +40 %, et pour la raison du § 24.14 : une direction
+   de plus coûte une résolution linéaire et une construction de modèle, et en 2D un diagramme ne coûte
+   presque rien. L'échange ne devient favorable que là où le diagramme est cher — la 3D — et il y est
+   bloqué par le coût de construction du § 24.27.
+
+### Pourquoi, structurellement
+
+Le modèle est juste sur le maximum, la minimisation est vérifiée, et pourtant le span ne contient pas de
+point franchement meilleur **pour le critère**. La raison est que les cellules qui portent le maximum sont
+limitées par leur **connectivité** — quels voisins elles ont — et c'est exactement ce que le span gèle.
+Les directions supplémentaires capturent la non-linéarité des **aires** à combinatoire fixe ; `log2`, qui
+moyenne sur 100 000 cellules, le voit et descend de 95 %, mais le maximum ne bouge pas, parce que pour
+débloquer les pires cellules il faut un diagramme neuf.
+
+C'est la limite propre de l'idée, et elle est nette : **le span rend la recherche de pas gratuite, il ne
+remplace pas un diagramme.**
+
 ## 25.1 Le prix du niveau grossier, et la zone dure ne bouge pas
 
 `densite --pas essai-limites --conv 0.5 --conv-ratio 1.414 --sigma 0.02`, `job -b`, 8 fils :

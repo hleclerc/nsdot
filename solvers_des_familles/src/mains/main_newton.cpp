@@ -220,9 +220,10 @@ int lance( const Args &a, const Opts &o, const Nuage<PD::dim> &nu, Lineaire &lin
     }
 
     std::printf( "  newton %s ( max|a-nu|/nu = %.2e ) : %dD n=%d threads=%d kernel=%s maxnv=%d leaf=%d"
-                 " -- %d iterations, %d diagrammes ( %d reculs ), %s%s\n",
+                 " -- %d iterations ( bascule log->lin a %d, donc %d en log ), %d diagrammes ( %d reculs ), %s%s\n",
                  st.fin, double( st.reste ), D, int( n ), a.par.threads, a.kernel.c_str(), PD::max_nv,
-                 int( a.leaf ), st.nb_iter, st.nb_diag - ( o.methode != "newton" ? po.st.nb_diag : 0 ), st.nb_recul, lin.nom(),
+                 int( a.leaf ), st.nb_iter, st.it_bascule, st.it_bascule >= 0 ? st.it_bascule : st.nb_iter,
+                 st.nb_diag - ( o.methode != "newton" ? po.st.nb_diag : 0 ), st.nb_recul, lin.nom(),
                  sl.nb_iter ? ( " ( " + std::to_string( sl.nb_iter ) + " iterations )" ).c_str() : "" );
     std::printf( "         arbre %.3f | majorants %.3f | diagrammes %.3f | assemblage %.3f"
                  " | resolution %.3f | limites %.3f | reste %.3f | TOTAL %.3f s%s\n",
@@ -710,6 +711,13 @@ int main( int argc, char **argv ) {
         else if ( s == "--g2-bpos" )    o.newton.g2_bpos = true;
         else if ( s == "--g2-modele" )  o.newton.g2_modele = true;
         else if ( s == "--g2-desc" )    o.newton.g2_desc = std::atoi( val() );
+        else if ( s == "--g2-hess" )    o.newton.g2_hess = std::atoi( val() );
+        else if ( s == "--span-juge" )  { const std::string v = val();
+                                          o.newton.span_juge = v == "pire" ? sf::NewtonOptions::PIRE : sf::NewtonOptions::LOG2; }
+        else if ( s == "--span-motif" ) o.newton.span_motif = std::atoi( val() );
+        else if ( s == "--g2-lin" )     o.newton.g2_lin = true;
+        else if ( s == "--g2-juge" )    { const std::string v = val();
+                                          o.newton.g2_juge = v == "pire" ? sf::NewtonOptions::PIRE : sf::NewtonOptions::LOG2; }
         else if ( s == "--g2-sonde-reelle" ) o.newton.g2_sonde_reelle = true;
         else if ( s == "--g2-back" )    o.newton.g2_back = std::atoi( val() );
         else if ( s == "--g2-tol" )     o.newton.g2_tol = std::atof( val() );
@@ -781,6 +789,10 @@ int main( int argc, char **argv ) {
                 "  --g2-bpos       grille2 : ne balayer que beta >= 0 ( avec la sonde, le cote negatif ne gagne jamais )\n"
                 "  --g2-modele     grille2 : evaluer la grille par le POLYNOME EXACT ( 2D ) au lieu de diagrammes -- la grille devient gratuite\n"
                 "  --g2-desc K     grille2 modele : K evaluations de DESCENTE DE GRADIENT apres la grille        (0)\n"
+                "  --g2-hess K     grille2 modele : K pas de NEWTON SUR LA BARRIERE apres la grille ( ce qui fait le mode ) (20)\n"
+                "  --g2-juge J     grille2 modele : sur quoi on choisit le point du span -- pire | log2        (pire)\n"
+                "  --g2-lin        grille2 modele : tourner AUSSI dans la phase lin ( exige --g2-juge pire )\n"
+                "  --span-juge J --span-motif K   span : minimiser pire | log2, et les tours de recherche a motif (log2, 60)\n"
                 "  --g2-sonde-reelle  grille2 modele : aires du point de sonde par un VRAI diagramme ( temoin )\n"
                 "  --g2-back K     grille2 modele : divisions par deux permises si le vrai merite ne descend pas   (4)\n"
                 "                  | modele ( 2D ) : le pas cherche dans le SPAN de plusieurs directions, sur le modele\n"
