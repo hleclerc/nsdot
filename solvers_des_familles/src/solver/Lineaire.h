@@ -56,6 +56,11 @@
 #  define SF_EIGEN 1
 #  include <Eigen/SparseCholesky>
 #  include <Eigen/SparseCore>
+#  if __has_include( <suitesparse/cholmod.h> ) && __has_include( <Eigen/CholmodSupport> )
+#    define SF_CHOLMOD 1
+#    include <suitesparse/cholmod.h>
+#    include <Eigen/CholmodSupport>
+#  endif
 #endif
 
 namespace sf {
@@ -290,6 +295,89 @@ struct Cholesky : Lineaire {
         d.assign( n, TF( 0 ) );
         for ( SI i = 1; i < n; ++i )
             d[ i ] = TF( sol[ i - 1 ] );
+        return true;
+    }
+};
+#endif
+
+// =====================================================================================
+// = LE CHOLESKY SUPERNODAL ( CHOLMOD )
+//
+// Le § 24.16 a mesure que le Cholesky COMPLET est deja le meilleur solveur lineaire en 2D a
+// `n = 1e5`, et que son poste dominant est la factorisation NUMERIQUE. Or `SimplicialLDLT` d'Eigen
+// est SCALAIRE : elle traite le facteur colonne par colonne, un flottant a la fois.
+//
+// La factorisation supernodale regroupe les colonnes de meme structure en blocs denses et les
+// traite par des appels BLAS 3 ( `dsyrk`, `dtrsm`, `dgemm` ). Deux gains d'un coup : l'intensite
+// arithmetique -- des produits de matrices denses au lieu d'indirections -- et le PARALLELISME,
+// qui vient alors du BLAS et non du code. C'est exactement l'ingenierie que le § 24.17 a identifiee
+// comme manquante, et elle existe deja : CHOLMOD la fournit, Eigen l'enveloppe.
+//
+// LICENCE : dans SuiteSparse 7.x le module Supernodal de CHOLMOD est LGPL-2.1+ ( les parties
+// GPL-2+ sont CHOLMOD/GPU, SPQR, RBio, MATLAB_Tools ). Un projet MIT peut donc le lier en
+// dynamique. Le module GPU, lui, est GPL-2+ : la voie GPU ne passera pas par CHOLMOD.
+//
+// La comptabilite est celle de `Cholesky` pour que les deux soient comparables : `t_hier` compte
+// l'analyse SYMBOLIQUE ( refaite seulement si le motif a bouge ), `t_res` la factorisation
+// NUMERIQUE et les descentes-remontees.
+// =====================================================================================
+#ifdef SF_CHOLMOD
+struct CholeskySuper : Lineaire {
+    using SpM = Eigen::SparseMatrix<double>;
+    Eigen::CholmodSupernodalLLT<SpM, Eigen::Lower> so;
+    std::vector<SI> motif;
+
+    const char *nom() const override { return "Cholesky SUPERNODAL ( CHOLMOD, BLAS 3 )"; }
+
+    bool sait_encore() const override { return ! motif.empty(); }
+    void resout_encore( const std::vector<TF> &b, std::vector<TF> &d ) override {
+        const SI n = SI( b.size() ), m = n - 1;
+        const double t0 = now();
+        Eigen::VectorXd rb( m );
+        for ( SI i = 1; i < n; ++i ) rb[ i - 1 ] = double( b[ i ] );
+        const Eigen::VectorXd sol = so.solve( rb );
+        d.assign( n, TF( 0 ) );
+        for ( SI i = 1; i < n; ++i ) d[ i ] = TF( sol[ i - 1 ] );
+        st.t_res += now() - t0;
+    }
+
+    bool resout( const Laplacien &L, const std::vector<TF> &b, std::vector<TF> &d ) override {
+        const SI n = L.n, m = n - 1;
+        const double t0 = now();
+        std::vector<Eigen::Triplet<double>> tri;
+        tri.reserve( size_t( L.row[ n ] ) / 2 + n );
+        for ( SI i = 1; i < n; ++i ) {
+            tri.emplace_back( i - 1, i - 1, double( L.dia[ i ] ) );
+            for ( SI k = L.row[ i ]; k < L.row[ i + 1 ]; ++k ) {
+                const SI j = L.col[ k ];
+                if ( j >= 1 && j < i ) tri.emplace_back( i - 1, j - 1, -double( L.c[ k ] ) );
+            }
+        }
+        SpM A( m, m );
+        A.setFromTriplets( tri.begin(), tri.end() );
+        const double t1 = now();
+        st.t_forme += t1 - t0;
+
+        std::vector<SI> mot( A.outerIndexPtr(), A.outerIndexPtr() + m + 1 );
+        mot.insert( mot.end(), A.innerIndexPtr(), A.innerIndexPtr() + A.nonZeros() );
+        if ( mot != motif ) {
+            so.analyzePattern( A );
+            motif.swap( mot );
+            ++st.nb_hier;
+        }
+        const double t2 = now();
+        st.t_hier += t2 - t1;
+
+        so.factorize( A );
+        if ( so.info() != Eigen::Success ) { st.t_res += now() - t2; return false; }
+        Eigen::VectorXd rb( m );
+        for ( SI i = 1; i < n; ++i ) rb[ i - 1 ] = double( b[ i ] );
+        const Eigen::VectorXd sol = so.solve( rb );
+        st.t_res += now() - t2;
+        if ( so.info() != Eigen::Success ) return false;
+
+        d.assign( n, TF( 0 ) );
+        for ( SI i = 1; i < n; ++i ) d[ i ] = TF( sol[ i - 1 ] );
         return true;
     }
 };

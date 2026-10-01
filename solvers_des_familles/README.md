@@ -6803,7 +6803,90 @@ fichier de licence, donc lier du GPL-3 engagerait l'ensemble ; lire `supernode.c
 coûterait une version supernodale de notre IC, non.
 
 Ensuite l'essai le plus rentable ne demande presque pas de code : le § 24.16 a mesuré que le **Cholesky
-complet est déjà le meilleur solveur 2D** ( linéaire 0.85 s contre 1.72 pour AMGCL ) et que son coût est
-sa **factorisation** ( 1.02 s ). Or notre Cholesky est `Eigen::SimplicialLDLT`, **scalaire**.
-`CholmodSupernodalLLT` attaque exactement ce poste, en quelques lignes et sous LGPL -- il ne manque que
-les en-têtes de développement.
+complet est déjà le meilleur solveur 2D** ( linéaire 0.85 s contre 1.72 pour AMGCL ). Or notre Cholesky
+est `Eigen::SimplicialLDLT`, **scalaire** : `CholmodSupernodalLLT` le remplace en quelques lignes et
+sous LGPL.
+
+> **FAIT, ET LE RESULTAT EST AU § 24.18** -- avec une correction : j'ajoutais ici que « son coût est sa
+> factorisation ( 1.02 s ) », ce qui lisait la mauvaise colonne. 1.02 s est l'analyse **symbolique** ;
+> la factorisation numérique tient dans les 0.85 s. Le supernodal ne gagne rien en 2D pour cette
+> raison même -- mais il fait **×38** en 3D.
+
+## 24.18 Le Cholesky SUPERNODAL : ×38 en 3D, rien en 2D — et les deux gains ne se recouvrent pas
+
+> **CORRECTION, et c'était ma prémisse.** Au § 24.16 et au § 24.17 j'ai écrit que le coût du Cholesky
+> était « sa factorisation ( 1.02 s ) ». **Mauvaise colonne.** Chez `Cholesky`, `hierarchie/analyse`
+> compte l'analyse **symbolique** et `resolution` la factorisation **numérique plus** les
+> descentes-remontées. Donc 1.02 s était l'analyse symbolique, et la factorisation numérique tenait
+> dans les 0.85 s. L'essai valait quand même d'être fait — il transforme la 3D — mais la raison que
+> j'en donnais était fausse.
+
+`CholeskySuper` (`--solver chsup`) enveloppe `Eigen::CholmodSupernodalLLT`. La factorisation
+supernodale regroupe les colonnes de même structure en blocs **denses** et les traite par des appels
+**BLAS 3** ; le parallélisme vient alors du BLAS, pas du code. C'est l'ingénierie que le § 24.17
+désignait comme manquante, et elle était déjà sur la machine.
+
+### En 2D : rien à gagner, et les fils BLAS NUISENT
+
+| 2D uniforme, `n = 1e5` | symbolique | numérique + solve | TOTAL |
+|---|---|---|---|
+| simplicial ( Eigen LDLT ) | 0.55 s | 1.15 / 1.14 / 1.10 | 2.19 / 2.17 / 2.14 |
+| **supernodal**, BLAS 1 fil | 0.50 | **0.98** | 1.97 |
+| supernodal, BLAS 8 fils | 0.49 | 1.04 | 1.91 |
+| supernodal, BLAS **16 fils** | 0.49 | **1.46** | 2.48 |
+| AMGCL ( référence ) | 0.25 | 0.56 | **1.20** |
+
+| 2D lignes s0.005 | symbolique | numérique + solve | TOTAL |
+|---|---|---|---|
+| simplicial | 1.00 s | **0.85** | **3.75** |
+| supernodal, BLAS 1 / 8 / 16 | 0.97 | 1.70 / 1.88 / 2.75 | 4.60 / 4.72 / 5.76 |
+| AMGCL | 0.86 | 1.77 | 4.29 |
+
+Au mieux −15 % sur l'uniforme, et **jusqu'à ×3 de perte** sur le nuage de lignes. La raison est
+structurelle : en 2D la dissection emboîtée produit des **séparateurs minces**, donc des supernœuds
+petits, et un appel BLAS 3 sur un bloc de quelques dizaines de lignes coûte plus en préparation qu'il
+ne rapporte en débit.
+
+**Et le piège de parallélisme est le contraire de ce qu'on attend.** OpenBLAS prend par défaut **tous**
+les cœurs (16 ici), et c'est le **pire** réglage en 2D : 1.46 s contre 0.98 à un seul fil. Tout solveur
+qui passe par le BLAS doit donc **épingler ses fils** — sans quoi on paie de la synchronisation sur des
+blocs trop petits, en plus de la sursouscription avec les 8 fils du diagramme.
+
+### En 3D : facteur 38, et là les fils servent
+
+| 3D plans s0.02 | symbolique | numérique + solve | TOTAL |
+|---|---|---|---|
+| simplicial, BLAS 1 / 8 / 16 | 3.39 s | **806 / 805 / 809** | **816 / 815 / 819** |
+| supernodal, BLAS 1 fil | 8.87 | 10.55 | 25.9 |
+| **supernodal, BLAS 8 fils** | 8.91 | **6.17** | **21.3** |
+| supernodal, BLAS 16 fils | 8.84 | 13.77 | 29.1 |
+| multigrille maison | 1.19 | 1.09 | **8.46** |
+
+**×131 sur la factorisation numérique** (806 → 6.17 s) et **×38 sur le total** (816 → 21.3 s). En 3D les
+séparateurs sont des **surfaces**, donc les fronts sont gros, et le BLAS 3 travaille enfin dans son
+régime. C'est aussi le seul endroit où le parallélisme BLAS paie : **8 fils valent 1.7×** sur la
+factorisation (10.55 → 6.17) — mais 16 la dégradent encore (13.77), le même plafond qu'en 2D.
+
+### Ce que ça règle, et ce que ça ne règle pas
+
+**Le gain supernodal et l'avantage du solveur direct ne se recouvrent pas.** En 2D, où le direct *est*
+le meilleur (§ 24.16), les fronts sont trop petits pour que le BLAS 3 paie. En 3D, où il paie
+massivement, le direct reste **2.5×** derrière notre multigrille (21.3 contre 8.46 s) — et c'est déjà
+après avoir divisé son coût par 38. Le « Cholesky hors jeu en 3D » du § 24.16 devient donc « Cholesky
+jouable en 3D mais toujours battu », ce qui est un déplacement réel mais pas un renversement.
+
+Reste que `chsup` est maintenant la bonne variante partout où l'on veut un **direct** : il domine le
+simplicial en 3D d'un facteur 38 et l'égale en 2D sur l'uniforme. Le simplicial garde l'avantage sur le
+seul nuage de lignes.
+
+### Licences, puisque le dépôt passe en MIT
+
+* **CHOLMOD CPU : LGPL-2.1+** (`Files: *` dans le fichier de copyright, les exceptions GPL-2+ étant
+  `CHOLMOD/GPU`, SPQR, RBio, MATLAB_Tools). Un projet MIT peut le lier **en dynamique** sans
+  contamination, c'est ce qu'on fait ici.
+* **La voie GPU de CHOLMOD est fermée** : son module `CHOLMOD/GPU` est **GPL-2+**. Si la 3D sur carte
+  doit passer par un direct, il faudra regarder ailleurs — cuDSS (NVIDIA, binaire propriétaire mais
+  libre d'usage), STRUMPACK (BSD, GPU), Ginkgo (BSD), rocALUTION.
+* Et l'observation qui compte pour la suite : **le seul solveur que nous possédons est le multigrille
+  maison**, et c'est aussi celui qui gagne en 3D. C'est donc la pièce qu'on peut porter sur GPU sans
+  contrainte de licence ni dépendance externe.

@@ -65,6 +65,13 @@ local function reglages()
     -- parallelise en OpenMP. Eigen est en-tetes seuls.
     add_defines( "AMGCL_NO_BOOST" )
     add_sysincludedirs( "/usr/include/eigen3" )
+    -- CHOLMOD, pour la factorisation SUPERNODALE ( § 24.18 ). Son module Supernodal est LGPL-2.1+
+    -- dans SuiteSparse 7.x, donc liable depuis du MIT ; le parallelisme y vient du BLAS, d'ou
+    -- OpenBLAS. Si les en-tetes ne sont pas la, `__has_include` desactive la variante tout seul.
+    if os.isfile( "/usr/include/suitesparse/cholmod.h" ) then
+        add_sysincludedirs( "/usr/include/suitesparse" )
+        add_syslinks( "cholmod", "amd", "colamd", "camd", "ccolamd", "suitesparseconfig", "lapack", "blas" )
+    end
     add_cxflags( "-fopenmp" )
     add_ldflags( "-fopenmp" )
     add_syslinks( "pthread" )

@@ -52,7 +52,7 @@ struct Opts {
     // des CENTAINES de systemes voisins, il gagne ( 90.4 s contre 93.0 a n = 1e5 ) -- parce que
     // le recyclage de sous-espace y trouve de quoi vivre, ce qu'une poignee d'iterations de
     // Newton ne donne pas. C'est le REGIME qui decide, pas la dimension seule.
-    std::string   solver = "auto"; ///< auto ( mg en 3D, amg en 2D ) | mg | amg | chol | mchol
+    std::string   solver = "auto"; ///< auto ( mg en 3D, amg en 2D ) | mg | amg | chol | chsup | mchol
     double        mchol_rho = 0;   ///< MCHOL : le `rho` du motif ( 0 : 7 en 2D, 3 en 3D )
     int           mchol_ech = 0;   ///< MCHOL : l'echelle -- 0 uniforme par niveau ( le papier ), 1 locale
     // LES REGLAGES DU MULTIGRILLE MAISON. Les defauts viennent de `Multigrille.h`, ou ils ont ete
@@ -94,6 +94,10 @@ struct Opts {
 template<int D>
 std::unique_ptr<Lineaire> fabrique( const Opts &o ) {
     const std::string sol = o.solver == "auto" ? ( D == 3 ? "mg" : "amg" ) : o.solver;
+#ifdef SF_CHOLMOD
+    if ( sol == "chsup" )                                // le supernodal ( § 24.18 )
+        return std::make_unique<CholeskySuper>();
+#endif
 #ifdef SF_EIGEN
     if ( sol == "chol" )
         return std::make_unique<Cholesky>();
