@@ -155,13 +155,14 @@ __device__ __forceinline__ int coupe_msk( const Plan2<TK> &p, int nb, TK ( &x )[
 /// Le depot travaille par LOTS : `k0` le premier rang du lot, `nk` sa taille, `cap` le pas du SoA.
 enum { DENS_AUCUNE = 0, DENS_DIRECTE = 1, DENS_DEPOT = 2 };
 
-template<bool POIDS, int BSM, bool CENTRE, int FIXE, int DENS = DENS_AUCUNE, class TK = float>
+template<bool POIDS, int BSM, bool CENTRE, int FIXE, int DENS = DENS_AUCUNE, class TK = float, bool RES64 = false>
 __global__ void __launch_bounds__( 128, BSM ) noyau2_filmsk( Arbre<TK,2> ar, double *res, int *deborde, int *liste_deb,
                                                             int *fac_j = nullptr, TK *fac_l = nullptr, int NF = 0,
                                                             bool raff = false, Image2 im = Image2{}, TK *dep_x = nullptr, TK *dep_y = nullptr,
                                                             int *dep_nb = nullptr, int *dep_id = nullptr,
                                                             int cap = 0, int k0 = 0, int nk = 0 ) {
     constexpr int R = 8, SUR = 3;
+    static_assert( ! RES64 || DENS == DENS_AUCUNE, "RES64 prend la mesure LUI-MEME : la densite image a son propre parcours d'arete" );
     const int k = ( DENS == DENS_DEPOT ? k0 : 0 ) + blockIdx.x * blockDim.x + threadIdx.x;
     if ( k >= ar.n ) return;
     if constexpr ( DENS == DENS_DEPOT ) if ( k >= k0 + nk ) return;
@@ -228,17 +229,69 @@ fin:
     // ---- LES SOMMETS RESOLUS DEPUIS LEURS PLANS ( `Arbre.cuh` ). Le sommet `i` est porte par
     //      l'arete qui y ARRIVE ( `c[ i - 1 ]` ) et par celle qui en part ( `c[ i ]` ) ; on
     //      remonte donc les plans un par un, chacun servant deux fois.
+    //
+    // `RES64` : LA MESURE EST PRISE ICI, dans la boucle, sur le sommet resolu et AVANT qu'il ne
+    // repasse par le flottant du noyau. C'est la derniere marche du modele `fp32`, et elle etait
+    // restee en travers : la resolution rend le sommet a `2^-53` pres, puis `x[ i ] = TK( vx )` le
+    // ramene aussitot a `eps h` -- donc l'aire a `eps` pres, soit le 1.4e-07 qui subsistait sur
+    // l'uniforme. Le sommet resolu EXISTE deja en `double` dans un registre ; il suffit de s'en
+    // servir avant de le jeter.
+    //
+    // CE QUE CA NE COUTE PAS : les `R` sommets en `double` ( 32 registres, l'occupation y
+    // passerait ). Le lacet se ferme en STREAMING -- deux `double` pour le sommet precedent, deux
+    // pour le premier -- donc cinq registres de plus en tout, et le tour du polygone est deja
+    // fait par la boucle de resolution.
+    //
+    // LES FACETTES SUIVENT LE MEME CHEMIN. `| v_{i+1} - v_i |` prise sur des sommets `float` perd
+    // sa precision RELATIVE sur les aretes courtes ( deux grands qui donnent un petit, encore ),
+    // et c'est exactement la longueur presque nulle qui faisait diverger la hessienne. Prise en
+    // `double`, seule la racine redescend au flottant du noyau.
+    double a2 = 0;                                       // deux fois l'aire, par le lacet resolu
+    bool   pris = false;                                 // la mesure a-t-elle ete prise ici
     if constexpr ( sizeof( TK ) < 8 && ( CENTRE || FIXE ) ) {
-        if ( raff && nb >= 3 ) {
-            double ax, ay, ao;
-            plan_relu<POIDS,FIXE>( ar, selR( c, nb - 1 ), u0, g0, p0, w0d, ax, ay, ao );
+        if ( raff ) {
+            if ( nb >= 3 ) {
+                double ax, ay, ao;
+                plan_relu<POIDS,FIXE>( ar, selR( c, nb - 1 ), u0, g0, p0, w0d, ax, ay, ao );
+                double v0x = 0, v0y = 0, ppx = 0, ppy = 0;
 #pragma unroll
-            for ( int i = 0; i < R; ++i ) {
-                if ( i >= SUR && i >= nb ) break;
-                double bx, by, bo, vx, vy;
-                plan_relu<POIDS,FIXE>( ar, c[ i ], u0, g0, p0, w0d, bx, by, bo );
-                if ( croise2( ax, ay, ao, bx, by, bo, vx, vy ) ) { x[ i ] = TK( vx ); y[ i ] = TK( vy ); }
-                ax = bx; ay = by; ao = bo;
+                for ( int i = 0; i < R; ++i ) {
+                    if ( i >= SUR && i >= nb ) break;
+                    double bx, by, bo, vx, vy;
+                    plan_relu<POIDS,FIXE>( ar, c[ i ], u0, g0, p0, w0d, bx, by, bo );
+                    if ( ! croise2( ax, ay, ao, bx, by, bo, vx, vy ) ) { vx = double( x[ i ] ); vy = double( y[ i ] ); }
+                    ax = bx; ay = by; ao = bo;
+                    x[ i ] = TK( vx ); y[ i ] = TK( vy );   // `filmix`, le depot et le debordement les relisent
+                    if constexpr ( RES64 ) {
+                        if ( i == 0 ) { v0x = vx; v0y = vy; }
+                        else {
+                            a2 += ppx * vy - vx * ppy;
+                            if ( fac_j ) {                  // la facette `i - 1`, du sommet `i - 1` au sommet `i`
+                                const double ex = vx - ppx, ey = vy - ppy;
+                                fac_j[ size_t( i - 1 ) * ar.n + i0 ] = id_de( ar, c[ i - 1 ] );
+                                fac_l[ size_t( i - 1 ) * ar.n + i0 ] = TK( sqrt( ex * ex + ey * ey ) );
+                            }
+                        }
+                        ppx = vx; ppy = vy;
+                    }
+                }
+                if constexpr ( RES64 ) {
+                    a2 += ppx * v0y - v0x * ppy;            // le lacet se ferme sur le sommet `0`
+                    if ( fac_j ) {
+                        const double ex = v0x - ppx, ey = v0y - ppy;
+                        fac_j[ size_t( nb - 1 ) * ar.n + i0 ] = id_de( ar, selR( c, nb - 1 ) );
+                        fac_l[ size_t( nb - 1 ) * ar.n + i0 ] = TK( sqrt( ex * ex + ey * ey ) );
+                    }
+                }
+            }
+            // `pris` est UNIFORME dans le warp ( `raff` l'est, `nb` ne l'est pas ) : les cellules
+            // vides passent par la meme branche, avec zero partout.
+            if constexpr ( RES64 ) {
+                if ( fac_j )
+#pragma unroll
+                    for ( int e = 0; e < R; ++e )
+                        if ( e >= nb ) { fac_j[ size_t( e ) * ar.n + i0 ] = -1000000; fac_l[ size_t( e ) * ar.n + i0 ] = 0; }
+                pris = true;
             }
         }
     }
@@ -272,7 +325,7 @@ fin:
     } else {
         // ---- LES FACETTES : une par arete dont le `cid` est un voisin. Au DEPOT, seul le `cid`
         //      est ecrit ici -- la longueur vient du second noyau, qui la veut ponderee par rho.
-        if ( fac_j ) {
+        if ( fac_j && ! pris ) {
 #pragma unroll
             for ( int e = 0; e < R; ++e ) {
                 int j = -1000000;                        // case vide ( au-dela de `nb` )
@@ -289,7 +342,7 @@ fin:
                 fac_l[ size_t( e ) * ar.n + i0 ] = l;
             }
         }
-        if constexpr ( DENS != DENS_DEPOT ) mes = nb > 0 ? aire_triee( x, y, nb ) : 0.0;
+        if constexpr ( DENS != DENS_DEPOT ) mes = pris ? 0.5 * fabs( a2 ) : ( nb > 0 ? aire_triee( x, y, nb ) : 0.0 );
     }
     if ( fac_j )
         for ( int e = R; e < NF; ++e ) {                 // `nb <= R` ici : le reste est vide

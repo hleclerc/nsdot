@@ -19,6 +19,9 @@
 --   src/gpu/FilOrd2D.cuh    les sommets ne bougent plus : l'ordre cyclique dans un registre de 64 bits ( -21 % de registres )
 --   src/gpu/FilSuc2D.cuh    tout en masques : la cellule est une relation de succession ( succ / pred )
 --   src/gpu/FilMsk2D.cuh    registres tries, mais la frontiere cueillie par des masques partages entre x, y et c
+--   src/gpu/FilEnt2D.cuh    LES SOMMETS EN ENTIERS 32 BITS : la grille 2^-30, et le predicat de coupe EXACT
+--   src/gpu/Alpha2D.cuh    `alpha*` : le pas ou la premiere cellule touche le plancher, par le POLYNOME
+--                          de l'aire -- degre deux exact, et sans reparcourir l'arbre
 --   src/gpu/FilUni2D.cuh    le meme en une seule boucle, lanes persistantes : perdu ( les phases se remelangent )
 --   src/gpu/FilShm2D.cuh    la rotation en memoire partagee : -26 % d'instructions, -25 % d'occupation, perdu de peu
 --   src/gpu/FilPh2D.cuh     LES PHASES : un noyau persistant par SM, trois files par bloc, l'etat en RAM,

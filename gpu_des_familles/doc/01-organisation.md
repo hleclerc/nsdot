@@ -21,6 +21,15 @@ src/gpu/FilOrd2D.cuh    LES SOMMETS NE BOUGENT PLUS : un registre de 64 bits por
 src/gpu/FilMsk2D.cuh    registres TRIÉS, la frontière par quatre masques de rôle et le remontage
                         en UN SEUL barillet — le plus petit noyau à registres triés : 96 / 59
                         registres contre 128 / 74, pour +6 % de temps ([§ profils](05-profils.md))
+src/gpu/FilEnt2D.cuh    LES SOMMETS EN ENTIERS 32 BITS : la cellule sur la grille 2^-30 dans le
+                        repère du germe, le prédicat de coupe EXACT ( deux `IMAD.WIDE`, aucune
+                        soustraction qui puisse déborder ) ; les poids sur la grille 2^-60, qui
+                        est la leur par homogénéité ([§ échelle](04-echelle.md))
+src/gpu/Alpha2D.cuh     `alpha*` : le pas EXACT où la première cellule touche le plancher
+                        d'aire. Le long de `w - t d` les normales ne bougent pas et les décalages
+                        sont affines, donc le sommet est affine et l'aire un polynôme de degré
+                        deux — racine en forme close, puis une réduction. Ne reparcourt PAS
+                        l'arbre : la connectivité du diagramme courant suffit
 src/gpu/FilSuc2D.cuh    TOUT EN MASQUES : la cellule est une relation de succession ( deux
                         registres `succ` / `pred` ), plus une position ni un index — mêmes
                         registres, même vitesse ([§ profils](05-profils.md))

@@ -1,0 +1,24 @@
+# clangd pour tout le depot. Les `-I` sont dans les `compile_flags.txt` ( un a la racine pour
+# loom / sdot / otrec, un par banc `*_des_familles/` -- le plus proche gagne, et ses chemins sont
+# relatifs a lui ). Ici : ce qui n'a pas de chemin.
+CompileFlags:
+  Remove: [ -march=*, -fno-math-errno ]
+Diagnostics:
+  UnusedIncludes: None
+  MissingIncludes: None
+---
+# CUDA : .cu et .cuh sont du CUDA pour clang, sur l'archi du banc ( RTX 2080 Ti ). Le toolkit est
+# celui de /usr/local/cuda ; clang ne connait pas encore sa version, d'ou le -Wno.
+If:
+  PathMatch: .*\.cuh?
+CompileFlags:
+  Add:
+    - -xcuda
+    - --cuda-gpu-arch=sm_75
+    - -Wno-unknown-cuda-version
+---
+# Les .h sont du C++ ( sans base de compilation, clangd prendrait un .h seul pour du C )
+If:
+  PathMatch: .*\.h
+CompileFlags:
+  Add: [ -xc++ ]

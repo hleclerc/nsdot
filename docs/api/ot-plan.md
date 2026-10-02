@@ -30,15 +30,15 @@ d = distance(
 
 ## `optimal_transport_plan( f, g, metric=None )`
 
-Computes the full OT plan. Returns an `OtPlan` object with all transport quantities.
+Computes the full OT plan. Returns an `SdotPlanNd` object with all transport quantities.
 
 **Parameters** — same as `distance`.
 
-**Returns** — `OtPlan`
+**Returns** — `SdotPlanNd`
 
 ---
 
-## `OtPlan`
+## `SdotPlanNd`
 
 The result of `optimal_transport_plan`.
 

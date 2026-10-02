@@ -14,9 +14,9 @@
 namespace sf::gpu {
 
 /// le mappage cellule / threads
-enum class Variante { FIL, FILREG, FILREGC, FILMIX4, FILMIX6, FILMIX8, FILMIX12, FILMIX16, FILBRK6, FILBRK8, FILBRK10, FILBRK12, FILBRK16, FILBRK8NU, FILROT6, FILROT8, FILNRM8, FILORD8, FILSUC8, FILMSK8, FILMSK8G, FILMSK8F, FILMSK8H, FILMSK8C6, FILMSK8C8, FILNRM8C6, FILNRM8C8, FILUNI8, FILUNI8NP, FILSHM8, FILNRM8TRI, FILNRM8TRIL, FILPH8, FILPH8G, FILPH8B, FILPH8A, FILPH8C, FILPH8O, FILPH8M, FILPH8M4, VOIES, VOIES16, VOIES32, PAQ8x1, PAQ8x2, PAQ8x4, PAQ32x1, PAQ32x2, PAQ32x4, PAQ8x1S, PAQ32x1S, PAQ32x4S, NB };
+enum class Variante { FIL, FILREG, FILREGC, FILMIX4, FILMIX6, FILMIX8, FILMIX12, FILMIX16, FILBRK6, FILBRK8, FILBRK10, FILBRK12, FILBRK16, FILBRK8NU, FILROT6, FILROT8, FILNRM8, FILORD8, FILSUC8, FILMSK8, FILMSK8G, FILMSK8F, FILMSK8H, FILMSK8M, FILENT8, FILENT8M, FILMSK8C6, FILMSK8C8, FILNRM8C6, FILNRM8C8, FILUNI8, FILUNI8NP, FILSHM8, FILNRM8TRI, FILNRM8TRIL, FILPH8, FILPH8G, FILPH8B, FILPH8A, FILPH8C, FILPH8O, FILPH8M, FILPH8M4, VOIES, VOIES16, VOIES32, PAQ8x1, PAQ8x2, PAQ8x4, PAQ32x1, PAQ32x2, PAQ32x4, PAQ8x1S, PAQ32x1S, PAQ32x4S, NB };
 inline const char *nom( Variante v ) {
-    static const char *noms[] = { "fil", "filreg", "filregc", "filmix4", "filmix6", "filmix8", "filmix12", "filmix16", "filbrk6", "filbrk8", "filbrk10", "filbrk12", "filbrk16", "filbrk8nu", "filrot6", "filrot8", "filnrm8", "filord8", "filsuc8", "filmsk8", "filmsk8g", "filmsk8f", "filmsk8h", "filmsk8c6", "filmsk8c8", "filnrm8c6", "filnrm8c8", "filuni8", "filuni8np", "filshm8", "filnrm8tri", "filnrm8tril", "filph8", "filph8g", "filph8b", "filph8a", "filph8c", "filph8o", "filph8m", "filph8m4", "voies", "voies16", "voies32", "paquet8x1", "paquet8x2", "paquet8x4", "paquet32x1", "paquet32x2", "paquet32x4", "paquet8x1S", "paquet32x1S", "paquet32x4S" };
+    static const char *noms[] = { "fil", "filreg", "filregc", "filmix4", "filmix6", "filmix8", "filmix12", "filmix16", "filbrk6", "filbrk8", "filbrk10", "filbrk12", "filbrk16", "filbrk8nu", "filrot6", "filrot8", "filnrm8", "filord8", "filsuc8", "filmsk8", "filmsk8g", "filmsk8f", "filmsk8h", "filmsk8m", "filent8", "filent8m", "filmsk8c6", "filmsk8c8", "filnrm8c6", "filnrm8c8", "filuni8", "filuni8np", "filshm8", "filnrm8tri", "filnrm8tril", "filph8", "filph8g", "filph8b", "filph8a", "filph8c", "filph8o", "filph8m", "filph8m4", "voies", "voies16", "voies32", "paquet8x1", "paquet8x2", "paquet8x4", "paquet32x1", "paquet32x2", "paquet32x4", "paquet8x1S", "paquet32x1S", "paquet32x4S" };
     return noms[ int( v ) ];
 }
 /// `paquet V x K` : `V` voies par cellule, `K` cellules par voie, un parcours par warp ( 2D )
@@ -113,6 +113,25 @@ struct DiagrammeGpu {
     /// releve, une cellule nulle a deja disparu.
     double residu( double cible, double *mini, double *b = nullptr,
                    double seuil = 0, int *nb_cond = nullptr, int *nb_vides = nullptr ) const;
+
+    /// `alpha*` : LE PAS EXACT ou la premiere cellule touche `seuil`, par le POLYNOME de l'aire
+    /// ( `Alpha2D.cuh` ). Le long de `w - t d` l'aire de chaque cellule est un polynome de degre
+    /// deux EXACT tant que la combinatoire ne change pas, donc `alpha*_i` est une racine en forme
+    /// close et `alpha*` une reduction -- il n'y a rien a essayer.
+    ///
+    /// `d` est la direction dans l'ordre DE L'APPELANT ( `n` doubles, hote ). Demande un
+    /// `tour_newton` juste avant : c'est SA connectivite qui sert, et cette passe ne reparcourt
+    /// pas l'arbre. Rend `alpha*` ( `1e300` si aucune cellule ne contraint ), et par `ms` le
+    /// temps GPU.
+    ///
+    /// `pol`, s'il est donne, recoit `( a0, a1, a2 )` par cellule ( `3 n`, en SoA, indexes par
+    /// identifiant ). `a0` doit valoir la mesure et `a1` valoir `-( L d )` : c'est le controle
+    /// exact de toute la chaine.
+    /// `conf` : le RAYON DE CONFIANCE du polynome, en fractions du rayon de cellule ( 0 : off ).
+    /// `nu`, s'il est donne, recoit le `alpha*` NU -- celui d'avant la region de confiance --
+    /// de quoi mesurer si elle mord. `pol` recoit `( a0, a1, a2, t_conf )`, soit `4 n`.
+    double limites( const double *d, double seuil, double conf = 0, double *ms = nullptr,
+                    double *nu = nullptr, std::vector<double> *pol = nullptr );
 
     /// la hierarchie du multigrille, montee depuis `H` ( le motif ne change pas dans un Newton,
     /// seuls les coefficients -- a remonter quand ils bougent )

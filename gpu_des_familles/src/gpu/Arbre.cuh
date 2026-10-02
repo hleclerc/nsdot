@@ -41,6 +41,11 @@ struct Arbre {
     const double      *w64;
     const int         *u[ D ];  ///< positions en VIRGULE FIXE 32 bits ( echelle `ECH_FIXE` )
     const long long   *u64[ D ];///< les memes en VIRGULE FIXE 64 bits ( echelle `ECH_F64` )
+    /// LA DIRECTION DE NEWTON, dans l'ordre de l'arbre ( `nullptr` : pas de modele polynomial ).
+    /// Le long du rayon `w - t d`, le decalage de chaque plan est AFFINE en `t` et sa normale ne
+    /// bouge pas -- donc chaque sommet se deplace affinement et l'aire est un polynome de degre
+    /// `D` exact. Voir `Alpha2D.cuh`.
+    const double      *d64 = nullptr;
     const int         *ids;     ///< rang -> identifiant
     int                n;
 };
@@ -173,10 +178,15 @@ constexpr double SEUIL_DET = 1e-6;
 
 /// LE PLAN D'UNE COUPE, RELU DEPUIS SON `cid`, EN `double` et dans le repere du germe. C'est le
 /// meme plan que la coupe a utilise, mais sans l'arrondi final au flottant du noyau.
+/// `dof` : LA DERIVEE DU DECALAGE le long du rayon `w - t d`. Le plan `i | j` porte
+/// `( w_i - w_j ) / 2`, donc `off( t ) = off( 0 ) - t ( d_i - d_j ) / 2` -- affine, et la normale
+/// ne bouge pas du tout. Un cote de la boite ne bouge pas non plus. C'est tout ce qu'il faut pour
+/// que le sommet soit affine en `t` ( `Alpha2D.cuh` ).
 template<bool POIDS, int FIXE, class TK>
 __device__ __forceinline__ void plan_relu( const Arbre<TK,2> &ar, int cid, const int *u0,
                                            const long long *g0, const TK *p0, double w0,
-                                           double &nx, double &ny, double &off ) {
+                                           double &nx, double &ny, double &off,
+                                           double d0 = 0, double *dof = nullptr ) {
     if ( cid >= 0 ) {                                    // un germe : le bissecteur
         nx = FIXE == 32 ? double( ar.u[ 0 ][ cid ] - u0[ 0 ] ) * INV_FIXE
            : FIXE == 64 ? double( ar.u64[ 0 ][ cid ] - g0[ 0 ] ) * INV_F64
@@ -186,6 +196,7 @@ __device__ __forceinline__ void plan_relu( const Arbre<TK,2> &ar, int cid, const
                         : double( ar.c[ 1 ][ cid ] ) - double( p0[ 1 ] );
         off = 0.5 * ( nx * nx + ny * ny );
         if constexpr ( POIDS ) off += 0.5 * ( w0 - ar.w64[ cid ] );
+        if ( dof ) *dof = ar.d64 ? -0.5 * ( d0 - ar.d64[ cid ] ) : 0.0;
         return;
     }
     // LES QUATRE COTES DU CARRE, dans l'ordre que pose le noyau ( l'arete `i` va du sommet `i` au
@@ -201,6 +212,7 @@ __device__ __forceinline__ void plan_relu( const Arbre<TK,2> &ar, int cid, const
     off = FIXE == 32 ? double( ( haut ? ECH_FIXE : 0 ) - u0[ d ] ) * INV_FIXE
         : FIXE == 64 ? double( ( haut ? ECH_F64 : 0ll ) - g0[ d ] ) * INV_F64
                      : ( haut ? 1.0 : 0.0 ) - double( p0[ d ] );
+    if ( dof ) *dof = 0.0;                               // un cote de la boite ne depend pas de `w`
 }
 
 /// LE SOMMET porte par les plans `a` ( l'arete qui arrive ) et `b` ( celle qui part ). Rend
@@ -213,6 +225,25 @@ __device__ __forceinline__ bool croise2( double ax, double ay, double ao,
         return false;
     vx = ( ao * by - bo * ay ) / det;
     vy = ( ax * bo - bx * ao ) / det;
+    return true;
+}
+
+/// LE SOMMET ET SA VITESSE. Les deux normales sont FIXES le long du rayon : le sommet resout le
+/// meme systeme `2 x 2` avec, au second membre, les derivees des decalages. On reutilise donc le
+/// determinant deja calcule -- une seconde resolution ne coute que deux produits croises et deux
+/// multiplications. C'est ce qui rend le modele polynomial presque gratuit.
+__device__ __forceinline__ bool croise2v( double ax, double ay, double ao, double dao,
+                                          double bx, double by, double bo, double dbo,
+                                          double &vx, double &vy, double &px, double &py ) {
+    const double det = ax * by - ay * bx;
+    const double e1 = ax * ax + ay * ay, e2 = bx * bx + by * by;
+    if ( ! ( det * det > SEUIL_DET * SEUIL_DET * e1 * e2 ) )
+        return false;
+    const double inv = 1.0 / det;
+    vx = ( ao  * by - bo  * ay ) * inv;
+    vy = ( ax  * bo - bx  * ao ) * inv;
+    px = ( dao * by - dbo * ay ) * inv;
+    py = ( ax * dbo - bx * dao ) * inv;
     return true;
 }
 

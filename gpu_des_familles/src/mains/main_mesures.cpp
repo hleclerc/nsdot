@@ -90,6 +90,14 @@ int mesure( const Args &a, const Opt &o, const Nuage<PD::dim> &nu ) {
         const gpu::Variante v = gpu::Variante( iv );
         if ( ! choisie( o.variante, gpu::nom( v ) ) ) continue;
         if ( D == 3 && v != gpu::Variante::FIL && v != gpu::Variante::VOIES ) continue;   // en 3D « voies » est le warp
+        // LA GRILLE ENTIERE est une variante `float` : ses sommets sont des `int` a l'echelle
+        // `ECH_FIXE`, ce qui n'a pas de sens sous un noyau `double`. La sauter pour de bon, et pas
+        // rendre un `Chrono` vide -- `res` garderait alors les mesures de la variante precedente,
+        // et la ligne imprimee serait celle d'une AUTRE variante.
+        if ( std::is_same_v<TK,double> && ( v == gpu::Variante::FILENT8 || v == gpu::Variante::FILENT8M ) ) {
+            std::printf( "      %-8s  -- `float` seulement ( sommets sur la grille entiere )\n", gpu::nom( v ) );
+            continue;
+        }
         const gpu::Chrono ch = g.mesures( v, a.nv( D ), o.reps_gpu, res );
         // l'ecart d'une cellule est rapporte a ELLE ( ou a la moyenne si elle est plus petite ). En
         // `float` c'est du bruit : une cellule de cote 1e-3 avec des sommets a 6e-8 pres a son aire
@@ -172,7 +180,7 @@ int main( int argc, char **argv ) {
         if ( s == "--temoin-double" ) { o.temoin_double = true; continue; }
         std::printf( "usage: mesures [options]\n" );
         Args::usage();
-        std::printf( "  --variante V    fil | filreg | filregc | filmix{4,6,8,12,16} | filbrk{6,8,10,12,16} | filbrk8nu | filrot{6,8} | filnrm8 | filord8 | filsuc8 | filmsk8 | filmsk8g | filmsk8f | filmsk8h | filmsk8c{6,8} | filnrm8c{6,8} | filuni8 | filuni8np | filshm8 | filnrm8tri | filnrm8tril | filph8 | filph8g | filph8b | filph8a | filph8c | filph8o | filph8m | filph8m4 | voies | voies16 | voies32 | paquet{8,32}x{1,2,4}[S] | toutes ( plusieurs : separees par des virgules )\n"
+        std::printf( "  --variante V    fil | filreg | filregc | filmix{4,6,8,12,16} | filbrk{6,8,10,12,16} | filbrk8nu | filrot{6,8} | filnrm8 | filord8 | filsuc8 | filmsk8 | filmsk8g | filmsk8f | filmsk8h | filmsk8m | filent8 | filent8m | filmsk8c{6,8} | filnrm8c{6,8} | filuni8 | filuni8np | filshm8 | filnrm8tri | filnrm8tril | filph8 | filph8g | filph8b | filph8a | filph8c | filph8o | filph8m | filph8m4 | voies | voies16 | voies32 | paquet{8,32}x{1,2,4}[S] | toutes ( plusieurs : separees par des virgules )\n"
                      "  --reps-gpu R    repetitions du noyau GPU, minimum       (10)\n"
                      "  --temoin-double le temoin de precision en double, meme si --kernel float\n" );
         return s == "--help" || s == "-h" ? 0 : 1;

@@ -301,9 +301,14 @@ divergeait — une boîte mal dimensionnée fait recommencer la cellule, donc so
 | `filmsk8h` (germe + fixe 64) | 1.0e-05 | 5.7e-06 | 5.8e-05 | 1.2e-04 | 2.2e-04 | 9.5 |
 | **`filmsk8h` + sommets résolus** | **1.4e-08** | **1.1e-08** | **4.9e-08** | **8.4e-08** | **1.4e-07** | **9.9** |
 
-**1.1e-08 de médiane, c'est un dixième de l'epsilon du `float`** : la cellule ordinaire est exacte
-à l'arrondi près, et il n'y a plus rien à gagner sans changer de flottant. Le prix est **+5 %**
-sur `filmsk8f` et **+32 %** sur `filnrm8`.
+**1.1e-08 de médiane, c'est un dixième de l'epsilon du `float`.** Le prix est **+5 %** sur
+`filmsk8f` et **+32 %** sur `filnrm8`.
+
+> J'avais écrit ici « la cellule ordinaire est exacte à l'arrondi près, et il n'y a plus rien à
+> gagner sans changer de flottant ». **C'est faux d'un facteur 220 000**, et la section suivante
+> le corrige : 1.4e-07 ≈ 2.4 · 2⁻²⁴ n'est pas un reste de géométrie, c'est l'epsilon du `float`
+> tout nu — donc un arrondi de STOCKAGE, celui qui reconvertit en `float` le sommet qu'on venait
+> de résoudre en `double`.
 
 **LA VIRGULE FIXE 64 BITS CHANGE DE STATUT.** La section précédente concluait qu'elle « ne
 rapporte RIEN de plus », et c'était juste : à 32 bits la quantification (9.3e-10) était déjà
@@ -344,16 +349,199 @@ Sur l'uniforme à poids `h²` (`--weights 1`, `n = 10⁶`), le terme des poids e
 invisible — médiane 8.2e-09 contre 4.7e-09, max 1.0e-06 contre 2.0e-07 — et c'est ce que le
 modèle prédit : `|w| ~ h²` y rend `eps |w| / h²` égal à `eps`.
 
+## LA QUATRIÈME RÉPARATION : ne pas jeter le sommet qu'on vient de résoudre
+
+Les trois réparations ci-dessus laissaient **1.4e-07 de max et 1.1e-08 de médiane** sur
+l'uniforme, et j'avais écrit que « la cellule ordinaire est exacte à l'arrondi près, il n'y a plus
+rien à gagner sans changer de flottant ». C'était faux, et l'erreur était d'un facteur **220 000**.
+
+Le compte est pourtant simple : 1.4e-07 ≈ 2.4 · 2⁻²⁴. Ce n'est pas un reste de géométrie, c'est
+**l'epsilon du `float` tout nu** — donc un arrondi de stockage, pas un arrondi de calcul. Et il
+n'y en a qu'un : le raffinement résout le sommet en `double`, à `2⁻⁵³` près, puis
+
+```cpp
+x[ i ] = TK( vx );   // et on jette les vingt-neuf bits qu'on vient de gagner
+```
+
+**Le sommet résolu existe déjà dans un registre `double`.** Il suffit de s'en servir avant de le
+jeter : la mesure est prise *dans* la boucle de résolution, et le lacet se ferme en **streaming**
+— deux `double` pour le sommet précédent, deux pour le premier, cinq registres en tout. On ne
+garde jamais les `R` sommets en `double`, ce qui coûterait 32 registres et l'occupation avec.
+Les longueurs de facettes suivent le même chemin : `| v_{i+1} − v_i |` prise sur des sommets
+`float` perd sa précision *relative* sur les arêtes courtes — deux grands qui donnent un petit,
+encore — et c'est exactement la longueur presque nulle qui faisait diverger la hessienne.
+
+C'est la variante `filmsk8m` (`SF_RES64=0` la désactive), et elle est **le défaut** du chemin de
+Newton.
+
+### Ce que ça donne (`--temoin-double`, `--reps-gpu 5`)
+
+**Uniforme, `n = 10⁶`, Voronoï :**
+
+| | médiane | p99.99 | max | ns/germe | registres |
+|---|---|---|---|---|---|
+| `filnrm8` | 3.2e-05 | 7.6e-04 | 4.8e-03 | 7.7 | 74 |
+| `filmsk8h` (les trois réparations) | 1.1e-08 | 8.4e-08 | 1.4e-07 | 10.1 | 78 |
+| **`filmsk8m`** (+ la mesure résolue) | **4.9e-14** | **4.9e-12** | 4.6e-08 | 10.6 | 94 |
+
+**Médiane 1.1e-08 → 4.9e-14, pour +5 % de temps.** La cellule ordinaire n'est plus « exacte à
+l'arrondi du `float` » : elle est exacte **à l'arrondi du `double`**, dans un noyau dont tous les
+registres géométriques sont des `float`. Ce qui est cohérent, et qu'il faut dire pour ne pas
+laisser croire à un miracle : le sommet EST calculé en `double` depuis des positions en virgule
+fixe 64 bits — le `float` ne sert plus qu'à décider *quelles* coupes s'appliquent, et cette
+décision-là n'a jamais eu besoin de précision.
+
+### Ce que ça coûte en BANDE PASSANTE, et pourquoi la réponse est « rien »
+
+La résolution **relit** les positions du voisin (`u64[0..1]`, 16 octets) et son poids (8 octets) :
+24 octets par plan, ~6 plans par cellule. La question légitime est de savoir si ce sont des accès
+DRAM. Le test décisif est la **loi en `n`** — si c'était de la bande passante, le surcoût
+grandirait quand le jeu de travail sort du cache :
+
+| uniforme, `float`, ns/germe | `n = 10⁶` | `n = 10⁷` |
+|---|---|---|
+| sans résolution (`SF_RAFF=0`) | 9.2 | 9.8 |
+| + la résolution | 9.7 (**+5.4 %**) | 10.1 (**+3.1 %**) |
+| + la mesure en `double` | 10.0 | 10.6 |
+| **les deux** | **+8.7 %** | **+8.2 %** |
+
+**Le surcoût ne grandit pas, il diminue.** À `n = 10⁷` les positions font 160 Mo — trente fois les
+5 Mo de L2 — et la résolution coûte proportionnellement *moins*. La raison est structurelle :
+**le parcours de l'arbre vient de lire ~25 plans candidats par cellule, la résolution n'en relit
+que 6.** C'est un sous-ensemble de ce que le même warp a touché quelques microsecondes plus tôt,
+donc des hits L2 ; ce qui coûte, c'est l'arithmétique `double`.
+
+Et c'est le bon côté de l'arbitrage. L'alternative — garder les plans en `double` dans des
+registres pendant la coupe — coûterait 24 registres par cellule (trois `double` fois huit), soit
+bien plus de 8 % d'occupation. **On échange 24 octets de trafic caché contre 24 registres**, et
+sur une carte c'est toujours le bon sens.
+
+**Le max, lui, ne suit pas** : 4.6e-08 au lieu de ~1e-13. C'est le garde-fou `SEUIL_DET = 1e-6`
+de `croise2` — quand les deux plans porteurs sont trop parallèles, on garde le sommet du noyau
+plutôt que de le remplacer par un quotient qui explose. Une poignée de cellules par million
+retombent donc au niveau `float` ; le p99.99 à 4.9e-12 dit combien peu. **Le seuil est désormais
+le seul terme qui reste**, et c'est le bon endroit où regarder ensuite.
+
+**Les deux nuages « lignes », `n = 10⁵` :**
+
+| | Voronoï, dédupliqué | | aires égales, dégénéré | |
+|---|---|---|---|---|
+| | médiane | max | médiane | max |
+| `filnrm8` | 3.4e-06 | 6.4e-04 | 2.0e-03 | 2.7e+00 |
+| `filmsk8h` | 1.2e-09 | 4.2e-07 | 7.7e-07 | 7.1e-05 |
+| **`filmsk8m`** | **5.8e-15** | **1.8e-10** | **1.0e-11** | **2.1e-07** |
+
+Sur le nuage **propre**, `filmsk8m` rejoint le témoin `double` : 1.8e-10 de maximum, zéro cellule
+fausse au débogueur. Sur le nuage **dégénéré** — conservé exprès, § 23.7 du banc CPU — il reste
+2.1e-07 de maximum, et c'est la paire de germes à 10⁻⁸ qui le fixe.
+
+## LES SOMMETS EN ENTIERS 32 BITS (`filent8`, `filent8m`)
+
+La question posée était : jusqu'où peut-on aller en entiers dans la construction d'une cellule ?
+`src/gpu/FilEnt2D.cuh` est `filmsk` à l'identique — mêmes masques de rôle, même barillet, même
+résolution finale — mais la cellule vit sur la **grille `2⁻³⁰`** dans le repère du germe, et la
+coupe s'écrit **sans un seul arrondi** :
+
+```
+2 ( du . V )  ≤  |du|² + ( W₀ − Wⱼ )        du = uⱼ − u₀,   W = w · ECH_FIXE²
+```
+
+**Où vivent les `w`, enfin.** `w` a la dimension d'une longueur au carré, donc sa grille naturelle
+est le **carré** de celle des positions : à `2⁻³⁰` sur `u`, c'est `2⁻⁶⁰` sur `w`. Avec cette
+échelle `|du|²` et `W₀ − Wⱼ` sont sur la MÊME grille et l'expression est homogène sans facteur
+correctif. Il n'y a rien à régler, et c'est la réponse à « les ordres de grandeur des `w` sont
+moins maîtrisés » : ils le sont exactement autant que ceux des positions, une fois la bonne
+puissance de deux choisie.
+
+Toutes les bornes tiennent sous `2⁶³` (`|du| ≤ 2³⁰`, `|V| ≤ 2³⁰`, poids écrêté à `2⁶¹`) et la
+comparaison se fait **sans soustraction** — `2 l > off` — pour qu'aucun intermédiaire ne déborde
+quel que soit l'éloignement du plan. Deux `IMAD.WIDE`, une addition, une comparaison.
+
+**Ce qui reste approché, et pourquoi c'est volontaire.** L'interpolation `s₀ / (s₀ − s₁)` est en
+`float` : l'exiger exacte demanderait une division de 71 bits par 40, que la carte n'a pas, et ça
+ne servirait à rien puisque **les sommets sont résolus** à la fin. L'élagage reste en `float` : il
+est conservatif par construction. L'aire sur la grille, elle, est exacte — accumulateur
+`__int128`, parce que la somme des produits croisés ne tient pas dans 64 bits.
+
+### Les chiffres
+
+**Uniforme, `n = 10⁶` :**
+
+| | médiane | max | ns/germe |
+|---|---|---|---|
+| `filmsk8h` | 1.1e-08 | 1.4e-07 | 10.1 |
+| `filmsk8m` | 4.9e-14 | 4.6e-08 | 10.6 |
+| `filent8` (mesure sur la grille) | 1.9e-07 | 1.7e-06 | 11.8 |
+| `filent8m` (mesure résolue) | **4.9e-14** | 5.4e-08 | 12.0 |
+
+**Trois conclusions, et elles sont nettes.**
+
+**(a) La grille entière SEULE est un recul, d'un facteur 17.** `filent8` fait 1.9e-07 de médiane
+contre 1.1e-08 pour `filmsk8h`. La raison est structurelle et se calcule d'avance : la grille est
+celle de **la boîte**, pas celle de la cellule — le polygone part du carré unité, donc on ne peut
+pas la resserrer. Le sommet porte `2⁻³¹` d'erreur ABSOLUE, quand le même sommet en `float` *dans
+le repère du germe* en porte `h · 2⁻²⁴`. Les deux se croisent à `h = 2⁻⁷`, soit **n ≈ 1.6 · 10⁴** :
+en dessous l'entier gagne, au-dessus le repère du germe gagne, et à `n = 10⁶` il gagne d'un
+facteur 8 sur le sommet — 17 sur l'aire.
+
+**(b) Une fois la mesure résolue, la grille entière ne coûte plus rien en précision.**
+`filent8m` = 4.9e-14, au chiffre près comme `filmsk8m`. C'est attendu et c'est le point : les
+entiers ne servent qu'à **décider**, et la décision n'a besoin que de vingt bits sur une cellule
+de `2⁻¹⁰`. Le prix est **+13 %** (12.0 contre 10.6 ns/germe).
+
+**(c) Ce que ces 13 % achètent, c'est la cohérence, pas la précision.** Le masque `m` dit
+désormais la vérité sur les sommets tels qu'ils sont stockés : plus d'écart possible entre « le
+bit dit dehors » et « la géométrie dit dedans », donc l'arc extérieur reste contigu, le polygone
+reste convexe, l'ordre cyclique reste juste. Sur ces nuages ça ne se voit pas — `filmsk8m` ne
+rate rien. C'est une assurance, et il faut la juger comme telle.
+
+### Et le contre-exemple, qui est le plus instructif
+
+Sur `lignes / aires égales` — le nuage dégénéré — **`filent8` et `filent8m` sont FAUX**, avec un
+écart maximal de **1.0**, pendant que `filmsk8m` y fait 2.1e-07 sans une seule cellule fausse.
+Le débogueur donne le compte exact : **une cellule vidée et quatre fausses sur 100 000**, de rangs
+35999 / 36000 et 36159 / 36160 — des paires **adjacentes dans l'arbre**, donc voisines dans
+l'espace. C'est la paire de germes à `δ = 10⁻⁸`, et sa voisine.
+
+Le calcul dit pourquoi, et il tient en une ligne : **`δ = 10⁻⁸` fait 11 pas d'une grille à
+`2⁻³⁰ = 9.3e-10`.** `filmsk8h/m`, qui lit les positions en virgule fixe **64 bits**, voit la même
+paire à 4.5 · 10⁶ pas. Quantifier les positions à `2⁻³⁰` *fusionne* la paire, et une cellule
+avale l'autre — d'où l'écart de 1.0, qui est exactement « deux fois l'aire attendue » sur le
+survivant et zéro sur l'autre.
+
+**Et le `double` n'y échappe pas, il recule seulement l'échéance.** Sous un noyau `double` avec
+`FIXE = 64`, les positions sont quantifiées à `2⁻⁵² = 2.2e-16` ; pour la même paire à `10⁻⁸`
+cela fait `2.2e-08` d'erreur RELATIVE sur `Δp`, donc sur la normale du plan — et le banc rend
+2.1e-07 d'écart maximal sur ce nuage, **en `double`**, contre 1e-13 partout ailleurs. Ce n'est
+donc pas une faiblesse des entiers : c'est la propriété de toute grille fixe face à une paire
+assez proche, et le seul remède est en amont.
+
+**C'est la leçon centrale de l'exercice** : l'arithmétique exacte sur une entrée mal quantifiée
+donne une réponse exactement fausse. La discipline EGC — quantifier l'entrée UNE fois, puis être
+exact dessus — n'a de sens que si la quantification est fine devant **la plus petite distance du
+nuage**, et pas devant l'espacement typique. Ce qui rejoint directement ce que
+`solvers_des_familles` vient d'établir (§ 23.10) : **la grille entière devient sûre exactement
+quand les diracs trop proches ont été agrégés en amont** — c'est la même précondition, pour la
+même raison.
+
 ### Conséquence pour le choix de carte
 
-Elle est renversée. **Le `float` n'est plus disqualifié par le Laguerre à poids forts** : la
-médiane y passe de 5.4e-4 à 7.7e-7 et le max de 2.3 à 7.1e-5. Reste à savoir si `7.7e-7` suffit
-au transport optimal — sur le chemin de Newton mesuré ici, oui : le Newton `float` suit le Newton
-`double` pas pour pas et s'arrête à 6.4e-08 de résidu ([§ ce qui reste](06-ce-qui-reste.md)).
-Le verdict « `double` obligatoire, donc H100 / A100 » ne tient donc plus tel quel, et la **RTX PRO
-6000** redevient candidate pour le transport optimal aussi. Ce qui n'a pas changé : l'arbre, la
-mémoire, et le fait que le `float` seul ne descend pas sous ~1e-7 de résidu — la dernière
-itération de Newton, elle, restera en `double`.
+Elle est renversée, et deux fois. **Le `float` n'est plus disqualifié par le Laguerre à poids
+forts** : sur `lignes / aires égales` la médiane passe de 5.4e-4 à 7.7e-7 avec les trois
+réparations, puis à **1.0e-11** avec la mesure résolue. Et sur le chemin de Newton, le `float`
+ne se contente plus de suivre le `double` : **il finit sur le même résidu**, 3.700e-12 contre
+3.699e-12, avec les mêmes 162 itérations de CG ([§ ce qui reste](06-ce-qui-reste.md)).
+
+Le verdict « `double` obligatoire, donc H100 / A100 » ne tient donc plus du tout, et la **RTX PRO
+6000** devient le bon choix pour le transport optimal aussi — le FP64 à 1/32 ou 1/64 n'est plus
+sur le chemin critique. Ce qui n'a pas changé : l'arbre et la mémoire. Ce qui est devenu faux et
+qu'il faut retirer partout : « le `float` seul ne descend pas sous ~1e-7 de résidu, la dernière
+itération restera en `double` ». Il n'y a plus de dernière itération à basculer.
+
+**Ce que le `float` n'achète toujours pas**, en revanche, c'est la **topologie** : 44 facettes
+manquantes et 53 en trop sur 6·10⁶ à `n = 10⁶` (1.1e-09 du poids de la hessienne), identiques
+avant et après la réparation, nulles en `double`. C'est la seule chose qu'un prédicat exact
+achèterait — et c'est ce que mesure `filent8` ci-dessus.
 
 ---
 

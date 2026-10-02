@@ -10,7 +10,7 @@ errand --setup --env nsdot    # l'environnement, avec les quatre en éditable
 
 ```
 loom/     git@github.com:hleclerc/loom.git       Jax/Torch → noyaux C++ (tensor, Aggregate, ffi_call)
-sdot/     git@github.com:hleclerc/sdot-ffi.git   Transport optimal semi-discret (Cell, PowerDiagram, OtPlan)
+sdot/     git@github.com:hleclerc/sdot-ffi.git   Transport optimal semi-discret (OtProblem, Cell, PowerDiagram)
 otrec/    git@github.com:hleclerc/otrec.git      Reconstruction CT (Reconstruction, Sinogram)
 errand/   git@github.com:hleclerc/errand.git     Le lanceur de travaux
 ```
@@ -48,7 +48,7 @@ errand                              # tout ce qui doit passer (C++ + Python)
 errand test_Cell                    # tout test_Cell.py
 errand test_Cell::batch             # le cas "batch" de test_Cell.py
 errand "test_Cell::grad_*"          # glob sur le nom
-errand -k bench "test_OtPlan1d::*" --nb-diracs 5000
+errand -k bench "test_SdotPlan1d::*" --nb-diracs 5000
 errand -k experiment exp_lung --nb-diracs 5000,10000   # une sortie par valeur
 
 # Ailleurs, et à plusieurs
@@ -245,14 +245,15 @@ du projet, `--import` nommant seulement les modules qui enregistrent leur racine
 fait `.github/workflows/wheels.yml`. `LOOM_KERNELS=auto|catalogue|atelier`. Voir
 `loom/src/loom/compilation/{catalogue,cli}.py`.
 
-Le transport semi-discret (`sdot.OtPlan`) est résolu **en un appel**, tout en C++
-(`sdot/include/sdot/otplan/`) : le Newton amorti du banc `solvers_des_familles`, le laplacien
+Le transport semi-discret (`sdot.OtProblem.solve()`) est résolu **en un appel**, tout en C++
+(`sdot/include/sdot/sdotplan/`) : le Newton amorti du banc `solvers_des_familles`, le laplacien
 assemblé sans tri, Cholesky (Eigen) / AMG (AMGCL) / CG en unité de domaine, le pas par les limites
 en 2D, la continuation en largeur pour les densités qui se concentrent ; le domaine est le support
 que la densité déclare (`bounding_half_spaces`). Eigen et AMGCL sont téléchargés par loom lui-même au premier
 noyau compilé (`loom/src/loom/compilation/externals.py` : archive épinglée + SHA-256, dans le cache
 utilisateur, puis sur le chemin d'inclusion ; `LOOM_EXTERNALS=0` pour s'en passer -- le gradient
-conjugué maison reste). Voir `notes/2026-09-22-otplan-cpp.md`.
+conjugué maison reste). Voir `notes/2026-09-22-otplan-cpp.md`, puis
+`notes/2026-10-02-sdotplan.md` (la refonte : `OtProblem`, les noms, ce qui reste).
 
 La compilation passe par **deux graphes**, le critère étant *avoir des dépendants ou non*
 (`loom/src/loom/compilation/build.py`) :

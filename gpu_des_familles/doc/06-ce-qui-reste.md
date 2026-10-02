@@ -709,6 +709,46 @@ exactement le comportement décrit sur CPU (README § 19 de `solvers_des_famille
 le nombre de chiffres justes à chaque itération, donc le partage `fp32` / `fp64` est
 **structurel** et tombe toujours au même endroit, aux deux ou trois dernières itérations.
 
+#### PUIS LE PLANCHER A DISPARU : la mesure prise sur le sommet résolu
+
+La quatrième réparation ([§ échelle](04-echelle.md)) enlève le seul arrondi qui restait — le
+sommet résolu en `double` était reconverti en `float` avant de servir à l'aire. Même commande,
+même nuage, `--arbre-gpu --newton 10`, critère `lin` avec plancher d'aire (`--marge 0.5`, toute
+cellule garde la moitié de ce qu'elle vaut) ; `SF_RES64=0` restaure l'ancien comportement :
+
+| | `float`, `SF_RES64=0` | **`float`** | `double` |
+|---|---|---|---|
+| itérations | 7 | **7** | 7 |
+| les pas | 0.125 … 1 | **les mêmes** | les mêmes |
+| essais de pas | 4, puis 1 partout | **identique** | identique |
+| plus petite cellule | 0.162 → 1.00 | **identique** | identique |
+| résidu à l'itération 6 | 2.621e-07 | **2.537e-07** | 2.537e-07 |
+| **résidu final** | 6.466e-08 | **3.700e-12** | 3.699e-12 |
+| itérations de CG | 167 | **162** | 162 |
+| 18 diagrammes | 1.29 s | **1.27 s** | 2.65 s |
+| **total** | 2.84 s | **2.79 s** | 4.24 s |
+
+**Le Newton `float` finit sur le résidu du Newton `double`, à quatre chiffres significatifs**
+(3.700e-12 contre 3.699e-12), avec le même nombre d'itérations de CG (162), la même dernière
+itération (59), les mêmes pas et les mêmes essais. Le plancher `fp32` à 6.4e-08 n'était pas une
+propriété du `float` : c'était **un arrondi de stockage**, et il a coûté quatre chiffres pendant
+toute l'étude.
+
+Le contrôle de la dérivée le dit aussi, par différence finie centrée : l'écart médian sur
+`dm/dw = +L` passe de **1.1e-08 à 2.9e-11** (le `double` fait 9.3e-15).
+
+**Ce que ça change pour la stratégie mixte.** Il n'y a plus de bascule à faire : le `float` seul
+atteint 3.7e-12 sur ce nuage, soit cinq ordres de grandeur sous la tolérance par défaut (1e-7).
+Le gain sur le total est de **×1.52** (2.79 s contre 4.24 s), **×2.09** sur les diagrammes seuls.
+La phrase « le `float` seul ne descend pas sous ~1e-7 de résidu » est fausse et doit être retirée
+partout où elle traîne.
+
+**Ce qui n'a PAS bougé, et c'est cohérent** : les 44 facettes manquantes et 53 en trop (1.1e-09 du
+poids total) sont identiques dans les deux runs `float`. Elles relèvent de la **topologie**, que
+le `float` décide et que cette réparation ne touche pas — elle ne change que les coordonnées. En
+`double` il n'y en a aucune. C'est la frontière exacte entre ce qu'un flottant plus précis achète
+et ce qu'il faudrait un prédicat exact pour acheter ([§ échelle](04-echelle.md), `filent8`).
+
 Ce qui change par rapport au CPU, c'est le **rapport de vitesse par diagramme**. Sur le CPU il
 vaut `s ≈ 1` et la stratégie mixte y perd exactement le surcoût de ses diagrammes
 supplémentaires. Ici, à `n = 10⁶` :
@@ -723,6 +763,127 @@ borné par l'arithmétique seule. **Sur cette carte la bascule `fp32 → fp64` r
 le CPU elle ne rapportait rien : le résidu final `6.4e-08` est déjà sous la tolérance par défaut
 (1e-7), et les deux dernières itérations en `double` coûteraient ~0.8 s de plus, pour un total
 sous les 4 s contre 4.29.
+
+### `alpha*` PAR LE POLYNÔME DE L'AIRE (`--pas limites`)
+
+La recherche de pas par essais dyadiques a un défaut qui ne se voit pas sur l'uniforme et qui est
+mortel ailleurs : **elle ne sait que doubler et diviser par deux.** Elle part du pas précédent
+doublé, descend jusqu'à ce qu'un pas passe, et recommence — donc après chaque refus elle
+redescend d'un facteur deux et doit *re-grimper* pendant plusieurs itérations. Sur un nuage dur
+ça donne une dent de scie qui ne s'arrête jamais.
+
+Le remède est celui du banc CPU (`essai-limites`, README § 21.5) et il repose sur un fait exact :
+**le long du rayon `w − t d`, l'aire d'une cellule est un polynôme de degré deux.** Les normales
+des plans ne dépendent que des positions, donc ne bougent pas ; les décalages sont affines en
+`t` ; donc chaque sommet, qui résout un système `2 × 2` à matrice fixe, est **affine en `t`** ; et
+l'aire par le lacet est une forme quadratique des sommets. `alpha*_i` est alors la plus petite
+racine positive de `A_i(t) = seuil`, en forme close, et `alpha* = min_i alpha*_i` est une
+réduction. **Il n'y a rien à essayer.**
+
+#### Ce que ça coûte sur la carte : presque rien, et voici pourquoi
+
+La direction `d` n'existe qu'*après* le gradient conjugué, donc après le diagramme qui a fourni la
+hessienne : une seconde passe sur les cellules est structurelle. Mais elle n'a pas besoin de
+refaire le diagramme — **la connectivité est déjà là**, dans `fac_j`, une arête par case et dans
+l'ordre du polygone. Or l'arête `e` va du sommet `e` au sommet `e + 1`, donc **le sommet `i` est
+l'intersection des plans `i − 1` et `i`** : ni parcours d'arbre, ni élagage, ni recherche de plan,
+ni même découpe. Huit lectures de plan et huit systèmes `2 × 2` — et le second système réutilise
+le déterminant du premier (`croise2v`), puisque c'est la même matrice avec les dérivées des
+décalages au second membre.
+
+| | `n = 10⁵` | `n = 10⁶` |
+|---|---|---|
+| un `alpha*` | **0.46 ms** | **7.6 ms** |
+| un diagramme | 9.7 ms | 69 ms |
+| **la passe en % d'un diagramme** | **4.7 %** | **11 %** |
+
+#### Le contrôle, exact, et il ne coûte rien non plus
+
+`dm_i/dw_j = L_ij`, donc `A'_i(0) = −(L d)_i` — et `L d` est le produit matrice-vecteur que le CG
+vient de faire. Le coefficient linéaire est donc **vérifiable exactement**, et il contrôle d'un
+coup toute la chaîne : le plan relu, la dérivée du décalage, la vitesse du sommet, le lacet.
+Mesuré à `n = 2·10⁵` : écart médian **4.6e-15** en `double` (max 2.0e-12), **3.8e-09** en `float`.
+Le polynôme est juste.
+
+#### Ce que ça donne
+
+**Uniforme `n = 10⁶`, `float`, `--tol 1e-11` :**
+
+| | essais | **limites** |
+|---|---|---|
+| itérations | 7 | **6** |
+| les pas | 0.125, 0.25, 0.5, 1, 1, 1, 1 | **0.134, 0.851, 1, 1, 1, 1** |
+| diagrammes | 18 (1.27 s) | **13 (0.90 s)** |
+| `alpha*` | — | 0.05 s |
+| **total** | 2.79 s | **2.52 s** |
+| résidu final | 3.700e-12 | 1.870e-13 |
+
+L'échelle dyadique perdait deux itérations à re-grimper de 0.125 à 1.
+
+**Lignes / aires égales `n = 10⁵`** — le nuage dégénéré, `float`, 60 itérations au plus :
+
+| | essais | **limites** |
+|---|---|---|
+| itérations | 60 | **33** |
+| diagrammes | 192 (1.80 s) | **71 (0.69 s)** |
+| **résidu final** | **2.160e+00 — PAS CONVERGÉ** | **7.494e-08 — CONVERGÉ** |
+| total | 4.35 s | 3.09 s |
+
+**La recherche par essais ne converge pas, `alpha*` converge.** C'est le résultat de la section, et
+la trace montre exactement pourquoi : les essais passent soixante itérations dans une dent de scie
+(monter par doublement, se faire refuser, retomber à 10⁻⁴, remonter), pendant que `alpha*` prend
+le bon pas du premier coup — **un seul essai à 30 itérations sur 33**, et une remontée monotone
+3.8e-05 → 4.4e-03 → … → 0.94 → 1.
+
+#### Deux réserves, et une limite qui n'est pas la sienne
+
+**Le polynôme est optimiste si la combinatoire change.** Un voisin qui entre rend l'aire réelle
+plus petite que ce que le polynôme prédit. On ne traque pas ces événements — les trouver
+demanderait l'arbre, c'est-à-dire le diagramme qu'on voulait éviter : on prend `0.99 · alpha*` et
+on **valide** avec le diagramme du nouvel itéré, qu'on calcule de toute façon. Le compte d'essais
+mesure exactement cette erreur, et il vaut 1 presque partout.
+
+**Une cellule dont un sommet est mal conditionné n'a pas voix au chapitre.** Ici, contrairement au
+raffinement, il n'y a pas de sommet de repli à garder — on n'a que les plans. Mettre le sommet à
+zéro corromprait le lacet et rendrait un `alpha*` faux ; la cellule est donc *déclarée non fiable*
+et rend `+inf`. L'optimisme est rattrapable (on rabote), le pessimisme gèlerait le Newton.
+
+#### LE RAYON DE CONFIANCE : écrit, mesuré, et il COÛTE (`--lim-conf`)
+
+Le polynôme suppose la combinatoire fixe, et la **vitesse** du sommet est bien moins bien
+conditionnée que sa position : les deux résolvent le même système, mais le second membre de la
+vitesse porte l'échelle de la *direction de Newton* et non celle de la géométrie, si bien que le
+même `SEUIL_DET` y est beaucoup trop laxiste (`|v'| ≲ |o'| / (SEUIL_DET · min(|a|,|b|))`). D'où
+l'idée, qui semblait solide : borner le pas par `t_conf = conf · |v| / |v'|`, le pas au bout
+duquel le sommet le plus rapide a bougé de `conf` fois le rayon de la cellule. Une région de
+confiance au sens propre.
+
+**Elle est nuisible, et franchement.** Uniforme `n = 10⁶`, `float`, `--tol 1e-11` :
+
+| `--lim-conf` | itérations | diagrammes | total | résidu |
+|---|---|---|---|---|
+| **0 (désactivé)** | **6** | **13** | **2.53 s** | 1.838e-13 |
+| 1 | 10 | 21 | 3.63 s | 1.433e-13 |
+| 0.25 | 20 | 41 | 5.29 s | **4.6e-02 — PAS CONVERGÉ** |
+
+Sur `lignes / aires égales` : `conf = 0` → 35 itérations et 9.99e-08 ; `conf = 1` → 36 itérations,
+match nul ; `conf = 0.25` → 60 itérations et **6.04 — pas convergé**.
+
+Et la raison est la même que pour les petites facettes : **la grandeur au niveau du SOMMET est le
+mauvais témoin.** Les sommets d'une cellule de Laguerre bougent beaucoup pour un pas parfaitement
+sain — c'est même exactement ce que fait un pas de Newton, la cellule se reforme. Exiger qu'ils
+bougent moins que le rayon de la cellule, c'est exiger que le Newton soit minuscule. L'AIRE, elle,
+est une intégrale : elle est bien plus stable que les sommets qui la portent, et son polynôme
+reste bon longtemps après que la combinatoire a commencé à changer.
+
+L'option reste, à zéro par défaut, comme résultat négatif mesuré. **Les garde-fous qui restent
+suffisent** : la cellule déclarée non fiable quand `croise2v` échoue, et la validation par le
+diagramme du nouvel itéré — qui n'a besoin que d'un essai à 30 itérations sur 33.
+
+**Et ce que `alpha*` ne répare pas** : sur `lignes / Voronoï` le départ a déjà une cellule vide
+(`plus petite cellule 0.00e+00`), donc la hessienne a une ligne isolée et le CG ne converge pas —
+les deux modes échouent à l'identique, en 0 itération. C'est la limitation des cellules mortes
+déjà décrite plus haut, et elle est en amont du pas.
 
 ### La prolongation lissée avec `cusparseSpGEMM` : écrite, mesurée, et elle PERD
 

@@ -42,7 +42,7 @@ __device__ __forceinline__ T selR( const T ( &a )[ R ], int i ) {
 /// donc le laisser en repere ABSOLU pendant que `filmsk` travaille dans le repere du germe
 /// revient a laisser une cellule sur huit avec l'erreur qu'on vient d'enlever aux autres ; et
 /// comme le maximum de l'erreur suit la pire cellule, ce sont elles qui le fixent.
-template<bool POIDS, int MaxNb, int R, bool CIDREG, bool CENTRE = false, int FIXE = 0, class TK = float>
+template<bool POIDS, int MaxNb, int R, bool CIDREG, bool CENTRE = false, int FIXE = 0, class TK = float, bool RES64 = false>
 __global__ void __launch_bounds__( 128 ) noyau2_filmix( Arbre<TK,2> ar, double *res, int *deborde, const int *liste = nullptr, int nl = 0,
                                                         int *fac_j = nullptr, TK *fac_l = nullptr, int NF = 0, int *fac_deb = nullptr,
                                                         bool raff = false, Image2 im = Image2{} ) {
@@ -184,20 +184,57 @@ fin:
     // ---- LES SOMMETS RESOLUS DEPUIS LEURS PLANS, comme `filmsk` -- et il le faut d'autant plus
     //      ici que ce noyau prend les GROSSES cellules, celles dont l'histoire de coupes est la
     //      plus longue, donc l'erreur portee la plus grande.
+    //
+    // `RES64` : la mesure prise DANS la boucle, sur le sommet resolu et avant qu'il ne repasse par
+    // le flottant du noyau ( voir `FilMsk2D.cuh` pour le pourquoi ). Ici la boucle n'est pas
+    // deroulee -- `nb` va jusqu'a `MaxNb` -- donc les indices sont a l'execution, et le lacet se
+    // ferme de la meme facon : deux `double` pour le sommet precedent, deux pour le premier.
+    double a2 = 0;
+    bool   pris = false;
     if constexpr ( sizeof( TK ) < 8 && ( CENTRE || FIXE ) ) {
-        if ( raff && nb >= 3 ) {
-            double ax, ay, ao;
-            plan_relu<POIDS,FIXE>( ar, get_c( nb - 1 ), u0, g0, p0, w0d, ax, ay, ao );
-            for ( int i = 0; i < nb; ++i ) {
-                double bx, by, bo, vx, vy;
-                plan_relu<POIDS,FIXE>( ar, get_c( i ), u0, g0, p0, w0d, bx, by, bo );
-                if ( croise2( ax, ay, ao, bx, by, bo, vx, vy ) ) {
+        if ( raff ) {
+            double v0x = 0, v0y = 0, ppx = 0, ppy = 0;
+            if ( nb >= 3 ) {
+                double ax, ay, ao;
+                plan_relu<POIDS,FIXE>( ar, get_c( nb - 1 ), u0, g0, p0, w0d, ax, ay, ao );
+                for ( int i = 0; i < nb; ++i ) {
+                    double bx, by, bo, vx, vy;
+                    plan_relu<POIDS,FIXE>( ar, get_c( i ), u0, g0, p0, w0d, bx, by, bo );
+                    if ( ! croise2( ax, ay, ao, bx, by, bo, vx, vy ) ) { vx = double( get_x( i ) ); vy = double( get_y( i ) ); }
+                    ax = bx; ay = by; ao = bo;
                     if ( i < R ) {
 #pragma unroll
                         for ( int o = 0; o < R; ++o ) { x[ o ] = o == i ? TK( vx ) : x[ o ]; y[ o ] = o == i ? TK( vy ) : y[ o ]; }
                     } else { lx[ i ] = TK( vx ); ly[ i ] = TK( vy ); }
+                    if constexpr ( RES64 ) {
+                        if ( i == 0 ) { v0x = vx; v0y = vy; }
+                        else {
+                            a2 += ppx * vy - vx * ppy;
+                            if ( fac_j && i - 1 < NF ) {
+                                const double ex = vx - ppx, ey = vy - ppy;
+                                fac_j[ size_t( i - 1 ) * ar.n + i0 ] = id_de( ar, get_c( i - 1 ) );
+                                fac_l[ size_t( i - 1 ) * ar.n + i0 ] = TK( sqrt( ex * ex + ey * ey ) );
+                            }
+                        }
+                        ppx = vx; ppy = vy;
+                    }
                 }
-                ax = bx; ay = by; ao = bo;
+                if constexpr ( RES64 ) {
+                    a2 += ppx * v0y - v0x * ppy;
+                    if ( fac_j && nb - 1 < NF ) {
+                        const double ex = v0x - ppx, ey = v0y - ppy;
+                        fac_j[ size_t( nb - 1 ) * ar.n + i0 ] = id_de( ar, get_c( nb - 1 ) );
+                        fac_l[ size_t( nb - 1 ) * ar.n + i0 ] = TK( sqrt( ex * ex + ey * ey ) );
+                    }
+                }
+            }
+            // la densite image a son PROPRE parcours d'arete, plus bas : on lui laisse la mesure
+            if constexpr ( RES64 ) if ( ! im.active() ) {
+                if ( fac_j ) {
+                    if ( nb > NF && fac_deb ) atomicAdd( fac_deb, 1 );
+                    for ( int e = nb > 0 ? nb : 0; e < NF; ++e ) { fac_j[ size_t( e ) * ar.n + i0 ] = -1000000; fac_l[ size_t( e ) * ar.n + i0 ] = 0; }
+                }
+                pris = true;
             }
         }
     }
@@ -228,7 +265,7 @@ fin:
     }
 
     // ---- LES FACETTES du polygone final ( `get_x` / `get_y` / `get_c` lisent registres ou queue )
-    if ( fac_j ) {
+    if ( fac_j && ! pris ) {
         if ( nb > NF && fac_deb ) atomicAdd( fac_deb, 1 );
         for ( int k = 0; k < NF; ++k ) {
             int j = -1000000;
@@ -244,7 +281,8 @@ fin:
         }
     }
     double area = 0;
-    if ( nb > 0 ) {
+    if ( pris ) area = 0.5 * fabs( a2 );
+    else if ( nb > 0 ) {
         double a = 0;
 #pragma unroll
         for ( int i = 0; i < R; ++i ) {

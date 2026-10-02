@@ -24,6 +24,8 @@
 #include "gpu/FilOrd2D.cuh"
 #include "gpu/FilSuc2D.cuh"
 #include "gpu/FilMsk2D.cuh"
+#include "gpu/FilEnt2D.cuh"
+#include "gpu/Alpha2D.cuh"
 #include "gpu/Image2D.cuh"
 #include "gpu/FilUni2D.cuh"
 #include "gpu/FilShm2D.cuh"
@@ -52,6 +54,16 @@ static bool raffine_actif() {
     return v;
 }
 
+/// LA MESURE PRISE SUR LE SOMMET RESOLU, en `double`, sans le faire repasser par le flottant du
+/// noyau ( `FilMsk2D.cuh`, `RES64` ). `SF_RES64=0` l'eteint, ce qui sert a le mesurer.
+/// le motif binaire d'un `double` POSITIF, cote hote ( l'ordre des motifs est celui des valeurs )
+static long long __double_as_longlong_h( double v ) { long long b; std::memcpy( &b, &v, sizeof( b ) ); return b; }
+
+static bool mesure_resolue() {
+    static const bool v = []{ const char *e = std::getenv( "SF_RES64" ); return ! e || std::atoi( e ); }();
+    return v;
+}
+
 template<int D, class TK>
 struct DiagrammeGpu<D,TK>::Impl {
     Noeud<TK,D> *nodes = nullptr;
@@ -60,6 +72,10 @@ struct DiagrammeGpu<D,TK>::Impl {
     long long   *u64[ D ] = {};                      ///< et en virgule fixe 64 bits
     TK          *w = nullptr;
     double      *w64 = nullptr;                      ///< les memes poids en `double` ( le plan )
+    double      *dir64 = nullptr;                    ///< LA DIRECTION DE NEWTON, dans l'ordre de l'arbre
+    double      *dir_id = nullptr;                   ///< la meme, telle que l'appelant la donne
+    double      *pol = nullptr;                      ///< `( a0, a1, a2 )` par cellule, SoA, par identifiant
+    unsigned long long *amin = nullptr;              ///< le minimum de `alpha*_i`, par `atomicMin`
     int         *ids = nullptr;
     double      *res = nullptr;
     int         *deb = nullptr, *deb2 = nullptr;
@@ -133,7 +149,7 @@ struct DiagrammeGpu<D,TK>::Impl {
         Arbre<TK,D> a;
         a.nodes = nodes;
         for ( int d = 0; d < D; ++d ) { a.c[ d ] = c[ d ]; a.u[ d ] = u[ d ]; a.u64[ d ] = u64[ d ]; }
-        a.w = w; a.w64 = w64; a.ids = ids; a.n = n;
+        a.w = w; a.w64 = w64; a.d64 = dir64; a.ids = ids; a.n = n;
         return a;
     }
 };
@@ -237,6 +253,7 @@ DiagrammeGpu<D,TK>::~DiagrammeGpu() {
     cudaFree( m.img ); cudaFree( m.cond ); cudaFree( m.ncond ); cudaFree( m.res0 ); cudaFree( m.hist );
     cudaFree( m.dep_x ); cudaFree( m.dep_y ); cudaFree( m.dep_nb ); cudaFree( m.dep_id );
     cudaFree( m.cgv );
+    cudaFree( m.dir64 ); cudaFree( m.dir_id ); cudaFree( m.pol ); cudaFree( m.amin ); cudaFree( m.rang_de );
     cudaFree( m.hrow ); cudaFree( m.hat ); cudaFree( m.hcol ); cudaFree( m.hval ); cudaFree( m.hdia ); cudaFree( m.hscan );
     for ( int d = 0; d < 2; ++d ) cudaFree( m.pid[ d ] );
     if ( m.sortie ) { libere_atelier<TK>( *( SortieBsp<TK> * ) m.sortie ); delete ( SortieBsp<TK> * ) m.sortie; }
@@ -478,36 +495,63 @@ Chrono lance2( const Impl &m, Variante v, int reps, std::vector<double> &res ) {
             return m.deb2;
         } );
     }
-    if ( v == Variante::FILMSK8 || v == Variante::FILMSK8G || v == Variante::FILMSK8F || v == Variante::FILMSK8H || v == Variante::FILMSK8C6 || v == Variante::FILMSK8C8 ) {
+    // LES SOMMETS EN ENTIERS 32 BITS, le predicat de coupe EXACT ( `FilEnt2D.cuh` ).
+    // `filent8` : la mesure prise sur la grille entiere -- ce que l'entier vaut TOUT SEUL.
+    // `filent8m` : la mesure prise sur le sommet resolu, en `double` -- comparable a `filmsk8m`.
+    if ( v == Variante::FILENT8 || v == Variante::FILENT8M ) {
+        if constexpr ( sizeof( TK ) != 4 ) return Chrono{};   // sautee en amont ( `main_mesures` )
+        else {
+            auto ent = [ & ]( auto rr ) {
+                constexpr bool RES64 = decltype( rr )::value;
+                const bool raff = raffine_actif();
+                Chrono ch = chrono<2,TK>( m, reps, res, [ & ]() {
+                    noyau2_filent<POIDS,1,RES64,64,TK><<<grid, bloc>>>( ar, m.res, m.deb, m.liste, nullptr, nullptr, 0, raff );
+                    int nd = 0;
+                    CUDA_OK( cudaMemcpy( &nd, m.deb, sizeof( int ), cudaMemcpyDeviceToHost ) );
+                    if ( nd == 0 ) return m.deb;
+                    // les cellules qui debordent les huit registres repassent par `filmix`, en
+                    // virgule fixe 64 : elles sont 13 % et fixent le maximum de l'erreur
+                    noyau2_filmix<POIDS,64,8,true,true,64,TK,RES64><<<( nd + bloc - 1 ) / bloc, bloc>>>( ar, m.res, m.deb2, m.liste, nd, nullptr, nullptr, 0, nullptr, raff );
+                    return m.deb2;
+                } );
+                infos( ch, noyau2_filent<POIDS,1,RES64,64,TK>, bloc );
+                return ch;
+            };
+            return v == Variante::FILENT8 ? ent( std::false_type{} ) : ent( std::true_type{} );
+        }
+    }
+    if ( v == Variante::FILMSK8 || v == Variante::FILMSK8G || v == Variante::FILMSK8F || v == Variante::FILMSK8H || v == Variante::FILMSK8M || v == Variante::FILMSK8C6 || v == Variante::FILMSK8C8 ) {
         // `BSM` : le nombre de blocs par SM que ptxas doit garantir -- il rabote les registres
         // pour y arriver. A 128 threads par bloc sur Turing ( 64 Ko de registres, 32 warps ) :
         // 4 blocs <=> 128 registres, 5 <=> 102, 6 <=> 85, 8 <=> 64 et l'occupation pleine
-        auto msk = [ & ]( auto mm, auto gg, auto ff ) {
+        auto msk = [ & ]( auto mm, auto gg, auto ff, auto rr ) {
             constexpr int BSM = decltype( mm )::value;
             constexpr bool CENTRE = decltype( gg )::value;
             constexpr int FIXE = decltype( ff )::value;
+            constexpr bool RES64 = decltype( rr )::value;
             // LE RAFFINEMENT DES SOMMETS, la ou il a un sens : `float` et repere du germe
             const bool raff = sizeof( TK ) == 4 && ( CENTRE || FIXE ) && raffine_actif();
             Chrono ch = chrono<2,TK>( m, reps, res, [ & ]() {
-                noyau2_filmsk<POIDS,BSM,CENTRE,FIXE,DENS_AUCUNE,TK><<<grid, bloc>>>( ar, m.res, m.deb, m.liste, nullptr, nullptr, 0, raff );
+                noyau2_filmsk<POIDS,BSM,CENTRE,FIXE,DENS_AUCUNE,TK,RES64><<<grid, bloc>>>( ar, m.res, m.deb, m.liste, nullptr, nullptr, 0, raff );
                 int nd = 0;
                 CUDA_OK( cudaMemcpy( &nd, m.deb, sizeof( int ), cudaMemcpyDeviceToHost ) );
                 if ( nd == 0 ) return m.deb;
-                noyau2_filmix<POIDS,64,8,true,CENTRE,FIXE,TK><<<( nd + bloc - 1 ) / bloc, bloc>>>( ar, m.res, m.deb2, m.liste, nd, nullptr, nullptr, 0, nullptr, raff );
+                noyau2_filmix<POIDS,64,8,true,CENTRE,FIXE,TK,RES64><<<( nd + bloc - 1 ) / bloc, bloc>>>( ar, m.res, m.deb2, m.liste, nd, nullptr, nullptr, 0, nullptr, raff );
                 return m.deb2;
             } );
-            infos( ch, noyau2_filmsk<POIDS,BSM,CENTRE,FIXE,DENS_AUCUNE,TK>, bloc );
+            infos( ch, noyau2_filmsk<POIDS,BSM,CENTRE,FIXE,DENS_AUCUNE,TK,RES64>, bloc );
             return ch;
         };
         using I1 = std::integral_constant<int,1>;
         using F = std::false_type; using T = std::true_type;
         using N0 = std::integral_constant<int,0>; using N32 = std::integral_constant<int,32>; using N64 = std::integral_constant<int,64>;
-        return v == Variante::FILMSK8   ? msk( I1{}, F{}, N0{} )
-             : v == Variante::FILMSK8G  ? msk( I1{}, T{}, N0{} )   // le repere centre sur le germe
-             : v == Variante::FILMSK8F  ? msk( I1{}, T{}, N32{} )  // + les positions en virgule fixe 32 bits
-             : v == Variante::FILMSK8H  ? msk( I1{}, T{}, N64{} )  // + en virgule fixe 64 bits
-             : v == Variante::FILMSK8C6 ? msk( std::integral_constant<int,6>{}, F{}, N0{} )
-             :                            msk( std::integral_constant<int,8>{}, F{}, N0{} );
+        return v == Variante::FILMSK8   ? msk( I1{}, F{}, N0{},  F{} )
+             : v == Variante::FILMSK8G  ? msk( I1{}, T{}, N0{},  F{} )  // le repere centre sur le germe
+             : v == Variante::FILMSK8F  ? msk( I1{}, T{}, N32{}, F{} )  // + les positions en virgule fixe 32 bits
+             : v == Variante::FILMSK8H  ? msk( I1{}, T{}, N64{}, F{} )  // + en virgule fixe 64 bits
+             : v == Variante::FILMSK8M  ? msk( I1{}, T{}, N64{}, T{} )  // + LA MESURE prise sur le sommet resolu
+             : v == Variante::FILMSK8C6 ? msk( std::integral_constant<int,6>{}, F{}, N0{}, F{} )
+             :                            msk( std::integral_constant<int,8>{}, F{}, N0{}, F{} );
     }
     if ( v == Variante::FILNRM8C6 || v == Variante::FILNRM8C8 ) {
         auto nrm = [ & ]( auto mm ) {
@@ -1309,6 +1353,7 @@ static int *cellules_2d( typename DiagrammeGpu<2,TK>::Impl &m, const Arbre<TK,2>
     const Image2 im = m.image();
     const Densite d = m.mode();
     const bool raff = sizeof( TK ) == 4 && FIX != 0 && raffine_actif();
+    const bool res64 = raff && mesure_resolue();
     CUDA_OK( cudaMemsetAsync( m.deb, 0, sizeof( int ) ) );
     CUDA_OK( cudaMemsetAsync( m.deb2, 0, sizeof( int ) ) );
 
@@ -1324,7 +1369,11 @@ static int *cellules_2d( typename DiagrammeGpu<2,TK>::Impl &m, const Arbre<TK,2>
                 k_dens_arete<TK,8><<<( nk * 8 + bloc - 1 ) / bloc, bloc>>>( im, m.dep_x, m.dep_y, m.dep_nb, m.dep_id, m.dep_cap, nk, m.n, m.res, dl );
         }
     } else if ( d == Densite::AUCUNE ) {
-        noyau2_filmsk<POIDS,1,true,FIX,DENS_AUCUNE><<<( m.n + bloc - 1 ) / bloc, bloc>>>( ar, m.res, m.deb, m.liste, dj, dl, NF, raff );
+        // `RES64` : la mesure prise sur le sommet RESOLU, en `double`. Les deux instanciations
+        // existent pour que `SF_RES64=0` puisse la mesurer ; sans densite image seulement, la
+        // densite ayant son propre parcours d'arete.
+        if ( res64 ) noyau2_filmsk<POIDS,1,true,FIX,DENS_AUCUNE,TK,true ><<<( m.n + bloc - 1 ) / bloc, bloc>>>( ar, m.res, m.deb, m.liste, dj, dl, NF, raff );
+        else         noyau2_filmsk<POIDS,1,true,FIX,DENS_AUCUNE,TK,false><<<( m.n + bloc - 1 ) / bloc, bloc>>>( ar, m.res, m.deb, m.liste, dj, dl, NF, raff );
     } else {
         noyau2_filmsk<POIDS,1,true,FIX,DENS_DIRECTE><<<( m.n + bloc - 1 ) / bloc, bloc>>>( ar, m.res, m.deb, m.liste, dj, dl, NF, raff, im );
     }
@@ -1333,7 +1382,8 @@ static int *cellules_2d( typename DiagrammeGpu<2,TK>::Impl &m, const Arbre<TK,2>
     CUDA_OK( cudaMemcpy( &nd, m.deb, sizeof( int ), cudaMemcpyDeviceToHost ) );
     if ( nd == 0 ) return m.deb;
     // la seconde passe finit les cellules trop grosses pour les registres, densite comprise
-    noyau2_filmix<POIDS,64,8,true,true,FIX><<<( nd + bloc - 1 ) / bloc, bloc>>>( ar, m.res, m.deb2, m.liste, nd, dj, dl, NF, m.cptr, raff, im );
+    if ( res64 ) noyau2_filmix<POIDS,64,8,true,true,FIX,TK,true ><<<( nd + bloc - 1 ) / bloc, bloc>>>( ar, m.res, m.deb2, m.liste, nd, dj, dl, NF, m.cptr, raff, im );
+    else         noyau2_filmix<POIDS,64,8,true,true,FIX,TK,false><<<( nd + bloc - 1 ) / bloc, bloc>>>( ar, m.res, m.deb2, m.liste, nd, dj, dl, NF, m.cptr, raff, im );
     return m.deb2;
 }
 
@@ -1384,6 +1434,66 @@ void DiagrammeGpu<D,TK>::regle_densite( Densite d, int chunk ) {
 
 template<int D, class TK>
 Densite DiagrammeGpu<D,TK>::densite() const { return impl->mode(); }
+
+// =====================================================================================
+// `alpha*` PAR LE POLYNOME DE L'AIRE ( `Alpha2D.cuh` ). Une passe sur les cellules SANS l'arbre :
+// la connectivite du dernier `tour_newton` suffit, et le sommet `i` est l'intersection des plans
+// des aretes `i - 1` et `i`.
+// =====================================================================================
+template<int D, class TK>
+double DiagrammeGpu<D,TK>::limites( const double *d, double seuil, double conf, double *ms, double *nu, std::vector<double> *pol ) {
+    if constexpr ( D != 2 ) { ( void ) d; ( void ) seuil; ( void ) conf; ( void ) ms; ( void ) nu; ( void ) pol; return 1e300; }
+    else {
+        Impl &m = *impl;
+        if ( ! m.fac_j ) return 1e300;                   // aucune connectivite : rien a dire
+        const int bloc = 128, gr = ( m.n + bloc - 1 ) / bloc;
+        if ( ! m.dir64 ) {
+            CUDA_OK( cudaMalloc( &m.dir64,  size_t( m.n ) * sizeof( double ) ) );
+            CUDA_OK( cudaMalloc( &m.dir_id, size_t( m.n ) * sizeof( double ) ) );
+            CUDA_OK( cudaMalloc( &m.pol, size_t( 4 ) * m.n * sizeof( double ) ) );
+            CUDA_OK( cudaMalloc( &m.amin, 2 * sizeof( unsigned long long ) ) );
+        }
+        // `rang_de` ( identifiant -> rang ) appartient au multigrille, qui l'a peut-etre deja
+        // monte ; sinon on le fait ici, c'est un noyau trivial
+        if ( ! m.rang_de ) {
+            CUDA_OK( cudaMalloc( &m.rang_de, size_t( m.n ) * sizeof( int ) ) );
+            k_amg_rang<<<gr, bloc>>>( m.ids, m.rang_de, m.n );
+        }
+
+        cudaEvent_t e0, e1;
+        CUDA_OK( cudaEventCreate( &e0 ) ); CUDA_OK( cudaEventCreate( &e1 ) );
+        CUDA_OK( cudaEventRecord( e0 ) );
+        CUDA_OK( cudaMemcpyAsync( m.dir_id, d, size_t( m.n ) * sizeof( double ), cudaMemcpyHostToDevice ) );
+        k_dir_rang<<<gr, bloc>>>( m.dir_id, m.ids, m.dir64, m.n );
+        const unsigned long long inf[ 2 ] = { ( unsigned long long ) __double_as_longlong_h( 1e300 ),
+                                              ( unsigned long long ) __double_as_longlong_h( 1e300 ) };
+        CUDA_OK( cudaMemcpyAsync( m.amin, inf, sizeof( inf ), cudaMemcpyHostToDevice ) );
+
+        const Arbre<TK,2> ar = m.arbre();                // `d64` y est desormais
+        constexpr int FIX = sizeof( TK ) == 4 ? 64 : 0;  // le meme que `cellules_2d`
+        if ( m.poids ) noyau2_alpha<true, FIX,TK><<<gr, bloc>>>( ar, m.fac_j, m.rang_de, NF, seuil, conf, m.pol, m.amin );
+        else           noyau2_alpha<false,FIX,TK><<<gr, bloc>>>( ar, m.fac_j, m.rang_de, NF, seuil, conf, m.pol, m.amin );
+        CUDA_OK( cudaEventRecord( e1 ) );
+        CUDA_OK( cudaEventSynchronize( e1 ) );
+        float t = 0;
+        CUDA_OK( cudaEventElapsedTime( &t, e0, e1 ) );
+        if ( ms ) *ms = t;
+        CUDA_OK( cudaGetLastError() );
+        cudaEventDestroy( e0 ); cudaEventDestroy( e1 );
+
+        unsigned long long b[ 2 ] = {};
+        CUDA_OK( cudaMemcpy( b, m.amin, sizeof( b ), cudaMemcpyDeviceToHost ) );
+        if ( pol ) {
+            pol->resize( size_t( 4 ) * m.n );
+            CUDA_OK( cudaMemcpy( pol->data(), m.pol, pol->size() * sizeof( double ), cudaMemcpyDeviceToHost ) );
+        }
+        double al = 0, an = 0;
+        std::memcpy( &an, &b[ 0 ], sizeof( an ) );       // `alpha*` NU
+        std::memcpy( &al, &b[ 1 ], sizeof( al ) );       // apres la region de confiance
+        if ( nu ) *nu = an;
+        return al;
+    }
+}
 
 /// UN TOUR DE NEWTON, de bout en bout sur la carte : poids, majorants, mesures, facettes.
 template<int D, class TK>

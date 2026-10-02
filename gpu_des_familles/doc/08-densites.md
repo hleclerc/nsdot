@@ -291,6 +291,11 @@ Mesurer sous une image coûte +7 % ; **résoudre** sous une image coûte ×160.
 * **Une échelle de continuation adaptée.** Les huit étapes coûtent 22, 34, 48, 61, 77, 96, 127 et
   197 itérations : la difficulté est toute entière dans le haut de la rampe. Un pas en `s` choisi
   sur le résidu atteint, plutôt qu'uniforme, est le chantier le mieux indiqué par les mesures.
+  — Le banc CPU a essayé une échelle **géométrique en `1 − s`** (`1/2, 1/4, … 2⁻¹⁴, puis 1`) sur
+  une image *à zéros*, où l'échelle uniforme stagne : elle converge, et le coût s'y inverse — les
+  dernières marches font 5 diagrammes chacune, tout le prix est dans le bas de la rampe
+  ([`solvers_des_familles` § 12.5](../../solvers_des_familles/README.md)). À essayer ici : l'image
+  de ce banc n'a pas de zéros, donc rien ne dit que le haut de la rampe s'y aplatit de même.
 * **Le pas admissible exact** au lieu des halvings (`limites_masse` du banc CPU) : une bissection
   par cellule sur `α`, toutes les cellules en parallèle, au lieu d'un diagramme complet par
   barreau. Son gain principal -- tuer les dizaines de reculs par itération -- est déjà pris par la

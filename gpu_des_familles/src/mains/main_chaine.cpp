@@ -259,7 +259,8 @@ double normalise( Img &im ) {
 
 template<class PD>
 int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu, bool arbre_gpu, int iterations,
-            int newton, int raff, double marge, double tol, const Img &img, int dmode, int chunk, int etapes, double tolcg, int echelle ) {
+            int newton, int raff, double marge, double tol, const Img &img, int dmode, int chunk, int etapes, double tolcg, int echelle,
+            bool limites, double lim_frac, double lim_conf ) {
     constexpr int D = PD::dim;
     using TK = typename PD::TKernel;
     static_assert( D == 2, "la chaine est 2D" );
@@ -719,7 +720,7 @@ int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu, bool arbre_gp
         }
 
         const double tn0 = now();
-        double t_diag = 0, t_lin = 0;
+        double t_diag = 0, t_lin = 0, t_lim = 0;
         int nb_diag = 0, nb_cg = 0;
 
         // ---- LA CONTINUATION EN CONTRASTE. Sous une image contrastee, le pas de Newton n'est pas
@@ -831,11 +832,43 @@ int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu, bool arbre_gp
             // pour retrouver ce qu'on savait deja.
             double t = std::min( 1.0, 2 * t_prec ), t_ok = 0;
             int essais = 0;
+            double al = 0, al_nu = 0, ms_al = 0;
+            if ( limites ) {
+                // `alpha*` PAR LE POLYNOME DE L'AIRE ( `Alpha2D.cuh` ) : le pas EXACT ou la
+                // premiere cellule touche le plancher, en forme close, sans un essai. La passe
+                // ne reparcourt pas l'arbre -- elle relit la connectivite du diagramme courant
+                // et resout chaque sommet depuis ses deux plans, avec sa VITESSE.
+                std::vector<double> pol;
+                al = g.limites( dh.data(), marge * mini, lim_conf, &ms_al, &al_nu, it == 0 ? &pol : nullptr );
+                t_lim += ms_al * 1e-3;
+                // LE CONTROLE : `dm_i/dw_j = L_ij` donne `A'_i( 0 ) = -( L d )_i`, et `L d` est
+                // le produit que le CG vient de faire. C'est tout le chemin -- plan, derivee du
+                // decalage, vitesse du sommet, lacet -- verifie d'un coup.
+                if ( it == 0 && ! pol.empty() ) {
+                    double *dy = nullptr;
+                    cudaMalloc( &dy, nu.n * sizeof( double ) );
+                    g.applique( H, dd, dy );
+                    std::vector<double> ld( nu.n );
+                    cudaMemcpy( ld.data(), dy, nu.n * sizeof( double ), cudaMemcpyDeviceToHost );
+                    cudaFree( dy );
+                    std::vector<double> ec;
+                    ec.reserve( nu.n );
+                    double mx = 0;
+                    for ( SI i = 0; i < nu.n; ++i ) mx = std::max( mx, std::fabs( ld[ i ] ) );
+                    for ( SI i = 0; i < nu.n; ++i ) ec.push_back( std::fabs( pol[ nu.n + i ] + ld[ i ] ) / mx );
+                    std::sort( ec.begin(), ec.end() );
+                    const auto qq = [ & ]( double f ) { return ec[ std::min( ec.size() - 1, size_t( f * ec.size() ) ) ]; };
+                    std::printf( "      LIMITES   A'( 0 ) = -( L d ) : ecart median %.1e, p99 %.1e, p99.99 %.1e, max %.1e ( rapportes a | L d |_max %.2e )\n",
+                                 qq( 0.5 ), qq( 0.99 ), qq( 0.9999 ), ec.back(), mx );
+                }
+                t = std::min( 1.0, lim_frac * al );
+            }
             for ( ; t > 1e-13; t *= 0.5 ) { ++essais; if ( essai( t ) ) { t_ok = t; break; } }
             if ( t_ok == 0 ) { std::printf( "      NEWTON    pas trouve, arret\n" ); et = netapes; break; }
-            // LE MEILLEUR COEFFICIENT : entre le dernier refuse et le premier accepte
+            // LE MEILLEUR COEFFICIENT : entre le dernier refuse et le premier accepte. Sous
+            // `--pas limites` il n'y a rien a raffiner : `alpha*` EST le bord.
             double lo = t_ok, hi = std::min( 1.0, 2 * t_ok );
-            for ( int k = 0; k < raff && t_ok < 1.0; ++k ) {
+            for ( int k = 0; k < raff && t_ok < 1.0 && ! limites; ++k ) {
                 const double mid = 0.5 * ( lo + hi );
                 ++essais;
                 if ( essai( mid ) ) { lo = mid; t_ok = mid; } else hi = mid;
@@ -847,11 +880,22 @@ int chaine( const Args &a, const Nuage<PD::dim> &nu, int reps_gpu, bool arbre_gp
             t_diag += now() - td0;
             ++nb_diag;
             err = g.residu( cible, &mini, db );
-            std::printf( "      NEWTON %2d  pas %.4f ( %d essais ), CG %4d it., residu %.3e, plus petite %.2e\n",
-                         it + 1, t_ok, essais, its, err / norme, mini / cible );
+            if ( limites )
+                // `alpha*` nu et `alpha*` apres la region de confiance : s'ils different, c'est
+                // ELLE qui a decide du pas, et c'est ce qu'on veut savoir
+                std::printf( "      NEWTON %2d  pas %.4f ( alpha* %.4e%s, %d essais, %.2f ms ), CG %4d it., residu %.3e, plus petite %.2e\n",
+                             it + 1, t_ok, al, al < al_nu * 0.999 ? "  <- confiance" : "", essais, ms_al, its, err / norme, mini / cible );
+            else
+                std::printf( "      NEWTON %2d  pas %.4f ( %d essais ), CG %4d it., residu %.3e, plus petite %.2e\n",
+                             it + 1, t_ok, essais, its, err / norme, mini / cible );
         }
         }
         const double t_tot = now() - tn0;
+        if ( limites )
+            std::printf( "      NEWTON    %d iterations, %.2f s ( %d diagrammes %.2f s, %d it. de CG %.2f s, alpha* %.2f s ), residu final %.3e%s\n",
+                         it, t_tot, nb_diag, t_diag, nb_cg, t_lin, t_lim, err / norme,
+                         err <= tol * norme ? "" : "   <-- PAS CONVERGE" );
+        else
         std::printf( "      NEWTON    %d iterations, %.2f s ( %d diagrammes %.2f s, %d it. de CG %.2f s ), residu final %.3e%s\n",
                      it, t_tot, nb_diag, t_diag, nb_cg, t_lin, err / norme,
                      err <= tol * norme ? "" : "   <-- PAS CONVERGE" );
@@ -909,6 +953,10 @@ int main( int argc, char **argv ) {
     int reps_gpu = 10;
     bool arbre_gpu = false;
     int iterations = 1, newton = 0, raff = 0;
+    bool limites = true;            // `alpha*` PAR DEFAUT : il ne perd nulle part, et sur le nuage
+    double lim_frac = 0.99;        // degenere il fait la difference entre converger et ne pas converger
+    double lim_conf = 0.0;         // LE RAYON DE CONFIANCE, DESACTIVE : il a ete ecrit, mesure, et il
+                                   // COUTE ( doc/06 ) -- les sommets bougent beaucoup pour un pas sain
     double marge = 0.5, tol = 1e-7;
     Img img;
     int dmode = 3, chunk = 1 << 20;
@@ -926,6 +974,9 @@ int main( int argc, char **argv ) {
         if ( s == "--iterations" && i + 1 < argc ) { iterations = std::atoi( argv[ ++i ] ); continue; }
         if ( s == "--newton" && i + 1 < argc ) { newton = std::atoi( argv[ ++i ] ); continue; }
         if ( s == "--raffine" && i + 1 < argc ) { raff = std::atoi( argv[ ++i ] ); continue; }
+        if ( s == "--pas" && i + 1 < argc ) { limites = std::string( argv[ ++i ] ) == "limites"; continue; }
+        if ( s == "--lim-frac" && i + 1 < argc ) { lim_frac = std::atof( argv[ ++i ] ); continue; }
+        if ( s == "--lim-conf" && i + 1 < argc ) { lim_conf = std::atof( argv[ ++i ] ); continue; }
         if ( s == "--marge" && i + 1 < argc ) { marge = std::atof( argv[ ++i ] ); continue; }
         if ( s == "--tol" && i + 1 < argc ) { tol = std::atof( argv[ ++i ] ); continue; }
         if ( s == "--image" && i + 1 < argc ) { taille_img = std::atoi( argv[ ++i ] ); continue; }
@@ -948,6 +999,9 @@ int main( int argc, char **argv ) {
                      "  --newton K      le NEWTON COMPLET, au plus K iterations\n"
                      "  --raffine R     dichotomies pour le meilleur pas apres la premiere acceptation (0 : nuisible)\n"
                      "  --marge F       toute cellule doit garder F fois ce qu elle vaut deja (0.5)\n"
+                     "  --pas limites|essais   la recherche du pas : `alpha*` par le POLYNOME de l aire ( defaut ), ou par essais\n"
+                     "  --lim-frac F    sous `--pas limites`, la fraction de `alpha*` retenue (0.99)\n"
+                     "  --lim-conf F    le rayon de confiance du polynome, en fractions du rayon de cellule (0 = desactive ; il COUTE)\n"
                      "  --tol T         residu relatif vise sur les mesures (1e-7)\n"
                      "  --image N       LA DENSITE IMAGE : une grille N x N de synthese ( fond lisse, disque net, bande fine )\n"
                      "  --image-pgm F   la meme, lue dans un PGM ( P2 ou P5 )\n"
@@ -972,7 +1026,7 @@ int main( int argc, char **argv ) {
     int bad = 0;
     for ( const Nuage<2> &nu : a.nuages<2>() ) {
         if ( nu.absent ) { std::printf( "  %-28s : ABSENT ( --cases DIR )\n", nu.nom.c_str() ); continue; }
-        bad += dispatch<2>( a, [ & ]( auto tag ) { return chaine<typename decltype( tag )::type>( a, nu, reps_gpu, arbre_gpu, iterations, newton, raff, marge, tol, img, dmode, chunk, etapes, tolcg, echelle ); } );
+        bad += dispatch<2>( a, [ & ]( auto tag ) { return chaine<typename decltype( tag )::type>( a, nu, reps_gpu, arbre_gpu, iterations, newton, raff, marge, tol, img, dmode, chunk, etapes, tolcg, echelle, limites, lim_frac, lim_conf ); } );
     }
     return bad ? 1 : 0;
 }

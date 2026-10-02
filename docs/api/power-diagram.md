@@ -16,7 +16,7 @@ picked at construction (`accelerator`):
 Whatever the storage, `pd.positions` / `pd.weights` read and write the seeds in the USER's order,
 and `measures` / `cells` come out in that order too. Setting `pd.weights = w` on a BSP storage
 re-sorts the weights and refreshes the per-node weight majorant in one kernel, without rebuilding
-the tree -- this is what `OtPlan` does at every step. Setting `pd.positions` rebuilds the tree.
+the tree -- this is what `SdotPlanNd` does at every step. Setting `pd.positions` rebuilds the tree.
 
 ```python
 from sdot import PowerDiagram, box_half_spaces
@@ -50,7 +50,7 @@ with respect to `positions`, `weights` and the distribution's values.
 `( masses, first, second )`: for every cell, `∫ρ`, `∫xρ` (`[ n, d ]`) and `∫|x|²ρ` -- what a
 transport cost and the cell barycenters are made of. Same sweep as `measures`; closed forms on
 piecewise-constant pieces (`Image`, Lebesgue), the adaptive quadrature otherwise. Not
-differentiable: `OtPlan.cost_and_position_grad` derives the transport cost by the envelope
+differentiable: `SdotPlanNd.cost_and_position_grad` derives the transport cost by the envelope
 theorem instead.
 
 ---
@@ -104,18 +104,18 @@ kernel's form (in `kernel_dtype`, `FP32` by default) on every call. Everything e
 
 ---
 
-## Solving for the weights: `OtPlan`
+## Solving for the weights: `SdotPlanNd`
 
-The diagram itself does not solve anything -- it is a view. `OtPlan( src_dist, dst_dist, ... )`
+The diagram itself does not solve anything -- it is a view. `SdotPlanNd( src_dist, dst_dist, ... )`
 holds ONE `PowerDiagram` built on the diracs of `src_dist`, and adjusts its weights until the
 measure of every cell against `dst_dist` matches its dirac's mass, by setting `pd.weights = w` at
 every evaluation (the tree is built once).
 
 ```python
 import numpy as np
-from sdot import OtPlan, SumOfDiracs, SumOfGaussians
+from sdot import SdotPlanNd, SumOfDiracs, SumOfGaussians
 
-plan = OtPlan( SumOfDiracs( np.random.rand( 200, 2 ) ), SumOfGaussians( ... ) )
+plan = SdotPlanNd( SumOfDiracs( np.random.rand( 200, 2 ) ), SumOfGaussians( ... ) )
 plan.weights                 # the adjusted weights, in the order of the diracs
 plan.power_diagram()         # the diagram at those weights
 plan.cell_masses             # ~ the target masses
