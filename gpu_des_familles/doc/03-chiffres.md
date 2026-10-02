@@ -1,7 +1,7 @@
 # LES CHIFFRES
 
 RTX 2080 Ti (Turing, 68 SM, 11 Go, **FP64 au 1/32**), CUDA 13.3. Le témoin : Xeon W-2145, 8 fils
-épinglés. Machine seule (`job -b`), tour de chauffe puis minimum de 10 répétitions au GPU, 3 au
+épinglés. Machine seule (`errand -x`), tour de chauffe puis minimum de 10 répétitions au GPU, 3 au
 CPU ; le chrono GPU est celui du noyau seul (événements CUDA), le téléversement et la descente des
 résultats sont comptés à part. Mêmes nuages que les deux autres bancs. Les vitesses sont contre le
 **CPU à 8 fils**, dans le même flottant.

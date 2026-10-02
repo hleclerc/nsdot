@@ -3824,7 +3824,7 @@ int main( int argc, char **argv ) {
                 "                  et la simple precision contre la double\n"
                 "  --amg-tol T     le residu RELATIF demande au solveur lineaire ( defaut 1e-10 -- une\n"
                 "                  direction de Newton amortie n'en demande pas tant )\n"
-                "  --chrono        le bord contre le decoupage, sur les memes cellules ( `job -b` )\n"
+                "  --chrono        le bord contre le decoupage, sur les memes cellules ( `errand -x` )\n"
                 "  --solver S      amg ( AMGCL, defaut ) | chol ( Eigen, sequentiel ) | mg ( § 17 )\n"
                 "  --amg-refaire N  la hierarchie d'AMGCL gardee N resolutions ( defaut 4 )\n"
                 "  --mg-lisseur 0|1|2  Jacobi amorti | spai0 | Chebyshev ; --mg-cheb R le rapport\n"

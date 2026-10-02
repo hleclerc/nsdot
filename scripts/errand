@@ -1,0 +1,6 @@
+#!/bin/sh
+# Le lanceur de la machine : `errand -- cmd`, `errand -x -- cmd` ( benchmark ), `errand --queue`, `errand --claim-wait`.
+# errand n'est installe dans aucun environnement : on le lance depuis ses sources, avec l'interprete de `vfs`.
+E=${ERRAND_SRC:-$HOME/nsdot_lmo/errand}
+PY=${ERRAND_PYTHON:-$HOME/.micromamba/envs/vfs/bin/python}
+PYTHONPATH="$E${PYTHONPATH:+:$PYTHONPATH}" exec "$PY" -m errand "$@"

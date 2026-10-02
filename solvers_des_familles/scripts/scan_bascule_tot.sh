@@ -5,7 +5,7 @@
 # c'est donc confier a `lin` des iterations ou la contrainte est encore active. Ce balayage le
 # mesure sur les deux amortissements et sur les six cas du banc.
 #
-#   job -- scripts/scan_bascule_tot.sh
+#   errand -- scripts/scan_bascule_tot.sh
 # =====================================================================================
 set -u
 cd ${0:a:h}/..

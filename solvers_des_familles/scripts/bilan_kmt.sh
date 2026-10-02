@@ -7,7 +7,7 @@
 # KMT = `--pas essais --residu lin`, l'echelle `t = 1, 1/2, 1/4 ...` avec le plancher d'aire et la
 # decroissance du merite `l2`. C'est bien le defaut, donc la reference est le banc lui-meme.
 #
-#   job -b -- scripts/bilan_kmt.sh
+#   errand -x -- scripts/bilan_kmt.sh
 # =====================================================================================
 set -u
 cd ${0:a:h}/..

@@ -4,7 +4,7 @@ Avant chaque chrono, 300 ms de noyau en boucle : le CPU (l'arbre, le témoin) la
 redescendre en fréquence, et un seul tour de chauffe ne le remonte pas — le même noyau donnait
 17 puis 13 ns/germe selon qu'il passait premier ou second. Puis 10 tours, minimum.
 
-`job -b -- ./build/linux/x86_64/release/mesures --threads 8 --reps 3 --reps-gpu 10 --kernel float`
+`errand -x -- ./build/linux/x86_64/release/mesures --threads 8 --reps 3 --reps-gpu 10 --kernel float`
 puis la même en `double` — machine seule, rien d'autre ne tourne. Un `PowerDiagram` CPU bâtit
 l'arbre ; le témoin mesure (chauffe, minimum de 3) ; `DiagrammeGpu` reçoit l'arbre ; chaque
 variante fait un tour de chauffe puis 10 tours chronométrés par événements CUDA autour du (ou des

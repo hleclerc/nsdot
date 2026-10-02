@@ -1753,12 +1753,12 @@ défaut : `32` en 3D et au-delà, `0` en 2D.
 
 ## 11.6 Comment ces chiffres sont pris
 
-`job -b -- <cmd>` (`scripts/job` à la racine du dépôt, `~/.local/bin/job` sur la machine) : le
+`errand -x -- <cmd>` (`scripts/errand` à la racine du dépôt, `~/.local/bin/errand` sur la machine) : le
 banc attend que les travaux en cours finissent, tient les nouveaux à la porte, et tourne seul.
 Les premiers chiffres de § 11 avaient été pris pendant que trois sessions et des compilations se
 partageaient les seize cœurs : le *sans mémoire* de l'uniforme y valait 0.232 à 0.305 s contre
 0.174 s seul, et les écarts relatifs bougeaient de ±15 %. Les *comptes* (plans, boîtes, coupes)
-ne dépendent pas de la charge ; les temps, si. Ne jamais chronométrer hors d'un `job -b`.
+ne dépendent pas de la charge ; les temps, si. Ne jamais chronométrer hors d'un `errand -x`.
 
 ---
 
