@@ -402,6 +402,7 @@ def optimize(points, sino,
 
     while True:
         C, value_grad = make_value_grad(mem_budget_bytes)
+        print(f"[CHUNK] Mode={batch_size} | Chunk choisi={C} angles/GPU | Angles/GPU={A // nb_devices}", flush=True)
 
         try:
             wv, wg = value_grad(points)
@@ -573,7 +574,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--devices', type=int, default=2)
     parser.add_argument('--points', type=int, default=1_000_000)
-    parser.add_argument('--chunk-size', type=int, default=10)
+    parser.add_argument('--chunk-size', type=lambda x: 'auto' if x == 'auto' else int(x), default=10)   
     parser.add_argument('--max-iter', type=int, default=15)
     args = parser.parse_args()
     if jax.default_backend() != 'gpu':
